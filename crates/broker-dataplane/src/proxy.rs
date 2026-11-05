@@ -40,7 +40,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tokio_rustls::LazyConfigAcceptor;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::audit::AuditPipeline;
 use crate::metrics::Metrics;
@@ -576,7 +576,7 @@ async fn handle_intercepted(
     match ctx.upstream.send(req).await {
         Ok(response) => {
             Metrics::inc(&shared.metrics.requests_injected_total);
-            info!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status = response.status().as_u16(), "injected credential");
+            debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status = response.status().as_u16(), "injected credential");
             response.map(|b| b.boxed())
         }
         Err(e) => {
