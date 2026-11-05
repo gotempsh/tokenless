@@ -6,7 +6,7 @@ members = [
     "crates/broker-core",
     "crates/broker-auth",
     "crates/broker-control",
-#    "crates/broker-dataplane",
+    "crates/broker-dataplane",
 #    "crates/broker-server",
     "crates/broker-conformance",
 ]
