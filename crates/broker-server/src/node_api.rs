@@ -29,6 +29,7 @@ use rustls::{RootCertStore, ServerConfig};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{debug, info, warn};
@@ -112,10 +113,13 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 /// Accepts TLS connections and serves the node router, attaching the
-/// client-certificate identity to each request.
+/// client-certificate identity to each request. Connections live in a
+/// `JoinSet`, so aborting this task also closes every open snapshot stream.
 pub async fn serve(listener: TcpListener, tls: Arc<ArcSwap<ServerConfig>>, app: Router) {
     let limit = Arc::new(Semaphore::new(MAX_NODE_CONNECTIONS));
+    let mut connections = JoinSet::new();
     loop {
+        while connections.try_join_next().is_some() {}
         let (tcp, peer_addr) = match listener.accept().await {
             Ok(c) => c,
             Err(e) => {
@@ -130,7 +134,7 @@ pub async fn serve(listener: TcpListener, tls: Arc<ArcSwap<ServerConfig>>, app: 
         };
         let acceptor = TlsAcceptor::from(tls.load_full());
         let app = app.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _permit = permit;
             let stream = match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(tcp)).await {
                 Ok(Ok(s)) => s,
