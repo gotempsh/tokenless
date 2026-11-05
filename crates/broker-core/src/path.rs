@@ -36,7 +36,9 @@ impl PathPattern {
             return Err(invalid("a wildcard is only allowed as a trailing '/*'"));
         }
         if body.contains('*') || body.contains('?') || body.contains('#') {
-            return Err(invalid("'*', '?' and '#' are only allowed as a trailing '/*'"));
+            return Err(invalid(
+                "'*', '?' and '#' are only allowed as a trailing '/*'",
+            ));
         }
         check_request_path(body).map_err(|r| invalid(r.as_str()))?;
         Ok(Self {
@@ -129,10 +131,16 @@ pub fn check_request_path(path: &str) -> Result<(), PathRejection> {
         return Err(PathRejection::ControlCharacter);
     }
     let lower = path.to_ascii_lowercase();
-    if ["%2e", "%2f", "%5c", "%00"].iter().any(|e| lower.contains(e)) {
+    if ["%2e", "%2f", "%5c", "%00"]
+        .iter()
+        .any(|e| lower.contains(e))
+    {
         return Err(PathRejection::EncodedSeparator);
     }
-    if path.split('/').any(|segment| segment == "." || segment == "..") {
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
         return Err(PathRejection::DotSegment);
     }
     Ok(())
@@ -210,12 +218,22 @@ mod tests {
         assert!(prefix.matches("/v1/"));
         assert!(!prefix.matches("/v1"));
         assert!(!prefix.matches("/v2/models"));
-        assert!(PathPattern::parse("/*").unwrap().matches("/anything/at/all"));
+        assert!(PathPattern::parse("/*")
+            .unwrap()
+            .matches("/anything/at/all"));
     }
 
     #[test]
     fn rejects_bad_patterns() {
-        for bad in ["user", "/v1*", "/a/*/b", "/a?b", "/../x", "/%2e%2e/x", "/a\\b"] {
+        for bad in [
+            "user",
+            "/v1*",
+            "/a/*/b",
+            "/a?b",
+            "/../x",
+            "/%2e%2e/x",
+            "/a\\b",
+        ] {
             assert!(PathPattern::parse(bad).is_err(), "{bad} should be rejected");
         }
     }
@@ -235,13 +253,22 @@ mod tests {
     #[test]
     fn request_path_checks_block_traversal_tricks() {
         assert!(check_request_path("/v1/models").is_ok());
-        assert_eq!(check_request_path("/v1/../admin"), Err(PathRejection::DotSegment));
-        assert_eq!(check_request_path("/v1/./x"), Err(PathRejection::DotSegment));
+        assert_eq!(
+            check_request_path("/v1/../admin"),
+            Err(PathRejection::DotSegment)
+        );
+        assert_eq!(
+            check_request_path("/v1/./x"),
+            Err(PathRejection::DotSegment)
+        );
         assert_eq!(
             check_request_path("/v1/%2E%2E/admin"),
             Err(PathRejection::EncodedSeparator)
         );
-        assert_eq!(check_request_path("/v1%2fadmin"), Err(PathRejection::EncodedSeparator));
+        assert_eq!(
+            check_request_path("/v1%2fadmin"),
+            Err(PathRejection::EncodedSeparator)
+        );
         assert_eq!(check_request_path("v1"), Err(PathRejection::NotAbsolute));
     }
 

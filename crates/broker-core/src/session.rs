@@ -226,7 +226,9 @@ pub fn verify_session(
     now: DateTime<Utc>,
 ) -> Result<SessionClaims, SessionError> {
     if token.len() > MAX_TOKEN_LEN {
-        return Err(malformed(format!("token is longer than {MAX_TOKEN_LEN} bytes")));
+        return Err(malformed(format!(
+            "token is longer than {MAX_TOKEN_LEN} bytes"
+        )));
     }
     let body = token
         .strip_prefix(HEADER)
@@ -354,7 +356,14 @@ mod tests {
     fn ttl_and_limits_are_bounded() {
         let scope = Scope::for_vault(&VaultId::new());
         let mk = |ttl, rules: Vec<RuleId>, limit| {
-            SessionClaims::new(scope.clone(), rules, ttl, limit, BTreeMap::new(), Utc::now())
+            SessionClaims::new(
+                scope.clone(),
+                rules,
+                ttl,
+                limit,
+                BTreeMap::new(),
+                Utc::now(),
+            )
         };
         assert!(mk(0, vec![RuleId::new()], None).is_err());
         assert!(mk(MAX_SESSION_TTL_SECS + 1, vec![RuleId::new()], None).is_err());

@@ -15,6 +15,7 @@ pub mod host;
 pub mod ids;
 pub mod injection;
 pub mod path;
+pub mod protocol;
 pub mod rule;
 pub mod scope;
 pub mod seal;

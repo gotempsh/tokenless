@@ -157,7 +157,11 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 ))
             }
             None if action == Action::TemplateRead => {}
-            None => return deny(format!("'{action}' needs a vault the principal is bound to")),
+            None => {
+                return deny(format!(
+                    "'{action}' needs a vault the principal is bound to"
+                ))
+            }
         }
     }
     let allowed = match principal.role {
@@ -220,14 +224,20 @@ mod tests {
             role: Role::Admin,
             vault: None,
         };
-        assert_eq!(rbac_decide(&admin, Action::NodeManage, None), Decision::Allow);
+        assert_eq!(
+            rbac_decide(&admin, Action::NodeManage, None),
+            Decision::Allow
+        );
     }
 
     #[test]
     fn api_keys_are_vault_bound() {
         let vault = VaultId::new();
         let issuer = key(Role::SessionIssuer, vault);
-        assert_eq!(rbac_decide(&issuer, Action::SessionMint, Some(&vault)), Decision::Allow);
+        assert_eq!(
+            rbac_decide(&issuer, Action::SessionMint, Some(&vault)),
+            Decision::Allow
+        );
         assert!(matches!(
             rbac_decide(&issuer, Action::SessionMint, Some(&VaultId::new())),
             Decision::Deny { .. }
@@ -237,11 +247,19 @@ mod tests {
             Decision::Deny { .. }
         ));
         assert!(matches!(
-            rbac_decide(&key(Role::Editor, vault), Action::CredentialWrite, Some(&vault)),
+            rbac_decide(
+                &key(Role::Editor, vault),
+                Action::CredentialWrite,
+                Some(&vault)
+            ),
             Decision::Deny { .. }
         ));
         assert!(matches!(
-            rbac_decide(&key(Role::Editor, vault), Action::ApiKeyManage, Some(&vault)),
+            rbac_decide(
+                &key(Role::Editor, vault),
+                Action::ApiKeyManage,
+                Some(&vault)
+            ),
             Decision::Deny { .. }
         ));
     }

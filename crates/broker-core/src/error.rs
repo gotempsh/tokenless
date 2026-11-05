@@ -31,7 +31,9 @@ pub enum CoreError {
     #[error("credential field '{field}' is missing for template '{template_id}'")]
     MissingField { template_id: String, field: String },
 
-    #[error("credential field '{field}' for template '{template_id}' is not declared by the template")]
+    #[error(
+        "credential field '{field}' for template '{template_id}' is not declared by the template"
+    )]
     UnknownField { template_id: String, field: String },
 
     #[error("value for credential field '{field}' is not a valid HTTP header value: {reason}")]

@@ -110,7 +110,10 @@ mod tests {
             verify_code(&secret, "admin", &code, now, None).unwrap(),
             Some(now / 30)
         );
-        assert_eq!(verify_code(&secret, "admin", "000000x", now, None).unwrap(), None);
+        assert_eq!(
+            verify_code(&secret, "admin", "000000x", now, None).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -119,7 +122,10 @@ mod tests {
         let now = 1_800_000_000;
         let code = code_at(&secret, now).unwrap();
         let step = verify_code(&secret, "admin", &code, now, None).unwrap();
-        assert_eq!(verify_code(&secret, "admin", &code, now, step).unwrap(), None);
+        assert_eq!(
+            verify_code(&secret, "admin", &code, now, step).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -131,7 +137,9 @@ mod tests {
             .unwrap()
             .is_some());
         let old = code_at(&secret, now - 90).unwrap();
-        assert!(verify_code(&secret, "admin", &old, now, None).unwrap().is_none());
+        assert!(verify_code(&secret, "admin", &old, now, None)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

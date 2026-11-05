@@ -45,12 +45,16 @@ impl RuleScope {
         };
         for host in &self.hosts {
             if !max.hosts.iter().any(|m| m.covers(host)) {
-                return Err(widening(format!("host '{host}' is outside the allowed hosts")));
+                return Err(widening(format!(
+                    "host '{host}' is outside the allowed hosts"
+                )));
             }
         }
         for path in &self.paths {
             if !max.paths.iter().any(|m| m.covers(path)) {
-                return Err(widening(format!("path '{path}' is outside the allowed paths")));
+                return Err(widening(format!(
+                    "path '{path}' is outside the allowed paths"
+                )));
             }
         }
         for method in &self.methods {
@@ -86,9 +90,18 @@ mod tests {
 
     fn scope(hosts: &[&str], paths: &[&str], methods: &[&str]) -> RuleScope {
         RuleScope {
-            hosts: hosts.iter().map(|h| HostPattern::parse(h).unwrap()).collect(),
-            paths: paths.iter().map(|p| PathPattern::parse(p).unwrap()).collect(),
-            methods: methods.iter().map(|m| HttpMethod::parse(m).unwrap()).collect(),
+            hosts: hosts
+                .iter()
+                .map(|h| HostPattern::parse(h).unwrap())
+                .collect(),
+            paths: paths
+                .iter()
+                .map(|p| PathPattern::parse(p).unwrap())
+                .collect(),
+            methods: methods
+                .iter()
+                .map(|m| HttpMethod::parse(m).unwrap())
+                .collect(),
         }
     }
 
@@ -105,7 +118,9 @@ mod tests {
         let max = scope(&["api.example.com"], &["/v1/*"], &["GET", "POST"]);
         let other_host = scope(&["evil.example.com"], &["/v1/*"], &["GET"]);
         let err = other_host.ensure_within(&max, "tmpl").unwrap_err();
-        assert!(matches!(err, CoreError::Widening { ref template_id, .. } if template_id == "tmpl"));
+        assert!(
+            matches!(err, CoreError::Widening { ref template_id, .. } if template_id == "tmpl")
+        );
         assert!(err.to_string().contains("evil.example.com"));
         assert!(scope(&["api.example.com"], &["/*"], &["GET"])
             .ensure_within(&max, "t")
@@ -128,7 +143,11 @@ mod tests {
     #[test]
     fn empty_dimensions_are_invalid() {
         assert!(scope(&[], &["/*"], &["*"]).validate("x").is_err());
-        assert!(scope(&["a.example.com"], &[], &["*"]).validate("x").is_err());
-        assert!(scope(&["a.example.com"], &["/*"], &[]).validate("x").is_err());
+        assert!(scope(&["a.example.com"], &[], &["*"])
+            .validate("x")
+            .is_err());
+        assert!(scope(&["a.example.com"], &["/*"], &[])
+            .validate("x")
+            .is_err());
     }
 }

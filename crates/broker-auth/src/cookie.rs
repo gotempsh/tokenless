@@ -32,7 +32,13 @@ mod tests {
     #[test]
     fn cookie_has_all_protections() {
         let c = session_cookie("abc", 3600);
-        for attr in ["HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=3600"] {
+        for attr in [
+            "HttpOnly",
+            "Secure",
+            "SameSite=Strict",
+            "Path=/",
+            "Max-Age=3600",
+        ] {
             assert!(c.contains(attr), "missing {attr}");
         }
         assert!(!c.contains("Domain"));
@@ -43,6 +49,9 @@ mod tests {
         let header = format!("other=1; {SESSION_COOKIE}=tok; x=y");
         assert_eq!(session_from_cookie_header(&header), Some("tok"));
         assert_eq!(session_from_cookie_header("other=1"), None);
-        assert_eq!(session_from_cookie_header(&format!("{SESSION_COOKIE}=")), None);
+        assert_eq!(
+            session_from_cookie_header(&format!("{SESSION_COOKIE}=")),
+            None
+        );
     }
 }

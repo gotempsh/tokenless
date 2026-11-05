@@ -78,7 +78,10 @@ impl HostPattern {
         }
         if let Some(suffix) = host.strip_prefix("*.") {
             if suffix.contains('*') {
-                return Err(invalid(input, "only a single leading '*.' wildcard is allowed"));
+                return Err(invalid(
+                    input,
+                    "only a single leading '*.' wildcard is allowed",
+                ));
             }
             validate_dns_name(input, suffix)?;
             if !suffix.contains('.') {
@@ -89,7 +92,10 @@ impl HostPattern {
             }
         } else {
             if host.contains('*') {
-                return Err(invalid(input, "wildcards are only allowed as a leading '*.'"));
+                return Err(invalid(
+                    input,
+                    "wildcards are only allowed as a leading '*.'",
+                ));
             }
             validate_dns_name(input, &host)?;
         }
@@ -303,7 +309,10 @@ mod tests {
 
     #[test]
     fn parse_authority_rejects_wildcards() {
-        assert_eq!(parse_authority("Example.com:443"), Some(("example.com".into(), 443)));
+        assert_eq!(
+            parse_authority("Example.com:443"),
+            Some(("example.com".into(), 443))
+        );
         assert_eq!(parse_authority("*.example.com:443"), None);
     }
 }

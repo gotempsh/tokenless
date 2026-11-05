@@ -53,7 +53,10 @@ pub fn seal(recipient: &PublicKey, plaintext: &[u8], aad: &[u8]) -> Result<Seale
     let epk = PublicKey::from(&ephemeral);
     let shared = ephemeral.diffie_hellman(recipient);
     if !shared.was_contributory() {
-        return Err(CoreError::crypto("seal", "recipient key is a low-order point"));
+        return Err(CoreError::crypto(
+            "seal",
+            "recipient key is a low-order point",
+        ));
     }
     let key = derive_key(shared.as_bytes(), &epk, recipient)?;
     let cipher = Aes256Gcm::new_from_slice(key.as_ref())
@@ -61,7 +64,13 @@ pub fn seal(recipient: &PublicKey, plaintext: &[u8], aad: &[u8]) -> Result<Seale
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|_| CoreError::crypto("seal.encrypt", "AES-GCM encryption failed"))?;
     Ok(Sealed {
         epk: STANDARD.encode(epk.as_bytes()),
@@ -91,7 +100,10 @@ pub fn open(
         .map_err(|e| CoreError::encoding("sealed.ct", e))?;
     let shared = secret.diffie_hellman(&epk);
     if !shared.was_contributory() {
-        return Err(CoreError::crypto("open", "ephemeral key is a low-order point"));
+        return Err(CoreError::crypto(
+            "open",
+            "ephemeral key is a low-order point",
+        ));
     }
     let recipient = PublicKey::from(secret);
     let key = derive_key(shared.as_bytes(), &epk, &recipient)?;
@@ -108,7 +120,10 @@ pub fn encode_public_key(key: &PublicKey) -> String {
 }
 
 pub fn decode_public_key(value: &str) -> Result<PublicKey, CoreError> {
-    Ok(PublicKey::from(decode_fixed::<32>("x25519 public key", value)?))
+    Ok(PublicKey::from(decode_fixed::<32>(
+        "x25519 public key",
+        value,
+    )?))
 }
 
 #[cfg(test)]
@@ -143,7 +158,9 @@ mod tests {
     fn public_key_encoding_round_trips() {
         let public = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
         assert_eq!(
-            decode_public_key(&encode_public_key(&public)).unwrap().as_bytes(),
+            decode_public_key(&encode_public_key(&public))
+                .unwrap()
+                .as_bytes(),
             public.as_bytes()
         );
         assert!(decode_public_key("AAAA").is_err());

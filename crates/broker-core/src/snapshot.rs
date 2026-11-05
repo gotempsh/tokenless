@@ -106,14 +106,16 @@ pub struct SnapshotBody {
     pub rules: Vec<SnapshotRule>,
 }
 
-/// AAD binding a sealed rule credential to one node, snapshot and rule.
-pub fn rule_aad(node_id: &NodeId, version: u64, rule_id: &RuleId) -> Vec<u8> {
-    format!("rule|{node_id}|{version}|{rule_id}").into_bytes()
+/// AAD binding a sealed rule credential to one node, rule and credential.
+/// The snapshot version is deliberately not part of it, so sealed rules can
+/// be reused across lease renewals; the whole snapshot is signed anyway.
+pub fn rule_aad(node_id: &NodeId, rule_id: &RuleId, credential_id: &CredentialId) -> Vec<u8> {
+    format!("rule|{node_id}|{rule_id}|{credential_id}").into_bytes()
 }
 
-/// AAD binding the sealed interception CA key to one node and snapshot.
-pub fn ca_aad(node_id: &NodeId, version: u64) -> Vec<u8> {
-    format!("interception-ca|{node_id}|{version}").into_bytes()
+/// AAD binding the sealed interception CA key to one node.
+pub fn ca_aad(node_id: &NodeId) -> Vec<u8> {
+    format!("interception-ca|{node_id}").into_bytes()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +195,7 @@ mod tests {
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
             interception_ca: InterceptionCa {
                 cert_der: STANDARD.encode(b"cert"),
-                key: seal(&node_key, b"key", &ca_aad(&node_id, 7)).unwrap(),
+                key: seal(&node_key, b"key", &ca_aad(&node_id)).unwrap(),
             },
             rules: vec![],
         }

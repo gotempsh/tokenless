@@ -32,6 +32,17 @@ const FORBIDDEN_HEADERS: &[&str] = &[
     "set-cookie",
 ];
 
+/// Credential-bearing headers a client may never supply on a host that has a
+/// rule: the broker owns authentication to that host.
+pub const ALWAYS_STRIPPED: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "private-token",
+    "x-auth-token",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InjectionSpec {
@@ -63,7 +74,9 @@ pub fn validate_header_name(name: &str) -> Result<String, CoreError> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
     {
-        return Err(invalid("header names may only contain RFC 9110 token characters"));
+        return Err(invalid(
+            "header names may only contain RFC 9110 token characters",
+        ));
     }
     let lower = name.to_ascii_lowercase();
     if FORBIDDEN_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
@@ -117,13 +130,27 @@ impl InjectionSpec {
         }
     }
 
+    /// Every header the data plane removes from client requests before
+    /// injecting: the always-stripped set plus this injection's own names.
+    pub fn strip_set(&self) -> Vec<String> {
+        let mut names: Vec<String> = ALWAYS_STRIPPED.iter().map(|s| s.to_string()).collect();
+        for name in self.header_names() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     pub fn validate(&self, template_id: &str) -> Result<(), CoreError> {
         if let InjectionSpec::Header { name, prefix, .. } = self {
             validate_header_name(name)?;
             if let Some(prefix) = prefix {
-                validate_header_value("prefix", prefix).map_err(|e| CoreError::InvalidTemplate {
-                    template_id: template_id.to_string(),
-                    reason: e.to_string(),
+                validate_header_value("prefix", prefix).map_err(|e| {
+                    CoreError::InvalidTemplate {
+                        template_id: template_id.to_string(),
+                        reason: e.to_string(),
+                    }
                 })?;
             }
         }
@@ -314,7 +341,13 @@ mod tests {
 
     #[test]
     fn rejects_forbidden_header_names() {
-        for name in ["Host", "Proxy-Authorization", "Cookie", "Transfer-Encoding", "bad header"] {
+        for name in [
+            "Host",
+            "Proxy-Authorization",
+            "Cookie",
+            "Transfer-Encoding",
+            "bad header",
+        ] {
             let spec = InjectionSpec::Header {
                 name: name.into(),
                 field: "k".into(),

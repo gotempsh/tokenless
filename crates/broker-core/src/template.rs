@@ -107,8 +107,7 @@ const MAX_TEMPLATE_BYTES: usize = 64 * 1024;
 fn is_slug(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
@@ -133,7 +132,9 @@ impl ServiceTemplate {
             reason,
         };
         if !is_slug(&self.id) {
-            return Err(invalid("id must be 1-64 characters of a-z, 0-9, '-' or '_'".into()));
+            return Err(invalid(
+                "id must be 1-64 characters of a-z, 0-9, '-' or '_'".into(),
+            ));
         }
         if self.version == 0 {
             return Err(invalid("version must be 1 or greater".into()));
@@ -147,10 +148,14 @@ impl ServiceTemplate {
             ));
         }
         if self.host_override.required && !self.host_override.allowed {
-            return Err(invalid("host_override.required implies host_override.allowed".into()));
+            return Err(invalid(
+                "host_override.required implies host_override.allowed".into(),
+            ));
         }
         if self.allow.paths.is_empty() || self.allow.methods.is_empty() {
-            return Err(invalid("allow.paths and allow.methods cannot be empty".into()));
+            return Err(invalid(
+                "allow.paths and allow.methods cannot be empty".into(),
+            ));
         }
         if self.credential_fields.is_empty() {
             return Err(invalid("at least one credential field is required".into()));
@@ -158,10 +163,16 @@ impl ServiceTemplate {
         let mut seen = std::collections::BTreeSet::new();
         for field in &self.credential_fields {
             if !is_slug(&field.name) {
-                return Err(invalid(format!("credential field name '{}' is invalid", field.name)));
+                return Err(invalid(format!(
+                    "credential field name '{}' is invalid",
+                    field.name
+                )));
             }
             if !seen.insert(field.name.as_str()) {
-                return Err(invalid(format!("credential field '{}' is declared twice", field.name)));
+                return Err(invalid(format!(
+                    "credential field '{}' is declared twice",
+                    field.name
+                )));
             }
         }
         for used in self.injection.fields() {
@@ -247,8 +258,14 @@ const BUILTIN_YAML: &[(&str, &str)] = &[
     ("gitlab", include_str!("../templates/gitlab.yaml")),
     ("stripe", include_str!("../templates/stripe.yaml")),
     ("openai", include_str!("../templates/openai.yaml")),
-    ("generic-bearer", include_str!("../templates/generic-bearer.yaml")),
-    ("generic-api-key", include_str!("../templates/generic-api-key.yaml")),
+    (
+        "generic-bearer",
+        include_str!("../templates/generic-bearer.yaml"),
+    ),
+    (
+        "generic-api-key",
+        include_str!("../templates/generic-api-key.yaml"),
+    ),
 ];
 
 /// The templates shipped with the broker, together with their YAML source.
@@ -280,7 +297,14 @@ mod tests {
         let ids: Vec<_> = builtins.iter().map(|(t, _)| t.id.as_str()).collect();
         assert_eq!(
             ids,
-            ["github", "gitlab", "stripe", "openai", "generic-bearer", "generic-api-key"]
+            [
+                "github",
+                "gitlab",
+                "stripe",
+                "openai",
+                "generic-bearer",
+                "generic-api-key"
+            ]
         );
     }
 
@@ -303,7 +327,8 @@ mod tests {
 
     #[test]
     fn unknown_keys_are_rejected() {
-        let yaml = include_str!("../templates/github.yaml").replace("version: 1", "version: 1\nscript: rm -rf /");
+        let yaml = include_str!("../templates/github.yaml")
+            .replace("version: 1", "version: 1\nscript: rm -rf /");
         assert!(matches!(
             ServiceTemplate::from_yaml(&yaml),
             Err(CoreError::TemplateParse { .. })

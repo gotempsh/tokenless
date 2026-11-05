@@ -78,7 +78,10 @@ mod tests {
 
     #[test]
     fn policy_rejects_short_passwords() {
-        assert!(matches!(hash_password("short"), Err(AuthError::WeakPassword { .. })));
+        assert!(matches!(
+            hash_password("short"),
+            Err(AuthError::WeakPassword { .. })
+        ));
     }
 
     #[test]
