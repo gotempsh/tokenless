@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: generic-api-key
+version: 1
+name: Generic API key header
+description: Any HTTPS API that reads a key from the X-API-Key header. The host is chosen per credential (admin only).
+hosts: []
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: API key
+injection:
+  method: header
+  name: X-API-Key
+  field: api_key
+host_override:
+  allowed: true
+  required: true
+  label: API host (https://host[:port])

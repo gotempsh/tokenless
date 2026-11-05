@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: openai
+version: 1
+name: OpenAI
+description: OpenAI API with a project API key.
+hosts:
+  - api.openai.com
+allow:
+  paths: ["/v1/*"]
+  methods: [GET, POST, DELETE]
+credential_fields:
+  - name: api_key
+    label: API key
+injection:
+  method: bearer
+  field: api_key
+validation:
+  method: GET
+  path: /v1/models
+  expect_status: [200]

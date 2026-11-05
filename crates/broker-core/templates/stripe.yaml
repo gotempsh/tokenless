@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: stripe
+version: 1
+name: Stripe
+description: Stripe API with a restricted or secret key.
+hosts:
+  - api.stripe.com
+allow:
+  paths: ["/v1/*"]
+  methods: [GET, POST, DELETE]
+credential_fields:
+  - name: secret_key
+    label: Secret or restricted key
+injection:
+  method: bearer
+  field: secret_key
+validation:
+  method: GET
+  path: /v1/balance
+  expect_status: [200]

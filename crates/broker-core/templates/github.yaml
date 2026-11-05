@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: github
+version: 1
+name: GitHub
+description: GitHub REST API with a personal access token or fine-grained token.
+hosts:
+  - api.github.com
+allow:
+  paths: ["/*"]
+  methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+credential_fields:
+  - name: token
+    label: Personal access token
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /user
+  expect_status: [200]

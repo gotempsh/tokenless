@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+/target
+/data
+*.db
+*.db-shm
+*.db-wal
+node_modules/
+broker-ui/dist/
+.env

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: generic-bearer
+version: 1
+name: Generic bearer token
+description: Any HTTPS API that accepts "Authorization Bearer". The host is chosen per credential (admin only).
+hosts: []
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: Bearer token
+injection:
+  method: bearer
+  field: token
+host_override:
+  allowed: true
+  required: true
+  label: API host (https://host[:port])

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: gitlab
+version: 1
+name: GitLab
+description: GitLab REST API (v4). Self-hosted instances can override the base URL (admin only).
+hosts:
+  - gitlab.com
+allow:
+  paths: ["/api/v4/*"]
+  methods: [GET, HEAD, POST, PUT, PATCH, DELETE]
+credential_fields:
+  - name: token
+    label: Personal, project or group access token
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v4/user
+  expect_status: [200]
+host_override:
+  allowed: true
+  required: false
+  label: Self-hosted GitLab base URL (https://...)

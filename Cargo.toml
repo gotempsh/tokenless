@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[workspace]
+resolver = "2"
+members = [
+    "crates/broker-core",
+#    "crates/broker-auth",
+#    "crates/broker-control",
+#    "crates/broker-dataplane",
+#    "crates/broker-server",
+#    "crates/broker-conformance",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+broker-core = { path = "crates/broker-core" }
+broker-auth = { path = "crates/broker-auth" }
+broker-control = { path = "crates/broker-control" }
+broker-dataplane = { path = "crates/broker-dataplane" }
+broker-conformance = { path = "crates/broker-conformance" }
+
+aes-gcm = "0.10"
+arc-swap = "1.7"
+argon2 = { version = "0.5", features = ["std"] }
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tower-log", "tracing"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rand = "0.8"
+rcgen = { version = "0.14", features = ["x509-parser"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+subtle = "2.5"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+webpki-roots = "1"
+x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
+x509-parser = "0.18"
+zeroize = { version = "1", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
