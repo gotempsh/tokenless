@@ -7,7 +7,7 @@ members = [
     "crates/broker-auth",
     "crates/broker-control",
     "crates/broker-dataplane",
-#    "crates/broker-server",
+    "crates/broker-server",
     "crates/broker-conformance",
 ]
 
@@ -42,7 +42,7 @@ hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 rand = "0.8"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
