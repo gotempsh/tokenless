@@ -1,0 +1,464 @@
+// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+import { useState, type FormEvent } from "react";
+import {
+  del,
+  get,
+  post,
+  put,
+  type ApiKey,
+  type AuditEvent,
+  type NodeInfo,
+  type Page,
+  type Role,
+  type Settings as SettingsModel,
+  type StoredTemplate,
+  type Vault,
+} from "../api";
+import { useAction, useLoad } from "../hooks";
+import { Empty, ErrorBanner, Loading, OneTimeSecret, Pager, Section, Tags, When } from "../components/ui";
+
+function injectionSummary(t: StoredTemplate["template"]): string {
+  switch (t.injection.method) {
+    case "bearer":
+      return `Authorization: Bearer <${t.injection.field}>`;
+    case "basic":
+      return `Authorization: Basic <${t.injection.username_field}:${t.injection.password_field}>`;
+    case "header":
+      return `${t.injection.name}: ${t.injection.prefix ?? ""}<${t.injection.field}>`;
+  }
+}
+
+// ----- templates -------------------------------------------------------------
+
+export function Templates({ isAdmin }: { isAdmin: boolean }) {
+  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
+  const [yaml, setYaml] = useState("");
+  const [reviewing, setReviewing] = useState<StoredTemplate | null>(null);
+  const action = useAction();
+
+  const importTemplate = async (e: FormEvent) => {
+    e.preventDefault();
+    const t = await action.run(() => post<StoredTemplate>("/templates/import", { yaml }));
+    if (t) {
+      setYaml("");
+      setReviewing(t);
+      templates.reload();
+    }
+  };
+
+  const approve = async (t: StoredTemplate) => {
+    const ok = await action.run(() => post<StoredTemplate>(`/templates/${t.template.id}/${t.template.version}/approve`));
+    if (ok) {
+      setReviewing(null);
+      templates.reload();
+    }
+  };
+
+  return (
+    <>
+      <Section title="Template catalog">
+        <p className="muted">
+          Templates describe a service: which hosts, paths and methods a credential may ever be used for, and how it is
+          injected. They set the maximum scope; credentials and rules can only narrow it.
+        </p>
+        <ErrorBanner error={templates.error ?? action.error} />
+        {templates.loading && !templates.data ? (
+          <Loading />
+        ) : (
+          <div className="cards">
+            {templates.data?.map((t) => (
+              <article key={`${t.template.id}@${t.template.version}`} className="card">
+                <header>
+                  <h3>{t.template.name}</h3>
+                  <span className={`pill ${t.status === "approved" ? "ok" : "warn"}`}>
+                    {t.status === "approved" ? "approved" : "pending approval"}
+                  </span>
+                </header>
+                <p className="muted small">
+                  <code>
+                    {t.template.id}@{t.template.version}
+                  </code>{" "}
+                  · {t.source}
+                </p>
+                <p>{t.template.description}</p>
+                <dl>
+                  <dt>Hosts</dt>
+                  <dd>{t.template.hosts.length ? <Tags values={t.template.hosts} /> : <span className="muted">set per credential (admin)</span>}</dd>
+                  <dt>Paths</dt>
+                  <dd>
+                    <Tags values={t.template.allow.paths} />
+                  </dd>
+                  <dt>Methods</dt>
+                  <dd>
+                    <Tags values={t.template.allow.methods} />
+                  </dd>
+                  <dt>Injects</dt>
+                  <dd>
+                    <code>{injectionSummary(t.template)}</code>
+                  </dd>
+                  {t.template.host_override.allowed && (
+                    <>
+                      <dt>Override</dt>
+                      <dd>Admins may set a custom host{t.template.host_override.required ? " (required)" : ""}</dd>
+                    </>
+                  )}
+                </dl>
+                {t.status !== "approved" && isAdmin && (
+                  <button type="button" onClick={() => setReviewing(t)}>
+                    Review and approve
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </Section>
+      {reviewing && reviewing.status !== "approved" && (
+        <Section title={`Approve "${reviewing.template.name}"?`}>
+          <div className="banner warn">
+            <p>Approving lets credentials created from this template be injected into requests to:</p>
+            {reviewing.template.hosts.length ? (
+              <Tags values={reviewing.template.hosts} />
+            ) : (
+              <p>a host chosen by an admin on each credential.</p>
+            )}
+            <p>
+              Paths <Tags values={reviewing.template.allow.paths} /> · methods <Tags values={reviewing.template.allow.methods} /> ·
+              header <code>{injectionSummary(reviewing.template)}</code>
+            </p>
+          </div>
+          <pre className="yaml">{reviewing.yaml}</pre>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={() => setReviewing(null)}>
+              Not now
+            </button>
+            {isAdmin && (
+              <button type="button" disabled={action.busy} onClick={() => void approve(reviewing)}>
+                Approve host binding
+              </button>
+            )}
+          </div>
+        </Section>
+      )}
+      {isAdmin && (
+        <Section title="Import a template">
+          <form className="form" onSubmit={importTemplate}>
+            <label>
+              Template YAML
+              <textarea rows={12} className="mono" value={yaml} onChange={(e) => setYaml(e.target.value)} required spellCheck={false} />
+            </label>
+            <button type="submit" disabled={action.busy}>
+              Import (requires approval)
+            </button>
+          </form>
+        </Section>
+      )}
+    </>
+  );
+}
+
+// ----- API keys ----------------------------------------------------------------
+
+const KEY_ROLES: Role[] = ["session_issuer", "viewer", "editor"];
+
+export function ApiKeys() {
+  const [page, setPage] = useState(1);
+  const keys = useLoad(() => get<Page<ApiKey>>(`/api-keys?page=${page}`), [page]);
+  const vaults = useLoad(() => get<Page<Vault>>("/vaults?page_size=100"), []);
+  const [form, setForm] = useState({ name: "", vault_id: "", role: "session_issuer" as Role, expires_in_days: 30 });
+  const [created, setCreated] = useState<string | null>(null);
+  const action = useAction();
+  const vaultName = (id: string) => vaults.data?.items.find((v) => v.id === id)?.name ?? id;
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    const result = await action.run(() => post<{ api_key: string; key: ApiKey }>("/api-keys", form));
+    if (result) {
+      setCreated(result.api_key);
+      keys.reload();
+    }
+  };
+
+  const revoke = async (k: ApiKey) => {
+    if (!window.confirm(`Revoke API key "${k.name}"?`)) return;
+    await action.run(() => del(`/api-keys/${k.id}`));
+    keys.reload();
+  };
+
+  return (
+    <>
+      <Section title="Create an API key">
+        <p className="muted">Keys belong to exactly one vault and role, and expire. Only a hash is stored.</p>
+        {created && <OneTimeSecret label="API key" value={created} hint={<code className="block">Authorization: Bearer {created.slice(0, 16)}…</code>} />}
+        <form className="form" onSubmit={create}>
+          <ErrorBanner error={action.error} />
+          <label>
+            Name
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+          </label>
+          <label>
+            Vault
+            <select value={form.vault_id} onChange={(e) => setForm({ ...form, vault_id: e.target.value })} required>
+              <option value="">Choose…</option>
+              {vaults.data?.items.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="choice-cards">
+            {KEY_ROLES.map((r) => (
+              <label key={r} className={`choice ${form.role === r ? "selected" : ""}`}>
+                <input type="radio" name="role" value={r} checked={form.role === r} onChange={() => setForm({ ...form, role: r })} />
+                <strong>{r.replace("_", " ")}</strong>
+                <span className="muted small">
+                  {r === "session_issuer" ? "Mint proxy sessions only" : r === "viewer" ? "Read the vault" : "Manage rules and sessions"}
+                </span>
+              </label>
+            ))}
+          </div>
+          <label>
+            Expires in (days)
+            <input type="number" min={1} max={365} value={form.expires_in_days} onChange={(e) => setForm({ ...form, expires_in_days: Number(e.target.value) })} />
+          </label>
+          <button type="submit" disabled={action.busy}>
+            Create API key
+          </button>
+        </form>
+      </Section>
+      <Section title="API keys">
+        <ErrorBanner error={keys.error} />
+        {keys.loading && !keys.data ? (
+          <Loading />
+        ) : keys.data?.items.length === 0 ? (
+          <Empty>No API keys.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Prefix</th>
+                <th>Vault</th>
+                <th>Role</th>
+                <th>Expires</th>
+                <th>Last used</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {keys.data?.items.map((k) => (
+                <tr key={k.id}>
+                  <td>{k.name}</td>
+                  <td>
+                    <code>{k.prefix}</code>
+                  </td>
+                  <td>{vaultName(k.vault_id)}</td>
+                  <td>{k.role}</td>
+                  <td>
+                    <When at={k.expires_at} />
+                  </td>
+                  <td>
+                    <When at={k.last_used_at} />
+                  </td>
+                  <td className="row-actions">
+                    {k.revoked_at ? (
+                      <span className="pill bad">revoked</span>
+                    ) : (
+                      <button type="button" className="danger" onClick={() => void revoke(k)}>
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <Pager page={keys.data} onPage={setPage} />
+      </Section>
+    </>
+  );
+}
+
+// ----- nodes -------------------------------------------------------------------
+
+export function Nodes() {
+  const [page, setPage] = useState(1);
+  const nodes = useLoad(() => get<Page<NodeInfo>>(`/nodes?page=${page}`), [page]);
+  const [joinToken, setJoinToken] = useState<string | null>(null);
+  const action = useAction();
+
+  const createToken = async () => {
+    const r = await action.run(() => post<{ token: string; expires_at: string }>("/nodes/join-tokens", {}));
+    if (r) setJoinToken(r.token);
+  };
+
+  const revoke = async (n: NodeInfo) => {
+    if (!window.confirm(`Revoke node "${n.name}"? It stops receiving policy and fails closed when its lease lapses.`)) return;
+    await action.run(() => post<void>(`/nodes/${n.id}/revoke`));
+    nodes.reload();
+  };
+
+  return (
+    <Section
+      title="Data plane nodes"
+      actions={
+        <button type="button" onClick={() => void createToken()} disabled={action.busy}>
+          Create join token
+        </button>
+      }
+    >
+      <ErrorBanner error={nodes.error ?? action.error} />
+      {joinToken && (
+        <OneTimeSecret
+          label="Join token (single use)"
+          value={joinToken}
+          hint={<code className="block">credential-broker node join --control-url https://&lt;this-host&gt;:8443 --token {joinToken.slice(0, 12)}…</code>}
+        />
+      )}
+      {nodes.loading && !nodes.data ? (
+        <Loading />
+      ) : nodes.data?.items.length === 0 ? (
+        <Empty>No nodes enrolled. Create a join token and run `credential-broker node join` on the data plane host.</Empty>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Node</th>
+              <th>Certificate until</th>
+              <th>Last seen</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {nodes.data?.items.map((n) => (
+              <tr key={n.id}>
+                <td>{n.name}</td>
+                <td>
+                  <code>{n.id.slice(0, 8)}</code>
+                </td>
+                <td>
+                  <When at={n.cert_not_after} />
+                </td>
+                <td>
+                  <When at={n.last_seen_at} />
+                </td>
+                <td className="row-actions">
+                  {n.revoked_at ? (
+                    <span className="pill bad">revoked</span>
+                  ) : (
+                    <button type="button" className="danger" onClick={() => void revoke(n)}>
+                      Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <Pager page={nodes.data} onPage={setPage} />
+    </Section>
+  );
+}
+
+// ----- audit -------------------------------------------------------------------
+
+export function Audit() {
+  const [page, setPage] = useState(1);
+  const [prefix, setPrefix] = useState("");
+  const [applied, setApplied] = useState("");
+  const events = useLoad(
+    () => get<Page<AuditEvent>>(`/audit?page=${page}&page_size=50&action_prefix=${encodeURIComponent(applied)}`),
+    [page, applied],
+  );
+  return (
+    <Section title="Audit log">
+      <form
+        className="inline-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setPage(1);
+          setApplied(prefix);
+        }}
+      >
+        <input placeholder="Action prefix, e.g. proxy. or credential." value={prefix} onChange={(e) => setPrefix(e.target.value)} />
+        <button type="submit">Filter</button>
+      </form>
+      <ErrorBanner error={events.error} />
+      {events.loading && !events.data ? (
+        <Loading rows={6} />
+      ) : events.data?.items.length === 0 ? (
+        <Empty>No matching events.</Empty>
+      ) : (
+        <table className="audit">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Outcome</th>
+              <th>Target</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.data?.items.map((e) => (
+              <tr key={e.id}>
+                <td>
+                  <When at={e.at} />
+                </td>
+                <td>
+                  <code>{e.actor}</code>
+                </td>
+                <td>
+                  <code>{e.action}</code>
+                </td>
+                <td>
+                  <span className={`pill ${e.outcome === "success" ? "ok" : "bad"}`}>{e.outcome}</span>
+                </td>
+                <td>{e.target && <code>{e.target}</code>}</td>
+                <td>
+                  <Tags values={Object.entries(e.detail).map(([k, v]) => `${k}=${v}`)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <Pager page={events.data} onPage={setPage} />
+    </Section>
+  );
+}
+
+// ----- settings ----------------------------------------------------------------
+
+export function Settings() {
+  const settings = useLoad(() => get<SettingsModel>("/settings"), []);
+  const action = useAction();
+  const set = async (policy: SettingsModel["unmatched_host_policy"]) => {
+    await action.run(() => put<SettingsModel>("/settings", { unmatched_host_policy: policy }));
+    settings.reload();
+  };
+  const current = settings.data?.unmatched_host_policy;
+  return (
+    <Section title="Settings">
+      <ErrorBanner error={settings.error ?? action.error} />
+      <h3>Hosts without a rule</h3>
+      <div className="choice-cards">
+        <button type="button" className={`choice ${current === "passthrough" ? "selected" : ""}`} onClick={() => void set("passthrough")}>
+          <strong>Tunnel untouched</strong>
+          <span className="muted small">Agents can reach other HTTPS hosts; nothing is injected or decrypted.</span>
+        </button>
+        <button type="button" className={`choice ${current === "deny" ? "selected" : ""}`} onClick={() => void set("deny")}>
+          <strong>Deny</strong>
+          <span className="muted small">Only hosts covered by one of the session's rules are reachable.</span>
+        </button>
+      </div>
+    </Section>
+  );
+}
