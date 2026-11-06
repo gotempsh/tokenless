@@ -3,6 +3,7 @@
 
 //! The management HTTP API (`/api/v1`) used by the UI and automation.
 
+mod console;
 mod extract;
 mod handlers;
 
@@ -142,11 +143,19 @@ fn ui_service(dir: PathBuf) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValu
         .layer(ServeDir::new(dir).fallback(ServeFile::new(index)))
 }
 
-/// Builds the full router: `/api/v1`, plus the UI bundle when `ui_dir` is set.
+/// Whether `serve` has a console to show without `--ui-dir`.
+pub fn console_embedded() -> bool {
+    console::embedded()
+}
+
+/// Builds the full router: `/api/v1`, plus the console: from `ui_dir` when
+/// it is set, otherwise the one compiled into the binary, if any.
 pub fn router(state: Arc<AppState>, ui_dir: Option<PathBuf>) -> Router {
     let mut app = Router::new().nest("/api/v1", api_routes());
     if let Some(dir) = ui_dir {
         app = app.fallback_service(ui_service(dir));
+    } else if console::embedded() {
+        app = app.fallback(console::serve);
     }
     app.layer(SetResponseHeaderLayer::overriding(
         header::X_CONTENT_TYPE_OPTIONS,

@@ -275,7 +275,8 @@ struct ServeArgs {
     /// Name or IP to put in the node API certificate (repeatable).
     #[arg(long = "node-api-name", default_values_t = vec!["localhost".to_string(), "127.0.0.1".to_string()])]
     node_api_names: Vec<String>,
-    /// Built UI directory to serve at `/`.
+    /// Serve the console from this built directory instead of the one
+    /// compiled into the binary (for console development).
     #[arg(long)]
     ui_dir: Option<PathBuf>,
     /// Extra PEM file of CAs trusted for credential validation requests,

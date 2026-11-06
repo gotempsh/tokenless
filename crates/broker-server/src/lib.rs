@@ -258,7 +258,17 @@ impl Server {
             }
         }));
         let api_tls = config.api_tls.is_some();
-        info!(%api_addr, api_tls, %node_addr, "credential broker server started");
+        let console = match (&config.ui_dir, api::console_embedded()) {
+            (Some(_), _) => "directory",
+            (None, true) => "embedded",
+            (None, false) => "none",
+        };
+        info!(%api_addr, api_tls, %node_addr, console, "credential broker server started");
+        if console == "none" {
+            tracing::warn!(
+                "this binary was built without the console; serving the API only. Build broker-ui and pass --ui-dir broker-ui/dist"
+            );
+        }
         Ok(RunningServer {
             api_addr,
             api_tls,

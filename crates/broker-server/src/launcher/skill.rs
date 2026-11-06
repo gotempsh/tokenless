@@ -76,6 +76,14 @@ mod tests {
             front.lines().any(|l| l == format!("name: {SKILL_NAME}")),
             "{front}"
         );
+        // `npx skills add gotempsh/tokenless` finds skills/<name>/SKILL.md
+        // and only accepts lowercase names with hyphens.
+        assert!(
+            SKILL_NAME
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "{SKILL_NAME}"
+        );
         let description = front
             .lines()
             .find_map(|l| l.strip_prefix("description: "))
