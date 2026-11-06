@@ -14,6 +14,7 @@ use broker_core::session::{
     key_id, validate_labels, verify_session, SessionClaims, SessionError, DEFAULT_SESSION_TTL_SECS,
 };
 use broker_core::substitution::SubstitutionLocation;
+use broker_core::template::{builtin_mcp_path, ServiceKind};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,10 @@ pub struct MintSession {
     pub bundle: Option<String>,
     #[serde(default)]
     pub ttl_secs: Option<u64>,
+    /// Ignore `ttl_secs` and last as long as Settings allow: for tokens
+    /// that live in an MCP client's configuration.
+    #[serde(default)]
+    pub longest: bool,
     #[serde(default)]
     pub request_limit: Option<u64>,
     #[serde(default)]
@@ -75,6 +80,12 @@ pub struct DiscoveredService {
     /// Disabled rules stay in the session but get no credential.
     pub enabled: bool,
     pub placeholders: Vec<DiscoveredPlaceholder>,
+    /// `mcp` for an MCP server, which clients reach through the gateway.
+    #[serde(default)]
+    pub kind: ServiceKind,
+    /// Where an MCP server answers on its host, e.g. `/mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_path: Option<String>,
 }
 
 /// What an agent may learn about its own session.
@@ -169,8 +180,12 @@ impl SessionService {
         let claims = SessionClaims::new(
             Scope::for_vault(&vault.id),
             rule_ids.clone(),
-            req.ttl_secs
-                .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl)),
+            if req.longest {
+                max_ttl
+            } else {
+                req.ttl_secs
+                    .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl))
+            },
             req.request_limit,
             req.labels.clone(),
             Utc::now(),
@@ -353,12 +368,24 @@ impl SessionService {
             else {
                 continue;
             };
-            let service = self
+            let template = self
                 .policy
                 .get_template(&credential.template_id, credential.template_version)
                 .await?
-                .map(|t| t.template.name)
+                .map(|t| t.template);
+            let service = template
+                .as_ref()
+                .map(|t| t.name.clone())
                 .unwrap_or_else(|| credential.template_id.clone());
+            let kind = template.as_ref().map(|t| t.kind).unwrap_or_default();
+            let mcp_path = (kind == ServiceKind::Mcp)
+                .then(|| {
+                    template
+                        .as_ref()
+                        .and_then(|t| t.mcp_path.clone())
+                        .or_else(|| builtin_mcp_path(&credential.template_id).map(str::to_string))
+                })
+                .flatten();
             services.push(DiscoveredService {
                 rule_id: rule.id,
                 rule: rule.name,
@@ -379,6 +406,8 @@ impl SessionService {
                         locations: s.locations,
                     })
                     .collect(),
+                kind,
+                mcp_path,
             });
         }
         Ok(SessionDiscovery { session, services })

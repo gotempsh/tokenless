@@ -76,13 +76,13 @@ pub struct ProxyShared {
     pub node_id: String,
 }
 
-fn body(text: impl Into<Bytes>) -> ProxyBody {
+pub(crate) fn body(text: impl Into<Bytes>) -> ProxyBody {
     Full::new(text.into())
         .map_err(|never| match never {})
         .boxed()
 }
 
-fn respond(status: StatusCode, message: &str) -> Response<ProxyBody> {
+pub(crate) fn respond(status: StatusCode, message: &str) -> Response<ProxyBody> {
     let mut response = Response::new(body(format!("{message}\n")));
     *response.status_mut() = status;
     response.headers_mut().insert(
@@ -129,7 +129,10 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
 
 /// Session-level checks that must hold at CONNECT and again on every
 /// request inside a tunnel.
-fn check_session(snapshot: &ActiveSnapshot, claims: &SessionClaims) -> Result<(), &'static str> {
+pub(crate) fn check_session(
+    snapshot: &ActiveSnapshot,
+    claims: &SessionClaims,
+) -> Result<(), &'static str> {
     if Utc::now() >= claims.exp {
         return Err("proxy session has expired");
     }
@@ -139,7 +142,7 @@ fn check_session(snapshot: &ActiveSnapshot, claims: &SessionClaims) -> Result<()
     Ok(())
 }
 
-fn session_rules<'a>(
+pub(crate) fn session_rules<'a>(
     snapshot: &'a ActiveSnapshot,
     claims: &'a SessionClaims,
 ) -> impl Iterator<Item = &'a ActiveRule> + 'a {
@@ -506,12 +509,14 @@ async fn intercept_tunnel(
     }
 }
 
-struct TunnelCtx {
-    host: String,
-    port: u16,
-    claims: Arc<SessionClaims>,
-    shared: Arc<ProxyShared>,
-    upstream: UpstreamHandle,
+/// One upstream target and the session sending to it: an intercepted
+/// tunnel, or a request to the MCP gateway.
+pub(crate) struct TunnelCtx {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) claims: Arc<SessionClaims>,
+    pub(crate) shared: Arc<ProxyShared>,
+    pub(crate) upstream: UpstreamHandle,
 }
 
 /// Does the request's own Host (or absolute authority) name the CONNECT target?
@@ -691,7 +696,7 @@ fn joined<'a>(values: impl Iterator<Item = &'a str>) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn audit_best_effort(
+pub(crate) fn audit_best_effort(
     shared: &ProxyShared,
     claims: &SessionClaims,
     action: &str,
@@ -730,7 +735,7 @@ fn proxy_event(
     event
 }
 
-async fn handle_intercepted(
+pub(crate) async fn handle_intercepted(
     mut req: Request<Incoming>,
     ctx: Arc<TunnelCtx>,
 ) -> Response<ProxyBody> {

@@ -281,6 +281,8 @@ mod tests {
                     locations: vec![],
                 },
             ],
+            kind: Default::default(),
+            mcp_path: None,
         };
         let env = placeholder_env(&[
             service("github", true, "GITHUB_TOKEN", "__GITHUB_TOKEN__"),

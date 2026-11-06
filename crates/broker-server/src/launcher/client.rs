@@ -22,6 +22,9 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 pub struct MintRequest {
     pub bundle: String,
     pub ttl_secs: u64,
+    /// Last as long as Settings allow, ignoring `ttl_secs`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub longest: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_limit: Option<u64>,
     pub labels: BTreeMap<String, String>,

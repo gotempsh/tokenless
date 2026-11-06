@@ -44,6 +44,10 @@ pub struct ServiceTemplate {
     pub category: TemplateCategory,
     #[serde(default)]
     pub kind: ServiceKind,
+    /// Where an MCP server answers on its host, e.g. `/mcp`. MCP clients
+    /// are pointed at it through the gateway; absent means `/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_path: Option<String>,
     /// Logo key the UI resolves to a bundled image; defaults to the id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<String>,
@@ -192,6 +196,16 @@ impl ServiceTemplate {
         if self.name.trim().is_empty() {
             return Err(invalid("name cannot be empty".into()));
         }
+        if let Some(path) = &self.mcp_path {
+            if self.kind != ServiceKind::Mcp {
+                return Err(invalid("mcp_path is only for MCP templates".into()));
+            }
+            if !path.starts_with('/') || path.contains(['?', '#']) || path.len() > 256 {
+                return Err(invalid(format!(
+                    "mcp_path '{path}' must be a path of at most 256 characters starting with '/'"
+                )));
+            }
+        }
         if self.hosts.is_empty() && !self.host_override.required {
             return Err(invalid(
                 "a template without hosts must set host_override.required".into(),
@@ -334,6 +348,26 @@ pub fn builtin_templates() -> Result<Vec<(ServiceTemplate, &'static str)>, CoreE
         .collect()
 }
 
+/// Where the built-in MCP template `id` answers, e.g. `/mcp`. A template
+/// stored before `mcp_path` existed keeps its old copy, so callers fall
+/// back to this; it is presentation, never policy.
+pub fn builtin_mcp_path(id: &str) -> Option<&'static str> {
+    static PATHS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    PATHS
+        .get_or_init(|| {
+            BUILTIN_YAML
+                .iter()
+                .filter_map(|(id, yaml)| {
+                    let template = ServiceTemplate::from_yaml(yaml).ok()?;
+                    Some((*id, template.mcp_path?))
+                })
+                .collect()
+        })
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, path)| path.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -342,6 +376,32 @@ mod tests {
 
     /// A YAML file dropped into `templates/` by hand would never ship:
     /// the catalogue is generated from `tools/catalog/services.toml`.
+    #[test]
+    fn mcp_paths_come_from_the_catalogue() {
+        assert_eq!(builtin_mcp_path("github-mcp"), Some("/mcp/"));
+        assert_eq!(builtin_mcp_path("neon-mcp"), Some("/mcp"));
+        assert_eq!(builtin_mcp_path("stripe-mcp"), None);
+        assert_eq!(builtin_mcp_path("openai"), None);
+    }
+
+    #[test]
+    fn mcp_path_must_be_a_path_on_an_mcp_template() {
+        let (base, _) = builtin_templates()
+            .unwrap()
+            .into_iter()
+            .find(|(t, _)| t.id == "github-mcp")
+            .unwrap();
+        let mut t = base.clone();
+        t.mcp_path = Some("mcp".into());
+        assert!(t.validate().is_err());
+        t.mcp_path = Some("/mcp?x=1".into());
+        assert!(t.validate().is_err());
+        t.mcp_path = Some("/mcp".into());
+        assert!(t.validate().is_ok());
+        t.kind = ServiceKind::Http;
+        assert!(t.validate().is_err());
+    }
+
     #[test]
     fn every_template_file_is_in_the_generated_catalogue() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");

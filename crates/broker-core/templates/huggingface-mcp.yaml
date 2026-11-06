@@ -6,6 +6,7 @@ name: "Hugging Face MCP"
 description: "Models, datasets and Spaces as MCP tools."
 category: llm_providers
 kind: mcp
+mcp_path: "/mcp"
 logo: huggingface
 aliases: [huggingface, hf, mcp]
 suggested_variable: HF_TOKEN

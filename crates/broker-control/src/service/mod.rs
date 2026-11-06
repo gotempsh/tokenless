@@ -995,6 +995,7 @@ mod tests {
             rule_ids: vec![],
             bundle: Some(bundle.into()),
             ttl_secs: Some(600),
+            longest: false,
             request_limit: None,
             labels: BTreeMap::new(),
         };
@@ -1024,6 +1025,7 @@ mod tests {
                     rule_ids: vec![rules[0].id],
                     bundle: None,
                     ttl_secs: Some(600),
+                    longest: false,
                     request_limit: None,
                     labels: BTreeMap::new(),
                 },
@@ -1284,6 +1286,7 @@ mod tests {
                     rule_ids: vec![rule.id],
                     bundle: None,
                     ttl_secs: None,
+                    longest: false,
                     request_limit: None,
                     labels: BTreeMap::new(),
                 },
@@ -1300,6 +1303,7 @@ mod tests {
                         rule_ids: vec![rule.id],
                         bundle: None,
                         ttl_secs: None,
+                        longest: false,
                         request_limit: None,
                         labels: BTreeMap::new(),
                     },
@@ -1398,6 +1402,7 @@ mod tests {
                     rule_ids: vec![rule.id],
                     bundle: None,
                     ttl_secs: Some(60),
+                    longest: false,
                     request_limit: Some(3),
                     labels: BTreeMap::new(),
                 },
@@ -1565,6 +1570,7 @@ mod tests {
                     rule_ids: vec![rule.id],
                     bundle: None,
                     ttl_secs: Some(600),
+                    longest: false,
                     request_limit: None,
                     labels: Default::default(),
                 },
@@ -1664,6 +1670,7 @@ mod tests {
             rule_ids: vec![rule.id],
             bundle: None,
             ttl_secs: Some(ttl),
+            longest: false,
             request_limit: None,
             labels: [("agent".to_string(), "reviewer".to_string())].into(),
         };
@@ -1689,6 +1696,23 @@ mod tests {
             .unwrap();
         assert_eq!(
             (long.session.expires_at - long.session.created_at).num_seconds(),
+            8 * 3600
+        );
+        // `longest` takes the cap, whatever ttl_secs says.
+        let longest = cp
+            .sessions
+            .mint(
+                &a,
+                &vault.id,
+                MintSession {
+                    longest: true,
+                    ..mint(60)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (longest.session.expires_at - longest.session.created_at).num_seconds(),
             8 * 3600
         );
         settings.max_session_ttl_secs = 30;

@@ -6,6 +6,7 @@ name: "Neon MCP"
 description: "Neon projects, branches and SQL as MCP tools."
 category: developer_tools
 kind: mcp
+mcp_path: "/mcp"
 logo: neon
 aliases: [neon, postgres, mcp]
 suggested_variable: NEON_API_KEY

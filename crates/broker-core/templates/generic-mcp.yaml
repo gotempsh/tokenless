@@ -6,6 +6,7 @@ name: "Custom MCP server"
 description: "Any remote MCP server that takes a bearer token. The host is chosen per credential (admin only)."
 category: custom
 kind: mcp
+mcp_path: "/mcp"
 hosts: []
 allow:
   paths: ["/*"]

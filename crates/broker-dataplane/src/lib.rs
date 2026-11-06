@@ -10,6 +10,7 @@
 
 pub mod audit;
 pub mod error;
+pub mod gateway;
 pub mod metrics;
 pub mod node;
 pub mod proxy;
@@ -48,6 +49,9 @@ pub struct DataPlaneConfig {
     /// Proxy listener. Defaults to loopback: expose it only on a private address.
     pub listen: SocketAddr,
     pub metrics_listen: Option<SocketAddr>,
+    /// MCP gateway listener (plain HTTP, session token in `Authorization`).
+    /// Off by default here; `node run` turns it on at 127.0.0.1:3129.
+    pub mcp_listen: Option<SocketAddr>,
     /// Trust the Mozilla root set for upstream TLS.
     pub use_public_roots: bool,
     /// Extra upstream roots (e.g. an internal CA for a self-hosted service).
@@ -66,6 +70,7 @@ impl Default for DataPlaneConfig {
         Self {
             listen: SocketAddr::from(([127, 0, 0, 1], 3128)),
             metrics_listen: None,
+            mcp_listen: None,
             use_public_roots: true,
             extra_upstream_roots: Vec::new(),
             audit_capacity: 4096,
@@ -81,6 +86,7 @@ impl Default for DataPlaneConfig {
 pub struct DataPlane {
     local_addr: SocketAddr,
     metrics_addr: Option<SocketAddr>,
+    mcp_addr: Option<SocketAddr>,
     snapshot: SnapshotHandle,
     metrics: Arc<Metrics>,
     tasks: Vec<JoinHandle<()>>,
@@ -117,6 +123,26 @@ impl DataPlane {
             connect_timeout: config.connect_timeout,
             node_id: node_id.to_string(),
         });
+        let mut mcp_addr = None;
+        let mut gateway_task = None;
+        if let Some(addr) = config.mcp_listen {
+            let listener = TcpListener::bind(addr).await.map_err(|e| {
+                DataPlaneError::io(format!("binding MCP gateway listener {addr}"), e)
+            })?;
+            let bound = listener
+                .local_addr()
+                .map_err(|e| DataPlaneError::io("reading MCP gateway listener address", e))?;
+            if !bound.ip().is_loopback() {
+                warn!(%bound, "MCP gateway listener is not on loopback; session tokens reach it over plain HTTP, so make sure it is only reachable on a private network");
+            }
+            info!(%bound, "MCP gateway listening");
+            mcp_addr = Some(bound);
+            gateway_task = Some(tokio::spawn(gateway::serve(
+                listener,
+                shared.clone(),
+                config.max_connections,
+            )));
+        }
         let mut tasks = vec![
             tokio::spawn(proxy::serve(listener, shared, config.max_connections)),
             tokio::spawn(run_snapshot_loop(
@@ -136,6 +162,7 @@ impl DataPlane {
                 metrics.clone(),
             )),
         ];
+        tasks.extend(gateway_task);
         let mut metrics_addr = None;
         if let Some(addr) = config.metrics_listen {
             let listener = TcpListener::bind(addr)
@@ -148,6 +175,7 @@ impl DataPlane {
         Ok(Self {
             local_addr,
             metrics_addr,
+            mcp_addr,
             snapshot,
             metrics,
             tasks,
@@ -160,6 +188,11 @@ impl DataPlane {
 
     pub fn metrics_addr(&self) -> Option<SocketAddr> {
         self.metrics_addr
+    }
+
+    /// Where the MCP gateway listens, when it is on.
+    pub fn mcp_addr(&self) -> Option<SocketAddr> {
+        self.mcp_addr
     }
 
     /// Version of the snapshot currently in force, if any.

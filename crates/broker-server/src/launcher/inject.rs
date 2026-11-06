@@ -309,6 +309,8 @@ mod tests {
             methods: vec![],
             enabled: true,
             placeholders,
+            kind: Default::default(),
+            mcp_path: None,
         }
     }
 

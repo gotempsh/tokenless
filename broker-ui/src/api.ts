@@ -214,6 +214,25 @@ export interface ProxySession {
   revoked_at: string | null;
 }
 
+/** What `/sessions/self` reports about one service a session reaches. */
+export interface DiscoveredService {
+  rule_id: string;
+  rule: string;
+  credential: string;
+  template_id: string;
+  service: string;
+  hosts: string[];
+  enabled: boolean;
+  kind?: ServiceKind;
+  mcp_path?: string;
+}
+
+export interface MintedSession {
+  /** Returned once; the broker keeps only the session record. */
+  token: string;
+  session: ProxySession;
+}
+
 export interface ApiKey {
   id: string;
   name: string;

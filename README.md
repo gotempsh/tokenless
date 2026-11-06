@@ -200,6 +200,39 @@ session was minted with. Holding a session's token is enough to end that
 session (`POST /api/v1/sessions/revoke-self`), which is how `run` cleans
 up with only a `session_issuer` key.
 
+### Connect an MCP client
+
+MCP clients that take a server URL (Claude Code, Cursor and others) use
+the proxy's **MCP gateway** instead of `HTTPS_PROXY`. `node run` serves it
+on `127.0.0.1:3129` (`--mcp-listen` to move it, `--no-mcp-gateway` to turn
+it off). Each MCP server in a bundle gets a URL of the form
+`http://127.0.0.1:3129/mcp/<host>/<path>`, and the client sends a session
+token as its bearer token:
+
+```sh
+credential-broker mcp --bundle code-review                # prints claude mcp add ... per server
+credential-broker mcp --bundle code-review --format json  # an mcpServers block for other clients
+```
+
+`mcp` mints one session for the bundle, lasting as long as **Settings →
+Session lifetime** allows (`--ttl` for less), and prints commands like:
+
+```sh
+claude mcp add --transport http github http://127.0.0.1:3129/mcp/api.githubcopilot.com/mcp/ \
+  --header 'Authorization: Bearer v4.public...'
+```
+
+The bundle's **Connect** tab does the same from the console. The gateway
+checks the token against the node's snapshot and removes it, then
+forwards the request over TLS exactly as an intercepted tunnel would: the
+same rule match, credential, MCP tool allowlist and audit records. It only
+reaches hosts the session's rules cover. The client stores the session
+token, never a service credential, so ending the session (Sessions page,
+`credential-broker session revoke --id ...`, or deleting the bundle) cuts
+it off within one snapshot. Only the streamable HTTP transport is
+supported; the older SSE transport's endpoint URLs would bypass the
+`/mcp/<host>` prefix. See [ADR 0003](docs/adr/0003-mcp-gateway.md).
+
 ### Automation
 
 Mint over the API with the `session_issuer` key, by bundle or by rules:

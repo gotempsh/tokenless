@@ -26,6 +26,8 @@ import {
   post,
   type AccessBundle,
   type CredentialMeta,
+  type DiscoveredService,
+  type MintedSession,
   type Page,
   type ProxySession,
   type Rule,
@@ -36,6 +38,7 @@ import {
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "../bundleConnect";
+import { claudeMcpCommand, DEFAULT_GATEWAY, mcpClientJson, mcpCredentials, mcpEndpoints, type McpEndpoint } from "../mcpConnect";
 import {
   CheckField,
   ChoiceCards,
@@ -44,6 +47,7 @@ import {
   DialogActions,
   Empty,
   ErrorBanner,
+  Exact,
   Field,
   FormDialog,
   Loading,
@@ -254,7 +258,16 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
         <BundleSessions bundle={b} vaultName={vault.data?.name} canRevoke={canEdit} onConnect={() => goTab("connect")} />
       )}
       {b && tab === "connect" && (
-        <Connect bundle={b} vaultName={vault.data?.name} credentials={memberCredentials} empty={members.length === 0} />
+        <div className="space-y-10">
+          <McpConnect
+            bundle={b}
+            vaultName={vault.data?.name}
+            servers={mcpCredentials(memberCredentials, services.data?.templates ?? [])}
+            canAdd={canAdd}
+            onAdd={goAdd}
+          />
+          <Connect bundle={b} vaultName={vault.data?.name} credentials={memberCredentials} empty={members.length === 0} />
+        </div>
       )}
       {!b && bundle.loading && <Loading />}
       <FormDialog open={editing} onOpenChange={setEditing} title={b ? `Edit ${b.name}` : "Edit bundle"}>
@@ -799,6 +812,134 @@ function FileSnippet({ name, contents }: { name: string; contents: string }) {
       </div>
       <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{contents}</pre>
     </div>
+  );
+}
+
+interface McpToken {
+  token: string;
+  session: ProxySession;
+  endpoints: McpEndpoint[];
+}
+
+type McpClient = "claude" | "json";
+
+/** The services a freshly minted token reaches, asked with the token itself. */
+async function tokenServices(token: string): Promise<DiscoveredService[]> {
+  const response = await fetch("/api/v1/sessions/self", {
+    headers: { authorization: `Bearer ${token}` },
+    credentials: "omit",
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Looking up the token's MCP servers failed with HTTP ${response.status}`);
+  const found = (await response.json()) as { services: DiscoveredService[] };
+  return found.services;
+}
+
+function McpConnect({
+  bundle,
+  vaultName,
+  servers,
+  canAdd,
+  onAdd,
+}: {
+  bundle: AccessBundle;
+  vaultName?: string;
+  servers: CredentialMeta[];
+  canAdd: boolean;
+  onAdd: () => void;
+}) {
+  const action = useAction();
+  const [minted, setMinted] = useState<McpToken | null>(null);
+  const [client, setClient] = useState<McpClient>("claude");
+  const create = () =>
+    action.run(async () => {
+      const m = await post<MintedSession>(`/vaults/${bundle.vault_id}/sessions`, {
+        bundle: bundle.id,
+        longest: true,
+        labels: { client: "mcp" },
+      });
+      setMinted({ token: m.token, session: m.session, endpoints: mcpEndpoints(await tokenServices(m.token)) });
+    });
+  const cli = `credential-broker mcp${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)}`;
+  return (
+    <Section
+      title="Connect an MCP client"
+      description="Claude Code, Cursor and other MCP clients reach this bundle's MCP servers through the proxy's MCP gateway with a token. The proxy swaps the token for the server's credential and applies the bundle's tool limits; the client never holds the credential."
+    >
+      {servers.length === 0 ? (
+        <div className="flex flex-col gap-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+          <span>
+            This bundle has no MCP server. Add one, such as GitHub MCP, Supabase MCP or a Custom MCP server, and MCP
+            clients can use its tools.
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onAdd}
+            disabled={!canAdd}
+            title={canAdd ? undefined : "Only admins can add services"}
+          >
+            <Plus className="size-4" /> Add an MCP server
+          </Button>
+        </div>
+      ) : (
+        <Panel className="p-5">
+          <ol className="space-y-6">
+            <Step n={1} title="Create a token for the client">
+              <p className="text-sm text-muted-foreground">
+                One token covers {servers.map((c) => c.name).join(", ")}. It lasts as long as{" "}
+                <a href="#/settings" className="underline">
+                  Settings
+                </a>{" "}
+                allow; end it on the Sessions tab to cut the client off.
+              </p>
+              <ErrorBanner error={action.error} />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" onClick={create} disabled={action.busy}>
+                  {minted ? "Create another token" : "Create a token"}
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  or from a terminal: <Mono>{cli}</Mono>
+                </span>
+              </div>
+            </Step>
+            <Step n={2} title="Add the servers to the client">
+              {!minted ? (
+                <p className="text-sm text-muted-foreground">The commands appear here once the token exists.</p>
+              ) : minted.endpoints.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  The token reaches no enabled MCP server with a fixed host. Enable the servers' rules, or give a Custom
+                  MCP server a host without wildcards.
+                </p>
+              ) : (
+                <>
+                  <ChoiceCards
+                    name="mcp-client"
+                    value={client}
+                    onChange={setClient}
+                    columns={2}
+                    choices={[
+                      { value: "claude", title: "Claude Code", description: <Mono>claude mcp add</Mono> },
+                      { value: "json", title: "Another client", description: "An mcpServers JSON block" },
+                    ]}
+                  />
+                  {client === "claude" ? (
+                    minted.endpoints.map((e) => <CommandSnippet key={e.name} command={claudeMcpCommand(e, minted.token)} />)
+                  ) : (
+                    <FileSnippet name="mcpServers" contents={mcpClientJson(minted.endpoints, minted.token)} />
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Shown once: copy it now. Valid until <Exact at={minted.session.expires_at} />. The proxy serves the
+                    gateway at <Mono>{DEFAULT_GATEWAY}</Mono>; for a proxy on another machine, use its{" "}
+                    <Mono>--mcp-listen</Mono> address.
+                  </p>
+                </>
+              )}
+            </Step>
+          </ol>
+        </Panel>
+      )}
+    </Section>
   );
 }
 

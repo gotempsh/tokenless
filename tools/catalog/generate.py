@@ -47,7 +47,7 @@ KEYS = {
     "variable", "auth", "field", "label", "field_description", "header", "prefix",
     "username_label", "username_description", "password_label", "password_description",
     "headers", "validate", "expect", "override", "paths", "methods", "logo", "icon",
-    "icon_dark_fills", "docs",
+    "icon_dark_fills", "docs", "mcp_path",
 }
 SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 VAR = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -94,6 +94,11 @@ def check_service(s: dict, seen: set[str]) -> None:
         raise CatalogError(f"service '{sid}': variable '{s['variable']}' is not UPPER_SNAKE_CASE")
     if not s.get("hosts") and "override" not in s:
         raise CatalogError(f"service '{sid}': no hosts, so it needs an 'override'")
+    if "mcp_path" in s:
+        if s.get("kind") != "mcp":
+            raise CatalogError(f"service '{sid}': mcp_path is only for kind = \"mcp\"")
+        if not s["mcp_path"].startswith("/") or "?" in s["mcp_path"]:
+            raise CatalogError(f"service '{sid}': mcp_path must be a path starting with '/'")
 
 
 def template_yaml(s: dict) -> str:
@@ -102,6 +107,8 @@ def template_yaml(s: dict) -> str:
           f"description: {q(s['description'])}", f"category: {s['category']}"]
     if s.get("kind", "http") != "http":
         y.append(f"kind: {s['kind']}")
+    if s.get("mcp_path"):
+        y.append(f"mcp_path: {q(s['mcp_path'])}")
     if s.get("logo"):
         y.append(f"logo: {s['logo']}")
     if s.get("popular"):

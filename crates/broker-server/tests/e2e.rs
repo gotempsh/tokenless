@@ -441,6 +441,7 @@ async fn end_to_end() {
     let dp = DataPlane::start(
         DataPlaneConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
+            mcp_listen: Some("127.0.0.1:0".parse().unwrap()),
             use_public_roots: false,
             extra_upstream_roots: upstream_roots,
             audit_flush_interval: Duration::from_millis(100),
@@ -535,6 +536,68 @@ async fn end_to_end() {
         "client credential headers must be stripped on ruled hosts"
     );
     assert_eq!(echo.path, "/v1/things");
+
+    // --- the MCP gateway: plain HTTP, the session token as a bearer token ---
+    let gateway = dp.mcp_addr().expect("MCP gateway listening");
+    let direct = reqwest::Client::builder().no_proxy().build().unwrap();
+    let gateway_url = |rest: &str| format!("http://{gateway}/mcp/{rest}");
+    let response = direct
+        .post(gateway_url(&format!("localhost:{upstream_port}/mcp?x=1")))
+        .bearer_auth(&session_token)
+        .header("mcp-session-id", "abc")
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let echo: Echo = response.json().await.unwrap();
+    assert_eq!(
+        echo.authorization.as_deref(),
+        Some(format!("Bearer {SECRET}").as_str()),
+        "the gateway swaps the session token for the credential"
+    );
+    assert_eq!(echo.path, "/mcp");
+    assert_eq!(echo.query.as_deref(), Some("x=1"));
+    assert_eq!(
+        echo.host.as_deref(),
+        Some(format!("localhost:{upstream_port}").as_str())
+    );
+    assert!(echo.body.contains("tools/list"), "{}", echo.body);
+    assert!(!format!("{echo:?}").contains(&session_token));
+
+    let status = |r: reqwest::Response| r.status();
+    let no_token = direct
+        .get(gateway_url(&format!("localhost:{upstream_port}/mcp")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(no_token.status(), StatusCode::UNAUTHORIZED);
+    assert!(no_token.headers().contains_key("www-authenticate"));
+    let upstream_secret = direct
+        .get(gateway_url(&format!("localhost:{upstream_port}/mcp")))
+        .bearer_auth("not-a-session-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status(upstream_secret), StatusCode::UNAUTHORIZED);
+    let elsewhere = direct
+        .get(gateway_url("other.example.com/mcp"))
+        .bearer_auth(&session_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        status(elsewhere),
+        StatusCode::FORBIDDEN,
+        "the gateway only reaches the session's own hosts"
+    );
+    let off_prefix = direct
+        .get(format!("http://{gateway}/localhost:{upstream_port}/mcp"))
+        .bearer_auth(&session_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status(off_prefix), StatusCode::NOT_FOUND);
 
     // --- substitutions: placeholders become the secret on the way out -------
     let echo: Echo = client
@@ -697,6 +760,7 @@ async fn end_to_end() {
                 &MintRequest {
                     bundle: "no-such-bundle".into(),
                     ttl_secs: 60,
+                    longest: false,
                     request_limit: None,
                     labels: Default::default(),
                 },
@@ -715,6 +779,7 @@ async fn end_to_end() {
             MintRequest {
                 bundle: "local-review".into(),
                 ttl_secs: 120,
+                longest: false,
                 request_limit: None,
                 labels: [("command".to_string(), "e2e".to_string())].into(),
             },

@@ -6,6 +6,7 @@ name: "GitHub MCP"
 description: "Repos, issues and pull requests as MCP tools."
 category: developer_tools
 kind: mcp
+mcp_path: "/mcp/"
 logo: github
 aliases: [github, mcp]
 suggested_variable: GITHUB_TOKEN

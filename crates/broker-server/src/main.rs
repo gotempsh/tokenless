@@ -69,6 +69,17 @@ enum Command {
     ///   credential-broker exec --bundle deploy GITHUB_TOKEN=cb://github/token -- ./release.sh
     #[command(visible_alias = "exec", verbatim_doc_comment)]
     Run(RunArgs),
+    /// Connect an MCP client (Claude Code, Cursor, ...) to the MCP servers
+    /// of an access bundle. Mints a long-lived session and prints, for each
+    /// MCP service, the gateway URL with the session token as its bearer
+    /// token. The client never sees the service's credential; end the
+    /// session on the Sessions page to cut it off.
+    ///
+    /// Examples:
+    ///   credential-broker mcp --bundle code-review
+    ///   credential-broker mcp --bundle code-review --format json
+    #[command(verbatim_doc_comment)]
+    Mcp(McpArgs),
     /// Print the agent skill, or install it where Claude Code finds skills.
     /// It tells an agent behind the broker how to see what it can reach,
     /// use placeholders and read the proxy's errors.
@@ -121,6 +132,42 @@ struct MintArgs {
     /// Label shown on the Sessions page, as key=value (repeatable).
     #[arg(long = "label")]
     labels: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum McpFormat {
+    /// `claude mcp add` commands.
+    Claude,
+    /// An `mcpServers` JSON block for other clients.
+    Json,
+}
+
+#[derive(clap::Args)]
+struct McpArgs {
+    #[command(flatten)]
+    broker: BrokerArgs,
+    /// Vault name or id. Not needed with a vault-bound API key.
+    #[arg(long, env = "CREDENTIAL_BROKER_VAULT")]
+    vault: Option<String>,
+    /// Access bundle whose MCP services to connect, by name or id.
+    #[arg(long, env = "CREDENTIAL_BROKER_BUNDLE")]
+    bundle: String,
+    /// Lifetime of the token (e.g. 8h, 7d). Default: the longest Settings
+    /// allow, since the client keeps it in its configuration.
+    #[arg(long)]
+    ttl: Option<String>,
+    /// Label shown on the Sessions page, as key=value (repeatable).
+    #[arg(long = "label")]
+    labels: Vec<String>,
+    /// The node's MCP gateway (`node run --mcp-listen`).
+    #[arg(
+        long,
+        env = "CREDENTIAL_BROKER_MCP_GATEWAY",
+        default_value = broker_server::launcher::mcp::DEFAULT_GATEWAY
+    )]
+    gateway: String,
+    #[arg(long, value_enum, default_value_t = McpFormat::Claude)]
+    format: McpFormat,
 }
 
 #[derive(clap::Args)]
@@ -274,6 +321,15 @@ enum NodeCommand {
         /// Prometheus metrics listener.
         #[arg(long)]
         metrics_listen: Option<SocketAddr>,
+        /// MCP gateway listener: MCP clients connect to
+        /// http://<this>/mcp/<host>/<path> with a session token as a bearer
+        /// token (see `credential-broker mcp`). Keep it on loopback or a
+        /// private address.
+        #[arg(long, default_value = "127.0.0.1:3129")]
+        mcp_listen: SocketAddr,
+        /// Do not start the MCP gateway.
+        #[arg(long)]
+        no_mcp_gateway: bool,
         /// Extra PEM file of CAs trusted for upstream TLS (repeatable).
         #[arg(long = "upstream-ca")]
         upstream_ca: Vec<PathBuf>,
@@ -387,6 +443,8 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
             state,
             listen,
             metrics_listen,
+            mcp_listen,
+            no_mcp_gateway,
             upstream_ca,
             no_public_roots,
         } => {
@@ -395,6 +453,7 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
             let config = DataPlaneConfig {
                 listen,
                 metrics_listen,
+                mcp_listen: (!no_mcp_gateway).then_some(mcp_listen),
                 use_public_roots: !no_public_roots,
                 extra_upstream_roots: extra,
                 state_path: Some(state),
@@ -444,6 +503,7 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
     Ok(MintRequest {
         bundle: args.bundle.clone(),
         ttl_secs,
+        longest: false,
         request_limit: args.request_limit,
         labels,
     })
@@ -648,6 +708,71 @@ fn session_token_from_env() -> Result<Zeroizing<String>, CliError> {
 }
 
 /// A readable summary of what a session reaches.
+async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
+    use broker_server::launcher::mcp::{claude_command, client_json, endpoints};
+    let gateway = args.gateway.trim().trim_end_matches('/').to_string();
+    if !gateway.starts_with("http://") && !gateway.starts_with("https://") {
+        return Err(LauncherError::config(format!(
+            "--gateway '{gateway}' must start with http:// (the node serves it as `node run --mcp-listen`)"
+        ))
+        .into());
+    }
+    let mut labels = BTreeMap::new();
+    for raw in &args.labels {
+        let (k, v) = parse_label(raw)?;
+        labels.insert(k, v);
+    }
+    labels
+        .entry("client".to_string())
+        .or_insert_with(|| "mcp".to_string());
+    let request = MintRequest {
+        bundle: args.bundle.clone(),
+        ttl_secs: match &args.ttl {
+            Some(ttl) => parse_duration_secs(ttl)?,
+            None => 0,
+        },
+        longest: args.ttl.is_none(),
+        request_limit: None,
+        labels,
+    };
+    let client = client(&args.broker)?;
+    let vault = client.resolve_vault(args.vault.as_deref()).await?;
+    let minted = client.mint(&vault, &request).await?;
+    let discovery = client.discover(&minted.token).await?;
+    let found = endpoints(&discovery.services, &gateway);
+    if found.is_empty() {
+        // A token for nothing would only be one more thing to revoke.
+        let _ = client.revoke_self(&minted.token).await;
+        return Err(LauncherError::config(format!(
+            "access bundle '{}' has no enabled MCP service; add one (GitHub MCP, Custom MCP server, ...) on the bundle's page, then run this again",
+            args.bundle
+        ))
+        .into());
+    }
+    match args.format {
+        McpFormat::Claude => {
+            for e in &found {
+                println!("# {} ({})", e.service, e.credential);
+                println!("{}\n", claude_command(e, &minted.token));
+            }
+        }
+        McpFormat::Json => {
+            let out = client_json(&found, &minted.token).map_err(|e| {
+                LauncherError::config(format!("encoding the MCP client configuration: {e}"))
+            })?;
+            println!("{out}");
+        }
+    }
+    eprintln!(
+        "credential-broker: session {} for bundle '{}' lasts until {}. The token above is what the client stores, never the services' credentials; end the session on the Sessions page or with `credential-broker session revoke --id {}` to cut the client off. The proxy node must be running with its MCP gateway at {gateway}.",
+        minted.session.id,
+        args.bundle,
+        minted.session.expires_at.to_rfc3339(),
+        minted.session.id,
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn describe_services(found: &PortServices) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -872,7 +997,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let agent_side = matches!(
         cli.command,
-        Command::Session { .. } | Command::Run(_) | Command::Skill { .. }
+        Command::Session { .. } | Command::Run(_) | Command::Mcp(_) | Command::Skill { .. }
     );
     init_logging(agent_side);
     let result = match cli.command {
@@ -880,6 +1005,7 @@ async fn main() -> ExitCode {
         Command::Node { command } => node(command).await.map(|()| ExitCode::SUCCESS),
         Command::Session { command } => session(command).await,
         Command::Run(args) => run(args).await,
+        Command::Mcp(args) => mcp_command(args).await,
         Command::Skill {
             install,
             dir,

@@ -6,6 +6,7 @@ name: "Supabase MCP"
 description: "Supabase projects, databases and logs as MCP tools."
 category: developer_tools
 kind: mcp
+mcp_path: "/mcp"
 logo: supabase
 aliases: [supabase, mcp]
 suggested_variable: SUPABASE_ACCESS_TOKEN
