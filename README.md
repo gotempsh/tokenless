@@ -20,6 +20,9 @@ denied, depending on policy).
 - **Fails closed.** The proxy runs from an Ed25519-signed, leased policy
   snapshot. When the lease lapses it refuses traffic, and it refuses to
   inject when it cannot record an audit event.
+- **No pivoting into private networks.** By default the proxy will not
+  tunnel to loopback, private, link-local or metadata addresses. Allow
+  specific ranges in **Settings**.
 
 The design, the threat model and the trade-offs are in
 [docs/adr/0001-architecture.md](docs/adr/0001-architecture.md).
@@ -44,9 +47,13 @@ Open <http://127.0.0.1:8080/> and complete these steps:
 2. **Vaults → Create vault**.
 3. **Credentials → Add a credential**. Pick a template (for example
    GitHub) and paste the token. The form is write-only.
+   Use **Test** next to it to send the template's validation request
+   (status code only, to the credential's own host).
 4. **Rules → Add a rule** for that credential. Leave the scope empty to
    use the template's maximum, or narrow it.
 5. **Nodes → Create join token**.
+6. Optionally, **People → Invite someone** as `viewer`, `editor` or
+   `admin`, and send them the one-time link.
 
 Enrol and run a data plane next to the agent:
 
@@ -83,9 +90,21 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
 
 ### Deployment notes
 
-- The management API serves plain HTTP on loopback. For anything beyond
-  `localhost`, put a TLS-terminating reverse proxy in front: the session
-  cookie is `Secure`.
+- The management API serves plain HTTP on loopback by default. For
+  anything beyond `localhost`, serve HTTPS directly or put a
+  TLS-terminating reverse proxy in front, because the session cookie is
+  `Secure`:
+
+  ```sh
+  ./target/release/credential-broker serve --data-dir ./data --ui-dir broker-ui/dist \
+    --api-listen 0.0.0.0:443 --api-tls-cert /etc/broker/fullchain.pem --api-tls-key /etc/broker/privkey.pem
+  ```
+
+  The certificate files are checked every minute and reloaded when they
+  change, so a renewal does not need a restart.
+- Validation requests to a self-hosted service with a private CA need
+  `--validation-ca ca.pem` (repeatable). If the service is on a private
+  address, also allow that range under **Settings → Egress to private addresses**.
 - Use `--node-listen` and `--node-api-name` to expose the node API on a
   private address.
 - Keep the proxy listener (`node run --listen`) on loopback or a private

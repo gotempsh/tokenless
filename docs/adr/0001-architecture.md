@@ -156,8 +156,10 @@ node protocol and the snapshot format are unchanged.
 ### Deployment modes
 
 1. **Standalone.** `credential-broker serve` runs on its own host or VM.
-   The management API listens on loopback behind any TLS-terminating
-   reverse proxy, the node API listens on a private address, and one
+   The management API either serves TLS itself (`--api-tls-cert` and
+   `--api-tls-key`, reloaded when the files change) or listens on loopback
+   behind a TLS-terminating reverse proxy. The node API listens on a
+   private address, and one
    `credential-broker node run` runs next to each agent runtime.
 2. **Standalone, hosted as a Temps project.** Only the server and UI are
    deployed behind Temps' HTTP proxy, which applies TLS and the project's
@@ -183,13 +185,23 @@ node protocol and the snapshot format are unchanged.
   Every mutating request must carry `X-CSRF-Token`, which is
   `HMAC-SHA256(csrf_key, session_hash)`.
 - Step-up: creating or widening credentials, creating rules, widening or
-  re-enabling rules, and managing API keys, templates and nodes all need a
-  TOTP verification within the last 300 s. Login counts as one.
+  re-enabling rules, and managing people, API keys, templates and nodes all
+  need a TOTP verification within the last 300 s. Login counts as one.
   `POST /auth/step-up` refreshes it, and the UI prompts for the code and
   retries the blocked request.
 - The first admin is created with a single-use setup token. It is printed
   to the terminal on first start (deliberately not to the structured log),
   stored only as a hash, and consumed atomically.
+- Further people join by invitation. An admin creates a single-use
+  `cbinv_` link for the `admin`, `editor` or `viewer` role, valid for 1 h
+  to 7 days and stored only as a hash. The invitee chooses a username and
+  password and enrols TOTP without a session; accepting consumes the
+  invite and creates the user in one transaction. Roles are
+  instance-wide.
+- An admin can change a person's role or disable them. Disabling deletes
+  their UI sessions, and login and session checks refuse disabled users.
+  The store refuses, under its write lock, any change that would leave no
+  enabled admin, so two admins cannot demote each other at once.
 - Login failures are rate limited to 5 per username per 5 minutes.
 
 **Automation**
@@ -296,16 +308,16 @@ checks every read endpoint and the raw database files for the plaintext.
 |---|---|---|---|
 | 1 | Unmatched hosts | Default `passthrough` (blind tunnel); `deny` is one click away in Settings | The broker's guarantee is about credentials, not egress filtering. Nothing is decrypted or injected on unmatched hosts. A deny default pushes operators to bypass the proxy with `NO_PROXY`, which loses the audit trail. |
 | 2 | Plain HTTP | Refused with 403, never forwarded | "Never inject on plain http" is implemented as "never proxy plain http", so there is no cleartext path at all. |
-| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: the audit row is written after the change commits; a failed write is logged at `error` and does not roll back the change. | Making every admin action depend on a second write path would turn an audit outage into a total outage. Seam: put the audit insert in the same transaction once stores expose transactions. |
+| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: every mutating store method takes the audit events for the change and writes them in the same transaction, only if the change succeeds. If the audit insert fails, the change rolls back. Events that change nothing (denials, validation requests) are written on their own; a failure there is logged at `error`. | A change can then never be committed without its audit row, and a failed change never leaves one behind. The audit table lives in the same database as the change, so this adds no second failure domain. `broker-conformance::audited_writes_suite` holds every store to it. |
 | 4 | Request limits | Counted per node, in memory, carried across snapshots | A shared counter would need a network call per request, which violates the hot-path rule. A session used on N nodes can therefore make up to N×limit requests, and counters reset when a node restarts. Rate-limited sessions are rejected (503) until the snapshot that provisions their counter arrives, rather than allowed unmetered. |
 | 5 | HTTP versions | HTTP/1.1 only inside intercepted tunnels (ALPN `http/1.1` on both sides) | Keeps the header-rewrite surface small and auditable. Passthrough tunnels carry anything. |
 | 6 | Secret lifetime in memory | Secrets are held in zeroize-on-drop buffers. The final `http::HeaderValue` cannot be zeroized and lives for one request. | That is a library limitation; documented rather than worked around with unsafe code (`unsafe_code = forbid`). |
 | 7 | Snapshot AAD | Sealed rule AAD is `rule|node|rule|credential`, deliberately without the snapshot version | Sealed blobs can then be cached per node and content generation, so a lease renewal does not redo X25519 for every rule. Freshness comes from the signed, versioned envelope. |
 | 8 | Node revocation | mTLS certificates are short-lived (24 h) with no CRL/OCSP; revocation is checked in the store on every node API call | The revoked node's snapshot stream closes at once, so it fails closed within one lease (60 s by default). |
-| 9 | Management API TLS | Plain HTTP on loopback by default; terminate TLS in front | The `Secure` cookie means browsers only send the session over HTTPS (or `localhost`). Seam: built-in TLS for the API listener. |
-| 10 | Users | One admin, created at setup; there is no user-management API yet | RBAC already models `editor` and `viewer` for people, and they are usable through API keys. Inviting more people is deferred (OIDC is phase 2). |
-| 11 | Template validation request | Declared and validated in the schema, but **not executed** | Executing it means the control plane makes outbound calls with the secret, which needs an SSRF policy first (see #12). |
-| 12 | Private upstreams / SSRF | Passthrough tunnels may reach any address the agent asks for, including private ranges | Same as a plain egress proxy on loopback. Ruled hosts are verified with public roots (or configured CAs), so DNS rebinding cannot capture an injected credential. Seam: an address allow/deny list in the snapshot. |
+| 9 | Management API TLS | Plain HTTP on loopback by default. With `--api-tls-cert`/`--api-tls-key` the server serves HTTPS itself, checking the PEM files every minute and reloading them on change. A reload that fails keeps the current certificate. A plain-HTTP listener on a non-loopback address logs a warning. | The `Secure` cookie means browsers only send the session over HTTPS (or `localhost`). Built-in TLS removes the need for a reverse proxy; the certificate stays the operator's choice (for example from an ACME client), rather than one the broker issues itself and nobody trusts. |
+| 10 | Users | The first admin comes from setup; more people join through single-use invites carrying an instance-wide role. Admins change roles and disable accounts. The last enabled admin cannot be demoted or disabled. | Per-vault roles for people would need a membership table and a second authorisation path; API keys already cover vault-scoped automation. OIDC remains phase 2, with `IdentityStore` as the seam. |
+| 11 | Template validation request | Executed on demand (`POST /credentials/{id}/validate`, step-up required, audited). The request goes only to the credential's own host, over TLS with public roots plus `--validation-ca`. Redirects are not followed, it times out after 10 s, it is subject to the egress policy (#12), and only the status code is returned. | The secret goes nowhere a rule could not already send it. The resolved address is checked and then dialled directly, so DNS rebinding cannot redirect it, and no response body can reflect the secret back to the caller. |
+| 12 | Private upstreams / SSRF | Passthrough tunnels and validation requests refuse non-public addresses by default: loopback, RFC 1918, link-local and metadata, CGNAT, ULA, multicast, documentation ranges, and IPv4 embedded in IPv6. An admin can allow specific CIDR ranges or switch the block off in Settings; widening needs step-up. The policy ships in the signed snapshot. The data plane resolves the name, checks every address, and connects only to checked addresses (403 if blocked). Ruled hosts are exempt. | An agent cannot use the proxy to reach the metadata service or internal admin ports. Ruled hosts were chosen by an admin, and their certificates are verified, so DNS rebinding cannot capture an injected credential. |
 | 13 | Interception CA | One interception CA per control plane, delivered sealed to every node | A compromised node can mint certificates that clients trusting that CA accept. Clients should trust it only inside agent sandboxes. Per-node, name-constrained intermediates are out of scope (see below). |
 | 14 | Setup token output | Printed to the terminal (stderr), not to the JSON log | Logs are often shipped elsewhere; the token is a one-shot admin credential. |
 | 15 | Login rate limiter | In memory, per process | Sufficient for a single-node standalone server. HA would need a shared limiter. |
