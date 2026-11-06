@@ -40,7 +40,7 @@ focus check doesn't read. avoid-ai-design-ignore-file: K7
 <div class="wrap hero">
   <div>
     <h1>Let an agent use your GitHub token without ever holding it</h1>
-    <p class="lede">tokenless is a credential broker for AI agents. Their HTTPS traffic goes through a proxy you run, and for hosts that have a rule, the proxy adds the real credential on the way out. The agent gets a proxy address and a placeholder.</p>
+    <p class="lede">tokenless is a credential broker for AI agents. Their HTTPS traffic goes through a proxy you run, and for hosts that have a rule, the proxy adds the real credential on the way out. The agent gets a proxy address and a placeholder. The proxy is authenticated: a connection without a valid session token gets <code>407</code> and nothing else.</p>
     <div class="hero-actions">
       <a class="button" href="#session">See a session in the terminal</a>
       <a href="#security">Read the security model</a>
@@ -86,7 +86,7 @@ Host: api.github.com
       <li class="holds">
         <h3>The proxy node</h3>
         <span class="addr">127.0.0.1:3128</span>
-        <p>Checks the session's signature, expiry and revocation, then the rule's hosts, methods and paths. It swaps in the credential, writes the audit record and forwards. Hosts without a rule are tunnelled untouched, or refused if you set the policy to deny.</p>
+        <p>Refuses any connection that has no session token. Checks the token's signature, expiry and revocation, then the rule's hosts, methods and paths. It swaps in the credential, writes the audit record and forwards. Hosts without a rule are tunnelled untouched, or refused if you set the policy to deny.</p>
       </li>
       <li class="holds">
         <h3>The API</h3>
@@ -244,6 +244,15 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
     <div class="section-head">
       <h2 id="security-title">Security model</h2>
       <p>If an agent is compromised, the most it can leak is a session token. That token is bound to specific rules, lasts an hour at most unless an admin raises the cap, and can be revoked within seconds.</p>
+    </div>
+
+    <div class="claim">
+      <h3>The proxy is authenticated</h3>
+      <div>
+        <p>Every connection to the proxy carries a session token, a PASETO <code>v4.public</code> token that the control plane signs with Ed25519. The proxy checks the signature against keys from its signed snapshot, without calling the control plane, then the token's expiry and revocation. It does this on the <code>CONNECT</code> and again on every request inside the tunnel.</p>
+        <p>Without a valid token the proxy answers <code>407</code>, whatever the host, including hosts with no rule. A process that finds the port can't use it as an open proxy.</p>
+        <p>MCP clients send the same token to the gateway as <code>Authorization: Bearer</code> and get <code>401</code> without it. Proxy nodes authenticate to the control plane with a client certificate issued when they join and renewed automatically.</p>
+      </div>
     </div>
 
     <div class="claim">
