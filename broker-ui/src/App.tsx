@@ -47,7 +47,8 @@ import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
-import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Auth";
+import { AcceptInvite, AuthLayout, Login, StepUpDialog } from "./pages/Auth";
+import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
 import { Bundles } from "./pages/Bundles";
 import { AddService } from "./pages/AddService";
@@ -66,7 +67,6 @@ import { Vaults } from "./pages/Vaults";
 
 type Boot =
   | { state: "loading" }
-  | { state: "setup" }
   | { state: "login" }
   | { state: "ready"; session: SessionInfo }
   | { state: "error"; message: string };
@@ -108,6 +108,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
 const LABELS: Record<string, string> = {
   ...Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label]))),
   "add-service": "Add a service",
+  account: "Account",
 };
 
 export function App() {
@@ -119,11 +120,6 @@ export function App() {
 
   const load = useCallback(async () => {
     try {
-      const status = await get<{ setup_required: boolean }>("/setup/status");
-      if (status.setup_required) {
-        setBoot({ state: "setup" });
-        return;
-      }
       const session = await get<SessionInfo>("/auth/me");
       setCsrfToken(session.csrf_token);
       setBoot({ state: "ready", session });
@@ -190,7 +186,6 @@ export function App() {
         <ErrorBanner error={boot.message} />
       </AuthLayout>
     );
-  if (boot.state === "setup") return <Setup onDone={() => setBoot({ state: "login" })} />;
   if (boot.state === "login")
     return (
       <Login
@@ -228,6 +223,7 @@ export function App() {
       {section === "proxies" && id && <ProxyDetail nodeId={id} />}
       {section === "audit" && <Audit me={user} />}
       {section === "settings" && <Settings />}
+      {section === "account" && <Account user={user} onChanged={() => void load()} />}
       <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />
     </Shell>
   );
@@ -489,21 +485,29 @@ function SidebarContent({
         ))}
       </nav>
       <div className={cn("flex items-center gap-2 border-t p-3", collapsed && "flex-col px-2")}>
-        <SideTip label={`${user.username} · ${role}`} show={collapsed}>
-          <span
-            className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold uppercase"
-            aria-label={collapsed ? `${user.username}, ${role}` : undefined}
-            role={collapsed ? "img" : undefined}
+        <SideTip label={`Account · ${user.username}`} show={collapsed}>
+          <a
+            href="#/account"
+            onClick={onNavigate}
+            aria-current={section === "account" ? "page" : undefined}
+            aria-label={collapsed ? `Account, ${user.username}, ${role}` : undefined}
+            className={cn(
+              "flex min-w-0 items-center gap-2 rounded-md p-1 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent focus-visible:ring-2",
+              !collapsed && "-m-1 flex-1",
+              section === "account" && "bg-sidebar-accent",
+            )}
           >
-            {user.username.slice(0, 2)}
-          </span>
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold uppercase">
+              {user.username.slice(0, 2)}
+            </span>
+            {!collapsed && (
+              <span className="min-w-0 flex-1 leading-tight">
+                <span className="block truncate text-sm font-medium">{user.username}</span>
+                <span className="block truncate text-xs text-sidebar-foreground/70">{role}</span>
+              </span>
+            )}
+          </a>
         </SideTip>
-        {!collapsed && (
-          <div className="min-w-0 flex-1 leading-tight">
-            <div className="truncate text-sm font-medium">{user.username}</div>
-            <div className="truncate text-xs text-sidebar-foreground/70">{role}</div>
-          </div>
-        )}
         <SideTip label="Sign out" show={collapsed}>
           <Button
             type="button"

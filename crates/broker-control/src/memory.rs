@@ -40,7 +40,6 @@ struct Inner {
     audit: Vec<AuditEvent>,
     users: HashMap<UserId, User>,
     ui_sessions: HashMap<String, UiSession>,
-    setup_token: Option<String>,
     api_keys: HashMap<ApiKeyId, ApiKey>,
     invites: HashMap<InviteId, Invite>,
     join_tokens: HashMap<String, JoinTokenRecord>,
@@ -858,6 +857,44 @@ impl IdentityStore for MemoryStore {
         Ok(())
     }
 
+    async fn set_user_password(
+        &self,
+        id: &UserId,
+        password_hash: &str,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let user = inner
+            .users
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("user", id))?;
+        user.password_hash = password_hash.to_string();
+        inner
+            .ui_sessions
+            .retain(|hash, s| s.user_id != *id || Some(hash.as_str()) == keep_session);
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn set_user_totp(
+        &self,
+        id: &UserId,
+        secret_enc: Option<Vec<u8>>,
+        last_step: Option<u64>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let user = inner
+            .users
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("user", id))?;
+        user.totp_secret_enc = secret_enc;
+        user.totp_last_step = last_step;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
     async fn insert_invite(&self, invite: Invite, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner.invites.contains_key(&invite.id)
@@ -1006,26 +1043,6 @@ impl IdentityStore for MemoryStore {
         let before = inner.ui_sessions.len();
         inner.ui_sessions.retain(|_, s| s.expires_at > now);
         Ok((before - inner.ui_sessions.len()) as u64)
-    }
-
-    async fn replace_setup_token(
-        &self,
-        token_hash: &str,
-        _at: DateTime<Utc>,
-    ) -> Result<(), StoreError> {
-        self.lock()?.setup_token = Some(token_hash.to_string());
-        Ok(())
-    }
-
-    async fn consume_setup_token(&self, token_hash: &str) -> Result<bool, StoreError> {
-        let mut inner = self.lock()?;
-        match &inner.setup_token {
-            Some(stored) if broker_auth::token::hashes_equal(stored, token_hash) => {
-                inner.setup_token = None;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
     }
 
     async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {

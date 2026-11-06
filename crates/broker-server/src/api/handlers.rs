@@ -16,7 +16,8 @@ use axum::Json;
 use broker_auth::cookie::clear_session_cookie;
 use broker_control::model::{Page, PageRequest, Settings};
 use broker_control::service::auth::{
-    AuthService, CreateApiKey, LoginRequest, SetupRequest, StepUpProof, TotpEnrollment, UserSummary,
+    AuthService, ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator,
+    LoginRequest, StepUpProof, TotpEnrollment, UserSummary,
 };
 use broker_control::service::bundles::{CreateBundle, UpdateBundle};
 use broker_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
@@ -64,46 +65,7 @@ pub async fn not_found() -> ApiError {
     ))
 }
 
-// ----- setup and login ---------------------------------------------------
-
-#[derive(Serialize)]
-pub struct SetupStatus {
-    setup_required: bool,
-}
-
-pub async fn setup_status(State(s): St) -> ApiResult<Json<SetupStatus>> {
-    Ok(Json(SetupStatus {
-        setup_required: s.control.auth.setup_required().await?,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct SetupTotpRequest {
-    username: String,
-}
-
-/// Generates a TOTP secret for the first admin to enrol in an authenticator.
-/// Only available while setup is pending; the secret is bound to the
-/// account only when `/setup` succeeds with a valid code for it.
-pub async fn setup_totp(
-    State(s): St,
-    ApiJson(req): ApiJson<SetupTotpRequest>,
-) -> ApiResult<Json<TotpEnrollment>> {
-    if !s.control.auth.setup_required().await? {
-        return Err(ApiError::Forbidden {
-            reason: "setup has already been completed".into(),
-        });
-    }
-    Ok(Json(s.control.auth.new_totp_enrollment(&req.username)?))
-}
-
-pub async fn setup_complete(
-    State(s): St,
-    ApiJson(req): ApiJson<SetupRequest>,
-) -> ApiResult<(StatusCode, Json<UserSummary>)> {
-    let user = s.control.auth.complete_setup(req).await?;
-    Ok((StatusCode::CREATED, Json(user)))
-}
+// ----- sign-in and the account ------------------------------------------
 
 #[derive(Serialize)]
 pub struct SessionInfo {
@@ -169,6 +131,52 @@ pub async fn step_up(
     let session = require_session(&authed)?;
     let at = s.control.auth.step_up(session, &req).await?;
     Ok(Json(StepUpResponse { step_up_at: at }))
+}
+
+/// Changes the signed-in person's password; other sessions of the account
+/// end, this one stays.
+pub async fn change_password(
+    State(s): St,
+    authed: Authed,
+    ApiJson(req): ApiJson<ChangePassword>,
+) -> ApiResult<StatusCode> {
+    let session = require_session(&authed)?;
+    s.control.auth.change_password(session, &req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A new authenticator secret for the signed-in person to add to an app.
+/// Nothing is stored until `/auth/authenticator` confirms it with a code.
+pub async fn authenticator_enrollment(
+    State(s): St,
+    authed: Authed,
+) -> ApiResult<Json<TotpEnrollment>> {
+    let session = require_session(&authed)?;
+    Ok(Json(
+        s.control.auth.new_totp_enrollment(&session.user.username)?,
+    ))
+}
+
+pub async fn enable_authenticator(
+    State(s): St,
+    authed: Authed,
+    ApiJson(req): ApiJson<EnableAuthenticator>,
+) -> ApiResult<Json<UserSummary>> {
+    let session = require_session(&authed)?;
+    Ok(Json(
+        s.control.auth.enable_authenticator(session, &req).await?,
+    ))
+}
+
+pub async fn disable_authenticator(
+    State(s): St,
+    authed: Authed,
+    ApiJson(req): ApiJson<DisableAuthenticator>,
+) -> ApiResult<Json<UserSummary>> {
+    let session = require_session(&authed)?;
+    Ok(Json(
+        s.control.auth.disable_authenticator(session, &req).await?,
+    ))
 }
 
 // ----- vaults ------------------------------------------------------------

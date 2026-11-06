@@ -301,7 +301,7 @@ impl Authorizer for RbacAuthorizer {
     }
 }
 
-/// People, UI sessions, the setup token and API keys (standalone mode).
+/// People, UI sessions and API keys (standalone mode).
 #[async_trait]
 pub trait IdentityStore: Send + Sync {
     async fn count_users(&self) -> Result<u64, StoreError>;
@@ -319,6 +319,26 @@ pub trait IdentityStore: Send + Sync {
         id: &UserId,
         role: Role,
         disabled_at: Option<DateTime<Utc>>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Replaces a user's password hash and deletes the user's UI sessions
+    /// except `keep_session` (a session token hash), in one step.
+    /// `NotFound` if the user is missing.
+    async fn set_user_password(
+        &self,
+        id: &UserId,
+        password_hash: &str,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Sets (`Some`) or removes (`None`) a user's encrypted authenticator
+    /// secret, with the last TOTP step it accepted. `NotFound` if the user
+    /// is missing.
+    async fn set_user_totp(
+        &self,
+        id: &UserId,
+        secret_enc: Option<Vec<u8>>,
+        last_step: Option<u64>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
 
@@ -370,16 +390,6 @@ pub trait IdentityStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
-
-    /// Replaces any outstanding setup token with this one.
-    async fn replace_setup_token(
-        &self,
-        token_hash: &str,
-        at: DateTime<Utc>,
-    ) -> Result<(), StoreError>;
-    /// Atomically consumes the setup token. Returns false if it does not
-    /// match or was already consumed.
-    async fn consume_setup_token(&self, token_hash: &str) -> Result<bool, StoreError>;
 
     /// `Conflict` if the prefix exists.
     async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError>;

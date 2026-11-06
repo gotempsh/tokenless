@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use broker_control::cipher::AesGcmCipher;
+pub use broker_control::service::auth::GeneratedCredentials;
 use broker_control::store::RbacAuthorizer;
 use broker_control::{ControlConfig, ControlPlane, Stores};
 use tokio::net::TcpListener;
@@ -73,8 +74,9 @@ pub struct RunningServer {
     /// Whether the management API is served over TLS.
     pub api_tls: bool,
     pub node_addr: SocketAddr,
-    /// Printed once by the binary; `None` once an admin exists.
-    pub setup_token: Option<String>,
+    /// The admin created on this start, with its generated password, for
+    /// the binary to print once; `None` when an account already existed.
+    pub initial_admin: Option<GeneratedCredentials>,
     pub control: Arc<ControlPlane>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -164,38 +166,57 @@ async fn bind(addr: SocketAddr, what: &str) -> Result<TcpListener, ServerError> 
 
 pub struct Server;
 
+/// Opens the data directory's master key and database as the control plane,
+/// without serving anything.
+async fn open_control(config: &ServerConfig) -> Result<Arc<ControlPlane>, ServerError> {
+    ensure_private_dir(&config.data_dir)?;
+    let key = load_or_create_master_key(&config.data_dir.join(MASTER_KEY_FILE))?;
+    let url = config
+        .database_url
+        .clone()
+        .unwrap_or_else(|| format!("sqlite://{}", config.data_dir.join("broker.db").display()));
+    let store = Arc::new(SqliteStore::connect(&url).await?);
+    let stores = Stores {
+        credentials: store.clone(),
+        policy: store.clone(),
+        audit: store.clone(),
+        identity: store.clone(),
+        nodes: store,
+    };
+    let cipher = Arc::new(AesGcmCipher::new(&key)?);
+    drop(key);
+    let control = Arc::new(
+        ControlPlane::new(
+            stores,
+            Arc::new(RbacAuthorizer),
+            cipher,
+            Arc::new(probe::HttpProber::new(
+                config.validation_public_roots,
+                &config.validation_extra_roots,
+            )?),
+            config.control.clone(),
+        )
+        .await?,
+    );
+    Ok(control)
+}
+
+/// Replaces `username`'s password with a generated one and ends all of the
+/// person's sessions. Run by the operator on the server's host, with the
+/// same data directory (and database URL) as `serve`; the server may be
+/// running.
+pub async fn reset_password(
+    config: &ServerConfig,
+    username: &str,
+) -> Result<GeneratedCredentials, ServerError> {
+    let control = open_control(config).await?;
+    Ok(control.auth.reset_password(username).await?)
+}
+
 impl Server {
     pub async fn start(config: ServerConfig) -> Result<RunningServer, ServerError> {
-        ensure_private_dir(&config.data_dir)?;
-        let key = load_or_create_master_key(&config.data_dir.join(MASTER_KEY_FILE))?;
-        let url = config
-            .database_url
-            .clone()
-            .unwrap_or_else(|| format!("sqlite://{}", config.data_dir.join("broker.db").display()));
-        let store = Arc::new(SqliteStore::connect(&url).await?);
-        let stores = Stores {
-            credentials: store.clone(),
-            policy: store.clone(),
-            audit: store.clone(),
-            identity: store.clone(),
-            nodes: store,
-        };
-        let cipher = Arc::new(AesGcmCipher::new(&key)?);
-        drop(key);
-        let control = Arc::new(
-            ControlPlane::new(
-                stores,
-                Arc::new(RbacAuthorizer),
-                cipher,
-                Arc::new(probe::HttpProber::new(
-                    config.validation_public_roots,
-                    &config.validation_extra_roots,
-                )?),
-                config.control.clone(),
-            )
-            .await?,
-        );
-        let setup_token = control.auth.issue_setup_token().await?;
+        let control = open_control(&config).await?;
+        let initial_admin = control.auth.create_initial_admin().await?;
         let state = Arc::new(api::AppState {
             control: control.clone(),
         });
@@ -273,7 +294,7 @@ impl Server {
             api_addr,
             api_tls,
             node_addr,
-            setup_token,
+            initial_admin,
             control,
             tasks,
         })

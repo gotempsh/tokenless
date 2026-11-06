@@ -6,6 +6,8 @@
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
+use rand::Rng;
+use zeroize::Zeroizing;
 
 use crate::error::AuthError;
 
@@ -58,6 +60,31 @@ pub fn verify_password(stored_hash: &str, password: &str) -> Result<bool, AuthEr
         .is_ok())
 }
 
+/// Characters of a generated password: lowercase letters and digits
+/// without look-alikes (0/o, 1/l/i), so it survives being read aloud or
+/// copied by hand.
+const GENERATED_ALPHABET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+const GENERATED_GROUPS: usize = 4;
+const GENERATED_GROUP_LEN: usize = 5;
+
+/// A random password for an account the server creates, such as the first
+/// admin: four groups of five characters joined by '-', about 99 bits.
+pub fn generate_password() -> Zeroizing<String> {
+    let mut out = Zeroizing::new(String::with_capacity(
+        GENERATED_GROUPS * (GENERATED_GROUP_LEN + 1),
+    ));
+    for group in 0..GENERATED_GROUPS {
+        if group > 0 {
+            out.push('-');
+        }
+        for _ in 0..GENERATED_GROUP_LEN {
+            let i = OsRng.gen_range(0..GENERATED_ALPHABET.len());
+            out.push(char::from(GENERATED_ALPHABET[i]));
+        }
+    }
+    out
+}
+
 /// A valid argon2id hash of a random password, used to keep login timing
 /// identical whether or not the username exists.
 pub fn dummy_hash() -> Result<String, AuthError> {
@@ -82,6 +109,21 @@ mod tests {
             hash_password("short"),
             Err(AuthError::WeakPassword { .. })
         ));
+    }
+
+    #[test]
+    fn generated_passwords_pass_the_policy_and_differ() {
+        let a = generate_password();
+        let b = generate_password();
+        assert_ne!(*a, *b);
+        assert_eq!(a.len(), 23);
+        assert_eq!(a.split('-').count(), 4);
+        assert!(a
+            .chars()
+            .all(|c| c == '-' || GENERATED_ALPHABET.contains(&(c as u8))));
+        check_password_policy(&a).unwrap();
+        let hash = hash_password(&a).unwrap();
+        assert!(verify_password(&hash, &a).unwrap());
     }
 
     #[test]

@@ -267,7 +267,10 @@ mod tests {
     use broker_core::snapshot::{decode_verifying_key, rule_aad};
     use rand::rngs::OsRng;
 
-    use super::auth::{CreateApiKey, LoginRequest, SetupRequest};
+    use super::auth::{
+        ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator, LoginRequest,
+        SessionAuth,
+    };
     use super::policy::{CreateCredential, CreateRule, UpdateRule};
     use super::sessions::MintSession;
     use super::*;
@@ -334,99 +337,239 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn setup_login_and_csrf() {
-        let cp = plane().await;
-        assert!(cp.auth.setup_required().await.unwrap());
-        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
-        let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
-        let req = |code: String, tok: &str| SetupRequest {
-            setup_token: tok.to_string(),
-            username: "admin".into(),
-            password: "correct horse battery".into(),
-            totp_secret: Some(enrol.secret.clone()),
-            totp_code: Some(code),
-        };
-        assert!(matches!(
-            cp.auth.complete_setup(req("000000".into(), &token)).await,
-            Err(ControlError::Validation { .. })
-        ));
-        let code = totp::code_at(&enrol.secret, now_secs()).unwrap();
-        assert!(matches!(
-            cp.auth
-                .complete_setup(req(code.clone(), "cbsetup_wrong"))
-                .await,
-            Err(ControlError::Unauthenticated { .. })
-        ));
-        cp.auth
-            .complete_setup(req(code.clone(), &token))
+    /// Creates the first admin, signs it in, and returns the session, the
+    /// generated password and the session token.
+    async fn first_admin(cp: &ControlPlane) -> (SessionAuth, String, String) {
+        let creds = cp.auth.create_initial_admin().await.unwrap().unwrap();
+        let password = creds.password.to_string();
+        let outcome = cp
+            .auth
+            .login(LoginRequest {
+                username: creds.username.clone(),
+                password: password.clone(),
+                totp_code: None,
+            })
             .await
             .unwrap();
-        assert!(matches!(
-            cp.auth.complete_setup(req(code.clone(), &token)).await,
-            Err(ControlError::Conflict { .. })
-        ));
-        assert!(cp.auth.issue_setup_token().await.unwrap().is_none());
+        let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
+        (auth, password, outcome.token)
+    }
 
-        let login = |password: &str, code: String| LoginRequest {
-            username: "admin".into(),
-            password: password.into(),
-            totp_code: Some(code),
-        };
-        // The setup code's time step is spent: replaying it must fail.
-        assert!(cp
+    /// Turns on an authenticator for `auth` and returns its secret. The
+    /// current time step is spent by the enrolment.
+    async fn add_authenticator(cp: &ControlPlane, auth: &SessionAuth, password: &str) -> String {
+        let enrol = cp.auth.new_totp_enrollment(&auth.user.username).unwrap();
+        let summary = cp
             .auth
-            .login(login("correct horse battery", code))
+            .enable_authenticator(
+                auth,
+                &EnableAuthenticator {
+                    secret: enrol.secret.clone(),
+                    code: totp::code_at(&enrol.secret, now_secs()).unwrap(),
+                    password: password.into(),
+                },
+            )
             .await
-            .is_err());
+            .unwrap();
+        assert!(summary.totp_enrolled);
+        enrol.secret
+    }
+
+    fn login(username: &str, password: &str, code: Option<String>) -> LoginRequest {
+        LoginRequest {
+            username: username.into(),
+            password: password.into(),
+            totp_code: code,
+        }
+    }
+
+    #[tokio::test]
+    async fn first_start_creates_the_admin_with_a_generated_password() {
+        let cp = plane().await;
+        let creds = cp.auth.create_initial_admin().await.unwrap().unwrap();
+        assert_eq!(creds.username, "admin");
+        assert!(!format!("{creds:?}").contains(creds.password.as_str()));
+        // Only the first start creates it.
+        assert!(cp.auth.create_initial_admin().await.unwrap().is_none());
+
         assert!(cp
             .auth
-            .login(login(
-                "wrong password!!",
-                totp::code_at(&enrol.secret, now_secs() + 30).unwrap()
-            ))
+            .login(login("admin", "wrong password!!", None))
             .await
             .is_err());
         let outcome = cp
             .auth
-            .login(login(
-                "correct horse battery",
-                totp::code_at(&enrol.secret, now_secs() + 30).unwrap(),
-            ))
+            .login(login("admin", &creds.password, None))
             .await
             .unwrap();
+        assert_eq!(outcome.user.role, Role::Admin);
+        assert!(!outcome.user.totp_enrolled, "the authenticator is opt-in");
         let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
-        assert_eq!(auth.user.username, "admin");
         assert!(cp.auth.verify_csrf(&auth.token_hash, &outcome.csrf_token));
         assert!(!cp.auth.verify_csrf(&auth.token_hash, "forged"));
         cp.auth.logout(&auth).await.unwrap();
         assert!(cp.auth.authenticate_session(&outcome.token).await.is_err());
     }
 
-    /// Completes first-admin setup and returns a fresh-step-up caller for it.
-    async fn setup_admin(cp: &ControlPlane) -> Caller {
-        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
+    #[tokio::test]
+    async fn an_authenticator_can_be_turned_on_and_off() {
+        let cp = plane().await;
+        let (auth, password, _) = first_admin(&cp).await;
         let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
-        let admin = cp
-            .auth
-            .complete_setup(SetupRequest {
-                setup_token: token,
-                username: "admin".into(),
-                password: "correct horse battery".into(),
-                totp_secret: Some(enrol.secret.clone()),
-                totp_code: Some(totp::code_at(&enrol.secret, now_secs()).unwrap()),
-            })
+        let enable = |code: String, password: &str| EnableAuthenticator {
+            secret: enrol.secret.clone(),
+            code,
+            password: password.into(),
+        };
+        assert!(matches!(
+            cp.auth
+                .enable_authenticator(&auth, &enable("000000".into(), &password))
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        let code = totp::code_at(&enrol.secret, now_secs()).unwrap();
+        assert!(matches!(
+            cp.auth
+                .enable_authenticator(&auth, &enable(code.clone(), "not the password"))
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+        cp.auth
+            .enable_authenticator(&auth, &enable(code.clone(), &password))
             .await
             .unwrap();
+        assert!(matches!(
+            cp.auth
+                .enable_authenticator(&auth, &enable(code.clone(), &password))
+                .await,
+            Err(ControlError::Conflict { .. })
+        ));
+        assert!(matches!(
+            cp.auth.login(login("admin", &password, None)).await,
+            Err(ControlError::SecondFactorRequired { .. })
+        ));
+        // The enrolment's code is spent: it cannot sign in again.
+        assert!(cp
+            .auth
+            .login(login("admin", &password, Some(code)))
+            .await
+            .is_err());
+
+        let disable = |code: String| DisableAuthenticator {
+            code,
+            password: password.clone(),
+        };
+        assert!(matches!(
+            cp.auth
+                .disable_authenticator(&auth, &disable("000000".into()))
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+        let off = cp
+            .auth
+            .disable_authenticator(
+                &auth,
+                &disable(totp::code_at(&enrol.secret, now_secs() + 30).unwrap()),
+            )
+            .await
+            .unwrap();
+        assert!(!off.totp_enrolled);
+        assert!(matches!(
+            cp.auth
+                .disable_authenticator(&auth, &disable("123456".into()))
+                .await,
+            Err(ControlError::Conflict { .. })
+        ));
+        cp.auth
+            .login(login("admin", &password, None))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_password_keeps_this_session_and_ends_the_others() {
+        let cp = plane().await;
+        let (auth, password, token) = first_admin(&cp).await;
+        let other = cp
+            .auth
+            .login(login("admin", &password, None))
+            .await
+            .unwrap();
+        let change = |current: &str, new: &str| ChangePassword {
+            current_password: current.into(),
+            new_password: new.into(),
+        };
+        assert!(matches!(
+            cp.auth
+                .change_password(&auth, &change("not the password", "a brand new password"))
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+        assert!(cp
+            .auth
+            .change_password(&auth, &change(&password, "short"))
+            .await
+            .is_err());
+        assert!(matches!(
+            cp.auth
+                .change_password(&auth, &change(&password, &password))
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        cp.auth
+            .change_password(&auth, &change(&password, "a brand new password"))
+            .await
+            .unwrap();
+        cp.auth
+            .authenticate_session(&token)
+            .await
+            .expect("the session that changed it stays");
+        assert!(
+            cp.auth.authenticate_session(&other.token).await.is_err(),
+            "other sessions end"
+        );
+        assert!(cp
+            .auth
+            .login(login("admin", &password, None))
+            .await
+            .is_err());
+        cp.auth
+            .login(login("admin", "a brand new password", None))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reset_password_replaces_the_old_one_and_ends_every_session() {
+        let cp = plane().await;
+        let (_, password, token) = first_admin(&cp).await;
+        assert!(matches!(
+            cp.auth.reset_password("nobody").await,
+            Err(ControlError::NotFound { ref id, .. }) if id == "nobody"
+        ));
+        let reset = cp.auth.reset_password(" Admin ").await.unwrap();
+        assert_eq!(reset.username, "admin");
+        assert_ne!(*reset.password, password);
+        assert!(cp.auth.authenticate_session(&token).await.is_err());
+        assert!(cp
+            .auth
+            .login(login("admin", &password, None))
+            .await
+            .is_err());
+        cp.auth
+            .login(login("admin", &reset.password, None))
+            .await
+            .unwrap();
+    }
+
+    /// The first admin with an authenticator, as a fresh-step-up caller.
+    async fn setup_admin(cp: &ControlPlane) -> Caller {
+        let (auth, password, _) = first_admin(cp).await;
+        add_authenticator(cp, &auth, &password).await;
         Caller {
-            principal: Principal {
-                kind: PrincipalKind::User,
-                actor: format!("user:{}", admin.id),
-                role: Role::Admin,
-                vault: None,
-            },
             step_up_at: Some(Utc::now()),
             second_factor: true,
+            ..auth.caller
         }
     }
 
@@ -645,31 +788,14 @@ mod tests {
         use super::auth::StepUpProof;
 
         let cp = plane().await;
-        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
-        let setup = |secret: Option<String>, code: Option<String>| SetupRequest {
-            setup_token: token.clone(),
-            username: "admin".into(),
-            password: "correct horse battery".into(),
-            totp_secret: secret,
-            totp_code: code,
-        };
-        // Half an enrolment is refused rather than silently dropped.
-        assert!(matches!(
-            cp.auth
-                .complete_setup(setup(Some(totp::generate_secret()), None))
-                .await,
-            Err(ControlError::Validation { .. })
-        ));
-        let admin = cp.auth.complete_setup(setup(None, None)).await.unwrap();
-        assert!(!admin.totp_enrolled);
-
+        let (_, password, _) = first_admin(&cp).await;
         let login = |password: &str| LoginRequest {
             username: "admin".into(),
             password: password.into(),
             totp_code: None,
         };
         assert!(cp.auth.login(login("not the password")).await.is_err());
-        let outcome = cp.auth.login(login("correct horse battery")).await.unwrap();
+        let outcome = cp.auth.login(login(&password)).await.unwrap();
         assert!(!outcome.user.totp_enrolled);
         let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
 
@@ -688,7 +814,7 @@ mod tests {
             .await
             .is_err());
         cp.auth
-            .step_up(&auth, &proof(None, Some("correct horse battery")))
+            .step_up(&auth, &proof(None, Some(&password)))
             .await
             .unwrap();
 
@@ -716,23 +842,11 @@ mod tests {
         use super::auth::StepUpProof;
 
         let cp = plane().await;
-        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
-        let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
-        let admin = cp
-            .auth
-            .complete_setup(SetupRequest {
-                setup_token: token,
-                username: "admin".into(),
-                password: "correct horse battery".into(),
-                totp_secret: Some(enrol.secret.clone()),
-                totp_code: Some(totp::code_at(&enrol.secret, now_secs()).unwrap()),
-            })
-            .await
-            .unwrap();
-        assert!(admin.totp_enrolled);
+        let (first, password, _) = first_admin(&cp).await;
+        let secret = add_authenticator(&cp, &first, &password).await;
         let without_code = LoginRequest {
             username: "admin".into(),
-            password: "correct horse battery".into(),
+            password: password.clone(),
             totp_code: None,
         };
         // The right password without a code asks for the code, as often as
@@ -765,7 +879,7 @@ mod tests {
         let outcome = cp
             .auth
             .login(LoginRequest {
-                totp_code: Some(totp::code_at(&enrol.secret, now_secs() + 30).unwrap()),
+                totp_code: Some(totp::code_at(&secret, now_secs() + 30).unwrap()),
                 ..without_code
             })
             .await
@@ -795,7 +909,7 @@ mod tests {
                 &auth,
                 &StepUpProof {
                     code: None,
-                    password: Some("correct horse battery".into()),
+                    password: Some(password),
                 }
             )
             .await

@@ -18,7 +18,6 @@ use subtle::ConstantTimeEq;
 use crate::error::AuthError;
 
 pub const SESSION_PREFIX: &str = "cbs";
-pub const SETUP_PREFIX: &str = "cbsetup";
 pub const API_KEY_PREFIX: &str = "cbk";
 pub const INVITE_PREFIX: &str = "cbinv";
 
@@ -102,7 +101,7 @@ mod tests {
 
     #[test]
     fn hashes_are_stable_and_compared_in_constant_time() {
-        let t = new_token(SETUP_PREFIX);
+        let t = new_token(INVITE_PREFIX);
         assert!(hashes_equal(&hash_token(&t), &hash_token(&t)));
         assert!(!hashes_equal(&hash_token(&t), &hash_token("other")));
         assert_eq!(hash_token(&t).len(), 64);

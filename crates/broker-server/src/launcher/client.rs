@@ -60,15 +60,26 @@ struct Problem {
     detail: String,
 }
 
+/// How the launcher proves who it is to the management API.
+pub enum Credentials {
+    /// An API key (`cbk_...`), usually a session issuer.
+    ApiKey(Zeroizing<String>),
+    /// The person's console session from `tokenless login`.
+    Session {
+        token: Zeroizing<String>,
+        csrf_token: String,
+    },
+}
+
 pub struct ApiClient {
     http: reqwest::Client,
     base: String,
-    api_key: Option<Zeroizing<String>>,
+    credentials: Option<Credentials>,
 }
 
 impl ApiClient {
     /// `server` is the management API origin, e.g. `http://127.0.0.1:8080`.
-    pub fn new(server: &str, api_key: Option<Zeroizing<String>>) -> Result<Self, LauncherError> {
+    pub fn new(server: &str, credentials: Option<Credentials>) -> Result<Self, LauncherError> {
         let base = server.trim().trim_end_matches('/').to_string();
         if !(base.starts_with("http://") || base.starts_with("https://")) {
             return Err(LauncherError::config(format!(
@@ -90,7 +101,7 @@ impl ApiClient {
         Ok(Self {
             http,
             base,
-            api_key,
+            credentials,
         })
     }
 
@@ -107,12 +118,18 @@ impl ApiClient {
         builder: RequestBuilder,
         operation: &'static str,
     ) -> Result<RequestBuilder, LauncherError> {
-        let key = self.api_key.as_ref().ok_or_else(|| {
-            LauncherError::config(format!(
-                "{operation} needs an API key: set TOKENLESS_API_KEY or pass --api-key-file"
-            ))
-        })?;
-        Ok(builder.bearer_auth(key.as_str()))
+        match self.credentials.as_ref() {
+            Some(Credentials::ApiKey(key)) => Ok(builder.bearer_auth(key.as_str())),
+            Some(Credentials::Session { token, csrf_token }) => Ok(builder
+                .header(
+                    reqwest::header::COOKIE,
+                    format!("{}={}", broker_auth::cookie::SESSION_COOKIE, token.as_str()),
+                )
+                .header(broker_auth::csrf::CSRF_HEADER, csrf_token)),
+            None => Err(LauncherError::config(format!(
+                "{operation} needs an API key or a signed-in person: set TOKENLESS_API_KEY, pass --api-key-file, or run tokenless login"
+            ))),
+        }
     }
 
     async fn send(
@@ -152,7 +169,7 @@ impl ApiClient {
     }
 
     /// A vault id as given, a vault name, or, when `reference` is `None`,
-    /// the only vault the key can see (a vault-bound API key sees one).
+    /// the only vault the caller can see (a vault-bound API key sees one).
     pub async fn resolve_vault(&self, reference: Option<&str>) -> Result<VaultId, LauncherError> {
         if let Some(id) = reference.and_then(|r| r.trim().parse::<VaultId>().ok()) {
             return Ok(id);
@@ -179,15 +196,15 @@ impl ApiClient {
                 .map(|v| v.id)
                 .ok_or_else(|| {
                     LauncherError::config(format!(
-                        "no vault named '{name}' is visible to this API key (visible: {})",
+                        "no vault named '{name}' is visible here (visible: {})",
                         names()
                     ))
                 }),
             None => match vaults.items.as_slice() {
                 [only] => Ok(only.id),
-                [] => Err(LauncherError::config("this API key cannot see any vault")),
+                [] => Err(LauncherError::config("no vault is visible here")),
                 _ => Err(LauncherError::config(format!(
-                    "this API key sees several vaults ({}); pass --vault",
+                    "several vaults are visible ({}); pass --vault",
                     names()
                 ))),
             },

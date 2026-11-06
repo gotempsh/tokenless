@@ -27,13 +27,17 @@ pub struct AppState {
 fn api_routes() -> Router<Arc<AppState>> {
     use handlers::*;
     Router::new()
-        .route("/setup/status", get(setup_status))
-        .route("/setup/totp", post(setup_totp))
-        .route("/setup", post(setup_complete))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .route("/auth/step-up", post(step_up))
+        .route("/auth/password", post(change_password))
+        .route(
+            "/auth/authenticator/enrollment",
+            post(authenticator_enrollment),
+        )
+        .route("/auth/authenticator", post(enable_authenticator))
+        .route("/auth/authenticator/remove", post(disable_authenticator))
         .route("/vaults", get(list_vaults).post(create_vault))
         .route("/vaults/{vault_id}", get(get_vault).delete(delete_vault))
         .route(

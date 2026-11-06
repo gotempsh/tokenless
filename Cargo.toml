@@ -44,7 +44,9 @@ http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
+keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
 rand = "0.8"
+rpassword = "7"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pki-types = "1"

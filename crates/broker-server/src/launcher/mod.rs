@@ -12,6 +12,7 @@
 //! sessions are capped (an hour unless an admin changes it), the port renews its session before it
 //! expires, and every session it minted is ended when it stops.
 
+pub mod account;
 pub mod client;
 pub mod inject;
 pub mod mcp;
@@ -47,6 +48,16 @@ pub enum LauncherError {
         url: String,
         expected: String,
         actual: String,
+    },
+
+    #[error("not signed in to {server}, or the session has ended; run: tokenless login --server {server}")]
+    NotSignedIn { server: String },
+
+    #[error("{operation} the session for {server} in the OS keychain failed: {reason}")]
+    Keychain {
+        operation: &'static str,
+        server: String,
+        reason: String,
     },
 
     #[error("I/O failure while {context}: {source}")]

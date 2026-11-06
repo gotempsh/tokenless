@@ -1578,6 +1578,61 @@ impl IdentityStore for SqliteStore {
         finish(tx, audit, "update_user_access").await
     }
 
+    async fn set_user_password(
+        &self,
+        id: &UserId,
+        password_hash: &str,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("set_user_password").await?;
+        let result = sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(password_hash)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("set user password", "user"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("user", id));
+        }
+        sqlx::query("DELETE FROM ui_sessions WHERE user_id = ? AND token_hash IS NOT ?")
+            .bind(id.to_string())
+            .bind(keep_session)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("sign the user out elsewhere", "ui_session"))?;
+        finish(tx, audit, "set_user_password").await
+    }
+
+    async fn set_user_totp(
+        &self,
+        id: &UserId,
+        secret_enc: Option<Vec<u8>>,
+        last_step: Option<u64>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("set_user_totp").await?;
+        let step = last_step
+            .map(|s| {
+                i64::try_from(s).map_err(|_| {
+                    StoreError::backend("encode totp step", format!("step {s} is out of range"))
+                })
+            })
+            .transpose()?;
+        let result =
+            sqlx::query("UPDATE users SET totp_secret_enc = ?, totp_last_step = ? WHERE id = ?")
+                .bind(secret_enc)
+                .bind(step)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db("set user authenticator", "user"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("user", id));
+        }
+        finish(tx, audit, "set_user_totp").await
+    }
+
     async fn insert_invite(&self, i: Invite, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_invite").await?;
         sqlx::query("INSERT INTO invites (id, token_hash, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1772,32 +1827,6 @@ impl IdentityStore for SqliteStore {
             .await
             .map_err(db("purge ui sessions", "ui_session"))?
             .rows_affected())
-    }
-
-    async fn replace_setup_token(
-        &self,
-        token_hash: &str,
-        at: DateTime<Utc>,
-    ) -> Result<(), StoreError> {
-        sqlx::query("INSERT INTO setup_tokens (singleton, token_hash, created_at) VALUES (1, ?, ?) ON CONFLICT(singleton) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at")
-            .bind(token_hash)
-            .bind(ts(&at))
-            .execute(&self.pool)
-            .await
-            .map_err(db("replace setup token", "setup_token"))?;
-        Ok(())
-    }
-
-    async fn consume_setup_token(&self, token_hash: &str) -> Result<bool, StoreError> {
-        Ok(
-            sqlx::query("DELETE FROM setup_tokens WHERE singleton = 1 AND token_hash = ?")
-                .bind(token_hash)
-                .execute(&self.pool)
-                .await
-                .map_err(db("consume setup token", "setup_token"))?
-                .rows_affected()
-                == 1,
-        )
     }
 
     async fn insert_api_key(&self, k: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {

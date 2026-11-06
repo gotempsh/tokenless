@@ -2074,27 +2074,87 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         "session survived delete"
     );
 
+    // A new password keeps the session that changed it and signs out the rest.
+    for hash in ["keep", "drop"] {
+        store
+            .insert_ui_session(
+                UiSession {
+                    token_hash: hash.into(),
+                    ..session.clone()
+                },
+                &[],
+            )
+            .await
+            .map_err(backend(S, "password_sessions"))?;
+    }
     store
-        .replace_setup_token("old", at(0))
+        .set_user_password(&user.id, "new-hash", Some("keep"), &[])
         .await
-        .map_err(backend(S, "setup_replace"))?;
+        .map_err(backend(S, "password_set"))?;
+    let changed = store
+        .get_user(&user.id)
+        .await
+        .map_err(backend(S, "password_get"))?;
+    let kept = store
+        .get_ui_session("keep")
+        .await
+        .map_err(backend(S, "password_keep"))?;
+    let dropped = store
+        .get_ui_session("drop")
+        .await
+        .map_err(backend(S, "password_drop"))?;
+    ensure!(
+        S,
+        "password_set",
+        changed.as_ref().map(|u| u.password_hash.as_str()) == Some("new-hash")
+            && kept.is_some()
+            && dropped.is_none(),
+        "a new password must be stored, keep the session that set it and end the others (user {changed:?}, kept {kept:?}, dropped {dropped:?})"
+    );
+    let missing = store
+        .set_user_password(&UserId::new(), "h", None, &[])
+        .await;
+    ensure!(
+        S,
+        "password_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+
     store
-        .replace_setup_token("new", at(1))
+        .set_user_totp(&user.id, None, None, &[])
         .await
-        .map_err(backend(S, "setup_replace"))?;
-    let old = store
-        .consume_setup_token("old")
+        .map_err(backend(S, "totp_clear"))?;
+    let cleared = store
+        .get_user(&user.id)
         .await
-        .map_err(backend(S, "setup_old"))?;
-    let new = store
-        .consume_setup_token("new")
+        .map_err(backend(S, "totp_get"))?;
+    store
+        .set_user_totp(&user.id, Some(vec![9, 9]), Some(42), &[])
         .await
-        .map_err(backend(S, "setup_new"))?;
-    let again = store
-        .consume_setup_token("new")
+        .map_err(backend(S, "totp_set"))?;
+    let set = store
+        .get_user(&user.id)
         .await
-        .map_err(backend(S, "setup_again"))?;
-    ensure!(S, "setup_once", !old && new && !again, "setup token must be replaceable and consumable exactly once (old={old}, new={new}, again={again})");
+        .map_err(backend(S, "totp_get"))?;
+    ensure!(
+        S,
+        "totp_set",
+        cleared
+            .as_ref()
+            .is_some_and(|u| u.totp_secret_enc.is_none() && u.totp_last_step.is_none())
+            && set.as_ref().is_some_and(
+                |u| u.totp_secret_enc == Some(vec![9, 9]) && u.totp_last_step == Some(42)
+            ),
+        "the authenticator must be removable and settable (cleared {cleared:?}, set {set:?})"
+    );
+    let missing = store.set_user_totp(&UserId::new(), None, None, &[]).await;
+    ensure!(
+        S,
+        "totp_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
 
     let key = ApiKey {
         id: ApiKeyId::new(),

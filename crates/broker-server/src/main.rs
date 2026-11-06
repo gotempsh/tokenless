@@ -13,7 +13,10 @@ use std::sync::Arc;
 
 use broker_dataplane::node::{enroll, NodeIdentity};
 use broker_dataplane::{DataPlane, DataPlaneConfig};
-use broker_server::launcher::client::{ApiClient, MintRequest, PortServices};
+use broker_server::launcher::account::{
+    self, AddService, ConsoleClient, Keychain, Prompter, SessionVault, SignIn,
+};
+use broker_server::launcher::client::{ApiClient, Credentials, MintRequest, PortServices};
 use broker_server::launcher::inject::{self, Assignment};
 use broker_server::launcher::port::{check_listen, SessionPort};
 use broker_server::launcher::session::LiveSession;
@@ -41,6 +44,41 @@ struct Cli {
 enum Command {
     /// Run the control plane: management API, UI and node API.
     Serve(ServeArgs),
+    /// Sign in as a person and keep the session in the OS keychain, for
+    /// the commands that set up the broker (`service add`, `proxy add`).
+    ///
+    /// Example:
+    ///   tokenless login --username admin
+    #[command(verbatim_doc_comment)]
+    Login {
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+        #[arg(long, default_value = "admin")]
+        username: String,
+    },
+    /// Sign out and remove the session from the OS keychain.
+    Logout {
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Services agents can use. Needs `tokenless login`.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+    /// Proxies that inject credentials. Needs `tokenless login`.
+    Proxy {
+        #[command(subcommand)]
+        command: ProxyCommand,
+    },
+    /// Server administration, run on the server's host with its data
+    /// directory.
+    Admin {
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
     /// Data plane node commands.
     Node {
         #[command(subcommand)]
@@ -289,6 +327,76 @@ struct ServeArgs {
 }
 
 #[derive(Subcommand)]
+enum ServiceCommand {
+    /// Add a service from a template: asks for its credential without
+    /// echoing it, stores it encrypted, and lets the access bundle use it.
+    /// Piped input is read as the credential when the template has one
+    /// field.
+    ///
+    /// Examples:
+    ///   tokenless service add github --vault work --bundle code-review
+    ///   gh auth token | tokenless service add github --vault work --bundle code-review
+    #[command(verbatim_doc_comment)]
+    Add {
+        /// Template id, as on the console's Templates page (github, openai, ...).
+        template: String,
+        /// Vault to add it to; created when there is none with this name.
+        #[arg(long, default_value = "default")]
+        vault: String,
+        /// Access bundle agents start with (`--bundle` of `tokenless run`);
+        /// created when the vault has none with this name.
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Service name (default: the template id).
+        #[arg(long)]
+        name: Option<String>,
+        /// Let agents only read (GET and HEAD).
+        #[arg(long)]
+        read_only: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProxyCommand {
+    /// Enrol this machine as a proxy. Start it afterwards with
+    /// `tokenless node run`.
+    Add {
+        /// Name shown on the Proxies page.
+        #[arg(long, default_value = "node")]
+        name: String,
+        /// Where to store the proxy's identity (mode 0600).
+        #[arg(long, default_value = "./node.json")]
+        state: PathBuf,
+        /// Node API URL (default: port 8443 of the --server host).
+        #[arg(long)]
+        control_url: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Give an account a new generated password and end its sessions. For
+    /// a lost admin password; works while the server is running.
+    ResetPassword {
+        /// The account to reset.
+        #[arg(long, default_value = "admin")]
+        username: String,
+        /// The server's data directory (the one `serve` uses).
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+        /// Database URL, when `serve` uses one.
+        #[arg(long)]
+        database_url: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum NodeCommand {
     /// Enrol this node with a one-time join token.
     Join {
@@ -388,6 +496,7 @@ async fn wait_for_shutdown() -> Result<(), CliError> {
 }
 
 async fn serve(args: ServeArgs) -> Result<(), CliError> {
+    let data_dir = args.data_dir.clone();
     let mut config = ServerConfig::new(args.data_dir);
     config.database_url = args.database_url;
     config.api_listen = args.api_listen;
@@ -400,14 +509,20 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.control.lease_secs = args.lease_secs.max(3);
     config.validation_extra_roots = read_cas(&args.validation_ca)?;
     let running = Server::start(config).await?;
-    if let Some(token) = &running.setup_token {
-        // Deliberately printed to the terminal, not the structured log, so
-        // it is not shipped to log aggregation. It is consumed on first use.
-        eprintln!();
-        eprintln!("  First-run setup token (single use):");
-        eprintln!("    {token}");
+    if let Some(admin) = &running.initial_admin {
+        // Printed to the terminal, not the structured log, so it is not
+        // shipped to log aggregation. Only its hash is stored.
+        print_credentials(
+            "Created the first admin. Save these now: the password is shown only once.",
+            admin,
+        );
         eprintln!(
-            "  Open {}://{}/ and create the first admin.",
+            "  Lost it? On this host: tokenless admin reset-password --data-dir {}",
+            data_dir.display()
+        );
+        eprintln!();
+        eprintln!(
+            "  Sign in at {}://{}/ or with: tokenless login",
             if running.api_tls { "https" } else { "http" },
             running.api_addr
         );
@@ -417,6 +532,237 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     info!("shutting down");
     running.shutdown();
     Ok(())
+}
+
+/// Hidden prompts on the terminal, never echoed or logged.
+struct TerminalPrompter;
+
+impl Prompter for TerminalPrompter {
+    fn secret(&self, label: &str) -> Result<Zeroizing<String>, LauncherError> {
+        rpassword::prompt_password(format!("{label}: "))
+            .map(|v| Zeroizing::new(v.trim_end_matches(['\r', '\n']).to_string()))
+            .map_err(LauncherError::io(format!(
+                "reading {label} from the terminal"
+            )))
+    }
+}
+
+async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
+    let prompter = TerminalPrompter;
+    let password = prompter.secret(&format!("Password for {username}"))?;
+    let session = match account::sign_in(&server, &username, &password, None).await? {
+        SignIn::Done(session) => session,
+        SignIn::CodeNeeded => {
+            let code = prompter.secret("Authenticator code")?;
+            match account::sign_in(&server, &username, &password, Some(&code)).await? {
+                SignIn::Done(session) => session,
+                SignIn::CodeNeeded => {
+                    return Err(
+                        LauncherError::config("the authenticator code was not accepted").into(),
+                    )
+                }
+            }
+        }
+    };
+    Keychain.save(&session)?;
+    eprintln!(
+        "tokenless: signed in to {} as {} until {}. The session is kept in the OS keychain.",
+        session.server,
+        session.username,
+        session.expires_at.format("%Y-%m-%d %H:%M UTC")
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn logout(server: String) -> Result<ExitCode, CliError> {
+    let prompter = TerminalPrompter;
+    if let Ok(client) = ConsoleClient::open(&Keychain, &server, &prompter) {
+        // Ending it on the server is best effort; the keychain entry goes
+        // either way.
+        if let Err(e) = client.logout().await {
+            tracing::warn!(error = %e, "could not end the session on the server");
+        }
+    }
+    let removed = Keychain.delete(server.trim().trim_end_matches('/'))?;
+    eprintln!(
+        "tokenless: {}",
+        if removed {
+            "signed out"
+        } else {
+            "was not signed in"
+        }
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The template's credential fields, from the terminal without echo, or
+/// from piped input when the template has a single field.
+fn read_fields(
+    template: &broker_control::model::StoredTemplate,
+    prompter: &dyn Prompter,
+) -> Result<BTreeMap<String, Zeroizing<String>>, CliError> {
+    use std::io::{IsTerminal, Read};
+    let fields = &template.template.credential_fields;
+    let mut out = BTreeMap::new();
+    if !std::io::stdin().is_terminal() {
+        let [only] = fields.as_slice() else {
+            return Err(LauncherError::config(format!(
+                "template '{}' has {} credential fields; run this in a terminal to be asked for each",
+                template.template.id,
+                fields.len()
+            ))
+            .into());
+        };
+        let mut value = Zeroizing::new(String::new());
+        std::io::stdin()
+            .read_to_string(&mut value)
+            .map_err(|e| CliError::Io {
+                context: "reading the credential from standard input".into(),
+                source: e,
+            })?;
+        let value = Zeroizing::new(value.trim().to_string());
+        if value.is_empty() {
+            return Err(
+                LauncherError::config("standard input was empty; pipe the credential in").into(),
+            );
+        }
+        out.insert(only.name.clone(), value);
+        return Ok(out);
+    }
+    for field in fields {
+        let label = if field.required {
+            field.label.clone()
+        } else {
+            format!("{} (optional, Enter to skip)", field.label)
+        };
+        let value = prompter.secret(&label)?;
+        let value = Zeroizing::new(value.trim().to_string());
+        if value.is_empty() {
+            if field.required {
+                return Err(LauncherError::config(format!("{} is required", field.label)).into());
+            }
+            continue;
+        }
+        out.insert(field.name.clone(), value);
+    }
+    Ok(out)
+}
+
+async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
+    match command {
+        ServiceCommand::Add {
+            template,
+            vault,
+            bundle,
+            name,
+            read_only,
+            server,
+        } => {
+            let prompter = TerminalPrompter;
+            let client = ConsoleClient::open(&Keychain, &server, &prompter)?;
+            let template = account::pick_template(client.templates().await?, &template)?;
+            eprintln!(
+                "tokenless: adding {} to vault '{}'. The credential is stored encrypted and can't be read back.",
+                template.template.name,
+                vault.trim()
+            );
+            let fields = read_fields(&template, &prompter)?;
+            let plan = AddService {
+                template_id: template.template.id.clone(),
+                name,
+                vault,
+                bundle,
+                read_only,
+            };
+            let added = client.add_service(&plan, &template, fields).await?;
+            eprintln!(
+                "tokenless: added service '{}' to vault '{}'{}",
+                added.credential.name,
+                added.vault.name,
+                if added.vault_created {
+                    " (new vault)"
+                } else {
+                    ""
+                }
+            );
+            match &added.bundle {
+                Some((bundle, created)) => eprintln!(
+                    "tokenless: {} bundle '{}'. Run an agent with: tokenless run --vault {} --bundle {} -- <command>",
+                    if *created { "created access" } else { "added it to access" },
+                    bundle.name,
+                    added.vault.name,
+                    bundle.name
+                ),
+                None => eprintln!(
+                    "tokenless: it is in no access bundle yet; pass --bundle, or add rule '{}' to one in the console",
+                    added.rule.name
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+async fn proxy(command: ProxyCommand) -> Result<ExitCode, CliError> {
+    match command {
+        ProxyCommand::Add {
+            name,
+            state,
+            control_url,
+            server,
+        } => {
+            let prompter = TerminalPrompter;
+            let client = ConsoleClient::open(&Keychain, &server, &prompter)?;
+            let control_url = match control_url {
+                Some(url) => url,
+                None => account::default_control_url(&server)?,
+            };
+            let join = client.create_join_token().await?;
+            let identity = enroll(&control_url, &join.token, &name).await?;
+            identity.save(&state)?;
+            eprintln!(
+                "tokenless: enrolled proxy '{name}' ({}); its identity is in {}",
+                identity.node_id,
+                state.display()
+            );
+            eprintln!(
+                "tokenless: start it with: tokenless node run --state {}",
+                state.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn print_credentials(heading: &str, creds: &broker_server::GeneratedCredentials) {
+    eprintln!();
+    eprintln!("  {heading}");
+    eprintln!();
+    eprintln!("    Username  {}", creds.username);
+    eprintln!("    Password  {}", creds.password.as_str());
+    eprintln!();
+    eprintln!("  Keep them in a password manager. Change the password from Account in");
+    eprintln!("  the console.");
+}
+
+async fn admin(command: AdminCommand) -> Result<(), CliError> {
+    match command {
+        AdminCommand::ResetPassword {
+            username,
+            data_dir,
+            database_url,
+        } => {
+            let mut config = ServerConfig::new(data_dir);
+            config.database_url = database_url;
+            let creds = broker_server::reset_password(&config, &username).await?;
+            print_credentials(
+                "Password reset. Save it now: it is shown only once. Every session of this account has ended.",
+                &creds,
+            );
+            eprintln!();
+            Ok(())
+        }
+    }
 }
 
 async fn node(command: NodeCommand) -> Result<(), CliError> {
@@ -477,8 +823,31 @@ fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError
         .filter(|k| !k.is_empty()))
 }
 
+/// An API key when one is given; otherwise the session of `tokenless login`
+/// for this server, when there is one.
 fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
-    Ok(Arc::new(ApiClient::new(&args.server, read_api_key(args)?)?))
+    let credentials = match read_api_key(args)? {
+        Some(key) => Some(Credentials::ApiKey(key)),
+        None => {
+            let server = args.server.trim().trim_end_matches('/');
+            // A keychain that cannot be read is the same as not signed in:
+            // the error then says how to authenticate.
+            match Keychain.load(server) {
+                Ok(Some(saved)) if saved.expires_at > chrono::Utc::now() => {
+                    Some(Credentials::Session {
+                        token: Zeroizing::new(saved.token),
+                        csrf_token: saved.csrf_token,
+                    })
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::debug!(error = %e, "no saved session");
+                    None
+                }
+            }
+        }
+    };
+    Ok(Arc::new(ApiClient::new(&args.server, credentials)?))
 }
 
 fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
@@ -996,12 +1365,25 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let agent_side = matches!(
         cli.command,
-        Command::Session { .. } | Command::Run(_) | Command::Mcp(_) | Command::Skill { .. }
+        Command::Session { .. }
+            | Command::Run(_)
+            | Command::Mcp(_)
+            | Command::Skill { .. }
+            | Command::Admin { .. }
+            | Command::Login { .. }
+            | Command::Logout { .. }
+            | Command::Service { .. }
+            | Command::Proxy { .. }
     );
     init_logging(agent_side);
     let result = match cli.command {
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
         Command::Node { command } => node(command).await.map(|()| ExitCode::SUCCESS),
+        Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
+        Command::Login { server, username } => login(server, username).await,
+        Command::Logout { server } => logout(server).await,
+        Command::Service { command } => service(command).await,
+        Command::Proxy { command } => proxy(command).await,
         Command::Session { command } => session(command).await,
         Command::Run(args) => run(args).await,
         Command::Mcp(args) => mcp_command(args).await,

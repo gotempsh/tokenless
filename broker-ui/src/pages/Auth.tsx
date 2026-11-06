@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
 
-interface TotpEnrollment {
+export interface TotpEnrollment {
   secret: string;
   otpauth_url: string;
 }
@@ -55,7 +55,7 @@ function AuthenticatorChoice({ checked, onChange }: { checked: boolean; onChange
   );
 }
 
-function EnrollmentBox({ enrollment }: { enrollment: TotpEnrollment }) {
+export function EnrollmentBox({ enrollment }: { enrollment: TotpEnrollment }) {
   return (
     <Alert>
       <Smartphone className="size-4" />
@@ -92,7 +92,7 @@ function PasswordField({ value, onChange }: { value: string; onChange: (v: strin
   );
 }
 
-function CodeField({ value, onChange, required, autoFocus }: { value: string; onChange: (v: string) => void; required?: boolean; autoFocus?: boolean }) {
+export function CodeField({ value, onChange, required, autoFocus }: { value: string; onChange: (v: string) => void; required?: boolean; autoFocus?: boolean }) {
   return (
     <Input
       id="totp-code"
@@ -105,95 +105,6 @@ function CodeField({ value, onChange, required, autoFocus }: { value: string; on
       required={required}
       autoFocus={autoFocus}
     />
-  );
-}
-
-/** First-run: create the admin with the one-time setup token from the server log. */
-export function Setup({ onDone }: { onDone: () => void }) {
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("");
-  const [setupToken, setSetupToken] = useState("");
-  const [code, setCode] = useState("");
-  const [useTotp, setUseTotp] = useState(false);
-  const [stage, setStage] = useState<"name" | "details">("name");
-  const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
-  const action = useAction();
-
-  const begin = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!useTotp) {
-      setEnrollment(null);
-      setStage("details");
-      return;
-    }
-    const result = await action.run(() => post<TotpEnrollment>("/setup/totp", { username }));
-    if (result) {
-      setEnrollment(result);
-      setStage("details");
-    }
-  };
-
-  const finish = async (e: FormEvent) => {
-    e.preventDefault();
-    const user = await action.run(() =>
-      post<UserSummary>("/setup", {
-        setup_token: setupToken.trim(),
-        username,
-        password,
-        ...totpFields(enrollment, code),
-      }),
-    );
-    if (user) onDone();
-  };
-
-  return (
-    <AuthLayout
-      title="Create the first admin"
-      description="The server printed a single-use setup token on its terminal when it started. It works once."
-    >
-      {stage === "name" ? (
-        <form onSubmit={begin} className="space-y-5">
-          <ErrorBanner error={action.error} />
-          <Field label="Username" htmlFor="username">
-            <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-          </Field>
-          <AuthenticatorChoice checked={useTotp} onChange={setUseTotp} />
-          <Button type="submit" className="w-full" disabled={action.busy}>
-            Continue
-          </Button>
-        </form>
-      ) : (
-        <form onSubmit={finish} className="space-y-5">
-          <ErrorBanner error={action.error} />
-          {enrollment && <EnrollmentBox enrollment={enrollment} />}
-          <Field label="Setup token" htmlFor="setup-token">
-            <Input
-              id="setup-token"
-              className="font-mono"
-              value={setupToken}
-              onChange={(e) => setSetupToken(e.target.value)}
-              autoComplete="off"
-              required
-            />
-          </Field>
-          <PasswordField value={password} onChange={setPassword} />
-          {enrollment && (
-            <Field label="Authenticator code" htmlFor="totp-code">
-              <CodeField value={code} onChange={setCode} required />
-            </Field>
-          )}
-          <div className="flex gap-2">
-            <Button type="button" variant="outline" onClick={() => setStage("name")}>
-              <ChevronLeft />
-              Back
-            </Button>
-            <Button type="submit" className="flex-1" disabled={action.busy}>
-              Create admin
-            </Button>
-          </div>
-        </form>
-      )}
-    </AuthLayout>
   );
 }
 

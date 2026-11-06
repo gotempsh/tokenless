@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! People and API keys: first-admin setup, password + TOTP login, UI
-//! sessions, step-up MFA and API key issuance.
+//! People and API keys: the generated first admin, password + TOTP login,
+//! UI sessions, step-up MFA, password and authenticator changes, and API
+//! key issuance.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,6 +16,7 @@ use broker_core::ids::{ApiKeyId, UserId, VaultId};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+use zeroize::Zeroizing;
 
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::SecretCipher;
@@ -59,16 +61,43 @@ pub struct TotpEnrollment {
     pub otpauth_url: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct SetupRequest {
-    pub setup_token: String,
+/// The username of the admin created on first start.
+pub const INITIAL_ADMIN: &str = "admin";
+
+/// Credentials the server generated, to be shown to the operator once.
+pub struct GeneratedCredentials {
     pub username: String,
+    pub password: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for GeneratedCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratedCredentials")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChangePassword {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Turns on an authenticator: the secret from `new_totp_enrollment`, the
+/// first code it shows, and the password to prove it is the account owner.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnableAuthenticator {
+    pub secret: String,
+    pub code: String,
     pub password: String,
-    /// Omit both TOTP fields for a password-only account.
-    #[serde(default)]
-    pub totp_secret: Option<String>,
-    #[serde(default)]
-    pub totp_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DisableAuthenticator {
+    pub code: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -290,24 +319,6 @@ impl AuthService {
         })
     }
 
-    pub async fn setup_required(&self) -> Result<bool, ControlError> {
-        Ok(self.identity.count_users().await? == 0)
-    }
-
-    /// When no account exists yet, mints a fresh one-time setup token
-    /// (invalidating any earlier one) for the operator to read from the
-    /// console. Returns `None` once an admin exists.
-    pub async fn issue_setup_token(&self) -> Result<Option<String>, ControlError> {
-        if !self.setup_required().await? {
-            return Ok(None);
-        }
-        let plaintext = token::new_token(token::SETUP_PREFIX);
-        self.identity
-            .replace_setup_token(&token::hash_token(&plaintext), Utc::now())
-            .await?;
-        Ok(Some(plaintext))
-    }
-
     pub fn new_totp_enrollment(&self, username: &str) -> Result<TotpEnrollment, ControlError> {
         validate_username(username)?;
         let secret = totp::generate_secret();
@@ -318,41 +329,211 @@ impl AuthService {
         })
     }
 
-    pub async fn complete_setup(&self, req: SetupRequest) -> Result<UserSummary, ControlError> {
-        let totp = check_new_account(
-            &req.username,
-            &req.password,
-            &req.totp_secret,
-            &req.totp_code,
-        )?;
-        if !self.setup_required().await? {
-            return Err(ControlError::Conflict {
-                message: "setup has already been completed".into(),
-            });
+    /// On first start, while no account exists, creates the admin with a
+    /// generated password and returns it so the operator can save it. It is
+    /// returned this once; only its hash is stored. `None` once anyone has
+    /// an account.
+    pub async fn create_initial_admin(&self) -> Result<Option<GeneratedCredentials>, ControlError> {
+        if self.identity.count_users().await? > 0 {
+            return Ok(None);
         }
-        if !self
-            .identity
-            .consume_setup_token(&token::hash_token(req.setup_token.trim()))
-            .await?
-        {
-            return Err(ControlError::Unauthenticated {
-                reason: "setup token is invalid or was already used".into(),
-            });
-        }
+        let password = password::generate_password();
         let user = build_user(
             self.cipher.as_ref(),
-            &req.username,
-            &req.password,
-            totp,
+            INITIAL_ADMIN,
+            &password,
+            None,
             Role::Admin,
         )?;
         let id = user.id;
-        let event = AuditEvent::new(format!("user:{id}"), "auth.setup", AuditOutcome::Success)
+        let event = AuditEvent::new("system", "auth.setup", AuditOutcome::Success)
             .target(format!("user:{id}"))
-            .detail("username", user.username.clone());
-        self.identity.insert_user(user.clone(), &[event]).await?;
-        info!(user_id = %id, username = %user.username, "first admin created from setup token");
-        Ok(UserSummary::from(&user))
+            .detail("username", INITIAL_ADMIN);
+        match self.identity.insert_user(user, &[event]).await {
+            Ok(()) => {}
+            // Another server sharing the database created it first.
+            Err(crate::error::StoreError::Conflict { .. }) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        info!(user_id = %id, username = INITIAL_ADMIN, "first admin created with a generated password");
+        Ok(Some(GeneratedCredentials {
+            username: INITIAL_ADMIN.to_string(),
+            password,
+        }))
+    }
+
+    /// Replaces a person's password with a generated one and signs them
+    /// out everywhere. For the operator of the server, who has its data
+    /// directory; not exposed over the API.
+    pub async fn reset_password(
+        &self,
+        username: &str,
+    ) -> Result<GeneratedCredentials, ControlError> {
+        let username = username.trim().to_ascii_lowercase();
+        let user = self
+            .identity
+            .get_user_by_username(&username)
+            .await?
+            .ok_or_else(|| ControlError::not_found("user", &username))?;
+        let password = password::generate_password();
+        let hash = password::hash_password(&password)?;
+        let event = AuditEvent::new("system", "user.password_reset", AuditOutcome::Success)
+            .target(format!("user:{}", user.id))
+            .detail("username", username.clone());
+        self.identity
+            .set_user_password(&user.id, &hash, None, &[event])
+            .await?;
+        warn!(user_id = %user.id, username = %username, "password reset by the server operator; all of the user's sessions ended");
+        Ok(GeneratedCredentials { username, password })
+    }
+
+    async fn session_user(&self, auth: &SessionAuth) -> Result<User, ControlError> {
+        self.identity
+            .get_user(&auth.user.id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("user", auth.user.id))
+    }
+
+    /// Checks the account's own password before a change to its sign-in,
+    /// counting a wrong one like a failed login.
+    async fn confirm_password(
+        &self,
+        auth: &SessionAuth,
+        user: &User,
+        presented: &str,
+        action: &'static str,
+    ) -> Result<(), ControlError> {
+        self.limiter.check(&user.username)?;
+        if password::verify_password(&user.password_hash, presented)? {
+            return Ok(());
+        }
+        self.limiter.fail(&user.username);
+        self.audit
+            .record(AuditEvent::new(
+                auth.caller.actor(),
+                action,
+                AuditOutcome::Denied,
+            ))
+            .await;
+        Err(ControlError::Unauthenticated {
+            reason: "the current password is incorrect".into(),
+        })
+    }
+
+    /// Changes the signed-in person's password. This session stays signed
+    /// in; every other session of the account ends.
+    pub async fn change_password(
+        &self,
+        auth: &SessionAuth,
+        req: &ChangePassword,
+    ) -> Result<(), ControlError> {
+        let user = self.session_user(auth).await?;
+        self.confirm_password(auth, &user, &req.current_password, "user.password_change")
+            .await?;
+        password::check_password_policy(&req.new_password)?;
+        if req.new_password == req.current_password {
+            return Err(ControlError::validation(
+                "the new password must differ from the current one",
+            ));
+        }
+        let hash = password::hash_password(&req.new_password)?;
+        let event = AuditEvent::new(
+            auth.caller.actor(),
+            "user.password_change",
+            AuditOutcome::Success,
+        )
+        .target(format!("user:{}", user.id));
+        self.identity
+            .set_user_password(&user.id, &hash, Some(&auth.token_hash), &[event])
+            .await?;
+        info!(user_id = %user.id, "password changed; other sessions ended");
+        Ok(())
+    }
+
+    /// Turns on an authenticator for the signed-in person. From then on,
+    /// signing in asks for its code.
+    pub async fn enable_authenticator(
+        &self,
+        auth: &SessionAuth,
+        req: &EnableAuthenticator,
+    ) -> Result<UserSummary, ControlError> {
+        let user = self.session_user(auth).await?;
+        if user.totp_secret_enc.is_some() {
+            return Err(ControlError::Conflict {
+                message: format!(
+                    "user '{}' already has an authenticator; remove it before adding another",
+                    user.username
+                ),
+            });
+        }
+        self.confirm_password(auth, &user, &req.password, "auth.totp_enable")
+            .await?;
+        let secret = req.secret.trim();
+        let step = totp::verify_code(secret, &user.username, req.code.trim(), unix_now(), None)?
+            .ok_or_else(|| {
+                ControlError::validation(
+                    "the code does not match this authenticator; check the device's clock and use the code it shows now",
+                )
+            })?;
+        let secret_enc = self
+            .cipher
+            .encrypt(secret.as_bytes(), &totp_aad(&user.id))?;
+        let event = AuditEvent::new(
+            auth.caller.actor(),
+            "auth.totp_enable",
+            AuditOutcome::Success,
+        )
+        .target(format!("user:{}", user.id));
+        self.identity
+            .set_user_totp(&user.id, Some(secret_enc), Some(step), &[event])
+            .await?;
+        info!(user_id = %user.id, "authenticator turned on");
+        let mut summary = UserSummary::from(&user);
+        summary.totp_enrolled = true;
+        Ok(summary)
+    }
+
+    /// Turns the signed-in person's authenticator off; it takes the
+    /// password and a current code.
+    pub async fn disable_authenticator(
+        &self,
+        auth: &SessionAuth,
+        req: &DisableAuthenticator,
+    ) -> Result<UserSummary, ControlError> {
+        let user = self.session_user(auth).await?;
+        if user.totp_secret_enc.is_none() {
+            return Err(ControlError::Conflict {
+                message: format!("user '{}' has no authenticator to remove", user.username),
+            });
+        }
+        self.confirm_password(auth, &user, &req.password, "auth.totp_disable")
+            .await?;
+        if !self.verify_totp(&user, req.code.trim()).await? {
+            self.limiter.fail(&user.username);
+            self.audit
+                .record(AuditEvent::new(
+                    auth.caller.actor(),
+                    "auth.totp_disable",
+                    AuditOutcome::Denied,
+                ))
+                .await;
+            return Err(ControlError::Unauthenticated {
+                reason: "the authenticator code is invalid or was already used".into(),
+            });
+        }
+        let event = AuditEvent::new(
+            auth.caller.actor(),
+            "auth.totp_disable",
+            AuditOutcome::Success,
+        )
+        .target(format!("user:{}", user.id));
+        self.identity
+            .set_user_totp(&user.id, None, None, &[event])
+            .await?;
+        info!(user_id = %user.id, "authenticator turned off");
+        let mut summary = UserSummary::from(&user);
+        summary.totp_enrolled = false;
+        Ok(summary)
     }
 
     async fn verify_totp(&self, user: &User, code: &str) -> Result<bool, ControlError> {

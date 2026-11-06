@@ -220,73 +220,34 @@ fn totp(secret: &str, offset_secs: u64) -> String {
     broker_auth::totp::code_at(secret, now + offset_secs).unwrap()
 }
 
-/// Creates the first admin from the setup token and logs in.
+/// Signs in as the admin created on first start, sets PASSWORD as its
+/// password and turns on an authenticator; returns the session and the
+/// authenticator's secret.
 async fn bootstrap_admin(server: &RunningServer) -> (Api, String) {
+    let generated = server
+        .initial_admin
+        .as_ref()
+        .expect("the first start creates the admin");
+    assert_eq!(generated.username, "admin");
     let mut api = Api::new(server);
-    let status = api.get("/setup/status").await;
-    assert_eq!(status["setup_required"], true);
-    let enrollment = api
-        .post("/setup/totp", json!({ "username": "admin" }))
-        .await;
-    let secret = enrollment["secret"].as_str().unwrap().to_string();
 
-    // A wrong setup token is refused.
     let (status, _, _) = api
         .call(
             reqwest::Method::POST,
-            "/setup",
-            Some(json!({
-                "setup_token": "cbsetup_wrong",
-                "username": "admin",
-                "password": PASSWORD,
-                "totp_secret": secret,
-                "totp_code": totp(&secret, 0),
-            })),
+            "/auth/login",
+            Some(json!({ "username": "admin", "password": "not-the-generated-one" })),
         )
         .await;
-    assert!(status.is_client_error());
-
-    let token = server
-        .setup_token
-        .clone()
-        .expect("setup token printed once");
-    api.post(
-        "/setup",
-        json!({
-            "setup_token": token,
-            "username": "admin",
-            "password": PASSWORD,
-            "totp_secret": secret,
-            "totp_code": totp(&secret, 0),
-        }),
-    )
-    .await;
-
-    // The setup token is single use.
-    let (status, _, _) = api
-        .call(
-            reqwest::Method::POST,
-            "/setup",
-            Some(json!({
-                "setup_token": token,
-                "username": "second",
-                "password": PASSWORD,
-                "totp_secret": secret,
-                "totp_code": totp(&secret, 0),
-            })),
-        )
-        .await;
-    assert!(status.is_client_error());
-
-    // Setup consumed the current TOTP step, so log in with the next one.
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, headers, body) = api
         .call(
             reqwest::Method::POST,
             "/auth/login",
-            Some(json!({ "username": "admin", "password": PASSWORD, "totp_code": totp(&secret, 30) })),
+            Some(json!({ "username": "admin", "password": generated.password.as_str() })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["user"]["totp_enrolled"], false);
     let set_cookie = headers
         .get(SET_COOKIE)
         .unwrap()
@@ -298,6 +259,39 @@ async fn bootstrap_admin(server: &RunningServer) -> (Api, String) {
     assert!(set_cookie.contains("SameSite=Strict"));
     api.cookie = Some(set_cookie.split(';').next().unwrap().to_string());
     api.csrf = Some(body["csrf_token"].as_str().unwrap().to_string());
+
+    let (status, _, _) = api
+        .call(
+            reqwest::Method::POST,
+            "/auth/password",
+            Some(json!({
+                "current_password": generated.password.as_str(),
+                "new_password": PASSWORD,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let enrollment = api.post("/auth/authenticator/enrollment", json!({})).await;
+    let secret = enrollment["secret"].as_str().unwrap().to_string();
+    let enabled = api
+        .post(
+            "/auth/authenticator",
+            json!({ "secret": secret, "code": totp(&secret, 0), "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(enabled["totp_enrolled"], true);
+
+    // From now on the password alone asks for the code.
+    let (status, _, body) = Api::new(server)
+        .call(
+            reqwest::Method::POST,
+            "/auth/login",
+            Some(json!({ "username": "admin", "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "second_factor_required");
     (api, secret)
 }
 
@@ -739,7 +733,7 @@ async fn end_to_end() {
     let listing = api.get(&format!("/vaults/{vault_id}/bundles")).await;
     assert_eq!(listing["total"], 1);
     {
-        use broker_server::launcher::client::{ApiClient, MintRequest};
+        use broker_server::launcher::client::{ApiClient, Credentials, MintRequest};
         use broker_server::launcher::port::SessionPort;
         use broker_server::launcher::session::LiveSession;
         use broker_server::launcher::trust::placeholder_env;
@@ -747,7 +741,10 @@ async fn end_to_end() {
         let launcher = Arc::new(
             ApiClient::new(
                 &format!("http://{}", server.api_addr),
-                automation.api_key.clone().map(zeroize::Zeroizing::new),
+                automation
+                    .api_key
+                    .clone()
+                    .map(|k| Credentials::ApiKey(zeroize::Zeroizing::new(k))),
             )
             .unwrap(),
         );
