@@ -39,6 +39,7 @@ export function TemplateCatalog({
   loading,
   includePending = false,
   onOpen,
+  openLabel,
   cardAction,
   autoFocus = false,
 }: {
@@ -47,6 +48,8 @@ export function TemplateCatalog({
   /** Show imported templates awaiting approval in their own section. */
   includePending?: boolean;
   onOpen: (t: StoredTemplate) => void;
+  /** What clicking a card does, for screen readers, e.g. "Add GitHub". */
+  openLabel?: (t: StoredTemplate) => string;
   /** A call to action in each card's footer; without it the whole card is the button. */
   cardAction?: (t: StoredTemplate) => ReactNode;
   autoFocus?: boolean;
@@ -168,6 +171,7 @@ export function TemplateCatalog({
                   key={`${section.key}-${t.template.id}`}
                   t={t}
                   onOpen={() => onOpen(t)}
+                  openLabel={openLabel?.(t)}
                   action={cardAction?.(t)}
                 />
               ))}
@@ -209,7 +213,17 @@ function CardBody({ t }: { t: StoredTemplate }) {
   );
 }
 
-export function TemplateCard({ t, onOpen, action }: { t: StoredTemplate; onOpen: () => void; action?: ReactNode }) {
+export function TemplateCard({
+  t,
+  onOpen,
+  openLabel,
+  action,
+}: {
+  t: StoredTemplate;
+  onOpen: () => void;
+  openLabel?: string;
+  action?: ReactNode;
+}) {
   if (!action) {
     return (
       <button
@@ -226,7 +240,8 @@ export function TemplateCard({ t, onOpen, action }: { t: StoredTemplate; onOpen:
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Details for ${t.template.name}`}
+        aria-label={openLabel ?? t.template.name}
+        title={openLabel}
         className="flex flex-1 flex-col gap-3 rounded-t-lg p-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
       >
         <CardBody t={t} />

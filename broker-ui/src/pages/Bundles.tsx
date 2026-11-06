@@ -36,6 +36,7 @@ import {
   Pager,
   Panel,
   RowActions,
+  RowMenu,
   Section,
   SelectField,
   Status,
@@ -226,7 +227,18 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                   )}
                   <TableCell>
                     {b.rule_ids.length === 0 ? (
-                      <Status tone="warning">no services</Status>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Status tone="warning">no services</Status>
+                        {canAdd && (
+                          <button
+                            type="button"
+                            className="text-xs font-medium underline-offset-4 hover:underline"
+                            onClick={() => goAdd(b.vault_id, b.id)}
+                          >
+                            Add a service
+                          </button>
+                        )}
+                      </div>
                     ) : services.loading && !services.data ? (
                       <Skeleton className="h-5 w-32" />
                     ) : (
@@ -238,40 +250,21 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                   </TableCell>
                   <TableCell>
                     <RowActions>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        title={canAdd ? `Add a service from the catalogue to ${b.name}` : "Only admins can add services"}
-                        disabled={!canAdd}
-                        onClick={() => goAdd(b.vault_id, b.id)}
-                      >
-                        <Plus />
-                        <span className="hidden sm:inline">Add service</span>
-                      </Button>
-                      <Button type="button" variant="outline" size="sm" onClick={() => setRunning(b)}>
-                        <Terminal />
-                        <span className="hidden sm:inline">Run an agent</span>
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Edit ${b.name}`}
-                        onClick={() => setEditing(b)}
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive"
-                        aria-label={`Delete ${b.name}`}
-                        onClick={() => confirm.ask(b)}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <RowMenu
+                        label={b.name}
+                        items={[
+                          {
+                            label: "Add a service",
+                            icon: Plus,
+                            onSelect: () => goAdd(b.vault_id, b.id),
+                            disabled: !canAdd,
+                            reason: "Only admins can add services",
+                          },
+                          { label: "Run an agent", icon: Terminal, onSelect: () => setRunning(b) },
+                          { label: "Edit bundle", icon: Pencil, onSelect: () => setEditing(b) },
+                          { label: "Delete bundle", icon: Trash2, onSelect: () => confirm.ask(b), destructive: true },
+                        ]}
+                      />
                     </RowActions>
                   </TableCell>
                 </TableRow>

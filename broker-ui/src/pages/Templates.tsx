@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent, type ReactNode } from "react";
-import { Plus, ShieldAlert, Upload } from "lucide-react";
+import { Info, Plus, ShieldAlert, Upload } from "lucide-react";
 import { get, post, type ServiceTemplate, type StoredTemplate, type UserSummary } from "../api";
 import { CATEGORY_LABEL, injectionSummary, KIND_LABEL } from "../catalog";
 import { useAction, useLoad } from "../hooks";
@@ -100,36 +100,39 @@ export function Templates({ user }: { user: UserSummary }) {
     }
   };
 
-  const open = (t: StoredTemplate) => (t.status !== "approved" && isAdmin ? setReviewing(t) : setViewing(t));
   const addTo = (t: StoredTemplate) => {
     setViewing(null);
     window.location.hash = addServiceHref({ template: t.template.id, back: "templates" });
   };
+  // A card's main action: admins add an approved service and review a
+  // pending one; everyone else reads its details.
+  const open = (t: StoredTemplate) => {
+    if (!isAdmin) setViewing(t);
+    else if (t.status !== "approved") setReviewing(t);
+    else addTo(t);
+  };
+  const openLabel = (t: StoredTemplate) =>
+    !isAdmin ? `Details for ${t.template.name}` : t.status !== "approved" ? `Review ${t.template.name}` : `Add ${t.template.name}`;
 
-  const cardAction = (t: StoredTemplate) =>
-    t.status !== "approved" ? (
-      <Button type="button" size="sm" variant="outline" disabled={!isAdmin} onClick={() => setReviewing(t)}>
-        Review
-      </Button>
-    ) : (
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        disabled={!isAdmin}
-        title={isAdmin ? `Add ${t.template.name} to a vault and an access bundle` : "Only admins can add services"}
-        onClick={() => addTo(t)}
-      >
-        <Plus />
-        Add to vault
-      </Button>
-    );
+  const cardAction = (t: StoredTemplate) => (
+    <Button
+      type="button"
+      size="icon"
+      variant="ghost"
+      className="size-7 text-muted-foreground"
+      aria-label={`Details for ${t.template.name}`}
+      title="Details"
+      onClick={() => setViewing(t)}
+    >
+      <Info />
+    </Button>
+  );
 
   return (
     <PageContainer>
       <PageHeader
         title="Templates"
-        description="The service catalogue. Pick a service, add its credential to a vault and put it in an access bundle in one step. A template knows the service's hosts, paths and methods and how its credential is sent; rules can only narrow that."
+        description="The service catalogue. Click a service to add its credential to a vault and put it in an access bundle in one step. A template knows the service's hosts, paths and methods and how its credential is sent; rules can only narrow that."
         actions={
           <Button
             type="button"
@@ -149,6 +152,7 @@ export function Templates({ user }: { user: UserSummary }) {
         loading={templates.loading && !templates.data}
         includePending={isAdmin}
         onOpen={open}
+        openLabel={openLabel}
         cardAction={cardAction}
       />
       <FormDialog

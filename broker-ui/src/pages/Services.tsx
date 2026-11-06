@@ -33,6 +33,7 @@ import {
   Pager,
   Panel,
   RowActions,
+  RowMenu,
   Section,
   Status,
   Tags,
@@ -99,6 +100,7 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
   );
 
   const failures = Object.values(results).filter((r) => !r.ok);
+  const adminOnly = "Only admins can change services";
 
   return (
     <Section
@@ -184,65 +186,51 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
                             </Status>
                           </span>
                         )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!tpl?.validation || action.busy || !isAdmin}
-                          title={
-                            tpl?.validation
-                              ? "Send the template's validation request with this credential"
-                              : "This template declares no validation request"
-                          }
-                          onClick={() => void test(c)}
-                        >
-                          <FlaskConical />
-                          <span className="hidden sm:inline">Test</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!isAdmin}
-                          onClick={() => setEditingHeaders(c)}
-                        >
-                          <ListPlus />
-                          <span className="hidden sm:inline">Headers</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!isAdmin}
-                          title="Placeholders the agent sends that the proxy replaces with this secret"
-                          onClick={() => setEditingPlaceholders(c)}
-                        >
-                          <Replace />
-                          <span className="hidden sm:inline">
-                            Placeholders{c.substitutions.length > 0 ? ` (${c.substitutions.length})` : ""}
-                          </span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!isAdmin}
-                          onClick={() => setRotating(c)}
-                        >
-                          <RefreshCw />
-                          <span className="hidden sm:inline">Replace secret</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          aria-label={`Delete ${c.name}`}
-                          disabled={!isAdmin}
-                          onClick={() => confirm.ask(c)}
-                        >
-                          <Trash2 />
-                        </Button>
+                        <RowMenu
+                          label={c.name}
+                          items={[
+                            {
+                              label: "Test credential",
+                              icon: FlaskConical,
+                              onSelect: () => void test(c),
+                              disabled: !tpl?.validation || action.busy || !isAdmin,
+                              reason: !isAdmin
+                                ? adminOnly
+                                : tpl?.validation
+                                  ? undefined
+                                  : "This template declares no validation request",
+                            },
+                            {
+                              label: "Custom headers",
+                              icon: ListPlus,
+                              onSelect: () => setEditingHeaders(c),
+                              disabled: !isAdmin,
+                              reason: adminOnly,
+                            },
+                            {
+                              label: "Placeholders",
+                              icon: Replace,
+                              onSelect: () => setEditingPlaceholders(c),
+                              disabled: !isAdmin,
+                              reason: adminOnly,
+                            },
+                            {
+                              label: "Replace secret",
+                              icon: RefreshCw,
+                              onSelect: () => setRotating(c),
+                              disabled: !isAdmin,
+                              reason: adminOnly,
+                            },
+                            {
+                              label: "Delete service",
+                              icon: Trash2,
+                              onSelect: () => confirm.ask(c),
+                              disabled: !isAdmin,
+                              reason: adminOnly,
+                              destructive: true,
+                            },
+                          ]}
+                        />
                       </RowActions>
                     </TableCell>
                   </TableRow>
@@ -334,6 +322,7 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
 function SecretSummary({ credential }: { credential: CredentialMeta }) {
   const refs = credential.variable_refs;
   const headers = credential.custom_headers.length;
+  const placeholders = credential.substitutions.length;
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-xs">
       {refs.length > 0 ? (
@@ -352,6 +341,11 @@ function SecretSummary({ credential }: { credential: CredentialMeta }) {
       {headers > 0 && (
         <span className="text-muted-foreground">
           · {headers} header{headers === 1 ? "" : "s"}
+        </span>
+      )}
+      {placeholders > 0 && (
+        <span className="text-muted-foreground">
+          · {placeholders} placeholder{placeholders === 1 ? "" : "s"}
         </span>
       )}
     </div>

@@ -5,7 +5,7 @@
 // session's traffic from the audit log.
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { ScrollText, Tags, Timer } from "lucide-react";
+import { Ban, ScrollText, Tags, Timer } from "lucide-react";
 import { get, patch, post, type AuditEvent, type Page, type ProxySession, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -22,6 +22,7 @@ import {
   Panel,
   Relative,
   RowActions,
+  RowMenu,
   Status,
   useConfirm,
   When,
@@ -122,7 +123,16 @@ export function Sessions() {
             <TableBody>
               {sessions.data?.items.map((s) => (
                 <TableRow key={s.id}>
-                  <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
+                  <TableCell>
+                    <button
+                      type="button"
+                      className="text-left font-medium underline-offset-4 hover:underline"
+                      title="Open this session's logs"
+                      onClick={() => setViewing(s)}
+                    >
+                      {sessionLabel(s)}
+                    </button>
+                  </TableCell>
                   <TableCell>
                     <a href={`#/vaults/${s.vault_id}/sessions`} className="hover:underline">
                       {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
@@ -141,15 +151,15 @@ export function Sessions() {
                   <TableCell>{sessionStatus(s)}</TableCell>
                   <TableCell>
                     <RowActions>
-                      <Button type="button" variant="outline" size="sm" onClick={() => setViewing(s)}>
-                        <ScrollText />
-                        <span className="hidden sm:inline">Logs</span>
-                      </Button>
-                      {isActive(s) && (
-                        <Button type="button" variant="ghost" size="sm" onClick={() => confirm.ask(s)}>
-                          Revoke
-                        </Button>
-                      )}
+                      <RowMenu
+                        label={sessionLabel(s)}
+                        items={[
+                          { label: "View logs", icon: ScrollText, onSelect: () => setViewing(s) },
+                          ...(isActive(s)
+                            ? [{ label: "Revoke session", icon: Ban, onSelect: () => confirm.ask(s), destructive: true }]
+                            : []),
+                        ]}
+                      />
                     </RowActions>
                   </TableCell>
                 </TableRow>

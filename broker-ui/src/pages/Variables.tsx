@@ -17,6 +17,7 @@ import {
   Pager,
   Panel,
   RowActions,
+  RowMenu,
   useConfirm,
   When,
 } from "../components/common";
@@ -162,22 +163,20 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                       </TableCell>
                       <TableCell>
                         <RowActions>
-                          <Button type="button" variant="outline" size="sm" onClick={() => setReplacing(v)}>
-                            <RefreshCw />
-                            <span className="hidden sm:inline">Replace value</span>
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive hover:text-destructive"
-                            aria-label={`Delete ${v.key}`}
-                            disabled={v.used_by.length > 0}
-                            title={v.used_by.length > 0 ? "Remove it from the services that use it first" : undefined}
-                            onClick={() => confirm.ask(v)}
-                          >
-                            <Trash2 />
-                          </Button>
+                          <RowMenu
+                            label={v.key}
+                            items={[
+                              { label: "Replace value", icon: RefreshCw, onSelect: () => setReplacing(v) },
+                              {
+                                label: "Delete variable",
+                                icon: Trash2,
+                                onSelect: () => confirm.ask(v),
+                                disabled: v.used_by.length > 0,
+                                reason: "Remove it from the services that use it first",
+                                destructive: true,
+                              },
+                            ]}
+                          />
                         </RowActions>
                       </TableCell>
                     </TableRow>

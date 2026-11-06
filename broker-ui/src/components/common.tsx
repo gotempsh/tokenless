@@ -5,7 +5,7 @@
 // in ./ui. Pages use these so every list, form and status reads the same.
 
 import { useState, type ReactNode } from "react";
-import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, type LucideIcon } from "lucide-react";
+import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
 import type { Page } from "../api";
 import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
@@ -20,6 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 import { EmptyState } from "./ui/empty-state";
 import { Label } from "./ui/label";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
@@ -465,4 +472,53 @@ export function DialogActions({ children }: { children: ReactNode }) {
 
 export function RowActions({ children }: { children: ReactNode }) {
   return <div className="flex items-center justify-end gap-2">{children}</div>;
+}
+
+export interface RowMenuItem {
+  label: string;
+  icon: LucideIcon;
+  onSelect: () => void;
+  disabled?: boolean;
+  /** Why the item is disabled, shown as its tooltip. */
+  reason?: string;
+  /** Destructive items go last, after a separator, in the destructive colour. */
+  destructive?: boolean;
+}
+
+/**
+ * The "…" menu at the end of a table row. A row shows at most one action
+ * of its own; everything else lives here, so rows stay quiet and scannable.
+ */
+export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }) {
+  const regular = items.filter((i) => !i.destructive);
+  const destructive = items.filter((i) => i.destructive);
+  const render = (item: RowMenuItem) => (
+    <DropdownMenuItem
+      key={item.label}
+      disabled={item.disabled}
+      title={item.disabled ? item.reason : undefined}
+      onSelect={item.onSelect}
+      className={cn(
+        "gap-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        item.destructive && "text-destructive focus:bg-destructive/10 focus:text-destructive",
+      )}
+    >
+      <item.icon />
+      {item.label}
+    </DropdownMenuItem>
+  );
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${label}`}>
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-44">
+        {regular.map(render)}
+        {regular.length > 0 && destructive.length > 0 && <DropdownMenuSeparator />}
+        {destructive.map(render)}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }

@@ -36,6 +36,7 @@ import {
   Pager,
   Panel,
   RowActions,
+  RowMenu,
   Section,
   SelectField,
   Status,
@@ -353,26 +354,13 @@ function Rules({ vaultId }: { vaultId: string }) {
                   </TableCell>
                   <TableCell>
                     <RowActions>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        title="Limit which MCP tools this rule's sessions may call"
-                        onClick={() => setEditingTools(r)}
-                      >
-                        <Wrench />
-                        <span className="hidden sm:inline">Tools</span>
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive"
-                        aria-label={`Delete ${r.name}`}
-                        onClick={() => confirm.ask(r)}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <RowMenu
+                        label={r.name}
+                        items={[
+                          { label: "MCP tools", icon: Wrench, onSelect: () => setEditingTools(r) },
+                          { label: "Delete rule", icon: Trash2, onSelect: () => confirm.ask(r), destructive: true },
+                        ]}
+                      />
                     </RowActions>
                   </TableCell>
                 </TableRow>
