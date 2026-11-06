@@ -1,75 +1,85 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState } from "react";
-import { ScrollText, Search } from "lucide-react";
-import { get, type AuditEvent, type Page } from "../api";
+import { useMemo, useState, type ReactNode } from "react";
+import { ScrollText } from "lucide-react";
+import { get, type ApiKey, type AuditEvent, type NodeInfo, type Page, type UserSummary } from "../api";
+import { ALL_EVENTS, AUDIT_CATEGORIES, actionPhrase, actorLabel, type ActorNames } from "../audit";
 import { useLoad } from "../hooks";
 import {
-  fromWidth, Empty, ErrorBanner, Loading, Mono, Pager, Panel, Status, Tags, When } from "../components/common";
+  fromWidth,
+  DialogActions,
+  Empty,
+  ErrorBanner,
+  Exact,
+  FormDialog,
+  Loading,
+  Mono,
+  Pager,
+  Panel,
+  rowOpener,
+  Status,
+  When,
+} from "../components/common";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
-import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-const QUICK_FILTERS = ["proxy.", "credential.", "rule.", "session.", "auth.", "user."];
+const OUTCOME_LABEL: Record<string, string> = { denied: "Denied", failure: "Failed" };
 
-export function Audit() {
-  const [page, setPage] = useState(1);
-  const [prefix, setPrefix] = useState("");
-  const [applied, setApplied] = useState("");
-  const events = useLoad(
-    () => get<Page<AuditEvent>>(`/audit?page=${page}&page_size=50&action_prefix=${encodeURIComponent(applied)}`),
-    [page, applied],
+/** Names for the users, API keys and proxies events refer to; admins only. */
+function useActorNames(me: UserSummary): ActorNames {
+  const isAdmin = me.role === "admin";
+  const none = () => Promise.resolve(undefined);
+  const users = useLoad(() => (isAdmin ? get<Page<UserSummary>>("/users?page_size=100") : none()), [isAdmin]);
+  const keys = useLoad(() => (isAdmin ? get<Page<ApiKey>>("/api-keys?page_size=100") : none()), [isAdmin]);
+  const nodes = useLoad(() => (isAdmin ? get<Page<NodeInfo>>("/nodes?page_size=100") : none()), [isAdmin]);
+  return useMemo(
+    () => ({
+      meId: me.id,
+      users: new Map(users.data?.items.map((u) => [u.id, u.username])),
+      apiKeys: new Map(keys.data?.items.map((k) => [k.prefix, k.name])),
+      nodes: new Map(nodes.data?.items.map((n) => [n.id, n.name])),
+    }),
+    [me.id, users.data, keys.data, nodes.data],
   );
-  const apply = (value: string) => {
-    setPrefix(value);
-    setPage(1);
-    setApplied(value);
-  };
+}
+
+/** One sentence per event; open a row for everything it recorded. */
+export function Audit({ me }: { me: UserSummary }) {
+  const [page, setPage] = useState(1);
+  const [category, setCategory] = useState(ALL_EVENTS);
+  const [viewing, setViewing] = useState<AuditEvent | null>(null);
+  const names = useActorNames(me);
+  const events = useLoad(
+    () => get<Page<AuditEvent>>(`/audit?page=${page}&page_size=50&action_prefix=${encodeURIComponent(category.prefix)}`),
+    [page, category],
+  );
+  const filtered = category.prefix !== "";
+
   return (
     <PageContainer>
-      <PageHeader
-        title="Audit log"
-      />
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-        <form
-          className="flex w-full gap-2 sm:w-auto"
-          onSubmit={(e) => {
-            e.preventDefault();
-            apply(prefix);
-          }}
-        >
-          <div className="relative w-full sm:w-80">
-            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-9"
-              placeholder="Action prefix, e.g. proxy."
-              value={prefix}
-              onChange={(e) => setPrefix(e.target.value)}
-              aria-label="Filter by action prefix"
-            />
-          </div>
-          <Button type="submit" variant="outline">
-            Filter
-          </Button>
-        </form>
-        <div className="flex flex-wrap gap-1">
-          {QUICK_FILTERS.map((f) => (
-            <Button
-              key={f}
-              type="button"
-              size="sm"
-              variant={applied === f ? "secondary" : "ghost"}
-              className="font-mono text-xs"
-              onClick={() => apply(applied === f ? "" : f)}
-            >
-              {f}
-            </Button>
+      <PageHeader title="Audit log" />
+      <Select
+        value={category.label}
+        onValueChange={(label) => {
+          setCategory(AUDIT_CATEGORIES.find((c) => c.label === label) ?? ALL_EVENTS);
+          setPage(1);
+        }}
+      >
+        <SelectTrigger className="w-full sm:w-56" aria-label="Show events">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {AUDIT_CATEGORIES.map((c) => (
+            <SelectItem key={c.label} value={c.label}>
+              {c.label}
+            </SelectItem>
           ))}
-        </div>
-      </div>
+        </SelectContent>
+      </Select>
       <ErrorBanner error={events.error} />
       <Panel>
         {events.loading && !events.data ? (
@@ -77,14 +87,12 @@ export function Audit() {
         ) : events.data?.items.length === 0 ? (
           <Empty
             icon={ScrollText}
-            title={applied ? "No matching events" : "No events yet"}
-            description={
-              applied ? `Nothing recorded with an action starting with "${applied}".` : "Events appear here as soon as anything changes."
-            }
+            title={filtered ? `No events in ${category.label}` : "No events yet"}
+            description="Events appear here as soon as anything changes."
             action={
-              applied ? (
-                <Button type="button" variant="outline" size="sm" onClick={() => apply("")}>
-                  Clear filter
+              filtered ? (
+                <Button type="button" variant="outline" size="sm" onClick={() => setCategory(ALL_EVENTS)}>
+                  Show all events
                 </Button>
               ) : undefined
             }
@@ -93,44 +101,29 @@ export function Audit() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className={fromWidth.md}>When</TableHead>
-                <TableHead className={fromWidth["2xl"]}>Actor</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead className={fromWidth.lg}>Outcome</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Target</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Detail</TableHead>
+                <TableHead>Event</TableHead>
+                <TableHead className={cn(fromWidth.md, "text-right")}>When</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.data?.items.map((e) => (
-                <TableRow key={e.id}>
-                  <TableCell className={cn(fromWidth.md, "text-muted-foreground")}>
-                    <When at={e.at} />
-                  </TableCell>
-                  <TableCell className={fromWidth["2xl"]}>
-                    <Mono>{e.actor}</Mono>
-                  </TableCell>
+                <TableRow key={e.id} {...rowOpener(() => setViewing(e))}>
                   <TableCell>
-                    <Mono>{e.action}</Mono>
-                    {/* Narrow tables fold who did it, and a failure, in here. */}
-                    <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground @2xl:hidden">
-                      <span className="@md:hidden">
-                        <When at={e.at} /> ·
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="[overflow-wrap:anywhere]">
+                        <span className="font-medium">{actorLabel(e, names)}</span> {actionPhrase(e)}
                       </span>
-                      by {e.actor}
                       {e.outcome !== "success" && (
-                        <span className="@lg:hidden">
-                          <Status tone="destructive">{e.outcome}</Status>
-                        </span>
+                        <Status tone="destructive">{OUTCOME_LABEL[e.outcome] ?? e.outcome}</Status>
                       )}
                     </div>
+                    {/* A narrow table folds the time in here. */}
+                    <div className="mt-1 text-xs text-muted-foreground @md:hidden">
+                      <When at={e.at} />
+                    </div>
                   </TableCell>
-                  <TableCell className={fromWidth.lg}>
-                    <Status tone={e.outcome === "success" ? "success" : "destructive"}>{e.outcome}</Status>
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>{e.target && <Mono>{e.target}</Mono>}</TableCell>
-                  <TableCell className={cn(fromWidth["4xl"], "max-w-md")}>
-                    <Tags values={Object.entries(e.detail).map(([k, v]) => `${k}=${v}`)} />
+                  <TableCell className={cn(fromWidth.md, "text-right text-muted-foreground")}>
+                    <When at={e.at} />
                   </TableCell>
                 </TableRow>
               ))}
@@ -139,6 +132,71 @@ export function Audit() {
         )}
         <Pager page={events.data} onPage={setPage} />
       </Panel>
+      <FormDialog
+        open={viewing !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewing(null);
+        }}
+        title="Event"
+      >
+        {viewing && <EventDetails event={viewing} names={names} onClose={() => setViewing(null)} />}
+      </FormDialog>
     </PageContainer>
+  );
+}
+
+/** Everything the event recorded, including the raw identifiers the list leaves out. */
+function EventDetails({ event, names, onClose }: { event: AuditEvent; names: ActorNames; onClose: () => void }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-sm">
+        <span className="font-medium">{actorLabel(event, names)}</span> {actionPhrase(event)}
+      </p>
+      <dl className="space-y-3">
+        <Fact label="When">
+          <Exact at={event.at} />
+        </Fact>
+        <Fact label="Outcome">
+          <Status tone={event.outcome === "success" ? "success" : "destructive"}>
+            {OUTCOME_LABEL[event.outcome] ?? "Succeeded"}
+          </Status>
+        </Fact>
+        <Fact label="Action">
+          <Mono>{event.action}</Mono>
+        </Fact>
+        <Fact label="Actor">
+          <Mono>{event.actor}</Mono>
+        </Fact>
+        {event.target && (
+          <Fact label="Target">
+            <Mono>{event.target}</Mono>
+          </Fact>
+        )}
+        {event.vault_id && (
+          <Fact label="Vault">
+            <Mono>{event.vault_id}</Mono>
+          </Fact>
+        )}
+        {Object.entries(event.detail).map(([k, v]) => (
+          <Fact key={k} label={k}>
+            {v ? <Mono>{v}</Mono> : <span className="text-muted-foreground">none</span>}
+          </Fact>
+        ))}
+      </dl>
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onClose}>
+          Close
+        </Button>
+      </DialogActions>
+    </div>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-all text-sm">{children}</dd>
+    </div>
   );
 }

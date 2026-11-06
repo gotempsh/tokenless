@@ -220,7 +220,7 @@ export function App() {
       {section === "people" && <People me={user} />}
       {section === "api-keys" && <ApiKeys />}
       {section === "proxies" && <Nodes />}
-      {section === "audit" && <Audit />}
+      {section === "audit" && <Audit me={user} />}
       {section === "settings" && <Settings />}
       <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />
     </Shell>
