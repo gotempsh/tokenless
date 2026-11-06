@@ -32,7 +32,7 @@ export function Settings() {
     <PageContainer>
       <PageHeader
         title="Settings"
-        description="Instance-wide proxy behaviour. Changes reach every data plane node at its next policy refresh."
+        description="Instance-wide proxy behaviour. Changes reach every proxy at its next policy refresh."
       />
       <ErrorBanner error={settings.error ?? action.error} />
       {!current ? (

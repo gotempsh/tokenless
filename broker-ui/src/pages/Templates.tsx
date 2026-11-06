@@ -1,95 +1,108 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent, type ReactNode } from "react";
-import { FileCode2, ShieldAlert, Upload } from "lucide-react";
-import { get, post, type StoredTemplate } from "../api";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { FileCode2, Search, ShieldAlert, Upload } from "lucide-react";
+import { get, post, type ServiceKind, type ServiceTemplate, type StoredTemplate, type TemplateCategory } from "../api";
+import { CATEGORIES, CATEGORY_LABEL, injectionSummary, KIND_LABEL, latestTemplates, matchesSearch } from "../catalog";
 import { useAction, useLoad } from "../hooks";
-import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Mono, Panel, Status, Tags } from "../components/common";
+import {
+  DialogActions,
+  Empty,
+  ErrorBanner,
+  Field,
+  FormDialog,
+  Mono,
+  Panel,
+  SelectField,
+  Status,
+  Tags,
+} from "../components/common";
+import { ServiceLogo } from "../components/ServiceLogo";
+import { Input } from "../components/ui/input";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 
-function injectionSummary(t: StoredTemplate["template"]): string {
-  switch (t.injection.method) {
-    case "bearer":
-      return `Authorization: Bearer <${t.injection.field}>`;
-    case "basic":
-      return `Authorization: Basic <${t.injection.username_field}:${t.injection.password_field}>`;
-    case "header":
-      return `${t.injection.name}: ${t.injection.prefix ?? ""}<${t.injection.field}>`;
-  }
-}
-
 function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[5.5rem_1fr] items-start gap-2 text-sm">
+    <div className="grid grid-cols-[6.5rem_1fr] items-start gap-2 text-sm">
       <dt className="pt-0.5 text-xs font-medium text-muted-foreground">{label}</dt>
       <dd className="min-w-0">{children}</dd>
     </div>
   );
 }
 
-function TemplateCard({ t, onReview }: { t: StoredTemplate; onReview?: () => void }) {
+function TemplateFacts({ t }: { t: ServiceTemplate }) {
   return (
-    <Panel className="flex flex-col gap-4 p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-semibold">{t.template.name}</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            <Mono>
-              {t.template.id}@{t.template.version}
-            </Mono>{" "}
-            · {t.source}
-          </p>
-        </div>
-        <Status tone={t.status === "approved" ? "success" : "warning"}>
-          {t.status === "approved" ? "approved" : "pending approval"}
-        </Status>
-      </div>
-      {t.template.description && <p className="text-sm text-muted-foreground">{t.template.description}</p>}
-      <dl className="space-y-2">
-        <Fact label="Hosts">
-          {t.template.hosts.length ? (
-            <Tags values={t.template.hosts} />
-          ) : (
-            <span className="text-muted-foreground">set per credential (admin)</span>
-          )}
+    <dl className="space-y-2">
+      <Fact label="Hosts">
+        {t.hosts.length ? <Tags values={t.hosts} /> : <span className="text-muted-foreground">set per credential (admin)</span>}
+      </Fact>
+      <Fact label="Paths">
+        <Tags values={t.allow.paths} />
+      </Fact>
+      <Fact label="Methods">
+        <Tags values={t.allow.methods} />
+      </Fact>
+      <Fact label="Injects">
+        <Mono className="break-all">{injectionSummary(t)}</Mono>
+      </Fact>
+      {(t.default_headers ?? []).length > 0 && (
+        <Fact label="Default headers">
+          <div className="space-y-1">
+            {(t.default_headers ?? []).map((h) => (
+              <Mono key={h.name} className="block break-all">
+                {h.name}: {h.value}
+              </Mono>
+            ))}
+          </div>
         </Fact>
-        <Fact label="Paths">
-          <Tags values={t.template.allow.paths} />
-        </Fact>
-        <Fact label="Methods">
-          <Tags values={t.template.allow.methods} />
-        </Fact>
-        <Fact label="Injects">
-          <Mono className="break-all">{injectionSummary(t.template)}</Mono>
-        </Fact>
-        {t.template.host_override.allowed && (
-          <Fact label="Override">
-            Admins may set a custom host{t.template.host_override.required ? " (required)" : ""}
-          </Fact>
-        )}
-      </dl>
-      {onReview && (
-        <div className="mt-auto">
-          <Button type="button" variant="outline" size="sm" onClick={onReview}>
-            Review and approve
-          </Button>
-        </div>
       )}
-    </Panel>
+      {t.suggested_variable && (
+        <Fact label="Variable">
+          <Mono>{`{{${t.suggested_variable}}}`}</Mono>
+        </Fact>
+      )}
+      {t.validation && (
+        <Fact label="Test request">
+          <Mono>
+            {t.validation.method} {t.validation.path}
+          </Mono>
+        </Fact>
+      )}
+      {t.host_override.allowed && (
+        <Fact label="Override">Admins may set a custom host{t.host_override.required ? " (required)" : ""}</Fact>
+      )}
+    </dl>
   );
 }
+
+type KindFilter = "all" | ServiceKind;
 
 export function Templates({ isAdmin }: { isAdmin: boolean }) {
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [importing, setImporting] = useState(false);
   const [yaml, setYaml] = useState("");
   const [reviewing, setReviewing] = useState<StoredTemplate | null>(null);
+  const [viewing, setViewing] = useState<StoredTemplate | null>(null);
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState<KindFilter>("all");
+  const [category, setCategory] = useState<"all" | TemplateCategory>("all");
   const importAction = useAction();
+  const rows = useMemo(
+    () =>
+      latestTemplates(templates.data ?? []).filter(
+        (t) =>
+          (kind === "all" || t.template.kind === kind) &&
+          (category === "all" || t.template.category === category) &&
+          matchesSearch(t.template, query),
+      ),
+    [templates.data, kind, category, query],
+  )
   const approveAction = useAction();
 
   const importTemplate = async (e: FormEvent) => {
@@ -117,7 +130,7 @@ export function Templates({ isAdmin }: { isAdmin: boolean }) {
     <PageContainer>
       <PageHeader
         title="Templates"
-        description="Templates describe a service: which hosts, paths and methods a credential may ever be used for, and how it is injected. They set the maximum scope; credentials and rules can only narrow it."
+        description="The service catalogue. A template knows a service's hosts, paths and methods and how its credential is sent; it sets the maximum scope, which services and rules can only narrow."
         actions={
           <Button
             type="button"
@@ -132,27 +145,144 @@ export function Templates({ isAdmin }: { isAdmin: boolean }) {
         }
       />
       <ErrorBanner error={templates.error} />
-      {templates.loading && !templates.data ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {Array.from({ length: 3 }, (_, i) => (
-            <Skeleton key={i} className="h-64 w-full rounded-lg" />
-          ))}
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search services or hosts…"
+            className="pl-9"
+            aria-label="Search templates"
+          />
         </div>
-      ) : templates.data?.length === 0 ? (
-        <Panel>
-          <Empty icon={FileCode2} title="No templates" description="Import a template YAML to describe a service." />
-        </Panel>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {templates.data?.map((t) => (
-            <TemplateCard
-              key={`${t.template.id}@${t.template.version}`}
-              t={t}
-              onReview={t.status !== "approved" && isAdmin ? () => setReviewing(t) : undefined}
-            />
-          ))}
+        <div className="w-full sm:w-[160px]">
+          <SelectField
+            value={kind}
+            onChange={(v) => setKind(v as KindFilter)}
+            options={[
+              { value: "all", label: "All types" },
+              { value: "http", label: "HTTP APIs" },
+              { value: "mcp", label: "MCP servers" },
+            ]}
+          />
         </div>
-      )}
+        <div className="w-full sm:w-[200px]">
+          <SelectField
+            value={category}
+            onChange={(v) => setCategory(v as "all" | TemplateCategory)}
+            options={[{ value: "all", label: "All categories" }, ...CATEGORIES]}
+          />
+        </div>
+      </div>
+      <Panel>
+        {templates.loading && !templates.data ? (
+          <div className="space-y-3 p-4">
+            {Array.from({ length: 6 }, (_, i) => (
+              <Skeleton key={i} className="h-10 w-full" />
+            ))}
+          </div>
+        ) : rows.length === 0 ? (
+          <Empty
+            icon={FileCode2}
+            title={templates.data?.length ? "No template matches" : "No templates"}
+            description={
+              templates.data?.length
+                ? "Try another search or filter, or use a Custom HTTP API template for any service."
+                : "Import a template YAML to describe a service."
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Service</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead className="hidden md:table-cell">Category</TableHead>
+                <TableHead className="hidden lg:table-cell">Hosts</TableHead>
+                <TableHead className="hidden xl:table-cell">Injects</TableHead>
+                <TableHead>Status</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((t) => (
+                <TableRow
+                  key={`${t.template.id}@${t.template.version}`}
+                  className="cursor-pointer"
+                  onClick={() => (t.status !== "approved" && isAdmin ? setReviewing(t) : setViewing(t))}
+                >
+                  <TableCell>
+                    <div className="flex min-w-56 items-center gap-3">
+                      <ServiceLogo template={t.template} size="sm" />
+                      <div className="min-w-0">
+                        <div className="truncate font-medium">{t.template.name}</div>
+                        <div className="line-clamp-1 text-xs text-muted-foreground">{t.template.description}</div>
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-muted-foreground">{KIND_LABEL[t.template.kind]}</TableCell>
+                  <TableCell className="hidden whitespace-nowrap text-muted-foreground md:table-cell">
+                    {CATEGORY_LABEL[t.template.category]}
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    {t.template.hosts.length ? (
+                      <Tags values={t.template.hosts.slice(0, 2).concat(t.template.hosts.length > 2 ? [`+${t.template.hosts.length - 2}`] : [])} />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">per credential</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="hidden max-w-72 xl:table-cell">
+                    <Mono className="block truncate">{injectionSummary(t.template)}</Mono>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2 whitespace-nowrap">
+                      <Status tone={t.status === "approved" ? "success" : "warning"}>
+                        {t.status === "approved" ? "approved" : "pending approval"}
+                      </Status>
+                      <span className="text-xs text-muted-foreground">v{t.template.version}</span>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </Panel>
+      <FormDialog
+        open={viewing !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewing(null);
+        }}
+        wide
+        title={viewing?.template.name ?? "Template"}
+      >
+        {viewing && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <ServiceLogo template={viewing.template} size="lg" />
+              <div className="min-w-0 space-y-1">
+                <p className="text-sm text-muted-foreground">{viewing.template.description}</p>
+                <p className="text-xs text-muted-foreground">
+                  <Mono>
+                    {viewing.template.id}@{viewing.template.version}
+                  </Mono>{" "}
+                  · {KIND_LABEL[viewing.template.kind]} · {CATEGORY_LABEL[viewing.template.category]} · {viewing.source}
+                </p>
+              </div>
+            </div>
+            <TemplateFacts t={viewing.template} />
+            <details className="rounded-md border">
+              <summary className="cursor-pointer px-4 py-2 text-sm font-medium">Template YAML</summary>
+              <pre className="max-h-80 overflow-auto border-t bg-muted/40 p-4 font-mono text-xs">{viewing.yaml}</pre>
+            </details>
+            <DialogActions>
+              <Button type="button" variant="outline" onClick={() => setViewing(null)}>
+                Close
+              </Button>
+            </DialogActions>
+          </div>
+        )}
+      </FormDialog>
       <FormDialog
         open={importing}
         onOpenChange={(o) => {

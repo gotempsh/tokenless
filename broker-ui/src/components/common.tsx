@@ -176,6 +176,29 @@ export function When({ at }: { at: string | null | undefined }) {
   );
 }
 
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 365 * 24 * 3600],
+  ["month", 30 * 24 * 3600],
+  ["week", 7 * 24 * 3600],
+  ["day", 24 * 3600],
+  ["hour", 3600],
+  ["minute", 60],
+  ["second", 1],
+];
+
+/** "in 5 days" / "3 hours ago", with the exact time on hover. */
+export function Relative({ at }: { at: string | null | undefined }) {
+  if (!at) return <span className="text-muted-foreground">never</span>;
+  const secs = (new Date(at).getTime() - Date.now()) / 1000;
+  const [unit, size] = UNITS.find(([, n]) => Math.abs(secs) >= n) ?? ["second", 1];
+  const text = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(secs / size), unit);
+  return (
+    <time dateTime={at} title={new Date(at).toLocaleString()} className="whitespace-nowrap">
+      {text}
+    </time>
+  );
+}
+
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <code className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-xs", className)}>{children}</code>;
 }

@@ -541,7 +541,7 @@ impl CredentialStore for SqliteStore {
         if users > 0 {
             return Err(StoreError::Conflict {
                 entity: "variable",
-                detail: format!("'{key}' is referenced by {users} credential(s)"),
+                detail: format!("variable '{key}' is referenced by {users} credential(s)"),
             });
         }
         sqlx::query("DELETE FROM variables WHERE id = ?")

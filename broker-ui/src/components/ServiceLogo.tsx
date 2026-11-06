@@ -1,0 +1,65 @@
+// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// Bundled service logos (see assets/logos/NOTICE.md for sources and
+// licences). A template names a logo key; `<key>.dark.svg`, when present, is
+// shown on dark backgrounds instead.
+
+import { Blocks, Bot, type LucideIcon } from "lucide-react";
+import type { ServiceTemplate } from "../api";
+import { cn } from "../lib/utils";
+
+const files = import.meta.glob<string>("../assets/logos/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+});
+
+const LOGOS = new Map<string, { light?: string; dark?: string }>();
+for (const [path, url] of Object.entries(files)) {
+  const file = path.slice(path.lastIndexOf("/") + 1, -".svg".length);
+  const dark = file.endsWith(".dark");
+  const key = dark ? file.slice(0, -".dark".length) : file;
+  const entry = LOGOS.get(key) ?? {};
+  if (dark) entry.dark = url;
+  else entry.light = url;
+  LOGOS.set(key, entry);
+}
+
+type LogoSource = Pick<ServiceTemplate, "id" | "kind"> & { logo?: string | null };
+
+const SIZES = {
+  sm: { tile: "size-8 rounded-md", img: "size-4.5", icon: "size-4" },
+  md: { tile: "size-10 rounded-lg", img: "size-6", icon: "size-5" },
+  lg: { tile: "size-12 rounded-lg", img: "size-7", icon: "size-6" },
+} as const;
+
+/** The service's logo on a neutral tile, or a generic icon when there is none. */
+export function ServiceLogo({
+  template,
+  size = "md",
+  className,
+}: {
+  template: LogoSource | undefined;
+  size?: keyof typeof SIZES;
+  className?: string;
+}) {
+  const s = SIZES[size];
+  const logo = template ? LOGOS.get(template.logo ?? template.id) : undefined;
+  const Fallback: LucideIcon = template?.kind === "mcp" ? Bot : Blocks;
+  return (
+    <span
+      className={cn("flex shrink-0 items-center justify-center border bg-background", s.tile, className)}
+      aria-hidden="true"
+    >
+      {logo?.light ? (
+        <>
+          <img src={logo.light} alt="" className={cn("object-contain", s.img, logo.dark && "dark:hidden")} />
+          {logo.dark && <img src={logo.dark} alt="" className={cn("hidden object-contain dark:block", s.img)} />}
+        </>
+      ) : (
+        <Fallback className={cn("text-muted-foreground", s.icon)} />
+      )}
+    </span>
+  );
+}

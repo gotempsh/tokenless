@@ -274,10 +274,7 @@ impl VariableService {
             .await
             .map_err(|e| match e {
                 crate::StoreError::Conflict { detail, .. } => ControlError::Conflict {
-                    message: format!(
-                        "variable {} is still used: {detail}; remove the references first",
-                        variable.key
-                    ),
+                    message: format!("{detail}; remove the references before deleting it"),
                 },
                 other => other.into(),
             })?;

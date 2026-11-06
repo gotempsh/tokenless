@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
+  Braces,
   ChevronRight,
   FileCode2,
   KeySquare,
@@ -15,6 +16,7 @@ import {
   Server,
   Settings as SettingsIcon,
   Sun,
+  Timer,
   Users,
   Vault as VaultIcon,
   type LucideIcon,
@@ -31,9 +33,11 @@ import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Au
 import { ApiKeys } from "./pages/ApiKeys";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
+import { Sessions } from "./pages/Sessions";
 import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
 import { Templates } from "./pages/Templates";
+import { Variables } from "./pages/Variables";
 import { VaultDetail } from "./pages/VaultDetail";
 import { Vaults } from "./pages/Vaults";
 
@@ -55,6 +59,8 @@ const NAV: { group: string; items: NavItem[] }[] = [
     group: "Broker",
     items: [
       { key: "vaults", label: "Vaults", icon: VaultIcon },
+      { key: "sessions", label: "Sessions", icon: Timer },
+      { key: "variables", label: "Variables", icon: Braces },
       { key: "templates", label: "Templates", icon: FileCode2 },
     ],
   },
@@ -68,7 +74,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "Instance",
     items: [
-      { key: "nodes", label: "Nodes", icon: Server },
+      { key: "proxies", label: "Proxies", icon: Server },
       { key: "audit", label: "Audit log", icon: ScrollText },
       { key: "settings", label: "Settings", icon: SettingsIcon },
     ],
@@ -168,7 +174,9 @@ export function App() {
     );
 
   const { user } = boot.session;
-  const [section = "vaults", id, tab] = route;
+  const [rawSection = "vaults", id, tab] = route;
+  // "nodes" was the old name of the proxies page; keep old links working.
+  const section = rawSection === "nodes" ? "proxies" : rawSection;
   const isAdmin = user.role === "admin";
 
   return (
@@ -177,10 +185,12 @@ export function App() {
       {section === "vaults" && id && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
+      {section === "sessions" && <Sessions />}
+      {section === "variables" && <Variables isAdmin={isAdmin} />}
       {section === "templates" && <Templates isAdmin={isAdmin} />}
       {section === "people" && <People me={user} />}
       {section === "api-keys" && <ApiKeys />}
-      {section === "nodes" && <Nodes />}
+      {section === "proxies" && <Nodes />}
       {section === "audit" && <Audit />}
       {section === "settings" && <Settings />}
       <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />

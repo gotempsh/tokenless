@@ -81,11 +81,37 @@ export type Injection =
   | { method: "basic"; username_field: string; password_field: string }
   | { method: "header"; name: string; field: string; prefix?: string };
 
+export type TemplateCategory =
+  | "llm_providers"
+  | "developer_tools"
+  | "infrastructure"
+  | "communication"
+  | "monitoring"
+  | "productivity"
+  | "payments"
+  | "commerce"
+  | "search"
+  | "custom";
+
+export type ServiceKind = "http" | "mcp";
+
+export interface CustomHeader {
+  name: string;
+  value: string;
+}
+
 export interface ServiceTemplate {
   id: string;
   version: number;
   name: string;
   description: string;
+  category: TemplateCategory;
+  kind: ServiceKind;
+  logo?: string | null;
+  popular?: boolean;
+  aliases?: string[];
+  suggested_variable?: string | null;
+  default_headers?: CustomHeader[];
   hosts: string[];
   allow: { paths: string[]; methods: string[] };
   credential_fields: CredentialField[];
@@ -113,9 +139,29 @@ export interface CredentialMeta {
   template_version: number;
   host_override: string[];
   field_names: string[];
+  custom_headers: CustomHeader[];
+  variable_refs: string[];
   created_by: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface VariableUse {
+  credential_id: string;
+  credential_name: string;
+  vault_id: string;
+  vault_name: string;
+}
+
+/** A write-only secret. The value is never returned. */
+export interface Variable {
+  id: string;
+  key: string;
+  created_by: string;
+  created_at: string;
+  updated_by: string;
+  updated_at: string;
+  used_by: VariableUse[];
 }
 
 export interface Rule {

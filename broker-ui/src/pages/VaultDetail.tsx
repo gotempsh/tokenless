@@ -1,24 +1,22 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useMemo, useState, type FormEvent } from "react";
-import { ChevronLeft, FlaskConical, KeyRound, ListChecks, Plus, RefreshCw, ShieldAlert, Timer, Trash2 } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { ChevronLeft, ListChecks, Plus, Timer, Trash2 } from "lucide-react";
 import {
   del,
   get,
   patch,
   post,
-  put,
   type CredentialMeta,
-  type CredentialValidation,
   type Page,
   type ProxySession,
   type Rule,
-  type StoredTemplate,
   type UserSummary,
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
+import { Services } from "./Services";
 import {
   CheckField,
   ConfirmDialog,
@@ -41,7 +39,6 @@ import {
   useConfirm,
   When,
 } from "../components/common";
-import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -53,7 +50,7 @@ import { Textarea } from "../components/ui/textarea";
 
 type Tab = "credentials" | "rules" | "sessions";
 const TABS: { value: Tab; label: string }[] = [
-  { value: "credentials", label: "Credentials" },
+  { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
   { value: "sessions", label: "Sessions" },
 ];
@@ -90,418 +87,10 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
           ))}
         </TabsList>
       </Tabs>
-      {tab === "credentials" && <Credentials vaultId={vaultId} user={user} />}
+      {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
       {tab === "rules" && <Rules vaultId={vaultId} />}
       {tab === "sessions" && <Sessions vaultId={vaultId} />}
     </PageContainer>
-  );
-}
-
-// ----- credentials -----------------------------------------------------------
-
-function Credentials({ vaultId, user }: { vaultId: string; user: UserSummary }) {
-  const [page, setPage] = useState(1);
-  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page=${page}`), [vaultId, page]);
-  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
-  const approved = useMemo(() => (templates.data ?? []).filter((t) => t.status === "approved"), [templates.data]);
-  const [adding, setAdding] = useState(false);
-  const [rotating, setRotating] = useState<CredentialMeta | null>(null);
-  const [results, setResults] = useState<Record<string, CredentialValidation>>({});
-  const confirm = useConfirm<CredentialMeta>();
-  const action = useAction();
-  const hasValidation = (c: CredentialMeta) =>
-    approved.some((t) => t.template.id === c.template_id && t.template.version === c.template_version && t.template.validation);
-
-  const test = async (c: CredentialMeta) => {
-    const r = await action.run(() => post<CredentialValidation>(`/credentials/${c.id}/validate`));
-    if (r) setResults({ ...results, [c.id]: r });
-  };
-
-  const remove = async (c: CredentialMeta) => {
-    await action.run(() => del(`/credentials/${c.id}`));
-    confirm.close();
-    creds.reload();
-  };
-
-  const addButton = (
-    <Button type="button" onClick={() => setAdding(true)}>
-      <Plus />
-      Add credential
-    </Button>
-  );
-
-  const failures = Object.values(results).filter((r) => !r.ok);
-
-  return (
-    <Section
-      title="Credentials"
-      description="Secrets are write-only: once saved, nobody (admins included) can read them back. They are only ever delivered, encrypted, to enrolled data plane nodes."
-      actions={addButton}
-    >
-      <ErrorBanner error={creds.error ?? action.error} />
-      {failures.map((r) => (
-        <Alert key={r.credential_id} variant="warning">
-          <FlaskConical className="size-4" />
-          <AlertTitle>
-            Test of {r.method} {r.path} on {r.host} failed
-          </AlertTitle>
-          <AlertDescription>
-            {r.detail}
-            {r.detail.includes("Settings") && (
-              <>
-                {" "}
-                <a href="#/settings" className="font-medium underline underline-offset-4">
-                  Open Settings
-                </a>
-              </>
-            )}
-          </AlertDescription>
-        </Alert>
-      ))}
-      <Panel>
-        {creds.loading && !creds.data ? (
-          <Loading />
-        ) : creds.data?.items.length === 0 ? (
-          <Empty
-            icon={KeyRound}
-            title="No credentials in this vault"
-            description="Add a credential from a service template, for example a GitHub token or a Stripe secret key."
-            action={addButton}
-          />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Template</TableHead>
-                <TableHead>Fields</TableHead>
-                <TableHead>Host override</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {creds.data?.items.map((c) => {
-                const result = results[c.id];
-                return (
-                  <TableRow key={c.id}>
-                    <TableCell className="font-medium">{c.name}</TableCell>
-                    <TableCell>
-                      <Mono>
-                        {c.template_id}@{c.template_version}
-                      </Mono>
-                    </TableCell>
-                    <TableCell>
-                      <Tags values={c.field_names.map((f) => `${f}: ••••••`)} />
-                    </TableCell>
-                    <TableCell>
-                      {c.host_override.length ? (
-                        <Tags values={c.host_override} />
-                      ) : (
-                        <span className="text-muted-foreground">template hosts</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      <When at={c.updated_at} />
-                    </TableCell>
-                    <TableCell>
-                      <RowActions>
-                        {result && (
-                          <span title={result.detail}>
-                            <Status tone={result.ok ? "success" : "destructive"}>
-                              {result.ok ? "works" : `failed${result.status ? ` (${result.status})` : ""}`}
-                            </Status>
-                          </span>
-                        )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={!hasValidation(c) || action.busy}
-                          title={
-                            hasValidation(c)
-                              ? "Send the template's validation request with this credential"
-                              : "This template declares no validation request"
-                          }
-                          onClick={() => void test(c)}
-                        >
-                          <FlaskConical />
-                          <span className="hidden sm:inline">Test</span>
-                        </Button>
-                        <Button type="button" variant="outline" size="sm" onClick={() => setRotating(c)}>
-                          <RefreshCw />
-                          <span className="hidden sm:inline">Replace secret</span>
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          aria-label={`Delete ${c.name}`}
-                          onClick={() => confirm.ask(c)}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </RowActions>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        )}
-        <Pager page={creds.data} onPage={setPage} />
-      </Panel>
-      <FormDialog
-        open={adding}
-        onOpenChange={setAdding}
-        wide
-        title="Add a credential"
-        description="Choose the service it belongs to. The template sets the hosts, paths and methods it may ever be used for."
-      >
-        <CredentialForm
-          templates={approved}
-          templatesLoading={templates.loading && !templates.data}
-          isAdmin={user.role === "admin"}
-          onSubmit={(body) => post<CredentialMeta>(`/vaults/${vaultId}/credentials`, body)}
-          onCancel={() => setAdding(false)}
-          onSaved={() => {
-            setAdding(false);
-            creds.reload();
-          }}
-        />
-      </FormDialog>
-      <FormDialog
-        open={rotating !== null}
-        onOpenChange={(o) => {
-          if (!o) setRotating(null);
-        }}
-        title={rotating ? `Replace secret for "${rotating.name}"` : "Replace secret"}
-        description="The new value takes effect on the data plane at its next policy refresh. The old value cannot be recovered."
-      >
-        {rotating && (
-          <RotateForm
-            credential={rotating}
-            template={approved.find((t) => t.template.id === rotating.template_id)}
-            onCancel={() => setRotating(null)}
-            onDone={() => {
-              setRotating(null);
-              creds.reload();
-            }}
-          />
-        )}
-      </FormDialog>
-      <ConfirmDialog
-        open={confirm.open}
-        onOpenChange={confirm.onOpenChange}
-        title={`Delete credential "${confirm.target?.name ?? ""}"?`}
-        description="The secret is destroyed. Rules that use this credential must be deleted first."
-        confirmLabel="Delete credential"
-        busy={action.busy}
-        onConfirm={() => {
-          if (confirm.target) void remove(confirm.target);
-        }}
-      />
-    </Section>
-  );
-}
-
-interface CredentialBody {
-  name: string;
-  template_id: string;
-  template_version: number;
-  host_override: string[];
-  fields: Record<string, string>;
-}
-
-function CredentialForm({
-  templates,
-  templatesLoading,
-  isAdmin,
-  onSubmit,
-  onCancel,
-  onSaved,
-}: {
-  templates: StoredTemplate[];
-  templatesLoading: boolean;
-  isAdmin: boolean;
-  onSubmit: (body: CredentialBody) => Promise<CredentialMeta>;
-  onCancel: () => void;
-  onSaved: () => void;
-}) {
-  const [templateKey, setTemplateKey] = useState("");
-  const [name, setName] = useState("");
-  const [hostOverride, setHostOverride] = useState("");
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const action = useAction();
-  const selected = templates.find((t) => `${t.template.id}@${t.template.version}` === templateKey)?.template;
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!selected) return;
-    const saved = await action.run(() =>
-      onSubmit({
-        name,
-        template_id: selected.id,
-        template_version: selected.version,
-        host_override: lines(hostOverride),
-        fields,
-      }),
-    );
-    // Clear secret values from memory as soon as they are saved.
-    setFields({});
-    if (saved) {
-      setName("");
-      setHostOverride("");
-      onSaved();
-    }
-  };
-
-  return (
-    <form className="space-y-4" onSubmit={submit} autoComplete="off">
-      <ErrorBanner error={action.error} />
-      <Field
-        label="Service template"
-        htmlFor="cred-template"
-        hint={
-          templates.length === 0 && !templatesLoading ? (
-            <>
-              No approved templates. <a href="#/templates" className="underline">Review templates</a>.
-            </>
-          ) : undefined
-        }
-      >
-        <SelectField
-          id="cred-template"
-          value={templateKey}
-          onChange={setTemplateKey}
-          placeholder={templatesLoading ? "Loading templates…" : "Choose a service…"}
-          options={templates.map((t) => ({
-            value: `${t.template.id}@${t.template.version}`,
-            label: `${t.template.name} (v${t.template.version})`,
-          }))}
-        />
-      </Field>
-      {selected && (
-        <>
-          <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
-            <p className="text-muted-foreground">{selected.description}</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Hosts</span>
-              {selected.hosts.length ? <Tags values={selected.hosts} /> : <span className="text-xs">chosen below</span>}
-            </div>
-          </div>
-          <Field label="Name" htmlFor="cred-name">
-            <Input id="cred-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ci-bot token" required />
-          </Field>
-          {selected.credential_fields.map((f) => (
-            <Field
-              key={f.name}
-              htmlFor={`cred-field-${f.name}`}
-              label={
-                <>
-                  {f.label}
-                  {!f.required && <span className="font-normal text-muted-foreground"> (optional)</span>}
-                </>
-              }
-              hint={f.description || undefined}
-            >
-              <Input
-                id={`cred-field-${f.name}`}
-                type="password"
-                autoComplete="new-password"
-                spellCheck={false}
-                className="font-mono"
-                value={fields[f.name] ?? ""}
-                onChange={(e) => setFields({ ...fields, [f.name]: e.target.value })}
-                required={f.required}
-              />
-            </Field>
-          ))}
-          {selected.host_override.allowed && (
-            <div className="space-y-3 rounded-md border border-dashed p-4">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <ShieldAlert className="size-4 text-warning-strong" />
-                Admin only: host override {selected.host_override.required ? "(required)" : "(optional)"}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Replaces the template's hosts (for example a self-hosted base URL). This widens the template's scope,
-                so it needs an admin and is recorded in the audit log.
-              </p>
-              <Field label={selected.host_override.label ?? "Base URL"} htmlFor="cred-host">
-                <Input
-                  id="cred-host"
-                  placeholder="https://api.internal.example:8443"
-                  value={hostOverride}
-                  onChange={(e) => setHostOverride(e.target.value)}
-                  disabled={!isAdmin}
-                  required={selected.host_override.required && isAdmin}
-                />
-              </Field>
-              {!isAdmin && <p className="text-xs text-muted-foreground">Ask an admin to create this credential.</p>}
-            </div>
-          )}
-        </>
-      )}
-      <DialogActions>
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={!selected || action.busy || (selected.host_override.required && !isAdmin)}>
-          Save credential
-        </Button>
-      </DialogActions>
-    </form>
-  );
-}
-
-function RotateForm({
-  credential,
-  template,
-  onCancel,
-  onDone,
-}: {
-  credential: CredentialMeta;
-  template: StoredTemplate | undefined;
-  onCancel: () => void;
-  onDone: () => void;
-}) {
-  const [fields, setFields] = useState<Record<string, string>>({});
-  const action = useAction();
-  const names =
-    template?.template.credential_fields ??
-    credential.field_names.map((n) => ({ name: n, label: n, required: true, description: "" }));
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    const ok = await action.run(() => put<CredentialMeta>(`/credentials/${credential.id}/secret`, { fields }));
-    setFields({});
-    if (ok) onDone();
-  };
-  return (
-    <form className="space-y-4" onSubmit={submit} autoComplete="off">
-      <ErrorBanner error={action.error} />
-      {names.map((f) => (
-        <Field key={f.name} label={`New ${f.label}`} htmlFor={`rotate-${f.name}`}>
-          <Input
-            id={`rotate-${f.name}`}
-            type="password"
-            autoComplete="new-password"
-            className="font-mono"
-            value={fields[f.name] ?? ""}
-            onChange={(e) => setFields({ ...fields, [f.name]: e.target.value })}
-            required={f.required}
-          />
-        </Field>
-      ))}
-      <DialogActions>
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={action.busy}>
-          Replace secret
-        </Button>
-      </DialogActions>
-    </form>
   );
 }
 
