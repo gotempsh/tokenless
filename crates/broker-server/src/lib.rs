@@ -5,6 +5,7 @@
 //! node API, SQLite storage and the master key file.
 
 pub mod api;
+pub mod api_tls;
 pub mod error;
 pub mod node_api;
 pub mod probe;
@@ -40,6 +41,8 @@ pub struct ServerConfig {
     pub node_api_names: Vec<String>,
     /// Built UI bundle (`broker-ui/dist`) to serve at `/`.
     pub ui_dir: Option<PathBuf>,
+    /// Serve the management API over TLS with this certificate and key.
+    pub api_tls: Option<api_tls::ApiTlsFiles>,
     /// Trust the public web PKI for credential validation requests.
     pub validation_public_roots: bool,
     /// Extra CAs trusted for validation requests (self-hosted services).
@@ -56,6 +59,7 @@ impl ServerConfig {
             node_listen: SocketAddr::from(([127, 0, 0, 1], 8443)),
             node_api_names: vec!["localhost".into(), "127.0.0.1".into()],
             ui_dir: None,
+            api_tls: None,
             validation_public_roots: true,
             validation_extra_roots: Vec::new(),
             control: ControlConfig::default(),
@@ -65,6 +69,8 @@ impl ServerConfig {
 
 pub struct RunningServer {
     pub api_addr: SocketAddr,
+    /// Whether the management API is served over TLS.
+    pub api_tls: bool,
     pub node_addr: SocketAddr,
     /// Printed once by the binary; `None` once an admin exists.
     pub setup_token: Option<String>,
@@ -208,11 +214,27 @@ impl Server {
 
         let app = api::router(state.clone(), config.ui_dir.clone());
         let mut tasks = Vec::new();
-        tasks.push(tokio::spawn(async move {
-            if let Err(e) = axum::serve(api_listener, app).await {
-                tracing::error!(error = %e, "API server stopped");
+        match &config.api_tls {
+            Some(files) => {
+                let reloader = api_tls::TlsReloader::new(files.clone())?;
+                tasks.push(tokio::spawn(api_tls::serve(
+                    api_listener,
+                    reloader.config(),
+                    app,
+                )));
+                tasks.push(tokio::spawn(reloader.watch()));
             }
-        }));
+            None => {
+                if !api_addr.ip().is_loopback() {
+                    warn!(%api_addr, "management API is plain HTTP on a non-loopback address; pass --api-tls-cert/--api-tls-key or put a TLS proxy in front (the session cookie is Secure, so browsers will not sign in over plain HTTP)");
+                }
+                tasks.push(tokio::spawn(async move {
+                    if let Err(e) = axum::serve(api_listener, app).await {
+                        tracing::error!(error = %e, "API server stopped");
+                    }
+                }));
+            }
+        }
         tasks.push(tokio::spawn(node_api::serve(
             node_listener,
             tls.clone(),
@@ -234,9 +256,11 @@ impl Server {
                 }
             }
         }));
-        info!(%api_addr, %node_addr, "credential broker server started");
+        let api_tls = config.api_tls.is_some();
+        info!(%api_addr, api_tls, %node_addr, "credential broker server started");
         Ok(RunningServer {
             api_addr,
+            api_tls,
             node_addr,
             setup_token,
             control,

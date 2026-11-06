@@ -45,10 +45,17 @@ struct ServeArgs {
     /// Database URL (default: sqlite://<data-dir>/broker.db).
     #[arg(long)]
     database_url: Option<String>,
-    /// Management API / UI listener. Put a TLS-terminating proxy in front of
-    /// it for anything other than loopback.
+    /// Management API / UI listener. Off loopback, serve it over TLS with
+    /// --api-tls-cert/--api-tls-key or put a TLS-terminating proxy in front.
     #[arg(long, default_value = "127.0.0.1:8080")]
     api_listen: SocketAddr,
+    /// PEM certificate chain for serving the management API over HTTPS.
+    /// Reloaded within a minute when the file changes.
+    #[arg(long, requires = "api_tls_key")]
+    api_tls_cert: Option<PathBuf>,
+    /// PEM private key matching --api-tls-cert.
+    #[arg(long, requires = "api_tls_cert")]
+    api_tls_key: Option<PathBuf>,
     /// Node API listener (TLS, mTLS for enrolled nodes).
     #[arg(long, default_value = "127.0.0.1:8443")]
     node_listen: SocketAddr,
@@ -155,6 +162,9 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.node_listen = args.node_listen;
     config.node_api_names = args.node_api_names;
     config.ui_dir = args.ui_dir;
+    if let (Some(cert), Some(key)) = (args.api_tls_cert, args.api_tls_key) {
+        config.api_tls = Some(broker_server::api_tls::ApiTlsFiles { cert, key });
+    }
     config.control.lease_secs = args.lease_secs.max(3);
     config.validation_extra_roots = read_cas(&args.validation_ca)?;
     let running = Server::start(config).await?;
@@ -165,7 +175,8 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  First-run setup token (single use):");
         eprintln!("    {token}");
         eprintln!(
-            "  Open http://{}/ and create the first admin.",
+            "  Open {}://{}/ and create the first admin.",
+            if running.api_tls { "https" } else { "http" },
             running.api_addr
         );
         eprintln!();
