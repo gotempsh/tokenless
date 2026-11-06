@@ -8,7 +8,6 @@ import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   Ban,
   Boxes,
-  ChevronLeft,
   ExternalLink,
   ListPlus,
   Pencil,
@@ -72,6 +71,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
+import { useBreadcrumbs } from "../breadcrumbs";
 import { CommandSnippet } from "./Bundles";
 import { SessionDetail, sessionLabel, sessionStatus } from "./Sessions";
 
@@ -151,6 +151,11 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
   };
 
   const b = bundle.data;
+  useBreadcrumbs([
+    { label: "Access bundles", href: "#/bundles" },
+    { label: b?.name ?? (bundle.error ? "Access bundle" : null), href: `#/bundles/${bundleId}` },
+    { label: TABS.find((t) => t.value === tab)?.label ?? null },
+  ]);
   const rulesInVault = services.data?.rules;
   const members = useMemo(
     () => (b && rulesInVault ? b.rule_ids.map((id) => rulesInVault.find((r) => r.id === id)).filter((r) => r !== undefined) : []),
@@ -163,57 +168,51 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
 
   return (
     <PageContainer>
-      <div className="space-y-2">
-        <a href="#/bundles" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ChevronLeft className="size-4" />
-          Access bundles
-        </a>
-        <PageHeader
-          title={b ? <span className="font-mono">{b.name}</span> : <Skeleton className="h-8 w-48" />}
-          verdict={b ? verdict(b, rulesInVault) : undefined}
-          description={b ? b.description || "No description" : undefined}
-          actions={
-            b && (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={goAdd}
-                  disabled={!canAdd}
-                  title={canAdd ? undefined : "Only admins can add services"}
-                >
-                  <Plus />
-                  <span className="hidden sm:inline">Add a service</span>
-                </Button>
-                <Button type="button" onClick={() => goTab("connect")}>
-                  <Terminal />
-                  <span className="hidden sm:inline">Run an agent</span>
-                </Button>
-                <RowMenu
-                  label={b.name}
-                  items={[
-                    {
-                      label: "Edit details",
-                      icon: Pencil,
-                      onSelect: () => setEditing(true),
-                      disabled: !canEdit,
-                      reason: "Only editors and admins can change bundles",
-                    },
-                    {
-                      label: "Delete bundle",
-                      icon: Trash2,
-                      onSelect: () => confirmDelete.ask(b),
-                      destructive: true,
-                      disabled: !canEdit,
-                      reason: "Only editors and admins can delete bundles",
-                    },
-                  ]}
-                />
-              </>
-            )
-          }
-        />
-      </div>
+      <PageHeader
+        title={b ? <span className="font-mono">{b.name}</span> : <Skeleton className="h-8 w-48" />}
+        verdict={b ? verdict(b, rulesInVault) : undefined}
+        description={b ? b.description || "No description" : undefined}
+        actions={
+          b && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={goAdd}
+                disabled={!canAdd}
+                title={canAdd ? undefined : "Only admins can add services"}
+              >
+                <Plus />
+                <span className="hidden sm:inline">Add a service</span>
+              </Button>
+              <Button type="button" onClick={() => goTab("connect")}>
+                <Terminal />
+                <span className="hidden sm:inline">Run an agent</span>
+              </Button>
+              <RowMenu
+                label={b.name}
+                items={[
+                  {
+                    label: "Edit details",
+                    icon: Pencil,
+                    onSelect: () => setEditing(true),
+                    disabled: !canEdit,
+                    reason: "Only editors and admins can change bundles",
+                  },
+                  {
+                    label: "Delete bundle",
+                    icon: Trash2,
+                    onSelect: () => confirmDelete.ask(b),
+                    destructive: true,
+                    disabled: !canEdit,
+                    reason: "Only editors and admins can delete bundles",
+                  },
+                ]}
+              />
+            </>
+          )
+        }
+      />
       <ErrorBanner error={bundle.error ?? vault.error ?? services.error ?? deleteAction.error} />
       {b && (
         <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 md:grid-cols-4">

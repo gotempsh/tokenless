@@ -7,7 +7,7 @@
 // created beside it. Started from the catalogue, a vault or a bundle.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronLeft, Lock } from "lucide-react";
+import { Check, Lock } from "lucide-react";
 import {
   get,
   patch,
@@ -36,6 +36,7 @@ import {
 } from "../addService";
 import { latestTemplates } from "../catalog";
 import { useLoad } from "../hooks";
+import { backCrumbs, useBreadcrumbs } from "../breadcrumbs";
 import { cn } from "../lib/utils";
 import { CommandSnippet, runCommand } from "./Bundles";
 import {
@@ -177,17 +178,9 @@ function planFor(where: Where, credential: CredentialBody): AddServicePlan {
   return { vault, credential, access: where.access, bundle };
 }
 
-const BACK_LABELS: [RegExp, string][] = [
-  [/^vaults\/[^/]+\/bundles$/, "access bundles"],
-  [/^vaults\/[^/]+/, "vault"],
-  [/^bundles/, "access bundles"],
-  [/^templates/, "templates"],
-];
-
-function backLink(ctx: AddServiceContext): { href: string; label: string } {
-  const back = ctx.back ?? "templates";
-  const label = BACK_LABELS.find(([re]) => re.test(back))?.[1] ?? "templates";
-  return { href: `#/${back}`, label: `Back to ${label}` };
+/** Where Back, Cancel and Done return to: the page that opened this one. */
+function backHref(ctx: AddServiceContext): string {
+  return `#/${ctx.back ?? "templates"}`;
 }
 
 export function AddService({ ctx, user }: { ctx: AddServiceContext; user: UserSummary }) {
@@ -201,14 +194,27 @@ export function AddService({ ctx, user }: { ctx: AddServiceContext; user: UserSu
         : undefined,
     [templates.data, ctx.template],
   );
-  const back = backLink(ctx);
+  const back = backHref(ctx);
+  // The names of the vault or bundle this page was opened from, for the trail.
+  const [backSection, backId] = (ctx.back ?? "").split("/");
+  const origin = useLoad(
+    async () =>
+      backId && backSection === "vaults"
+        ? (await get<Vault>(`/vaults/${backId}`)).name
+        : backId && backSection === "bundles"
+          ? (await get<AccessBundle>(`/bundles/${backId}`)).name
+          : undefined,
+    [backSection, backId],
+  );
+  const originName = origin.data ?? (origin.error ? (backSection === "vaults" ? "Vault" : "Access bundle") : null);
+  useBreadcrumbs([
+    ...backCrumbs(ctx.back, { vault: originName, bundle: originName }),
+    { label: "Add a service", href: addServiceHref({ ...ctx, template: undefined }) },
+    ...(ctx.template ? [{ label: template?.name ?? (templates.loading ? null : ctx.template) }] : []),
+  ]);
 
   return (
     <PageContainer>
-      <a href={back.href} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="size-4" />
-        {back.label}
-      </a>
       <ErrorBanner error={templates.error} />
       {!ctx.template ? (
         <Catalogue ctx={ctx} templates={templates.data ?? []} loading={templates.loading && !templates.data} />
@@ -218,7 +224,7 @@ export function AddService({ ctx, user }: { ctx: AddServiceContext; user: UserSu
           <Skeleton className="h-64 w-full" />
         </div>
       ) : template ? (
-        <ServicePage key={`${template.id}@${template.version}`} ctx={ctx} template={template} user={user} back={back.href} />
+        <ServicePage key={`${template.id}@${template.version}`} ctx={ctx} template={template} user={user} back={back} />
       ) : (
         <Panel className="space-y-3 p-6">
           <p className="font-medium">No approved template "{ctx.template}"</p>

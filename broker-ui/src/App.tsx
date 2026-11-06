@@ -37,6 +37,7 @@ import {
 } from "./api";
 import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
+import { BreadcrumbContext, trail, type Crumb } from "./breadcrumbs";
 import { parseAddServiceContext } from "./addService";
 import { useTheme, type Theme } from "./theme";
 import { useSidebarCollapsed } from "./sidebar";
@@ -106,8 +107,6 @@ const LABELS: Record<string, string> = {
   ...Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label]))),
   "add-service": "Add a service",
 };
-
-const DETAILS: Record<string, string> = { vaults: "Vault", bundles: "Access bundle" };
 
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
@@ -207,7 +206,7 @@ export function App() {
   const isAdmin = user.role === "admin";
 
   return (
-    <Shell section={section} detail={id ? DETAILS[section] : undefined} user={user} onLogout={() => void logout()}>
+    <Shell section={section} user={user} onLogout={() => void logout()}>
       {section === "vaults" && !id && <Vaults canCreate={isAdmin} />}
       {section === "vaults" && id && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
@@ -264,18 +263,17 @@ function useSectionAlerts(isAdmin: boolean): Alerts {
 
 function Shell({
   section,
-  detail,
   user,
   onLogout,
   children,
 }: {
   section: string;
-  detail?: string;
   user: UserSummary;
   onLogout: () => void;
   children: ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [crumbs, setCrumbs] = useState<Crumb[] | null>(null);
   const [theme, setTheme] = useTheme();
   const [collapsed, toggleCollapsed] = useSidebarCollapsed();
   const alerts = useSectionAlerts(user.role === "admin");
@@ -291,6 +289,7 @@ function Shell({
   );
 
   return (
+    <BreadcrumbContext.Provider value={setCrumbs}>
     <TooltipProvider delayDuration={200}>
       <div className="flex min-h-svh w-full">
         <aside
@@ -342,19 +341,7 @@ function Shell({
                 {collapsed ? "Expand sidebar" : "Collapse sidebar"} <kbd className="ml-1 text-xs text-muted-foreground">{shortcutLabel()}</kbd>
               </TooltipContent>
             </Tooltip>
-            <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-              {detail ? (
-                <>
-                  <a href={`#/${section}`} className="text-muted-foreground hover:text-foreground">
-                    {LABELS[section] ?? section}
-                  </a>
-                  <ChevronRight className="size-3.5 text-muted-foreground" />
-                  <span className="truncate font-medium">{detail}</span>
-                </>
-              ) : (
-                <span className="truncate font-medium">{LABELS[section] ?? section}</span>
-              )}
-            </nav>
+            <Breadcrumbs crumbs={trail(LABELS[section] ?? section, crumbs)} />
             <div className="ml-auto">
               <ThemeToggle theme={theme} onChange={setTheme} />
             </div>
@@ -363,6 +350,44 @@ function Shell({
         </div>
       </div>
     </TooltipProvider>
+    </BreadcrumbContext.Provider>
+  );
+}
+
+/**
+ * The header trail. On narrow screens only the parent and the current page
+ * show; the rest of the way back is in the sidebar.
+ */
+function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
+  const last = crumbs.length - 1;
+  return (
+    <nav aria-label="Breadcrumb" className="min-w-0">
+      <ol className="flex min-w-0 items-center gap-1.5 text-sm">
+        {crumbs.map((c, i) => (
+          <li key={i} className={cn("flex min-w-0 items-center gap-1.5", i < last - 1 && "hidden sm:flex")}>
+            {i > 0 && (
+              <ChevronRight
+                aria-hidden
+                className={cn("size-3.5 shrink-0 text-muted-foreground", i === last - 1 && "hidden sm:block")}
+              />
+            )}
+            {c.label === null ? (
+              <Skeleton className="h-4 w-24" />
+            ) : i === last ? (
+              <span aria-current="page" className="truncate font-medium">
+                {c.label}
+              </span>
+            ) : c.href ? (
+              <a href={c.href} className="truncate text-muted-foreground hover:text-foreground">
+                {c.label}
+              </a>
+            ) : (
+              <span className="truncate text-muted-foreground">{c.label}</span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </nav>
   );
 }
 

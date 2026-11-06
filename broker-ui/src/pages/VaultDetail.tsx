@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { ChevronLeft, ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
+import { ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
 import {
   api,
   del,
@@ -52,6 +52,7 @@ import { Switch } from "../components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
+import { useBreadcrumbs } from "../breadcrumbs";
 
 type Tab = "credentials" | "rules" | "bundles" | "sessions";
 const TABS: { value: Tab; label: string }[] = [
@@ -119,34 +120,30 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
   const vault = useLoad(() => get<Vault>(`/vaults/${vaultId}`), [vaultId]);
   const [deleting, setDeleting] = useState(false);
   const isAdmin = user.role === "admin";
+  useBreadcrumbs([
+    { label: "Vaults", href: "#/vaults" },
+    { label: vault.data?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
+    { label: TABS.find((t) => t.value === tab)?.label ?? null },
+  ]);
   return (
     <PageContainer>
-      <div className="space-y-2">
-        <a
-          href="#/vaults"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" />
-          Vaults
-        </a>
-        <PageHeader
-          title={vault.data ? vault.data.name : <Skeleton className="h-8 w-48" />}
-          description={vault.data ? <Mono>{vault.data.scope}</Mono> : undefined}
-          actions={
-            <Button
-              type="button"
-              variant="outline"
-              className="text-destructive hover:text-destructive"
-              disabled={!isAdmin || !vault.data}
-              title={isAdmin ? undefined : "Only admins can delete a vault"}
-              onClick={() => setDeleting(true)}
-            >
-              <Trash2 />
-              <span className="hidden sm:inline">Delete vault</span>
-            </Button>
-          }
-        />
-      </div>
+      <PageHeader
+        title={vault.data ? vault.data.name : <Skeleton className="h-8 w-48" />}
+        description={vault.data ? <Mono>{vault.data.scope}</Mono> : undefined}
+        actions={
+          <Button
+            type="button"
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            disabled={!isAdmin || !vault.data}
+            title={isAdmin ? undefined : "Only admins can delete a vault"}
+            onClick={() => setDeleting(true)}
+          >
+            <Trash2 />
+            <span className="hidden sm:inline">Delete vault</span>
+          </Button>
+        }
+      />
       <ErrorBanner error={vault.error} />
       <Tabs
         value={tab}
