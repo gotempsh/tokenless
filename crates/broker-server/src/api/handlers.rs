@@ -682,6 +682,22 @@ pub async fn list_all_sessions(
     ))
 }
 
+/// Sessions minted from one access bundle.
+pub async fn list_bundle_sessions(
+    State(s): St,
+    authed: Authed,
+    Path(bundle_id): Path<String>,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let id: BundleId = parse_id("access bundle", &bundle_id)?;
+    Ok(Json(
+        s.control
+            .sessions
+            .list_for_bundle(&authed.caller, &id, q.request())
+            .await?,
+    ))
+}
+
 pub async fn revoke_session(
     State(s): St,
     authed: Authed,

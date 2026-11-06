@@ -435,7 +435,10 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionRead, Some(vault_id))
             .await?;
-        Ok(self.policy.list_sessions(Some(vault_id), page).await?)
+        Ok(self
+            .policy
+            .list_sessions(Some(vault_id), None, page)
+            .await?)
     }
 
     /// Sessions in every vault the caller can see: all of them for an
@@ -449,6 +452,31 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionRead, vault.as_ref())
             .await?;
-        Ok(self.policy.list_sessions(vault.as_ref(), page).await?)
+        Ok(self
+            .policy
+            .list_sessions(vault.as_ref(), None, page)
+            .await?)
+    }
+
+    /// Sessions minted from one access bundle, newest first. Sessions of a
+    /// bundle that was since deleted are only reachable by vault.
+    pub async fn list_for_bundle(
+        &self,
+        caller: &Caller,
+        bundle_id: &BundleId,
+        page: PageRequest,
+    ) -> Result<Page<ProxySession>, ControlError> {
+        let bundle = self
+            .policy
+            .get_bundle(bundle_id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("access bundle", bundle_id))?;
+        self.guard
+            .check(caller, Action::SessionRead, Some(&bundle.vault_id))
+            .await?;
+        Ok(self
+            .policy
+            .list_sessions(Some(&bundle.vault_id), Some(bundle_id), page)
+            .await?)
     }
 }

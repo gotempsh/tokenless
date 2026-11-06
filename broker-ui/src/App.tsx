@@ -32,6 +32,7 @@ import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Auth";
+import { BundleDetail, bundleTab } from "./pages/BundleDetail";
 import { Bundles } from "./pages/Bundles";
 import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
@@ -90,6 +91,8 @@ const LABELS: Record<string, string> = {
   ...Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label]))),
   "add-service": "Add a service",
 };
+
+const DETAILS: Record<string, string> = { vaults: "Vault", bundles: "Access bundle" };
 
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
@@ -189,13 +192,14 @@ export function App() {
   const isAdmin = user.role === "admin";
 
   return (
-    <Shell section={section} detail={section === "vaults" && id ? "Vault" : undefined} user={user} onLogout={() => void logout()}>
+    <Shell section={section} detail={id ? DETAILS[section] : undefined} user={user} onLogout={() => void logout()}>
       {section === "vaults" && !id && <Vaults canCreate={isAdmin} />}
       {section === "vaults" && id && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
-      {section === "bundles" && <Bundles user={user} />}
+      {section === "bundles" && !id && <Bundles user={user} />}
+      {section === "bundles" && id && <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />}
       {section === "sessions" && <Sessions />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}
       {section === "templates" && <Templates user={user} />}

@@ -1,0 +1,909 @@
+// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// One access bundle: the services it gives an agent, the sessions minted
+// from it, and how to start an agent or a script with it.
+
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  Ban,
+  Boxes,
+  ChevronLeft,
+  ExternalLink,
+  ListPlus,
+  Pencil,
+  Plus,
+  ScrollText,
+  Terminal,
+  Timer,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  api,
+  get,
+  patch,
+  post,
+  type AccessBundle,
+  type CredentialMeta,
+  type Page,
+  type ProxySession,
+  type Rule,
+  type StoredTemplate,
+  type UserSummary,
+  type Vault,
+} from "../api";
+import { useAction, useLoad } from "../hooks";
+import { addServiceHref } from "../addService";
+import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "../bundleConnect";
+import {
+  CheckField,
+  ChoiceCards,
+  ConfirmDialog,
+  CopyButton,
+  DialogActions,
+  Empty,
+  ErrorBanner,
+  Field,
+  FormDialog,
+  Loading,
+  Mono,
+  Pager,
+  Panel,
+  Relative,
+  RowActions,
+  RowMenu,
+  Section,
+  Status,
+  Tags,
+  useConfirm,
+  When,
+} from "../components/common";
+import { ServiceLogo } from "../components/ServiceLogo";
+import { Button } from "../components/ui/button-components";
+import { Input } from "../components/ui/input";
+import { PageContainer, PageHeader } from "../components/ui/page-header";
+import { Skeleton } from "../components/ui/skeleton";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Textarea } from "../components/ui/textarea";
+import { CommandSnippet } from "./Bundles";
+import { SessionDetail, sessionLabel, sessionStatus } from "./Sessions";
+
+export type BundleTab = "services" | "sessions" | "connect";
+
+const TABS: { value: BundleTab; label: string }[] = [
+  { value: "services", label: "Services" },
+  { value: "sessions", label: "Sessions" },
+  { value: "connect", label: "Run an agent" },
+];
+
+export function bundleTab(raw: string | undefined): BundleTab {
+  return raw === "sessions" || raw === "connect" ? raw : "services";
+}
+
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="truncate text-sm">{children}</dd>
+    </div>
+  );
+}
+
+/** What the bundle gives an agent today, in one glance. */
+function verdict(bundle: AccessBundle, rules: Rule[] | undefined) {
+  if (bundle.rule_ids.length === 0) return <Status tone="warning">No services</Status>;
+  if (!rules) return null;
+  const enabled = rules.filter((r) => bundle.rule_ids.includes(r.id) && r.enabled).length;
+  if (enabled === 0) return <Status tone="warning">Every service disabled</Status>;
+  return <Status tone="success">Ready</Status>;
+}
+
+export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: BundleTab; user: UserSummary }) {
+  const bundle = useLoad(() => get<AccessBundle>(`/bundles/${bundleId}`), [bundleId]);
+  const vaultId = bundle.data?.vault_id;
+  const vault = useLoad(
+    () => (vaultId ? get<Vault>(`/vaults/${vaultId}`) : Promise.resolve(undefined)),
+    [vaultId],
+  );
+  const services = useLoad(
+    () =>
+      vaultId
+        ? Promise.all([
+            get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`),
+            get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`),
+            get<StoredTemplate[]>("/templates"),
+          ]).then(([rules, credentials, templates]) => ({
+            rules: rules.items,
+            credentials: credentials.items,
+            templates,
+          }))
+        : Promise.resolve(undefined),
+    [vaultId],
+  );
+  const [editing, setEditing] = useState(false);
+  const [including, setIncluding] = useState(false);
+  const confirmDelete = useConfirm<AccessBundle>();
+  const deleteAction = useAction();
+
+  const canEdit = user.role === "admin" || user.role === "editor";
+  const canAdd = user.role === "admin";
+  const here = `bundles/${bundleId}`;
+  const goTab = (t: BundleTab) => {
+    window.location.hash = `#/${here}/${t}`;
+  };
+  const goAdd = () => {
+    window.location.hash = addServiceHref({ vault: vaultId, bundle: bundleId, back: here });
+  };
+
+  const remove = async (b: AccessBundle) => {
+    const done = await deleteAction.run(() => api<{ sessions_revoked: number }>("DELETE", `/bundles/${b.id}`));
+    confirmDelete.close();
+    if (done) window.location.hash = "#/bundles";
+  };
+
+  const b = bundle.data;
+  const rulesInVault = services.data?.rules;
+  const members = useMemo(
+    () => (b && rulesInVault ? b.rule_ids.map((id) => rulesInVault.find((r) => r.id === id)).filter((r) => r !== undefined) : []),
+    [b, rulesInVault],
+  );
+  const memberCredentials = useMemo(() => {
+    const ids = new Set(members.filter((r) => r.enabled).map((r) => r.credential_id));
+    return (services.data?.credentials ?? []).filter((c) => ids.has(c.id));
+  }, [members, services.data]);
+
+  return (
+    <PageContainer>
+      <div className="space-y-2">
+        <a href="#/bundles" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ChevronLeft className="size-4" />
+          Access bundles
+        </a>
+        <PageHeader
+          title={b ? <span className="font-mono">{b.name}</span> : <Skeleton className="h-8 w-48" />}
+          verdict={b ? verdict(b, rulesInVault) : undefined}
+          description={b ? b.description || "No description" : undefined}
+          actions={
+            b && (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={goAdd}
+                  disabled={!canAdd}
+                  title={canAdd ? undefined : "Only admins can add services"}
+                >
+                  <Plus />
+                  <span className="hidden sm:inline">Add a service</span>
+                </Button>
+                <Button type="button" onClick={() => goTab("connect")}>
+                  <Terminal />
+                  <span className="hidden sm:inline">Run an agent</span>
+                </Button>
+                <RowMenu
+                  label={b.name}
+                  items={[
+                    {
+                      label: "Edit details",
+                      icon: Pencil,
+                      onSelect: () => setEditing(true),
+                      disabled: !canEdit,
+                      reason: "Only editors and admins can change bundles",
+                    },
+                    {
+                      label: "Delete bundle",
+                      icon: Trash2,
+                      onSelect: () => confirmDelete.ask(b),
+                      destructive: true,
+                      disabled: !canEdit,
+                      reason: "Only editors and admins can delete bundles",
+                    },
+                  ]}
+                />
+              </>
+            )
+          }
+        />
+      </div>
+      <ErrorBanner error={bundle.error ?? vault.error ?? services.error ?? deleteAction.error} />
+      {b && (
+        <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 md:grid-cols-4">
+          <Fact label="Vault">
+            <a href={`#/vaults/${b.vault_id}/bundles`} className="hover:underline">
+              {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
+            </a>
+          </Fact>
+          <Fact label="Services">
+            {b.rule_ids.length}
+            {members.some((r) => !r.enabled) && (
+              <span className="text-muted-foreground"> ({members.filter((r) => !r.enabled).length} disabled)</span>
+            )}
+          </Fact>
+          <Fact label="Created by">{b.created_by}</Fact>
+          <Fact label="Updated">
+            <When at={b.updated_at} />
+          </Fact>
+        </dl>
+      )}
+      <Tabs value={tab} onValueChange={(v) => goTab(bundleTab(v))}>
+        <TabsList>
+          {TABS.map((t) => (
+            <TabsTrigger key={t.value} value={t.value}>
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      {b && tab === "services" && (
+        <BundleServices
+          bundle={b}
+          services={services.data}
+          loading={services.loading && !services.data}
+          canEdit={canEdit}
+          canAdd={canAdd}
+          onAdd={goAdd}
+          onInclude={() => setIncluding(true)}
+          onChanged={bundle.reload}
+        />
+      )}
+      {b && tab === "sessions" && (
+        <BundleSessions bundle={b} vaultName={vault.data?.name} canRevoke={canEdit} onConnect={() => goTab("connect")} />
+      )}
+      {b && tab === "connect" && (
+        <Connect bundle={b} vaultName={vault.data?.name} credentials={memberCredentials} empty={members.length === 0} />
+      )}
+      {!b && bundle.loading && <Loading />}
+      <FormDialog open={editing} onOpenChange={setEditing} title={b ? `Edit ${b.name}` : "Edit bundle"}>
+        {b && editing && (
+          <DetailsForm
+            bundle={b}
+            onCancel={() => setEditing(false)}
+            onSaved={() => {
+              setEditing(false);
+              bundle.reload();
+            }}
+          />
+        )}
+      </FormDialog>
+      <FormDialog
+        open={including}
+        onOpenChange={setIncluding}
+        title="Include services already in the vault"
+        description="Pick rules the vault already has. Sessions minted afterwards get them; running sessions keep what they started with."
+      >
+        {b && including && (
+          <IncludeForm
+            bundle={b}
+            rules={rulesInVault ?? []}
+            credentials={services.data?.credentials ?? []}
+            onCancel={() => setIncluding(false)}
+            onSaved={() => {
+              setIncluding(false);
+              bundle.reload();
+            }}
+          />
+        )}
+      </FormDialog>
+      <ConfirmDialog
+        open={confirmDelete.open}
+        onOpenChange={confirmDelete.onOpenChange}
+        title={`Delete bundle "${confirmDelete.target?.name ?? ""}"?`}
+        description="Agents can no longer start with it, and the live sessions minted from it are ended: proxies refuse them at their next policy refresh. The services and their rules stay in the vault."
+        confirmLabel="Delete bundle"
+        destructive
+        busy={deleteAction.busy}
+        onConfirm={() => {
+          if (confirmDelete.target) void remove(confirmDelete.target);
+        }}
+      />
+    </PageContainer>
+  );
+}
+
+// ----- services ---------------------------------------------------------------
+
+interface VaultServices {
+  rules: Rule[];
+  credentials: CredentialMeta[];
+  templates: StoredTemplate[];
+}
+
+function allowedLabel(rule: Rule): string {
+  const methods = rule.allow.methods.includes("*") ? "Any method" : rule.allow.methods.join(", ");
+  const paths = rule.allow.paths.length === 1 && rule.allow.paths[0] === "/*" ? "every path" : rule.allow.paths.join(" ");
+  return `${methods} · ${paths}`;
+}
+
+function BundleServices({
+  bundle,
+  services,
+  loading,
+  canEdit,
+  canAdd,
+  onAdd,
+  onInclude,
+  onChanged,
+}: {
+  bundle: AccessBundle;
+  services: VaultServices | undefined;
+  loading: boolean;
+  canEdit: boolean;
+  canAdd: boolean;
+  onAdd: () => void;
+  onInclude: () => void;
+  onChanged: () => void;
+}) {
+  const confirm = useConfirm<Rule>();
+  const action = useAction();
+  const others = (services?.rules ?? []).filter((r) => !bundle.rule_ids.includes(r.id));
+  const removeRule = async (rule: Rule) => {
+    // Read the bundle just before writing it, so rules added meanwhile are kept.
+    const done = await action.run(async () => {
+      const current = await get<AccessBundle>(`/bundles/${bundle.id}`);
+      return patch<AccessBundle>(`/bundles/${bundle.id}`, {
+        rule_ids: current.rule_ids.filter((id) => id !== rule.id),
+      });
+    });
+    confirm.close();
+    if (done) onChanged();
+  };
+  const credential = (id: string) => services?.credentials.find((c) => c.id === id);
+  const template = (c: CredentialMeta | undefined) =>
+    c ? services?.templates.find((t) => t.template.id === c.template_id && t.template.version === c.template_version)?.template : undefined;
+
+  const includeButton = (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={onInclude}
+      disabled={!canEdit || others.length === 0}
+      title={
+        !canEdit
+          ? "Only editors and admins can change bundles"
+          : others.length === 0
+            ? "Every rule in the vault is already in this bundle"
+            : undefined
+      }
+    >
+      <ListPlus />
+      Include existing
+    </Button>
+  );
+
+  return (
+    <Section
+      title="Services"
+      description="What an agent started with this bundle can reach, and how. Changes apply to sessions minted afterwards."
+      actions={bundle.rule_ids.length > 0 ? includeButton : undefined}
+    >
+      <ErrorBanner error={action.error} />
+      <Panel>
+        {loading ? (
+          <Loading />
+        ) : bundle.rule_ids.length === 0 ? (
+          <Empty
+            icon={Boxes}
+            title="No services in this bundle"
+            description="Add one from the catalogue (it is stored in the vault, given a rule and put here in one step), or include a rule the vault already has."
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button type="button" onClick={onAdd} disabled={!canAdd} title={canAdd ? undefined : "Only admins can add services"}>
+                  <Plus />
+                  Add a service
+                </Button>
+                {includeButton}
+              </div>
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Service</TableHead>
+                <TableHead>Allowed</TableHead>
+                <TableHead className="hidden lg:table-cell">Hosts</TableHead>
+                <TableHead className="hidden md:table-cell">Placeholders</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {bundle.rule_ids.map((id) => {
+                const rule = services?.rules.find((r) => r.id === id);
+                if (!rule) {
+                  return (
+                    <TableRow key={id}>
+                      <TableCell colSpan={6} className="text-muted-foreground">
+                        Rule <Mono>{id.slice(0, 8)}</Mono> is not visible to you.
+                      </TableCell>
+                    </TableRow>
+                  );
+                }
+                const c = credential(rule.credential_id);
+                const t = template(c);
+                return (
+                  <TableRow key={id}>
+                    <TableCell>
+                      <div className="flex items-center gap-3">
+                        <ServiceLogo template={t ?? (c ? { id: c.template_id, kind: "http" } : undefined)} size="sm" />
+                        <div className="min-w-0">
+                          <div className="truncate font-medium">{c?.name ?? "Unknown service"}</div>
+                          <div className="truncate text-xs text-muted-foreground">
+                            {t?.name ?? c?.template_id} · rule {rule.name}
+                          </div>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {allowedLabel(rule)}
+                      {rule.allow.mcp_tools !== undefined && (
+                        <div className="text-xs text-muted-foreground">
+                          MCP tools: {rule.allow.mcp_tools.length === 0 ? "none" : rule.allow.mcp_tools.join(", ")}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      <Tags values={rule.allow.hosts} />
+                    </TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      {c && c.substitutions.length > 0 ? (
+                        <div className="flex flex-col gap-1">
+                          {c.substitutions.map((s) => (
+                            <Mono key={s.placeholder}>{`cb://${c.name}/${s.field}`}</Mono>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">none</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {rule.enabled ? <Status tone="success">Enabled</Status> : <Status tone="neutral">Disabled</Status>}
+                    </TableCell>
+                    <TableCell>
+                      <RowActions>
+                        <RowMenu
+                          label={c?.name ?? rule.name}
+                          items={[
+                            {
+                              label: "Open in vault",
+                              icon: ExternalLink,
+                              onSelect: () => {
+                                window.location.hash = `#/vaults/${bundle.vault_id}/rules`;
+                              },
+                            },
+                            {
+                              label: "Remove from bundle",
+                              icon: X,
+                              onSelect: () => confirm.ask(rule),
+                              destructive: true,
+                              disabled: !canEdit,
+                              reason: "Only editors and admins can change bundles",
+                            },
+                          ]}
+                        />
+                      </RowActions>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </Panel>
+      <ConfirmDialog
+        open={confirm.open}
+        onOpenChange={confirm.onOpenChange}
+        title={`Remove "${confirm.target ? (credential(confirm.target.credential_id)?.name ?? confirm.target.name) : ""}" from ${bundle.name}?`}
+        description="Sessions minted from the bundle afterwards no longer get it. The service and its rule stay in the vault, and running sessions keep what they started with; revoke them to cut access now."
+        confirmLabel="Remove from bundle"
+        destructive
+        busy={action.busy}
+        onConfirm={() => {
+          if (confirm.target) void removeRule(confirm.target);
+        }}
+      />
+    </Section>
+  );
+}
+
+function IncludeForm({
+  bundle,
+  rules,
+  credentials,
+  onCancel,
+  onSaved,
+}: {
+  bundle: AccessBundle;
+  rules: Rule[];
+  credentials: CredentialMeta[];
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const others = rules.filter((r) => !bundle.rule_ids.includes(r.id));
+  const [picked, setPicked] = useState<string[]>([]);
+  const action = useAction();
+  const credName = (id: string) => credentials.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const saved = await action.run(async () => {
+      const current = await get<AccessBundle>(`/bundles/${bundle.id}`);
+      return patch<AccessBundle>(`/bundles/${bundle.id}`, {
+        rule_ids: [...new Set([...current.rule_ids, ...picked])],
+      });
+    });
+    if (saved) onSaved();
+  };
+  return (
+    <form className="space-y-4" onSubmit={submit}>
+      <ErrorBanner error={action.error} />
+      <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border p-3">
+        {others.map((r) => (
+          <CheckField
+            key={r.id}
+            id={`include-${r.id}`}
+            checked={picked.includes(r.id)}
+            onChange={(on) => setPicked(on ? [...picked, r.id] : picked.filter((id) => id !== r.id))}
+            hint={<Tags values={r.allow.hosts} />}
+          >
+            <span className="font-medium">{credName(r.credential_id)}</span>
+            <span className="text-muted-foreground"> · {r.name}</span>
+            {!r.enabled && <span className="text-muted-foreground"> (disabled, skipped when minting)</span>}
+          </CheckField>
+        ))}
+      </div>
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={action.busy || picked.length === 0}>
+          {picked.length > 1 ? `Include ${picked.length} services` : "Include service"}
+        </Button>
+      </DialogActions>
+    </form>
+  );
+}
+
+function DetailsForm({ bundle, onCancel, onSaved }: { bundle: AccessBundle; onCancel: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(bundle.name);
+  const [description, setDescription] = useState(bundle.description);
+  const action = useAction();
+  const nameProblem =
+    name && !NAME.test(name.trim()) ? "Letters, digits, '-', '_' and '.', starting with a letter or digit (up to 64)." : null;
+  const renamed = name.trim() !== bundle.name;
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const saved = await action.run(() =>
+      patch<AccessBundle>(`/bundles/${bundle.id}`, { name: name.trim(), description }),
+    );
+    if (saved) onSaved();
+  };
+  return (
+    <form className="space-y-4" onSubmit={submit}>
+      <ErrorBanner error={action.error} />
+      <Field
+        label="Name"
+        htmlFor="bundle-detail-name"
+        hint={
+          nameProblem ??
+          (renamed
+            ? `Scripts that start agents with --bundle ${bundle.name} stop working until they use the new name.`
+            : "Used on the command line: --bundle <name>.")
+        }
+      >
+        <Input
+          id="bundle-detail-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="font-mono"
+          aria-invalid={nameProblem !== null}
+          required
+        />
+      </Field>
+      <Field label="Description" htmlFor="bundle-detail-description" hint="Optional: what the bundle is for.">
+        <Textarea
+          id="bundle-detail-description"
+          rows={3}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Read pull requests and post review comments"
+        />
+      </Field>
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={action.busy || nameProblem !== null || !name.trim()}>
+          Save
+        </Button>
+      </DialogActions>
+    </form>
+  );
+}
+
+// ----- sessions ---------------------------------------------------------------
+
+const isActive = (s: ProxySession) => !s.revoked_at && new Date(s.expires_at) > new Date();
+
+function BundleSessions({
+  bundle,
+  vaultName,
+  canRevoke,
+  onConnect,
+}: {
+  bundle: AccessBundle;
+  vaultName?: string;
+  canRevoke: boolean;
+  onConnect: () => void;
+}) {
+  const [page, setPage] = useState(1);
+  const sessions = useLoad(
+    () => get<Page<ProxySession>>(`/bundles/${bundle.id}/sessions?page=${page}`),
+    [bundle.id, page],
+  );
+  const [viewing, setViewing] = useState<ProxySession | null>(null);
+  const confirm = useConfirm<ProxySession>();
+  const action = useAction();
+  const revoke = async (s: ProxySession) => {
+    await action.run(() => post<ProxySession>(`/sessions/${s.id}/revoke`));
+    confirm.close();
+    setViewing(null);
+    sessions.reload();
+  };
+  return (
+    <Section
+      title="Sessions"
+      description="Every agent run with this bundle gets its own session. Open one to see the requests it made; revoke it to cut that agent off."
+    >
+      <ErrorBanner error={sessions.error ?? action.error} />
+      <Panel>
+        {sessions.loading && !sessions.data ? (
+          <Loading />
+        ) : sessions.data?.items.length === 0 ? (
+          <Empty
+            icon={Timer}
+            title="No agent has started with this bundle yet"
+            description={
+              <>
+                Sessions appear here when an agent starts with <Mono>--bundle {bundle.name}</Mono>.
+              </>
+            }
+            action={
+              <Button type="button" variant="outline" onClick={onConnect}>
+                <Terminal />
+                Run an agent
+              </Button>
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Label</TableHead>
+                <TableHead className="hidden md:table-cell">Started by</TableHead>
+                <TableHead>Started</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sessions.data?.items.map((s) => (
+                <TableRow key={s.id}>
+                  <TableCell>
+                    <button
+                      type="button"
+                      className="text-left font-medium underline-offset-4 hover:underline"
+                      title="Open this session's logs"
+                      onClick={() => setViewing(s)}
+                    >
+                      {sessionLabel(s)}
+                    </button>
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <Relative at={s.created_at} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    <Relative at={s.expires_at} />
+                  </TableCell>
+                  <TableCell>{sessionStatus(s)}</TableCell>
+                  <TableCell>
+                    <RowActions>
+                      <RowMenu
+                        label={sessionLabel(s)}
+                        items={[
+                          { label: "View logs", icon: ScrollText, onSelect: () => setViewing(s) },
+                          ...(isActive(s)
+                            ? [
+                                {
+                                  label: "Revoke session",
+                                  icon: Ban,
+                                  onSelect: () => confirm.ask(s),
+                                  destructive: true,
+                                  disabled: !canRevoke,
+                                  reason: "Only editors and admins can revoke sessions",
+                                },
+                              ]
+                            : []),
+                        ]}
+                      />
+                    </RowActions>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        <Pager page={sessions.data} onPage={setPage} />
+      </Panel>
+      <FormDialog
+        open={viewing !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewing(null);
+        }}
+        wide
+        title={viewing ? sessionLabel(viewing) : "Session"}
+      >
+        {viewing && (
+          <SessionDetail
+            session={viewing}
+            vaultName={vaultName}
+            onRevoke={() => confirm.ask(viewing)}
+            onClose={() => setViewing(null)}
+            onChanged={(s) => {
+              setViewing(s);
+              sessions.reload();
+            }}
+          />
+        )}
+      </FormDialog>
+      <ConfirmDialog
+        open={confirm.open}
+        onOpenChange={confirm.onOpenChange}
+        title={`Revoke "${confirm.target ? sessionLabel(confirm.target) : ""}"?`}
+        description="Proxies refuse the session at their next policy refresh. The agent using it loses access immediately after."
+        confirmLabel="Revoke session"
+        busy={action.busy}
+        onConfirm={() => {
+          if (confirm.target) void revoke(confirm.target);
+        }}
+      />
+    </Section>
+  );
+}
+
+// ----- connect ----------------------------------------------------------------
+
+function Step({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <li className="flex gap-4">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold">{n}</span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <h3 className="text-sm font-medium">{title}</h3>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+function FileSnippet({ name, contents }: { name: string; contents: string }) {
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center justify-between gap-2 border-b px-3 py-1.5">
+        <Mono>{name}</Mono>
+        <CopyButton value={contents} label={`Copy ${name}`} />
+      </div>
+      <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{contents}</pre>
+    </div>
+  );
+}
+
+function Connect({
+  bundle,
+  vaultName,
+  credentials,
+  empty,
+}: {
+  bundle: AccessBundle;
+  vaultName?: string;
+  credentials: CredentialMeta[];
+  empty: boolean;
+}) {
+  const [agent, setAgent] = useState(AGENTS[0]?.id ?? "claude");
+  const command = AGENTS.find((a) => a.id === agent)?.command ?? "<agent-command>";
+  const refs = useMemo(() => envReferences(credentials), [credentials]);
+  return (
+    <Section
+      title={`Run an agent with ${bundle.name}`}
+      description="The CLI mints a session from the bundle, starts the agent behind a local session port with the broker's CA trusted, renews the session while it runs and ends it when the agent exits. The agent never sees a secret or the session token."
+    >
+      {empty && (
+        <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+          This bundle has no services yet, so an agent started with it reaches nothing through the broker. Add one on the
+          Services tab first.
+        </p>
+      )}
+      <Panel className="p-5">
+        <ol className="space-y-6">
+          <Step n={1} title="Give the agent's machine a key that can start sessions">
+            <p className="text-sm text-muted-foreground">
+              Create a <span className="font-medium text-foreground">session_issuer</span> key for this vault under{" "}
+              <a href="#/api-keys" className="underline">
+                API keys
+              </a>
+              . It can start sessions from the vault's bundles and nothing else.
+            </p>
+            <CommandSnippet command="export CREDENTIAL_BROKER_API_KEY=cbk_..." />
+            <p className="text-xs text-muted-foreground">
+              Off this machine, also set <Mono>CREDENTIAL_BROKER_URL</Mono> to this console's address and{" "}
+              <Mono>CREDENTIAL_BROKER_PROXY_ADDRESS</Mono> to a{" "}
+              <a href="#/proxies" className="underline">
+                proxy
+              </a>
+              's <Mono>host:port</Mono>.
+            </p>
+          </Step>
+          <Step n={2} title="Start the agent">
+            <ChoiceCards
+              name="bundle-agent"
+              value={agent}
+              onChange={setAgent}
+              columns={3}
+              choices={AGENTS.map((a) => ({
+                value: a.id,
+                title: a.label,
+                description: a.id === "other" ? "Any program that honours HTTPS_PROXY" : <Mono>{a.command}</Mono>,
+              }))}
+            />
+            <CommandSnippet command={runAgentCommand(bundle.name, command, vaultName)} />
+          </Step>
+          <Step n={3} title="Teach the agent how the broker works">
+            <p className="text-sm text-muted-foreground">
+              The skill tells the agent how to see what it can reach, hand a tool a placeholder instead of a key, and read
+              the proxy's 403, 407 and 429 answers instead of working around them.
+            </p>
+            <CommandSnippet command="credential-broker skill --install" />
+          </Step>
+          <Step n={4} title="Or run a script that reads keys from its environment">
+            {refs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                None of this bundle's services has a placeholder yet. Give one a placeholder on the vault's{" "}
+                <a href={`#/vaults/${bundle.vault_id}/credentials`} className="underline">
+                  Services
+                </a>{" "}
+                tab, then fill a variable with <Mono>NAME=cb://&lt;service&gt;/&lt;field&gt;</Mono>.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Each <Mono>cb://</Mono> reference becomes the service's placeholder, which the proxy swaps for the
+                  secret on the service's hosts. The script never holds the secret.
+                </p>
+                <CommandSnippet command={execCommand(bundle.name, refs, vaultName)} />
+                <p className="text-sm text-muted-foreground">
+                  Or keep the references in a file next to the script and commit it:
+                </p>
+                <FileSnippet name=".env.broker" contents={envFile(refs)} />
+                <CommandSnippet
+                  command={`credential-broker exec${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file .env.broker -- ./script.sh`}
+                />
+              </>
+            )}
+          </Step>
+          <Step n={5} title="Or keep a session open for agents you start yourself">
+            <CommandSnippet
+              command={`credential-broker session start${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file ./agent.env`}
+            />
+            <p className="text-xs text-muted-foreground">
+              Then <Mono>. ./agent.env</Mono> in the agent's shell. Ctrl-C ends the session.
+            </p>
+          </Step>
+        </ol>
+      </Panel>
+    </Section>
+  );
+}

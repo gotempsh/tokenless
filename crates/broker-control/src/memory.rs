@@ -655,6 +655,7 @@ impl PolicyStore for MemoryStore {
     async fn list_sessions(
         &self,
         vault_id: Option<&VaultId>,
+        bundle_id: Option<&BundleId>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
         let items: Vec<_> = self
@@ -662,6 +663,7 @@ impl PolicyStore for MemoryStore {
             .sessions
             .values()
             .filter(|s| vault_id.is_none_or(|v| &s.vault_id == v))
+            .filter(|s| bundle_id.is_none_or(|b| s.bundle.as_ref().is_some_and(|sb| &sb.id == b)))
             .cloned()
             .collect();
         Ok(page.apply(&newest_first(items, |s| s.created_at)))

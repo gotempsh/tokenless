@@ -1015,6 +1015,46 @@ mod tests {
             .await
             .unwrap();
 
+        // The bundle's page lists only the sessions minted from it.
+        cp.sessions
+            .mint(
+                &a,
+                &vault.id,
+                MintSession {
+                    rule_ids: vec![rules[0].id],
+                    bundle: None,
+                    ttl_secs: Some(600),
+                    request_limit: None,
+                    labels: BTreeMap::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let listed = cp
+            .sessions
+            .list_for_bundle(&a, &bundle.id, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.total, 2,
+            "the rule-minted session is not the bundle's"
+        );
+        assert!(listed
+            .items
+            .iter()
+            .all(|s| s.bundle.as_ref().map(|b| b.id) == Some(bundle.id)));
+        let missing = broker_core::ids::BundleId::new();
+        let err = cp
+            .sessions
+            .list_for_bundle(&a, &missing, PageRequest::new(None, None))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ControlError::NotFound { .. })
+                && err.to_string().contains(&missing.to_string()),
+            "{err}"
+        );
+
         // Disabled rules are skipped, and a bundle with none left refuses.
         for (i, rule) in rules.iter().enumerate() {
             cp.policy

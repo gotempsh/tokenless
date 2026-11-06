@@ -215,7 +215,9 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
               {bundles.data?.items.map((b) => (
                 <TableRow key={b.id}>
                   <TableCell>
-                    <div className="font-mono font-medium">{b.name}</div>
+                    <a href={`#/bundles/${b.id}`} className="font-mono font-medium underline-offset-4 hover:underline">
+                      {b.name}
+                    </a>
                     {b.description && <p className="text-xs text-muted-foreground">{b.description}</p>}
                   </TableCell>
                   {!scoped && (
@@ -259,6 +261,13 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                             onSelect: () => goAdd(b.vault_id, b.id),
                             disabled: !canAdd,
                             reason: "Only admins can add services",
+                          },
+                          {
+                            label: "Open bundle",
+                            icon: Boxes,
+                            onSelect: () => {
+                              window.location.hash = `#/bundles/${b.id}`;
+                            },
                           },
                           { label: "Run an agent", icon: Terminal, onSelect: () => setRunning(b) },
                           { label: "Edit bundle", icon: Pencil, onSelect: () => setEditing(b) },

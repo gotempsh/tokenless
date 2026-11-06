@@ -139,7 +139,13 @@ export function Sessions() {
                     </a>
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
-                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
+                    {s.bundle ? (
+                      <a href={`#/bundles/${s.bundle.id}/sessions`} className="hover:underline">
+                        {s.bundle.name}
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
                   <TableCell className="text-muted-foreground">

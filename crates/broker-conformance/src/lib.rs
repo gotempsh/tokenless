@@ -794,7 +794,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     let listed = store
-        .list_sessions(Some(&v1.id), PageRequest::default())
+        .list_sessions(Some(&v1.id), None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list"))?;
     ensure!(
@@ -808,8 +808,35 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .insert_session(session(VaultId::new(), 30, None), &[])
         .await
         .map_err(backend(S, "session_insert_other"))?;
+    let bundle_id = BundleId::new();
+    let from_bundle = ProxySession {
+        bundle: Some(SessionBundle {
+            id: bundle_id,
+            name: "code-review".into(),
+        }),
+        ..session(v1.id, 30, None)
+    };
+    store
+        .insert_session(from_bundle.clone(), &[])
+        .await
+        .map_err(backend(S, "session_insert_bundle"))?;
+    let by_bundle = store
+        .list_sessions(Some(&v1.id), Some(&bundle_id), PageRequest::default())
+        .await
+        .map_err(backend(S, "session_list_bundle"))?;
+    ensure!(
+        S,
+        "session_list_bundle",
+        by_bundle.total == 1
+            && by_bundle.items.len() == 1
+            && by_bundle.items[0].id == from_bundle.id
+            && by_bundle.items[0].bundle.as_ref().map(|b| b.id) == Some(bundle_id),
+        "listing by bundle must return only the session minted from it, got {} of {:?}",
+        by_bundle.total,
+        by_bundle.items.iter().map(|s| s.id).collect::<Vec<_>>()
+    );
     let everywhere = store
-        .list_sessions(None, PageRequest::default())
+        .list_sessions(None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list_all"))?;
     ensure!(

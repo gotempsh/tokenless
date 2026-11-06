@@ -223,10 +223,12 @@ pub trait PolicyStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError>;
-    /// Newest first; every vault when `vault_id` is `None`.
+    /// Newest first; every vault when `vault_id` is `None`, and only those
+    /// minted from `bundle_id` when it is given.
     async fn list_sessions(
         &self,
         vault_id: Option<&VaultId>,
+        bundle_id: Option<&BundleId>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError>;
     /// Returns false if it was already revoked. `NotFound` if missing.
