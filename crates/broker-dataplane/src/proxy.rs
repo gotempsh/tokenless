@@ -237,7 +237,13 @@ async fn handle_proxy_request(
         return respond(StatusCode::BAD_REQUEST, "CONNECT target must be host:port");
     };
     let intercept = session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port));
-    if !intercept && snapshot.policy == UnmatchedHostPolicy::Deny {
+    let excepted = || {
+        snapshot
+            .passthrough_hosts
+            .iter()
+            .any(|h| h.matches(&host, port))
+    };
+    if !intercept && snapshot.policy == UnmatchedHostPolicy::Deny && !excepted() {
         Metrics::inc(&shared.metrics.connect_denied_total);
         audit_best_effort(
             &shared,
@@ -251,7 +257,9 @@ async fn handle_proxy_request(
         );
         return respond(
             StatusCode::FORBIDDEN,
-            "no rule covers this host and the unmatched-host policy is deny",
+            &format!(
+                "no rule in this session covers {host}:{port} and the unmatched-host policy is deny; an admin can add it to Settings → Always reachable"
+            ),
         );
     }
     let tls_config = if intercept {

@@ -80,6 +80,7 @@ pub struct ActiveSnapshot {
     pub limits: HashMap<SessionId, Arc<AtomicU64>>,
     pub policy: UnmatchedHostPolicy,
     pub egress: broker_core::egress::EgressPolicy,
+    pub passthrough_hosts: Vec<broker_core::host::HostPattern>,
     pub rules: Vec<ActiveRule>,
     pub tls: Arc<InterceptionTls>,
 }
@@ -294,6 +295,7 @@ pub fn build_active(
         limits,
         policy: body.unmatched_host_policy,
         egress: body.egress.clone(),
+        passthrough_hosts: body.passthrough_hosts.clone(),
         rules,
         tls,
     })
@@ -364,6 +366,7 @@ pub(crate) mod tests {
                 limited_sessions: vec![],
                 unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
                 egress: Default::default(),
+                passthrough_hosts: vec![],
                 interception_ca: InterceptionCa {
                     cert_der: STANDARD.encode(&self.ca_cert_der),
                     key: seal(&public, &self.ca_key_der, &ca_aad(&node)).unwrap(),

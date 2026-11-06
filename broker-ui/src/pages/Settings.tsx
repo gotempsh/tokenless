@@ -18,12 +18,14 @@ export function Settings() {
   const settings = useLoad(() => get<SettingsModel>("/settings"), []);
   const action = useAction();
   const [allowText, setAllowText] = useState<string | null>(null);
+  const [hostsText, setHostsText] = useState<string | null>(null);
   const current = settings.data;
 
   const save = async (next: SettingsModel) => {
     const saved = await action.run(() => put<SettingsModel>("/settings", next));
     if (saved) {
       setAllowText(null);
+      setHostsText(null);
       settings.reload();
     }
   };
@@ -63,6 +65,44 @@ export function Settings() {
                 },
               ]}
             />
+          </Section>
+          <Section
+            title="Always reachable"
+            description="Hosts every session may reach even when hosts without a rule are denied, such as package registries and documentation. They are tunnelled untouched: never decrypted and never given a credential."
+          >
+            <Panel>
+              <form
+                className="space-y-4 p-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void save({ ...current, passthrough_hosts: lines(hostsText ?? "") });
+                }}
+              >
+                <Field
+                  label="Hosts"
+                  htmlFor="passthrough-hosts"
+                  hint={
+                    current.unmatched_host_policy === "deny"
+                      ? "One per line, e.g. registry.npmjs.org or *.pythonhosted.org (one label), with :port for ports other than 443. They still obey the egress rules below."
+                      : "Only used while hosts without a rule are denied; with “Tunnel untouched” every host is reachable already."
+                  }
+                >
+                  <Textarea
+                    id="passthrough-hosts"
+                    rows={4}
+                    className="font-mono"
+                    value={hostsText ?? current.passthrough_hosts.join("\n")}
+                    onChange={(e) => setHostsText(e.target.value)}
+                    placeholder={"registry.npmjs.org\npypi.org\n*.pythonhosted.org"}
+                  />
+                </Field>
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={action.busy || hostsText === null}>
+                    Save hosts
+                  </Button>
+                </div>
+              </form>
+            </Panel>
           </Section>
           <Section
             title="Egress to private addresses"

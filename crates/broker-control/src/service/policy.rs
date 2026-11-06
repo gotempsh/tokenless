@@ -79,6 +79,9 @@ pub struct UpdateRule {
     pub enabled: Option<bool>,
 }
 
+/// Always-reachable hosts are matched on every CONNECT, so keep the list short.
+pub const MAX_PASSTHROUGH_HOSTS: usize = 100;
+
 fn validate_name(kind: &str, name: &str) -> Result<String, ControlError> {
     let name = name.trim();
     if name.is_empty() || name.len() > 100 || name.chars().any(char::is_control) {
@@ -1012,10 +1015,24 @@ impl PolicyService {
             .check(caller, Action::SettingsWrite, None)
             .await?;
         settings.egress.validate()?;
+        let mut settings = settings;
+        settings.passthrough_hosts.sort();
+        settings.passthrough_hosts.dedup();
+        if settings.passthrough_hosts.len() > MAX_PASSTHROUGH_HOSTS {
+            return Err(ControlError::validation(format!(
+                "at most {MAX_PASSTHROUGH_HOSTS} always-reachable hosts are allowed, got {}",
+                settings.passthrough_hosts.len()
+            )));
+        }
         let previous = self.policy.get_settings().await?;
+        let adds_exception = settings
+            .passthrough_hosts
+            .iter()
+            .any(|h| !previous.passthrough_hosts.iter().any(|p| p.covers(h)));
         let widens = settings.egress.widens(&previous.egress)
             || (previous.unmatched_host_policy == UnmatchedHostPolicy::Deny
-                && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough);
+                && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough)
+            || adds_exception;
         if widens {
             // Opening egress is as sensitive as widening a rule.
             self.guard.require_step_up(caller, Action::SettingsWrite)?;
@@ -1034,6 +1051,15 @@ impl PolicyService {
                 settings
                     .egress
                     .allow
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+            .detail(
+                "passthrough_hosts",
+                settings
+                    .passthrough_hosts
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()

@@ -848,6 +848,12 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             block_private: false,
             allow: vec![allow],
         },
+        passthrough_hosts: vec![broker_core::host::HostPattern::parse("registry.npmjs.org")
+            .map_err(|e| ConformanceFailure {
+                suite: S,
+                check: "settings_host",
+                detail: e.to_string(),
+            })?],
     };
     store
         .put_settings(deny.clone(), &[])

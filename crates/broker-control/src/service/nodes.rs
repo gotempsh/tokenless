@@ -407,6 +407,7 @@ impl NodeService {
                 .collect(),
             unmatched_host_policy: settings.unmatched_host_policy,
             egress: settings.egress.clone(),
+            passthrough_hosts: settings.passthrough_hosts.clone(),
             interception_ca: content.ca.clone(),
             rules: content.rules.clone(),
         };

@@ -256,6 +256,8 @@ export interface EgressPolicy {
 export interface Settings {
   unmatched_host_policy: "passthrough" | "deny";
   egress: EgressPolicy;
+  /** Tunnelled untouched even under "deny"; never given a credential. */
+  passthrough_hosts: string[];
 }
 
 export interface CredentialValidation {

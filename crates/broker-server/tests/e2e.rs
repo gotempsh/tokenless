@@ -835,6 +835,65 @@ async fn end_to_end() {
     assert_eq!(echo.authorization.as_deref(), Some(CLIENT_SUPPLIED));
     assert_eq!(echo.path, "/passthrough");
 
+    // --- deny policy with an always-reachable host -----------------------------
+    let deny = |hosts: Vec<String>| {
+        json!({
+            "unmatched_host_policy": "deny",
+            "egress": { "block_private": true, "allow": ["127.0.0.0/8"] },
+            "passthrough_hosts": hosts,
+        })
+    };
+    api.call(reqwest::Method::PUT, "/settings", Some(deny(vec![])))
+        .await;
+    eventually("deny policy applied", Duration::from_secs(5), || async {
+        connect_status(proxy, &loopback_target, Some(&session_token)).await == 403
+    })
+    .await;
+    let (status, _, saved) = api
+        .call(
+            reqwest::Method::PUT,
+            "/settings",
+            Some(deny(vec![loopback_target.clone()])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["passthrough_hosts"][0], loopback_target);
+    eventually(
+        "always-reachable host tunnelled under deny",
+        Duration::from_secs(5),
+        || async { connect_status(proxy, &loopback_target, Some(&session_token)).await == 200 },
+    )
+    .await;
+    // Exceptions are tunnelled, never intercepted: the upstream's own
+    // certificate and the agent's own header reach it.
+    let echo: Echo = direct
+        .get(format!("https://127.0.0.1:{upstream_port}/excepted"))
+        .header(AUTHORIZATION, CLIENT_SUPPLIED)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(echo.authorization.as_deref(), Some(CLIENT_SUPPLIED));
+    // They still obey the egress policy.
+    api.call(
+        reqwest::Method::PUT,
+        "/settings",
+        Some(json!({
+            "unmatched_host_policy": "deny",
+            "egress": { "block_private": true, "allow": [] },
+            "passthrough_hosts": [loopback_target.clone()],
+        })),
+    )
+    .await;
+    eventually(
+        "egress still applies to always-reachable hosts",
+        Duration::from_secs(5),
+        || async { connect_status(proxy, &loopback_target, Some(&session_token)).await == 403 },
+    )
+    .await;
+
     // --- audit records were shipped by the node ----------------------------
     eventually(
         "proxy.inject audit event",

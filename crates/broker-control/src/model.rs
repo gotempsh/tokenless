@@ -216,6 +216,10 @@ pub struct Settings {
     /// Which addresses passthrough tunnels and validation requests may reach.
     #[serde(default)]
     pub egress: EgressPolicy,
+    /// Hosts every session may tunnel to under the `deny` policy, such as
+    /// package registries. Never intercepted, never given a credential.
+    #[serde(default)]
+    pub passthrough_hosts: Vec<HostPattern>,
 }
 
 impl Default for Settings {
@@ -223,6 +227,7 @@ impl Default for Settings {
         Self {
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
             egress: EgressPolicy::default(),
+            passthrough_hosts: Vec::new(),
         }
     }
 }

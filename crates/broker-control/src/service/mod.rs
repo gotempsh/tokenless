@@ -1431,6 +1431,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn always_reachable_hosts_widen_egress_and_need_step_up() {
+        use broker_core::host::HostPattern;
+        let cp = plane().await;
+        let host = |h: &str| HostPattern::parse(h).unwrap();
+        let mut settings = cp.policy.get_settings(&admin(0)).await.unwrap();
+        settings.unmatched_host_policy = broker_core::snapshot::UnmatchedHostPolicy::Deny;
+        cp.policy
+            .put_settings(&admin(0), settings.clone())
+            .await
+            .unwrap();
+
+        settings.passthrough_hosts = vec![host("registry.npmjs.org"), host("registry.npmjs.org")];
+        let stale = cp.policy.put_settings(&admin(3600), settings.clone()).await;
+        assert!(matches!(stale, Err(ControlError::StepUpRequired { .. })));
+        let saved = cp
+            .policy
+            .put_settings(&admin(0), settings.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            saved.passthrough_hosts,
+            vec![host("registry.npmjs.org")],
+            "deduplicated"
+        );
+
+        // Removing an exception narrows egress, so it needs no step-up.
+        settings.passthrough_hosts.clear();
+        cp.policy
+            .put_settings(&admin(3600), settings.clone())
+            .await
+            .unwrap();
+
+        settings.passthrough_hosts = (0..101)
+            .map(|i| host(&format!("h{i}.example.com")))
+            .collect();
+        let too_many = cp
+            .policy
+            .put_settings(&admin(0), settings)
+            .await
+            .unwrap_err();
+        assert!(too_many.to_string().contains("at most 100"), "{too_many}");
+    }
+
+    #[tokio::test]
     async fn substitutions_name_existing_fields_and_are_audited_by_placeholder() {
         use broker_core::substitution::{Substitution, SubstitutionLocation};
         let cp = plane().await;

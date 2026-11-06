@@ -105,6 +105,10 @@ pub struct SnapshotBody {
     /// Destinations passthrough tunnels may reach.
     #[serde(default)]
     pub egress: crate::egress::EgressPolicy,
+    /// Hosts tunnelled untouched even under [`UnmatchedHostPolicy::Deny`].
+    /// Omitted when empty so older nodes keep accepting snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passthrough_hosts: Vec<crate::host::HostPattern>,
     pub interception_ca: InterceptionCa,
     pub rules: Vec<SnapshotRule>,
 }
@@ -197,6 +201,7 @@ mod tests {
             limited_sessions: vec![],
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
             egress: Default::default(),
+            passthrough_hosts: vec![],
             interception_ca: InterceptionCa {
                 cert_der: STANDARD.encode(b"cert"),
                 key: seal(&node_key, b"key", &ca_aad(&node_id)).unwrap(),
