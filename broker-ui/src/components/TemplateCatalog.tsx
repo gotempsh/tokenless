@@ -102,7 +102,9 @@ export function TemplateCatalog({
   );
 
   return (
-    <div className="space-y-6">
+    // A query container: the catalogue is a list until it is wide enough
+    // for cards that are not cramped, sidebar or not.
+    <div className="@container space-y-6">
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <div className="relative w-full sm:w-80">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -142,11 +144,24 @@ export function TemplateCatalog({
         </div>
       </div>
       {loading ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-          {Array.from({ length: 8 }, (_, i) => (
-            <Skeleton key={i} className="h-36 w-full rounded-lg" />
-          ))}
-        </div>
+        <>
+          <div className="divide-y rounded-lg border @4xl:hidden">
+            {Array.from({ length: 6 }, (_, i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-3">
+                <Skeleton className="size-8 shrink-0 rounded-md" />
+                <div className="flex-1 space-y-1.5">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-3 w-64 max-w-full" />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className={cn(GRID, "hidden")}>
+            {Array.from({ length: 8 }, (_, i) => (
+              <Skeleton key={i} className="h-36 w-full rounded-lg" />
+            ))}
+          </div>
+        </>
       ) : sections.length === 0 ? (
         <p className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
           {latest.length ? (
@@ -165,7 +180,19 @@ export function TemplateCatalog({
             <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               {section.title} <span className="tabular-nums">· {section.items.length}</span>
             </h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {/* One list or one grid shows, by the catalogue's width. */}
+            <ul role="list" className="divide-y rounded-lg border @4xl:hidden">
+              {section.items.map((t) => (
+                <TemplateRow
+                  key={`${section.key}-${t.template.id}`}
+                  t={t}
+                  onOpen={() => onOpen(t)}
+                  openLabel={openLabel?.(t)}
+                  action={cardAction?.(t)}
+                />
+              ))}
+            </ul>
+            <div className={cn(GRID, "hidden")}>
               {section.items.map((t) => (
                 <TemplateCard
                   key={`${section.key}-${t.template.id}`}
@@ -183,6 +210,60 @@ export function TemplateCatalog({
   );
 }
 
+/** Cards only where three fit without cramping: 56rem of catalogue and up. */
+const GRID = "@4xl:grid @4xl:grid-cols-3 @4xl:gap-3 @7xl:grid-cols-4";
+
+function categoryLabel(t: StoredTemplate): string {
+  return t.template.kind === "mcp" ? KIND_LABEL.mcp : CATEGORY_LABEL[t.template.category];
+}
+
+/** A catalogue entry as a list row: logo, name, one line of description. */
+function TemplateRow({
+  t,
+  onOpen,
+  openLabel,
+  action,
+}: {
+  t: StoredTemplate;
+  onOpen: () => void;
+  openLabel?: string;
+  action?: ReactNode;
+}) {
+  const tpl = t.template;
+  return (
+    <li className="flex items-center gap-2 pr-3 transition-colors hover:bg-accent/40">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={openLabel}
+        title={openLabel}
+        className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-4 text-left focus-visible:outline-2 focus-visible:outline-ring"
+      >
+        <ServiceLogo template={tpl} size="sm" />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium">{tpl.name}</span>
+            {t.status !== "approved" && (
+              <Badge variant="outline" className="shrink-0 border-warning/50 font-normal text-warning-strong">
+                Pending approval
+              </Badge>
+            )}
+          </span>
+          <span className="block truncate text-xs text-muted-foreground">{tpl.description}</span>
+        </span>
+        <span className="hidden shrink-0 text-xs text-muted-foreground @xl:block">{categoryLabel(t)}</span>
+        <span
+          className="hidden max-w-48 shrink-0 truncate font-mono text-xs text-muted-foreground @2xl:block"
+          title={tpl.hosts.join(", ")}
+        >
+          {hostSummary(t)}
+        </span>
+      </button>
+      {action}
+    </li>
+  );
+}
+
 function hostSummary(t: StoredTemplate): string {
   const hosts = t.template.hosts;
   if (hosts.length === 0) return "Host set when added";
@@ -197,7 +278,7 @@ function CardBody({ t }: { t: StoredTemplate }) {
         <ServiceLogo template={tpl} />
         {t.status === "approved" ? (
           <Badge variant="secondary" className="font-normal">
-            {tpl.kind === "mcp" ? KIND_LABEL.mcp : CATEGORY_LABEL[tpl.category]}
+            {categoryLabel(t)}
           </Badge>
         ) : (
           <Badge variant="outline" className="border-warning/50 font-normal text-warning-strong">
