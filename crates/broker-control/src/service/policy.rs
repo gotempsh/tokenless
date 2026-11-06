@@ -12,7 +12,7 @@ use broker_core::host::HostPattern;
 use broker_core::ids::{CredentialId, RuleId, VaultId};
 use broker_core::injection::SecretFields;
 use broker_core::path::{HttpMethod, PathPattern};
-use broker_core::rule::RuleScope;
+use broker_core::rule::{validate_mcp_tools, RuleScope};
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::substitution::{validate_substitutions, Substitution};
@@ -63,6 +63,9 @@ pub struct CreateRule {
     pub paths: Option<Vec<String>>,
     #[serde(default)]
     pub methods: Option<Vec<String>>,
+    /// MCP tools a `tools/call` may name; omit to allow every tool.
+    #[serde(default)]
+    pub mcp_tools: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -77,6 +80,12 @@ pub struct UpdateRule {
     pub methods: Option<Vec<String>>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Replaces the MCP tool list. `{"mcp_tools": []}` allows none; send
+    /// `"allow_all_tools": true` to drop the list.
+    #[serde(default)]
+    pub mcp_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub allow_all_tools: bool,
 }
 
 /// Always-reachable hosts are matched on every CONNECT, so keep the list short.
@@ -162,6 +171,14 @@ fn check_substitutions(
 ) -> Result<(), ControlError> {
     let names: Vec<&str> = field_names.iter().map(String::as_str).collect();
     validate_substitutions(substitutions, &names).map_err(ControlError::from)
+}
+
+fn tools_string(tools: &Option<Vec<String>>) -> String {
+    match tools {
+        None => "all".into(),
+        Some(t) if t.is_empty() => "none".into(),
+        Some(t) => t.join(","),
+    }
 }
 
 fn hosts_string(hosts: &[HostPattern]) -> String {
@@ -880,6 +897,7 @@ impl PolicyService {
                 Some(m) => parse_methods(m)?,
                 None => max.methods.clone(),
             },
+            mcp_tools: req.mcp_tools.clone().map(validate_mcp_tools).transpose()?,
         };
         allow.validate(&template.id)?;
         allow.ensure_within(&max, &template.id)?;
@@ -899,7 +917,8 @@ impl PolicyService {
             .vault(*vault_id)
             .target(format!("rule:{}", rule.id))
             .detail("credential", meta.id.to_string())
-            .detail("hosts", hosts_string(&rule.allow.hosts));
+            .detail("hosts", hosts_string(&rule.allow.hosts))
+            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools));
         self.policy.insert_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)
@@ -938,6 +957,16 @@ impl PolicyService {
         if let Some(enabled) = req.enabled {
             rule.enabled = enabled;
         }
+        if req.allow_all_tools && req.mcp_tools.is_some() {
+            return Err(ControlError::validation(
+                "send either mcp_tools or allow_all_tools, not both",
+            ));
+        }
+        if req.allow_all_tools {
+            rule.allow.mcp_tools = None;
+        } else if let Some(tools) = &req.mcp_tools {
+            rule.allow.mcp_tools = Some(validate_mcp_tools(tools.clone())?);
+        }
         rule.allow.validate(&template.id)?;
         rule.allow.ensure_within(&max, &template.id)?;
         let widened = rule.allow.widens(&previous.allow) || (rule.enabled && !previous.enabled);
@@ -950,7 +979,8 @@ impl PolicyService {
             .target(format!("rule:{id}"))
             .detail("widened", widened.to_string())
             .detail("enabled", rule.enabled.to_string())
-            .detail("hosts", hosts_string(&rule.allow.hosts));
+            .detail("hosts", hosts_string(&rule.allow.hosts))
+            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools));
         self.policy.update_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)

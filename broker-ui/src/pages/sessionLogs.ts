@@ -23,6 +23,14 @@ export interface LogRow {
   substituted?: string;
   /** Why the body was not searched for placeholders. */
   bodySkipped?: string;
+  /** The MCP call, e.g. "tools/call search_issues". */
+  mcp?: string;
+}
+
+function mcpCall(e: AuditEvent | undefined): string | undefined {
+  if (!e) return undefined;
+  const tool = e.detail.mcp_tool;
+  return tool ? `tools/call ${tool}` : e.detail.mcp_method;
 }
 
 const BLOCKED = new Set(["proxy.deny", "proxy.connect_denied", "proxy.egress_blocked"]);
@@ -74,9 +82,10 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         reason: response?.detail.reason,
         substituted: e.detail.substituted,
         bodySkipped: e.detail.body_not_substituted,
+        mcp: mcpCall(e),
       });
     } else if (BLOCKED.has(e.action)) {
-      rows.push({ key: e.id, at: e.at, outcome: "blocked", request: request(e), reason: e.detail.reason });
+      rows.push({ key: e.id, at: e.at, outcome: "blocked", request: request(e), reason: e.detail.reason, mcp: mcpCall(e) });
     } else if (e.action === "proxy.tunnel") {
       rows.push({ key: e.id, at: e.at, outcome: "passthrough", request: request(e), reason: e.detail.reason });
     }

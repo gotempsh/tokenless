@@ -871,6 +871,7 @@ mod tests {
             hosts,
             paths,
             methods: Some(vec!["GET".into()]),
+            mcp_tools: None,
         };
         assert!(cp
             .policy
@@ -950,6 +951,7 @@ mod tests {
                         hosts: None,
                         paths: None,
                         methods: None,
+                        mcp_tools: None,
                     },
                 )
                 .await
@@ -1160,6 +1162,7 @@ mod tests {
                     hosts: None,
                     paths: None,
                     methods: None,
+                    mcp_tools: None,
                 },
             )
             .await
@@ -1247,6 +1250,7 @@ mod tests {
                     hosts: None,
                     paths: None,
                     methods: None,
+                    mcp_tools: None,
                 },
             )
             .await

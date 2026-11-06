@@ -16,6 +16,44 @@ pub struct RuleScope {
     pub hosts: Vec<HostPattern>,
     pub paths: Vec<PathPattern>,
     pub methods: Vec<HttpMethod>,
+    /// MCP tools a `tools/call` may name. `None` allows every tool; an
+    /// empty list allows none (other MCP methods still work).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tools: Option<Vec<String>>,
+}
+
+pub const MAX_MCP_TOOLS: usize = 200;
+
+/// Checks and normalises an MCP tool allowlist: sorted, without duplicates.
+pub fn validate_mcp_tools(tools: Vec<String>) -> Result<Vec<String>, CoreError> {
+    let mut tools: Vec<String> = tools.into_iter().map(|t| t.trim().to_string()).collect();
+    tools.sort();
+    tools.dedup();
+    if tools.len() > MAX_MCP_TOOLS {
+        return Err(CoreError::InvalidTemplate {
+            template_id: "mcp tools".into(),
+            reason: format!(
+                "at most {MAX_MCP_TOOLS} tools may be listed, got {}",
+                tools.len()
+            ),
+        });
+    }
+    for tool in &tools {
+        let valid = !tool.is_empty()
+            && tool.len() <= 128
+            && tool
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-./".contains(c));
+        if !valid {
+            return Err(CoreError::InvalidTemplate {
+                template_id: "mcp tools".into(),
+                reason: format!(
+                    "tool name '{tool}' must be 1-128 letters, digits, '_', '-', '.' or '/'"
+                ),
+            });
+        }
+    }
+    Ok(tools)
 }
 
 impl RuleScope {
@@ -69,7 +107,19 @@ impl RuleScope {
 
     /// True when `self` allows something `previous` did not.
     pub fn widens(&self, previous: &RuleScope) -> bool {
-        self.ensure_within(previous, "").is_err()
+        let more_tools = match (&self.mcp_tools, &previous.mcp_tools) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(now), Some(before)) => now.iter().any(|t| !before.contains(t)),
+        };
+        more_tools || self.ensure_within(previous, "").is_err()
+    }
+
+    /// May a `tools/call` name `tool`?
+    pub fn allows_tool(&self, tool: &str) -> bool {
+        self.mcp_tools
+            .as_ref()
+            .is_none_or(|tools| tools.iter().any(|t| t == tool))
     }
 
     pub fn matches_host(&self, host: &str, port: u16) -> bool {
@@ -102,6 +152,7 @@ mod tests {
                 .iter()
                 .map(|m| HttpMethod::parse(m).unwrap())
                 .collect(),
+            mcp_tools: None,
         }
     }
 
@@ -138,6 +189,31 @@ mod tests {
         assert!(!s.allows("api.example.com", 443, "GET", "/v2/models"));
         assert!(!s.allows("other.example.com", 443, "GET", "/v1/models"));
         assert!(!s.allows("api.example.com", 8443, "GET", "/v1/models"));
+    }
+
+    #[test]
+    fn tool_lists_narrow_and_widen() {
+        let all = scope(&["mcp.example.com"], &["/*"], &["*"]);
+        let some = RuleScope {
+            mcp_tools: Some(vec!["search".into()]),
+            ..all.clone()
+        };
+        let more = RuleScope {
+            mcp_tools: Some(vec!["search".into(), "delete".into()]),
+            ..all.clone()
+        };
+        assert!(!some.widens(&all), "a list narrows 'every tool'");
+        assert!(all.widens(&some), "dropping the list allows every tool");
+        assert!(more.widens(&some));
+        assert!(!some.widens(&more));
+        assert!(all.allows_tool("anything"));
+        assert!(some.allows_tool("search") && !some.allows_tool("delete"));
+        assert_eq!(
+            validate_mcp_tools(vec![" b".into(), "a".into(), "b".into()]).unwrap(),
+            ["a", "b"]
+        );
+        assert!(validate_mcp_tools(vec!["has space".into()]).is_err());
+        assert!(validate_mcp_tools(vec![String::new()]).is_err());
     }
 
     #[test]

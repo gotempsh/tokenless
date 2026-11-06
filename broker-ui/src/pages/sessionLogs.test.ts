@@ -32,6 +32,14 @@ describe("logRows", () => {
     expect(rows[0]).toMatchObject({ outcome: "error", status: 502, reason: "upstream request failed: reset" });
   });
 
+  test("names the MCP call", () => {
+    const rows = logRows([
+      event("1", "proxy.deny", "denied", { ...request, mcp_method: "tools/call", mcp_tool: "drop_table" }),
+      event("2", "proxy.inject", "success", { ...request, request_id: "r3", mcp_method: "tools/list" }),
+    ]);
+    expect(rows.map((r) => r.mcp)).toEqual(["tools/call drop_table", "tools/list"]);
+  });
+
   test("labels denials and tunnels", () => {
     const rows = logRows([
       event("3", "proxy.deny", "denied", { ...request, reason: "no rule" }),

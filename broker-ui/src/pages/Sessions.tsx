@@ -273,6 +273,7 @@ export function SessionDetail({
                     <TableCell>{outcomeBadge(r)}</TableCell>
                     <TableCell className="max-w-80">
                       <Mono className="block truncate">{r.request}</Mono>
+                      {r.mcp && <p className="mt-1 text-xs">MCP {r.mcp}</p>}
                       {r.reason && <p className="mt-1 text-xs text-muted-foreground">{r.reason}</p>}
                       {r.substituted && (
                         <p className="mt-1 text-xs text-muted-foreground">Filled in {r.substituted}</p>

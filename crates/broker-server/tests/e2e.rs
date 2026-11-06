@@ -563,6 +563,93 @@ async fn end_to_end() {
     let sent: Value = serde_json::from_str(&echo.body).unwrap();
     assert_eq!(sent["auth"], SECRET);
 
+    // --- MCP tool limits ----------------------------------------------------
+    let (status, _, limited) = api
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/rules/{rule_id}"),
+            Some(json!({ "mcp_tools": ["search", "search"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{limited}");
+    assert_eq!(limited["allow"]["mcp_tools"], json!(["search"]));
+    let call = |tool: &str| {
+        json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": { "name": tool, "arguments": { "token": "__UPSTREAM_TOKEN__" } } })
+    };
+    let mcp_url = format!("https://localhost:{upstream_port}/mcp");
+    eventually(
+        "tool limits reach the proxy",
+        Duration::from_secs(10),
+        || async {
+            let refused: Value = client
+                .post(&mcp_url)
+                .json(&call("delete_everything"))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap_or(Value::Null);
+            refused["error"]["data"]["tool"] == "delete_everything"
+        },
+    )
+    .await;
+    // An allowed call is forwarded, with its placeholder filled in.
+    let echo: Echo = client
+        .post(&mcp_url)
+        .json(&call("search"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let forwarded: Value = serde_json::from_str(&echo.body).unwrap();
+    assert_eq!(forwarded["params"]["name"], "search");
+    assert_eq!(forwarded["params"]["arguments"]["token"], SECRET);
+    // A batch with one refused call is refused whole, one error per request.
+    let refused: Value = client
+        .post(&mcp_url)
+        .json(&json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "tools/list" },
+            { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "drop" } },
+        ]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(refused.as_array().map(Vec::len), Some(2), "{refused}");
+    assert_eq!(refused[1]["id"], 2);
+    // Without a readable body the proxy cannot check, so it refuses.
+    let unreadable = client
+        .post(&mcp_url)
+        .header("content-encoding", "gzip")
+        .body("not really gzip")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unreadable.status(), StatusCode::BAD_REQUEST);
+    // GET (the SSE stream) is not a tool call and passes.
+    assert!(client
+        .get(&mcp_url)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    let (status, _, restored) = api
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/rules/{rule_id}"),
+            Some(json!({ "allow_all_tools": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert!(restored["allow"].get("mcp_tools").is_none(), "{restored}");
+
     // --- no session: 407 -------------------------------------------------------
     assert_eq!(
         connect_status(proxy, &format!("localhost:{upstream_port}"), None).await,

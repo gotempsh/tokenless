@@ -286,6 +286,7 @@ impl ServiceTemplate {
             hosts,
             paths: self.allow.paths.clone(),
             methods: self.allow.methods.clone(),
+            mcp_tools: None,
         };
         scope.validate(&self.id)?;
         Ok(scope)

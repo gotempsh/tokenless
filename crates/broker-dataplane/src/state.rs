@@ -390,6 +390,7 @@ pub(crate) mod tests {
                                 hosts: vec![HostPattern::parse(host).unwrap()],
                                 paths: vec![PathPattern::parse("/*").unwrap()],
                                 methods: vec![HttpMethod::parse("*").unwrap()],
+                                mcp_tools: None,
                             },
                             strip_headers: vec![
                                 "authorization".into(),

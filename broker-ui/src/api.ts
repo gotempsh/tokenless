@@ -180,7 +180,8 @@ export interface Rule {
   vault_id: string;
   credential_id: string;
   name: string;
-  allow: { hosts: string[]; paths: string[]; methods: string[] };
+  /** `mcp_tools` absent: every tool; a list: only those tools/call names. */
+  allow: { hosts: string[]; paths: string[]; methods: string[]; mcp_tools?: string[] };
   enabled: boolean;
   created_by: string;
   created_at: string;

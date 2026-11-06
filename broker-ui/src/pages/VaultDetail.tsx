@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { ChevronLeft, ListChecks, Plus, Timer, Trash2 } from "lucide-react";
+import { ChevronLeft, ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
 import {
   del,
   get,
@@ -101,7 +101,67 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
 
 // ----- rules ---------------------------------------------------------------
 
-const EMPTY_RULE = { name: "", credential_id: "", hosts: "", paths: "", methods: "" };
+const EMPTY_RULE = { name: "", credential_id: "", hosts: "", paths: "", methods: "", tools: "" };
+
+/** "every tool", "no tools" or the list, for a rule's MCP tool limit. */
+function toolsLabel(tools: string[] | undefined): string {
+  if (tools === undefined) return "every tool";
+  if (tools.length === 0) return "no tools";
+  return tools.join(", ");
+}
+
+function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => void; onDone: () => void }) {
+  const [limited, setLimited] = useState(rule.allow.mcp_tools !== undefined);
+  const [text, setText] = useState((rule.allow.mcp_tools ?? []).join("\n"));
+  const action = useAction();
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const body = limited ? { mcp_tools: lines(text) } : { allow_all_tools: true };
+    if (await action.run(() => patch<Rule>(`/rules/${rule.id}`, body))) onDone();
+  };
+  return (
+    <form className="space-y-4" onSubmit={submit}>
+      <ErrorBanner error={action.error} />
+      <ChoiceCards<"all" | "limited">
+        name="tools"
+        value={limited ? "limited" : "all"}
+        onChange={(v) => setLimited(v === "limited")}
+        choices={[
+          { value: "all", title: "Every tool", description: "Any tools/call the MCP server offers." },
+          {
+            value: "limited",
+            title: "Only these tools",
+            description: "Other tools/call requests are answered with an MCP error naming the tool and never reach the server.",
+          },
+        ]}
+      />
+      {limited && (
+        <Field
+          label="Allowed tools"
+          htmlFor="rule-tools"
+          hint="One tool name per line, as the server lists it in tools/list. Leave empty to allow none; other MCP methods still work."
+        >
+          <Textarea
+            id="rule-tools"
+            rows={5}
+            className="font-mono"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={"search_issues\nget_file_contents"}
+          />
+        </Field>
+      )}
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={action.busy}>
+          Save tools
+        </Button>
+      </DialogActions>
+    </form>
+  );
+}
 
 function Rules({ vaultId }: { vaultId: string }) {
   const [page, setPage] = useState(1);
@@ -109,6 +169,7 @@ function Rules({ vaultId }: { vaultId: string }) {
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(EMPTY_RULE);
+  const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
   const createAction = useAction();
@@ -124,6 +185,7 @@ function Rules({ vaultId }: { vaultId: string }) {
         hosts: opt(form.hosts),
         paths: opt(form.paths),
         methods: opt(form.methods),
+        mcp_tools: opt(form.tools),
       }),
     );
     if (created) {
@@ -194,6 +256,11 @@ function Rules({ vaultId }: { vaultId: string }) {
                   </TableCell>
                   <TableCell>
                     <Tags values={r.allow.methods} />
+                    {r.allow.mcp_tools !== undefined && (
+                      <p className="mt-1 max-w-48 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
+                        MCP: {toolsLabel(r.allow.mcp_tools)}
+                      </p>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
@@ -208,6 +275,16 @@ function Rules({ vaultId }: { vaultId: string }) {
                   </TableCell>
                   <TableCell>
                     <RowActions>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        title="Limit which MCP tools this rule's sessions may call"
+                        onClick={() => setEditingTools(r)}
+                      >
+                        <Wrench />
+                        <span className="hidden sm:inline">Tools</span>
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
@@ -285,6 +362,20 @@ function Rules({ vaultId }: { vaultId: string }) {
               />
             </Field>
           </div>
+          <Field
+            label="MCP tools"
+            htmlFor="rule-new-tools"
+            hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
+          >
+            <Textarea
+              id="rule-new-tools"
+              rows={2}
+              className="font-mono"
+              value={form.tools}
+              onChange={(e) => setForm({ ...form, tools: e.target.value })}
+              placeholder="search_issues"
+            />
+          </Field>
           <DialogActions>
             <Button type="button" variant="outline" onClick={() => setAdding(false)}>
               Cancel
@@ -294,6 +385,25 @@ function Rules({ vaultId }: { vaultId: string }) {
             </Button>
           </DialogActions>
         </form>
+      </FormDialog>
+      <FormDialog
+        open={editingTools !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditingTools(null);
+        }}
+        title={editingTools ? `MCP tools for "${editingTools.name}"` : "MCP tools"}
+        description="Applies to JSON-RPC requests sent to the rule's hosts. Allowing more tools needs a recent sign-in confirmation."
+      >
+        {editingTools && (
+          <ToolsForm
+            rule={editingTools}
+            onCancel={() => setEditingTools(null)}
+            onDone={() => {
+              setEditingTools(null);
+              rules.reload();
+            }}
+          />
+        )}
       </FormDialog>
       <ConfirmDialog
         open={confirm.open}

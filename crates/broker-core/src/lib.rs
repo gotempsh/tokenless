@@ -16,6 +16,7 @@ pub mod error;
 pub mod host;
 pub mod ids;
 pub mod injection;
+pub mod mcp;
 pub mod path;
 pub mod protocol;
 pub mod rule;

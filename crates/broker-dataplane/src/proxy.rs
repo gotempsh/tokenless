@@ -22,7 +22,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::host::parse_authority;
+use broker_core::mcp::{self, McpMessage, NotJsonRpc};
 use broker_core::path::check_request_path;
+use broker_core::rule::RuleScope;
 use broker_core::session::{verify_session, SessionClaims};
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::substitution::{
@@ -618,52 +620,74 @@ fn body_skip_reason(headers: &HeaderMap) -> Option<&'static str> {
     }
 }
 
-/// Buffers a body of known, bounded length and swaps placeholders in it.
-/// Anything else is streamed unchanged, with the reason in `skipped`.
-async fn substitute_body(
-    req: Request<Incoming>,
-    subs: &[RenderedSubstitution],
-    applied: &mut Applied,
-    skipped: &mut Option<&'static str>,
-) -> Result<Request<ProxyBody>, (StatusCode, String)> {
-    if !wants_body(subs) {
-        return Ok(req.map(|b| b.boxed()));
-    }
+/// A request body, either read into memory or left to stream.
+enum ReadBody {
+    Buffered(http::request::Parts, Bytes),
+    /// Not read, with the reason (unknown length, compressed, too large).
+    Streamed(Request<Incoming>, &'static str),
+}
+
+/// Reads a body of known length up to 4 MiB that is not compressed.
+async fn read_body(req: Request<Incoming>) -> Result<ReadBody, (StatusCode, String)> {
     if let Some(reason) = body_skip_reason(req.headers()) {
-        *skipped = Some(reason);
-        return Ok(req.map(|b| b.boxed()));
+        return Ok(ReadBody::Streamed(req, reason));
     }
-    let (mut parts, incoming) = req.into_parts();
+    let (parts, incoming) = req.into_parts();
     let limited = http_body_util::Limited::new(incoming, MAX_SUBSTITUTION_BODY as usize);
-    let collected = match timeout(BODY_READ_TIMEOUT, limited.collect()).await {
-        Ok(Ok(collected)) => collected.to_bytes(),
-        Ok(Err(e)) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("could not read the request body: {e}"),
-            ))
-        }
-        Err(_) => {
-            return Err((
-                StatusCode::REQUEST_TIMEOUT,
-                "the request body did not arrive within 30s".to_string(),
-            ))
-        }
+    match timeout(BODY_READ_TIMEOUT, limited.collect()).await {
+        Ok(Ok(collected)) => Ok(ReadBody::Buffered(parts, collected.to_bytes())),
+        Ok(Err(e)) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("could not read the request body: {e}"),
+        )),
+        Err(_) => Err((
+            StatusCode::REQUEST_TIMEOUT,
+            "the request body did not arrive within 30s".to_string(),
+        )),
+    }
+}
+
+/// The first MCP tool call in `messages` that `allow` does not permit.
+fn refused_tool<'m>(messages: &'m [McpMessage], allow: &RuleScope) -> Option<&'m str> {
+    messages
+        .iter()
+        .filter_map(|m| m.tool.as_deref())
+        .find(|tool| !allow.allows_tool(tool))
+}
+
+/// The JSON-RPC answer to a refused body: one error, or one per request in
+/// a batch (none of a refused batch is forwarded).
+fn mcp_refusal(messages: &[McpMessage], tool: &str, batch: bool) -> Response<ProxyBody> {
+    let json = if batch {
+        serde_json::Value::Array(
+            messages
+                .iter()
+                .filter(|m| m.id.is_some())
+                .map(|m| mcp::refusal(m.id.as_ref(), tool))
+                .collect(),
+        )
+    } else {
+        mcp::refusal(messages.first().and_then(|m| m.id.as_ref()), tool)
     };
-    let kind = BodyKind::from_content_type(
-        parts
-            .headers
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-    );
-    let bytes = match apply_to_body(&collected, kind, subs, applied) {
-        Some(rewritten) => Bytes::from(rewritten),
-        None => collected,
-    };
-    parts
-        .headers
-        .insert(http::header::CONTENT_LENGTH, HeaderValue::from(bytes.len()));
-    Ok(Request::from_parts(parts, body(bytes)))
+    let mut response = Response::new(body(json.to_string()));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
+        .headers_mut()
+        .insert("x-broker-error", HeaderValue::from_static("1"));
+    response
+}
+
+/// Comma-joined distinct values, at most 512 characters, for audit details.
+fn joined<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for v in values {
+        if !seen.contains(&v) {
+            seen.push(v);
+        }
+    }
+    seen.join(", ").chars().take(512).collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -786,17 +810,98 @@ async fn handle_intercepted(
     let request_id = new_request_id();
     let mut applied = Applied::default();
     let mut body_skipped = None;
-    let req = if rule.substitutions.is_empty() {
-        req.map(|b| b.boxed())
-    } else {
+    let mut mcp_seen: Option<Vec<McpMessage>> = None;
+    if !rule.substitutions.is_empty() {
         if let Err(reason) = substitute_head(&mut req, &rule.substitutions, &mut applied) {
             Metrics::inc(&shared.metrics.requests_denied_total);
             return respond(StatusCode::BAD_REQUEST, &reason);
         }
-        match substitute_body(req, &rule.substitutions, &mut applied, &mut body_skipped).await {
-            Ok(req) => req,
+    }
+    let check_tools = rule.allow.mcp_tools.is_some() && method == "POST";
+    let req = if check_tools || wants_body(&rule.substitutions) {
+        match read_body(req).await {
             Err((status, reason)) => return respond(status, &reason),
+            Ok(ReadBody::Streamed(req, reason)) => {
+                if check_tools {
+                    let reason = format!(
+                        "this rule limits MCP tools, so its requests need a JSON body of known length up to 4 MiB that is not compressed ({reason})"
+                    );
+                    Metrics::inc(&shared.metrics.requests_denied_total);
+                    audit_best_effort(
+                        shared,
+                        claims,
+                        "proxy.deny",
+                        AuditOutcome::Denied,
+                        &ctx.host,
+                        ctx.port,
+                        Some((&method, &path)),
+                        &reason,
+                    );
+                    return respond(StatusCode::BAD_REQUEST, &reason);
+                }
+                body_skipped = Some(reason);
+                req.map(|b| b.boxed())
+            }
+            Ok(ReadBody::Buffered(mut parts, bytes)) => {
+                if check_tools {
+                    let parsed = match mcp::messages(&bytes) {
+                        Ok(parsed) => parsed,
+                        Err(NotJsonRpc(reason)) => {
+                            Metrics::inc(&shared.metrics.requests_denied_total);
+                            return respond(
+                                StatusCode::BAD_REQUEST,
+                                &format!(
+                                    "this rule limits MCP tools and the body is not MCP JSON-RPC: {reason}"
+                                ),
+                            );
+                        }
+                    };
+                    if let Some(tool) = refused_tool(&parsed, &rule.allow) {
+                        Metrics::inc(&shared.metrics.requests_denied_total);
+                        let event = proxy_event(
+                            shared,
+                            claims,
+                            "proxy.deny",
+                            AuditOutcome::Denied,
+                            &ctx.host,
+                            ctx.port,
+                            Some((&method, &path)),
+                        )
+                        .target(format!("rule:{}", rule.id))
+                        .detail("mcp_method", "tools/call")
+                        .detail("mcp_tool", tool.to_string())
+                        .detail(
+                            "reason",
+                            format!("MCP tool '{tool}' is not in the rule's allowed tools"),
+                        );
+                        let _ = shared.audit.try_record(event);
+                        let batch = bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[');
+                        return mcp_refusal(&parsed, tool, batch);
+                    }
+                    mcp_seen = Some(parsed);
+                }
+                let bytes = if wants_body(&rule.substitutions) {
+                    let kind = BodyKind::from_content_type(
+                        parts
+                            .headers
+                            .get(CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok()),
+                    );
+                    match apply_to_body(&bytes, kind, &rule.substitutions, &mut applied) {
+                        Some(rewritten) => Bytes::from(rewritten),
+                        None => bytes,
+                    }
+                } else {
+                    bytes
+                };
+                parts
+                    .headers
+                    .insert(http::header::CONTENT_LENGTH, HeaderValue::from(bytes.len()));
+                Request::from_parts(parts, body(bytes))
+            }
         }
+    } else {
+        req.map(|b| b.boxed())
     };
     let mut req = req;
     let mut event = proxy_event(
@@ -816,6 +921,16 @@ async fn handle_intercepted(
     }
     if let Some(reason) = body_skipped {
         event = event.detail("body_not_substituted", reason);
+    }
+    if let Some(messages) = &mcp_seen {
+        event = event.detail(
+            "mcp_method",
+            joined(messages.iter().map(|m| m.method.as_str())),
+        );
+        let tools = joined(messages.iter().filter_map(|m| m.tool.as_deref()));
+        if !tools.is_empty() {
+            event = event.detail("mcp_tool", tools);
+        }
     }
     if shared.audit.try_record(event).is_err() {
         return respond(
@@ -948,6 +1063,7 @@ mod tests {
                 hosts: vec![HostPattern::parse("api.example.com").unwrap()],
                 paths: vec![PathPattern::parse("/*").unwrap()],
                 methods: vec![HttpMethod::parse("*").unwrap()],
+                mcp_tools: None,
             },
             strip: vec![
                 HeaderName::from_static("authorization"),

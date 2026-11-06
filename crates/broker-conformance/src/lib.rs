@@ -107,6 +107,7 @@ fn scope() -> Result<RuleScope, ConformanceFailure> {
         hosts: vec![broker_core::host::HostPattern::parse("api.example.com").map_err(parse_err)?],
         paths: vec![broker_core::path::PathPattern::parse("/*").map_err(parse_err)?],
         methods: vec![broker_core::path::HttpMethod::parse("GET").map_err(parse_err)?],
+        mcp_tools: Some(vec!["search".to_string()]),
     })
 }
 
