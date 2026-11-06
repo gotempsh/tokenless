@@ -27,9 +27,15 @@ function totpFields(enrollment: TotpEnrollment | null, code: string) {
 export function AuthLayout({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
   return (
     <div className="flex min-h-svh flex-col items-center justify-center bg-muted/40 px-4 py-10">
-      <div className="mb-6 flex items-center gap-2">
-        <BrandMark />
-        <span className="text-sm font-semibold">Tokenless</span>
+      <div className="mb-6 flex max-w-md flex-col items-center gap-3 text-center">
+        <div className="flex items-center gap-2">
+          <BrandMark />
+          <span className="text-sm font-semibold">Tokenless</span>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          A credential broker for AI agents. Agents call APIs through your proxy, which adds the real token on the way
+          out, so the agent never holds it.
+        </p>
       </div>
       <div className="w-full max-w-md rounded-lg border bg-card p-6 text-card-foreground sm:p-8">
         <div className="mb-6 space-y-1.5">
@@ -303,6 +309,16 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
           Sign in
         </Button>
       </form>
+      <div className="mt-6 space-y-1.5 border-t pt-5 text-xs text-muted-foreground">
+        <p>
+          <span className="font-medium text-foreground">First time?</span> Sign in as <code>admin</code> with the
+          password <code>tokenless serve</code> printed when it first started.
+        </p>
+        <p>
+          Lost it? On the server, run <code>tokenless admin reset-password</code>. No account yet? Ask an admin for an
+          invitation.
+        </p>
+      </div>
     </AuthLayout>
   );
 }
