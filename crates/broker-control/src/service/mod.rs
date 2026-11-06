@@ -126,8 +126,10 @@ impl Guard {
     }
 }
 
-/// Writes control plane audit events. A failed write is logged at error
-/// level; the operation it describes has already been committed.
+/// Writes audit events that describe no stored change: denials and
+/// validation requests. Events for a change are handed to the store method
+/// that makes it and committed with it. A failed write here is logged at
+/// error level.
 #[derive(Clone)]
 pub struct AuditRecorder {
     sink: Arc<dyn AuditSink>,
@@ -196,7 +198,6 @@ impl ControlPlane {
             stores.policy.clone(),
             keys.clone(),
             guard.clone(),
-            recorder.clone(),
             notifier.clone(),
         );
         let nodes = nodes::NodeService::new(

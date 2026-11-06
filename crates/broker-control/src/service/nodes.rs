@@ -132,15 +132,25 @@ impl NodeService {
         let secret = token::new_token("s");
         let now = Utc::now();
         let expires_at = now + Duration::seconds(i64::try_from(ttl).unwrap_or(3600));
+        let event = AuditEvent::new(
+            caller.actor(),
+            "node.join_token.create",
+            AuditOutcome::Success,
+        )
+        .target(format!("join_token:{token_id}"))
+        .detail("expires_at", expires_at.to_rfc3339());
         self.nodes
-            .insert_join_token(JoinTokenRecord {
-                id: token_id.clone(),
-                secret_hash: token::hash_token(&secret),
-                created_by: caller.actor().to_string(),
-                created_at: now,
-                expires_at,
-                consumed_at: None,
-            })
+            .insert_join_token(
+                JoinTokenRecord {
+                    id: token_id.clone(),
+                    secret_hash: token::hash_token(&secret),
+                    created_by: caller.actor().to_string(),
+                    created_at: now,
+                    expires_at,
+                    consumed_at: None,
+                },
+                &[event],
+            )
             .await?;
         let encoded = JoinToken {
             token_id: token_id.clone(),
@@ -148,17 +158,6 @@ impl NodeService {
             ca_fingerprint: self.keys.node_ca.fingerprint(),
         }
         .encode();
-        self.audit
-            .record(
-                AuditEvent::new(
-                    caller.actor(),
-                    "node.join_token.create",
-                    AuditOutcome::Success,
-                )
-                .target(format!("join_token:{token_id}"))
-                .detail("expires_at", expires_at.to_rfc3339()),
-            )
-            .await;
         Ok(JoinTokenIssued {
             token: encoded,
             token_id,
@@ -205,31 +204,30 @@ impl NodeService {
             &node_id,
             self.config.node_cert_ttl,
         )?;
+        let event = AuditEvent::new(
+            format!("node:{node_id}"),
+            "node.enroll",
+            AuditOutcome::Success,
+        )
+        .target(format!("node:{node_id}"))
+        .detail("name", name.to_string())
+        .detail("join_token", join.token_id.clone());
         self.nodes
-            .insert_node(Node {
-                id: node_id,
-                name: name.to_string(),
-                seal_public_key: req.seal_public_key.clone(),
-                cert_serial: signed.serial.clone(),
-                cert_not_after: signed.not_after,
-                enrolled_at: now,
-                last_seen_at: None,
-                revoked_at: None,
-            })
+            .insert_node(
+                Node {
+                    id: node_id,
+                    name: name.to_string(),
+                    seal_public_key: req.seal_public_key.clone(),
+                    cert_serial: signed.serial.clone(),
+                    cert_not_after: signed.not_after,
+                    enrolled_at: now,
+                    last_seen_at: None,
+                    revoked_at: None,
+                },
+                &[event],
+            )
             .await?;
         info!(node_id = %node_id, node_name = %name, "data plane node enrolled");
-        self.audit
-            .record(
-                AuditEvent::new(
-                    format!("node:{node_id}"),
-                    "node.enroll",
-                    AuditOutcome::Success,
-                )
-                .target(format!("node:{node_id}"))
-                .detail("name", name.to_string())
-                .detail("join_token", join.token_id),
-            )
-            .await;
         Ok(EnrollResponse {
             node_id,
             client_cert_pem: signed.cert_pem,
@@ -270,8 +268,16 @@ impl NodeService {
             &node.id,
             self.config.node_cert_ttl,
         )?;
+        let event = AuditEvent::new(
+            format!("node:{}", node.id),
+            "node.renew",
+            AuditOutcome::Success,
+        )
+        .target(format!("node:{}", node.id))
+        .detail("cert_serial", signed.serial.clone())
+        .detail("not_after", signed.not_after.to_rfc3339());
         self.nodes
-            .update_node_cert(&node.id, &signed.serial, signed.not_after)
+            .update_node_cert(&node.id, &signed.serial, signed.not_after, &[event])
             .await?;
         info!(node_id = %node.id, not_after = %signed.not_after, "renewed node client certificate");
         Ok(RenewResponse {
@@ -440,18 +446,13 @@ impl NodeService {
 
     pub async fn revoke_node(&self, caller: &Caller, id: &NodeId) -> Result<(), ControlError> {
         self.guard.check(caller, Action::NodeManage, None).await?;
-        let changed = self.nodes.revoke_node(id, Utc::now()).await?;
+        let event = AuditEvent::new(caller.actor(), "node.revoke", AuditOutcome::Success)
+            .target(format!("node:{id}"));
+        self.nodes.revoke_node(id, Utc::now(), &[event]).await?;
         if let Ok(mut cache) = self.cache.lock() {
             cache.remove(id);
         }
         self.notifier.bump_sessions();
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "node.revoke", AuditOutcome::Success)
-                    .target(format!("node:{id}"))
-                    .detail("already_revoked", (!changed).to_string()),
-            )
-            .await;
         Ok(())
     }
 

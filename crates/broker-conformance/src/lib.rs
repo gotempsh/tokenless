@@ -147,7 +147,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         (&other, b"ct-3".to_vec()),
     ] {
         store
-            .insert_credential(meta.clone(), ct)
+            .insert_credential(meta.clone(), ct, &[])
             .await
             .map_err(backend(S, "insert"))?;
     }
@@ -174,7 +174,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
     );
 
     let dup = store
-        .insert_credential(credential(vault_a, "first", 0), b"x".to_vec())
+        .insert_credential(credential(vault_a, "first", 0), b"x".to_vec(), &[])
         .await;
     ensure!(
         S,
@@ -230,6 +230,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
             b"ct-rotated".to_vec(),
             vec!["token".into(), "extra".into()],
             at(5),
+            &[],
         )
         .await
         .map_err(backend(S, "replace"))?;
@@ -254,7 +255,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "field names not updated: {meta:?}"
     );
     let missing = store
-        .replace_secret(&CredentialId::new(), vec![], vec![], at(0))
+        .replace_secret(&CredentialId::new(), vec![], vec![], at(0), &[])
         .await;
     ensure!(
         S,
@@ -264,7 +265,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
     );
 
     store
-        .delete_credential(&first.id)
+        .delete_credential(&first.id, &[])
         .await
         .map_err(backend(S, "delete"))?;
     let gone = store
@@ -287,7 +288,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         gone_ct.is_none(),
         "ciphertext still present after delete"
     );
-    let again = store.delete_credential(&first.id).await;
+    let again = store.delete_credential(&first.id, &[]).await;
     ensure!(
         S,
         "delete_missing",
@@ -303,14 +304,14 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let v1 = vault("alpha", -20);
     let v2 = vault("beta", -10);
     store
-        .insert_vault(v1.clone())
+        .insert_vault(v1.clone(), &[])
         .await
         .map_err(backend(S, "vault_insert"))?;
     store
-        .insert_vault(v2.clone())
+        .insert_vault(v2.clone(), &[])
         .await
         .map_err(backend(S, "vault_insert"))?;
-    let dup = store.insert_vault(vault("alpha", 0)).await;
+    let dup = store.insert_vault(vault("alpha", 0), &[]).await;
     ensure!(
         S,
         "vault_duplicate",
@@ -357,10 +358,10 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         created_at: at(0),
     };
     store
-        .insert_template(stored.clone())
+        .insert_template(stored.clone(), &[])
         .await
         .map_err(backend(S, "template_insert"))?;
-    let dup = store.insert_template(stored.clone()).await;
+    let dup = store.insert_template(stored.clone(), &[]).await;
     ensure!(
         S,
         "template_duplicate",
@@ -368,7 +369,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "same id+version must be Conflict, got {dup:?}"
     );
     store
-        .approve_template(&template.id, template.version, "user:admin")
+        .approve_template(&template.id, template.version, "user:admin", &[])
         .await
         .map_err(backend(S, "template_approve"))?;
     let got = store
@@ -388,7 +389,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         got.as_ref().map(|t| &t.template) == Some(&template),
         "template content changed in storage"
     );
-    let missing = store.approve_template("nope", 1, "x").await;
+    let missing = store.approve_template("nope", 1, "x", &[]).await;
     ensure!(
         S,
         "template_approve_missing",
@@ -414,11 +415,13 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let r3 = rule(v2.id, CredentialId::new(), "one", true)?;
     for r in [&r1, &r2, &r3] {
         store
-            .insert_rule(r.clone())
+            .insert_rule(r.clone(), &[])
             .await
             .map_err(backend(S, "rule_insert"))?;
     }
-    let dup = store.insert_rule(rule(v1.id, cred, "one", true)?).await;
+    let dup = store
+        .insert_rule(rule(v1.id, cred, "one", true)?, &[])
+        .await;
     ensure!(
         S,
         "rule_duplicate",
@@ -470,7 +473,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     updated.enabled = true;
     updated.name = "two-renamed".into();
     store
-        .update_rule(updated.clone())
+        .update_rule(updated.clone(), &[])
         .await
         .map_err(backend(S, "rule_update"))?;
     let got = store
@@ -483,7 +486,9 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         got.as_ref() == Some(&updated),
         "update not persisted: {got:?}"
     );
-    let missing = store.update_rule(rule(v1.id, cred, "ghost", true)?).await;
+    let missing = store
+        .update_rule(rule(v1.id, cred, "ghost", true)?, &[])
+        .await;
     ensure!(
         S,
         "rule_update_missing",
@@ -491,10 +496,10 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     store
-        .delete_rule(&r1.id)
+        .delete_rule(&r1.id, &[])
         .await
         .map_err(backend(S, "rule_delete"))?;
-    let missing = store.delete_rule(&r1.id).await;
+    let missing = store.delete_rule(&r1.id, &[]).await;
     ensure!(
         S,
         "rule_delete_missing",
@@ -508,7 +513,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let expired = session(v1.id, -1, Some(5));
     for s in [&active, &limited, &expired] {
         store
-            .insert_session(s.clone())
+            .insert_session(s.clone(), &[])
             .await
             .map_err(backend(S, "session_insert"))?;
     }
@@ -533,11 +538,11 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "only the unexpired limited session should be listed, got {limits:?}"
     );
     let first = store
-        .revoke_session(&active.id, at(0))
+        .revoke_session(&active.id, at(0), &[])
         .await
         .map_err(backend(S, "session_revoke"))?;
     let second = store
-        .revoke_session(&active.id, at(1))
+        .revoke_session(&active.id, at(1), &[])
         .await
         .map_err(backend(S, "session_revoke_again"))?;
     ensure!(
@@ -547,7 +552,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "first revoke must return true and the second false, got {first}/{second}"
     );
     store
-        .revoke_session(&expired.id, at(0))
+        .revoke_session(&expired.id, at(0), &[])
         .await
         .map_err(backend(S, "session_revoke_expired"))?;
     let revoked = store
@@ -560,7 +565,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         revoked == vec![active.id],
         "only unexpired revoked sessions should be listed, got {revoked:?}"
     );
-    let missing = store.revoke_session(&SessionId::new(), at(0)).await;
+    let missing = store.revoke_session(&SessionId::new(), at(0), &[]).await;
     ensure!(
         S,
         "session_revoke_missing",
@@ -605,7 +610,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         },
     };
     store
-        .put_settings(deny.clone())
+        .put_settings(deny.clone(), &[])
         .await
         .map_err(backend(S, "settings_put"))?;
     let got = store
@@ -712,6 +717,135 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
     Ok(())
 }
 
+async fn count_action(
+    sink: &dyn AuditSink,
+    action: &str,
+    check: &'static str,
+) -> Result<u64, ConformanceFailure> {
+    let page = sink
+        .query(&AuditQuery {
+            action_prefix: Some(action.to_string()),
+            ..Default::default()
+        })
+        .await
+        .map_err(backend("audited_writes", check))?;
+    Ok(page.items.iter().filter(|e| e.action == action).count() as u64)
+}
+
+/// A mutating store method commits the audit events it is given together
+/// with the change, and only when the change succeeds. Run it against a
+/// single backend that implements all three traits.
+pub async fn audited_writes_suite<T>(store: &T) -> Result<(), ConformanceFailure>
+where
+    T: CredentialStore + PolicyStore + AuditSink,
+{
+    const S: &str = "audited_writes";
+    let event = |action: &str| AuditEvent::new("user:conformance", action, AuditOutcome::Success);
+    let vault_id = VaultId::new();
+    let meta = credential(vault_id, "audited", -5);
+
+    store
+        .insert_credential(meta.clone(), b"ct".to_vec(), &[event("t.cred.create")])
+        .await
+        .map_err(backend(S, "insert"))?;
+    let n = count_action(store, "t.cred.create", "insert").await?;
+    ensure!(
+        S,
+        "insert",
+        n == 1,
+        "a successful insert must write its event, found {n}"
+    );
+
+    let dup = store
+        .insert_credential(
+            credential(vault_id, "audited", 0),
+            b"ct".to_vec(),
+            &[event("t.cred.dup")],
+        )
+        .await;
+    ensure!(
+        S,
+        "conflict",
+        matches!(dup, Err(StoreError::Conflict { .. })),
+        "duplicate name must conflict, got {dup:?}"
+    );
+    let n = count_action(store, "t.cred.dup", "conflict").await?;
+    ensure!(
+        S,
+        "conflict",
+        n == 0,
+        "a conflicting insert must not write its event, found {n}"
+    );
+
+    let missing = store
+        .delete_credential(&CredentialId::new(), &[event("t.cred.delete_missing")])
+        .await;
+    ensure!(
+        S,
+        "not_found",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "deleting an unknown credential must be NotFound, got {missing:?}"
+    );
+    let n = count_action(store, "t.cred.delete_missing", "not_found").await?;
+    ensure!(
+        S,
+        "not_found",
+        n == 0,
+        "a failed delete must not write its event, found {n}"
+    );
+
+    let unknown_rule = rule(vault_id, meta.id, "missing", true)?;
+    let missing = store
+        .update_rule(unknown_rule, &[event("t.rule.update_missing")])
+        .await;
+    ensure!(
+        S,
+        "update_not_found",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "updating an unknown rule must be NotFound, got {missing:?}"
+    );
+    let n = count_action(store, "t.rule.update_missing", "update_not_found").await?;
+    ensure!(
+        S,
+        "update_not_found",
+        n == 0,
+        "a failed update must not write its event, found {n}"
+    );
+
+    let proxy_session = session(vault_id, 600, None);
+    store
+        .insert_session(proxy_session.clone(), &[])
+        .await
+        .map_err(backend(S, "revoke"))?;
+    for _ in 0..2 {
+        store
+            .revoke_session(&proxy_session.id, at(0), &[event("t.session.revoke")])
+            .await
+            .map_err(backend(S, "revoke"))?;
+    }
+    let n = count_action(store, "t.session.revoke", "revoke").await?;
+    ensure!(
+        S,
+        "revoke",
+        n == 2,
+        "revoking (including the idempotent repeat) must write each event, found {n}"
+    );
+
+    let several = [event("t.many"), event("t.many"), event("t.many")];
+    store
+        .delete_credential(&meta.id, &several)
+        .await
+        .map_err(backend(S, "several"))?;
+    let n = count_action(store, "t.many", "several").await?;
+    ensure!(
+        S,
+        "several",
+        n == 3,
+        "every event passed must be written, found {n}"
+    );
+    Ok(())
+}
+
 /// Invariants every authoriser must keep, whatever its role model.
 pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceFailure> {
     const S: &str = "authorizer";
@@ -805,12 +939,12 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         created_at: at(0),
     };
     store
-        .insert_user(user.clone())
+        .insert_user(user.clone(), &[])
         .await
         .map_err(backend(S, "user_insert"))?;
     let mut dup = user.clone();
     dup.id = UserId::new();
-    let res = store.insert_user(dup).await;
+    let res = store.insert_user(dup, &[]).await;
     ensure!(
         S,
         "user_duplicate",
@@ -859,15 +993,15 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         ..session.clone()
     };
     store
-        .insert_ui_session(session.clone())
+        .insert_ui_session(session.clone(), &[])
         .await
         .map_err(backend(S, "ui_insert"))?;
     store
-        .insert_ui_session(stale)
+        .insert_ui_session(stale, &[])
         .await
         .map_err(backend(S, "ui_insert"))?;
     store
-        .set_ui_session_step_up("h1", at(5))
+        .set_ui_session_step_up("h1", at(5), &[])
         .await
         .map_err(backend(S, "ui_step_up"))?;
     let got = store
@@ -891,7 +1025,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         "expected 1 expired session purged, got {purged}"
     );
     store
-        .delete_ui_session("h1")
+        .delete_ui_session("h1", &[])
         .await
         .map_err(backend(S, "ui_delete"))?;
     ensure!(
@@ -941,14 +1075,17 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         last_used_at: None,
     };
     store
-        .insert_api_key(key.clone())
+        .insert_api_key(key.clone(), &[])
         .await
         .map_err(backend(S, "key_insert"))?;
     let dup = store
-        .insert_api_key(ApiKey {
-            id: ApiKeyId::new(),
-            ..key.clone()
-        })
+        .insert_api_key(
+            ApiKey {
+                id: ApiKeyId::new(),
+                ..key.clone()
+            },
+            &[],
+        )
         .await;
     ensure!(
         S,
@@ -967,11 +1104,11 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         "secret hash must be stored for verification"
     );
     let first = store
-        .revoke_api_key(&key.id, at(1))
+        .revoke_api_key(&key.id, at(1), &[])
         .await
         .map_err(backend(S, "key_revoke"))?;
     let second = store
-        .revoke_api_key(&key.id, at(2))
+        .revoke_api_key(&key.id, at(2), &[])
         .await
         .map_err(backend(S, "key_revoke"))?;
     ensure!(
@@ -980,7 +1117,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         first && !second,
         "revoke must report the first change only"
     );
-    let missing = store.revoke_api_key(&ApiKeyId::new(), at(0)).await;
+    let missing = store.revoke_api_key(&ApiKeyId::new(), at(0), &[]).await;
     ensure!(
         S,
         "key_revoke_missing",
@@ -1006,11 +1143,11 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         ..token.clone()
     };
     store
-        .insert_join_token(token.clone())
+        .insert_join_token(token.clone(), &[])
         .await
         .map_err(backend(S, "join_insert"))?;
     store
-        .insert_join_token(expired)
+        .insert_join_token(expired, &[])
         .await
         .map_err(backend(S, "join_insert"))?;
     let wrong = store
@@ -1042,11 +1179,11 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         revoked_at: None,
     };
     store
-        .insert_node(node.clone())
+        .insert_node(node.clone(), &[])
         .await
         .map_err(backend(S, "node_insert"))?;
     store
-        .update_node_cert(&node.id, "02", at(7200))
+        .update_node_cert(&node.id, "02", at(7200), &[])
         .await
         .map_err(backend(S, "node_cert"))?;
     store
@@ -1066,11 +1203,11 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         "node cert/heartbeat not stored: {got:?}"
     );
     let first = store
-        .revoke_node(&node.id, at(20))
+        .revoke_node(&node.id, at(20), &[])
         .await
         .map_err(backend(S, "node_revoke"))?;
     let second = store
-        .revoke_node(&node.id, at(21))
+        .revoke_node(&node.id, at(21), &[])
         .await
         .map_err(backend(S, "node_revoke"))?;
     ensure!(

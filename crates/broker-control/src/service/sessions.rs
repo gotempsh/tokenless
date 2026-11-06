@@ -14,7 +14,7 @@ use broker_core::session::{SessionClaims, DEFAULT_SESSION_TTL_SECS};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use super::{AuditRecorder, Caller, Guard};
+use super::{Caller, Guard};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::model::{Page, PageRequest, ProxySession};
@@ -43,7 +43,6 @@ pub struct SessionService {
     policy: Arc<dyn PolicyStore>,
     keys: Arc<KeyRing>,
     guard: Guard,
-    audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
 }
 
@@ -52,14 +51,12 @@ impl SessionService {
         policy: Arc<dyn PolicyStore>,
         keys: Arc<KeyRing>,
         guard: Guard,
-        audit: AuditRecorder,
         notifier: Arc<PolicyNotifier>,
     ) -> Self {
         Self {
             policy,
             keys,
             guard,
-            audit,
             notifier,
         }
     }
@@ -118,7 +115,6 @@ impl SessionService {
             expires_at: claims.exp,
             revoked_at: None,
         };
-        self.policy.insert_session(session.clone()).await?;
         let mut event = AuditEvent::new(caller.actor(), "session.mint", AuditOutcome::Success)
             .vault(*vault_id)
             .target(format!("session:{}", session.id))
@@ -127,7 +123,9 @@ impl SessionService {
         for (k, v) in &session.labels {
             event = event.detail(&format!("label.{k}"), v.clone());
         }
-        self.audit.record(event).await;
+        self.policy
+            .insert_session(session.clone(), &[event])
+            .await?;
         if session.request_limit.is_some() {
             self.notifier.bump_sessions();
         }
@@ -147,18 +145,13 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionRevoke, Some(&session.vault_id))
             .await?;
-        let changed = self.policy.revoke_session(id, Utc::now()).await?;
-        if changed {
+        let event = AuditEvent::new(caller.actor(), "session.revoke", AuditOutcome::Success)
+            .vault(session.vault_id)
+            .target(format!("session:{id}"))
+            .detail("already_revoked", session.revoked_at.is_some().to_string());
+        if self.policy.revoke_session(id, Utc::now(), &[event]).await? {
             self.notifier.bump_sessions();
         }
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "session.revoke", AuditOutcome::Success)
-                    .vault(session.vault_id)
-                    .target(format!("session:{id}"))
-                    .detail("already_revoked", (!changed).to_string()),
-            )
-            .await;
         self.policy
             .get_session(id)
             .await?

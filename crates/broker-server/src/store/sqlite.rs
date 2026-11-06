@@ -27,7 +27,7 @@ use serde::Serialize;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -139,10 +139,67 @@ impl SqliteStore {
         Ok(to_u64(get::<i64>(&row, "n")?))
     }
 
+    async fn begin(
+        &self,
+        operation: &'static str,
+    ) -> Result<Transaction<'static, Sqlite>, StoreError> {
+        self.pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::backend(&format!("begin {operation}"), e))
+    }
+
     async fn exists(&self, table: &'static str, id: &str) -> Result<bool, StoreError> {
         let sql = format!("SELECT COUNT(*) AS n FROM {table} WHERE id = ?");
         Ok(self.count(&sql, Some(id)).await? > 0)
     }
+}
+
+async fn exists_tx(
+    tx: &mut Transaction<'static, Sqlite>,
+    table: &'static str,
+    id: &str,
+) -> Result<bool, StoreError> {
+    let sql = format!("SELECT COUNT(*) AS n FROM {table} WHERE id = ?");
+    let row = sqlx::query(&sql)
+        .bind(id.to_string())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db("count", "row"))?;
+    Ok(get::<i64>(&row, "n")? > 0)
+}
+
+async fn write_audit(
+    tx: &mut Transaction<'static, Sqlite>,
+    events: &[AuditEvent],
+) -> Result<(), StoreError> {
+    for e in events {
+        sqlx::query("INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(e.id.to_string())
+            .bind(ts(&e.at))
+            .bind(&e.actor)
+            .bind(&e.action)
+            .bind(e.outcome.as_str())
+            .bind(e.vault_id.map(|v| v.to_string()))
+            .bind(&e.target)
+            .bind(to_json("detail", &e.detail)?)
+            .execute(&mut **tx)
+            .await
+            .map_err(db("insert audit event", "audit"))?;
+    }
+    Ok(())
+}
+
+/// Writes the change's audit events in its transaction and commits both.
+async fn finish(
+    mut tx: Transaction<'static, Sqlite>,
+    audit: &[AuditEvent],
+    operation: &'static str,
+) -> Result<(), StoreError> {
+    write_audit(&mut tx, audit).await?;
+    tx.commit()
+        .await
+        .map_err(|e| StoreError::backend(&format!("commit {operation}"), e))
 }
 
 fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
@@ -168,7 +225,9 @@ impl CredentialStore for SqliteStore {
         &self,
         meta: CredentialMeta,
         ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
             "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -183,10 +242,10 @@ impl CredentialStore for SqliteStore {
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
         .bind(ciphertext)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db("insert credential", "credential"))?;
-        Ok(())
+        finish(tx, audit, "insert_credential").await
     }
 
     async fn get_credential(
@@ -241,7 +300,9 @@ impl CredentialStore for SqliteStore {
         ciphertext: Vec<u8>,
         field_names: Vec<String>,
         updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
+        let mut tx = self.begin("replace_secret").await?;
         let result = sqlx::query(
             "UPDATE credentials SET secret = ?, field_names = ?, updated_at = ? WHERE id = ?",
         )
@@ -249,25 +310,30 @@ impl CredentialStore for SqliteStore {
         .bind(to_json("field_names", &field_names)?)
         .bind(ts(&updated_at))
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db("replace credential secret", "credential"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("credential", id));
         }
-        Ok(())
+        finish(tx, audit, "replace_secret").await
     }
 
-    async fn delete_credential(&self, id: &CredentialId) -> Result<(), StoreError> {
+    async fn delete_credential(
+        &self,
+        id: &CredentialId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("delete_credential").await?;
         let result = sqlx::query("DELETE FROM credentials WHERE id = ?")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("delete credential", "credential"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("credential", id));
         }
-        Ok(())
+        finish(tx, audit, "delete_credential").await
     }
 
     async fn load_secret_ciphertext(
@@ -353,16 +419,17 @@ const SESSION_COLUMNS: &str =
 
 #[async_trait]
 impl PolicyStore for SqliteStore {
-    async fn insert_vault(&self, vault: Vault) -> Result<(), StoreError> {
+    async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_vault").await?;
         sqlx::query("INSERT INTO vaults (id, name, scope, created_at) VALUES (?, ?, ?, ?)")
             .bind(vault.id.to_string())
             .bind(&vault.name)
             .bind(vault.scope.to_string())
             .bind(ts(&vault.created_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert vault", "vault"))?;
-        Ok(())
+        finish(tx, audit, "insert_vault").await
     }
 
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError> {
@@ -391,7 +458,12 @@ impl PolicyStore for SqliteStore {
         })
     }
 
-    async fn insert_template(&self, t: StoredTemplate) -> Result<(), StoreError> {
+    async fn insert_template(
+        &self,
+        t: StoredTemplate,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_template").await?;
         sqlx::query("INSERT INTO templates (id, version, yaml, source, status, imported_by, approved_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&t.template.id)
             .bind(i64::from(t.template.version))
@@ -407,10 +479,10 @@ impl PolicyStore for SqliteStore {
             .bind(&t.imported_by)
             .bind(&t.approved_by)
             .bind(ts(&t.created_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert template", "template"))?;
-        Ok(())
+        finish(tx, audit, "insert_template").await
     }
 
     async fn get_template(
@@ -443,21 +515,24 @@ impl PolicyStore for SqliteStore {
         id: &str,
         version: u32,
         approved_by: &str,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
+        let mut tx = self.begin("approve_template").await?;
         let result = sqlx::query("UPDATE templates SET status = 'approved', approved_by = ? WHERE id = ? AND version = ?")
             .bind(approved_by)
             .bind(id)
             .bind(i64::from(version))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("approve template", "template"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("template", format!("{id}@{version}")));
         }
-        Ok(())
+        finish(tx, audit, "approve_template").await
     }
 
-    async fn insert_rule(&self, rule: Rule) -> Result<(), StoreError> {
+    async fn insert_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_rule").await?;
         sqlx::query("INSERT INTO rules (id, vault_id, credential_id, name, allow, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(rule.id.to_string())
             .bind(rule.vault_id.to_string())
@@ -468,10 +543,10 @@ impl PolicyStore for SqliteStore {
             .bind(&rule.created_by)
             .bind(ts(&rule.created_at))
             .bind(ts(&rule.updated_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert rule", "rule"))?;
-        Ok(())
+        finish(tx, audit, "insert_rule").await
     }
 
     async fn get_rule(&self, id: &RuleId) -> Result<Option<Rule>, StoreError> {
@@ -531,7 +606,8 @@ impl PolicyStore for SqliteStore {
         .await
     }
 
-    async fn update_rule(&self, rule: Rule) -> Result<(), StoreError> {
+    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_rule").await?;
         let result = sqlx::query(
             "UPDATE rules SET name = ?, allow = ?, enabled = ?, updated_at = ? WHERE id = ?",
         )
@@ -540,28 +616,34 @@ impl PolicyStore for SqliteStore {
         .bind(i64::from(rule.enabled))
         .bind(ts(&rule.updated_at))
         .bind(rule.id.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db("update rule", "rule"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("rule", rule.id));
         }
-        Ok(())
+        finish(tx, audit, "update_rule").await
     }
 
-    async fn delete_rule(&self, id: &RuleId) -> Result<(), StoreError> {
+    async fn delete_rule(&self, id: &RuleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("delete_rule").await?;
         let result = sqlx::query("DELETE FROM rules WHERE id = ?")
             .bind(id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("delete rule", "rule"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("rule", id));
         }
-        Ok(())
+        finish(tx, audit, "delete_rule").await
     }
 
-    async fn insert_session(&self, s: ProxySession) -> Result<(), StoreError> {
+    async fn insert_session(
+        &self,
+        s: ProxySession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_session").await?;
         sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(s.id.to_string())
             .bind(s.vault_id.to_string())
@@ -572,10 +654,10 @@ impl PolicyStore for SqliteStore {
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
             .bind(opt_ts(&s.revoked_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert session", "session"))?;
-        Ok(())
+        finish(tx, audit, "insert_session").await
     }
 
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError> {
@@ -619,20 +701,26 @@ impl PolicyStore for SqliteStore {
         })
     }
 
-    async fn revoke_session(&self, id: &SessionId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_session(
+        &self,
+        id: &SessionId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("revoke_session").await?;
         let result = sqlx::query(
             "UPDATE proxy_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
         )
         .bind(ts(&at))
         .bind(id.to_string())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db("revoke session", "session"))?;
         if result.rows_affected() == 1 {
-            return Ok(true);
+            return finish(tx, audit, "revoke_session").await.map(|()| true);
         }
-        if self.exists("proxy_sessions", &id.to_string()).await? {
-            Ok(false)
+        if exists_tx(&mut tx, "proxy_sessions", &id.to_string()).await? {
+            finish(tx, audit, "revoke_session").await.map(|()| false)
         } else {
             Err(StoreError::not_found("session", id))
         }
@@ -677,13 +765,18 @@ impl PolicyStore for SqliteStore {
         }
     }
 
-    async fn put_settings(&self, settings: Settings) -> Result<(), StoreError> {
+    async fn put_settings(
+        &self,
+        settings: Settings,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("put_settings").await?;
         sqlx::query("INSERT INTO settings (key, value) VALUES ('instance', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
             .bind(to_json("settings", &settings)?)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("put settings", "settings"))?;
-        Ok(())
+        finish(tx, audit, "put_settings").await
     }
 }
 
@@ -711,29 +804,8 @@ fn audit_from_row(row: &SqliteRow) -> Result<AuditEvent, StoreError> {
 #[async_trait]
 impl AuditSink for SqliteStore {
     async fn record(&self, events: &[AuditEvent]) -> Result<(), StoreError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(db("begin audit batch", "audit"))?;
-        for e in events {
-            sqlx::query("INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(e.id.to_string())
-                .bind(ts(&e.at))
-                .bind(&e.actor)
-                .bind(&e.action)
-                .bind(e.outcome.as_str())
-                .bind(e.vault_id.map(|v| v.to_string()))
-                .bind(&e.target)
-                .bind(to_json("detail", &e.detail)?)
-                .execute(&mut *tx)
-                .await
-                .map_err(db("insert audit event", "audit"))?;
-        }
-        tx.commit()
-            .await
-            .map_err(db("commit audit batch", "audit"))?;
-        Ok(())
+        let tx = self.begin("record audit").await?;
+        finish(tx, events, "record audit").await
     }
 
     async fn query(&self, query: &AuditQuery) -> Result<Page<AuditEvent>, StoreError> {
@@ -814,7 +886,8 @@ impl IdentityStore for SqliteStore {
         self.count("SELECT COUNT(*) AS n FROM users", None).await
     }
 
-    async fn insert_user(&self, u: User) -> Result<(), StoreError> {
+    async fn insert_user(&self, u: User, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_user").await?;
         sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(u.id.to_string())
             .bind(&u.username)
@@ -823,10 +896,10 @@ impl IdentityStore for SqliteStore {
             .bind(u.totp_last_step.map(to_i64))
             .bind(u.role.as_str())
             .bind(ts(&u.created_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert user", "user"))?;
-        Ok(())
+        finish(tx, audit, "insert_user").await
     }
 
     async fn get_user(&self, id: &UserId) -> Result<Option<User>, StoreError> {
@@ -867,17 +940,22 @@ impl IdentityStore for SqliteStore {
         }
     }
 
-    async fn insert_ui_session(&self, s: UiSession) -> Result<(), StoreError> {
+    async fn insert_ui_session(
+        &self,
+        s: UiSession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_ui_session").await?;
         sqlx::query("INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, step_up_at) VALUES (?, ?, ?, ?, ?)")
             .bind(&s.token_hash)
             .bind(s.user_id.to_string())
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
             .bind(opt_ts(&s.step_up_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert ui session", "ui_session"))?;
-        Ok(())
+        finish(tx, audit, "insert_ui_session").await
     }
 
     async fn get_ui_session(&self, token_hash: &str) -> Result<Option<UiSession>, StoreError> {
@@ -902,26 +980,33 @@ impl IdentityStore for SqliteStore {
         &self,
         token_hash: &str,
         at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
+        let mut tx = self.begin("set_ui_session_step_up").await?;
         let result = sqlx::query("UPDATE ui_sessions SET step_up_at = ? WHERE token_hash = ?")
             .bind(ts(&at))
             .bind(token_hash)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("set step-up", "ui_session"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("ui_session", "<hash>"));
         }
-        Ok(())
+        finish(tx, audit, "set_ui_session_step_up").await
     }
 
-    async fn delete_ui_session(&self, token_hash: &str) -> Result<(), StoreError> {
+    async fn delete_ui_session(
+        &self,
+        token_hash: &str,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("delete_ui_session").await?;
         sqlx::query("DELETE FROM ui_sessions WHERE token_hash = ?")
             .bind(token_hash)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("delete ui session", "ui_session"))?;
-        Ok(())
+        finish(tx, audit, "delete_ui_session").await
     }
 
     async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
@@ -959,7 +1044,8 @@ impl IdentityStore for SqliteStore {
         )
     }
 
-    async fn insert_api_key(&self, k: ApiKey) -> Result<(), StoreError> {
+    async fn insert_api_key(&self, k: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_api_key").await?;
         sqlx::query("INSERT INTO api_keys (id, name, prefix, secret_hash, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(k.id.to_string())
             .bind(&k.name)
@@ -972,10 +1058,10 @@ impl IdentityStore for SqliteStore {
             .bind(ts(&k.expires_at))
             .bind(opt_ts(&k.revoked_at))
             .bind(opt_ts(&k.last_used_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert api key", "api_key"))?;
-        Ok(())
+        finish(tx, audit, "insert_api_key").await
     }
 
     async fn get_api_key_by_prefix(&self, prefix: &str) -> Result<Option<ApiKey>, StoreError> {
@@ -1010,19 +1096,25 @@ impl IdentityStore for SqliteStore {
         })
     }
 
-    async fn revoke_api_key(&self, id: &ApiKeyId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_api_key(
+        &self,
+        id: &ApiKeyId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("revoke_api_key").await?;
         let result =
             sqlx::query("UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
                 .bind(ts(&at))
                 .bind(id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db("revoke api key", "api_key"))?;
         if result.rows_affected() == 1 {
-            return Ok(true);
+            return finish(tx, audit, "revoke_api_key").await.map(|()| true);
         }
-        if self.exists("api_keys", &id.to_string()).await? {
-            Ok(false)
+        if exists_tx(&mut tx, "api_keys", &id.to_string()).await? {
+            finish(tx, audit, "revoke_api_key").await.map(|()| false)
         } else {
             Err(StoreError::not_found("api_key", id))
         }
@@ -1054,7 +1146,12 @@ fn node_from_row(row: &SqliteRow) -> Result<Node, StoreError> {
 
 #[async_trait]
 impl NodeStore for SqliteStore {
-    async fn insert_join_token(&self, t: JoinTokenRecord) -> Result<(), StoreError> {
+    async fn insert_join_token(
+        &self,
+        t: JoinTokenRecord,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_join_token").await?;
         sqlx::query("INSERT INTO join_tokens (id, secret_hash, created_by, created_at, expires_at, consumed_at) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(&t.id)
             .bind(&t.secret_hash)
@@ -1062,10 +1159,10 @@ impl NodeStore for SqliteStore {
             .bind(ts(&t.created_at))
             .bind(ts(&t.expires_at))
             .bind(opt_ts(&t.consumed_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert join token", "join_token"))?;
-        Ok(())
+        finish(tx, audit, "insert_join_token").await
     }
 
     async fn consume_join_token(
@@ -1086,7 +1183,8 @@ impl NodeStore for SqliteStore {
             == 1)
     }
 
-    async fn insert_node(&self, n: Node) -> Result<(), StoreError> {
+    async fn insert_node(&self, n: Node, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_node").await?;
         sqlx::query("INSERT INTO nodes (id, name, seal_public_key, cert_serial, cert_not_after, enrolled_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(n.id.to_string())
             .bind(&n.name)
@@ -1096,10 +1194,10 @@ impl NodeStore for SqliteStore {
             .bind(ts(&n.enrolled_at))
             .bind(opt_ts(&n.last_seen_at))
             .bind(opt_ts(&n.revoked_at))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db("insert node", "node"))?;
-        Ok(())
+        finish(tx, audit, "insert_node").await
     }
 
     async fn get_node(&self, id: &NodeId) -> Result<Option<Node>, StoreError> {
@@ -1134,19 +1232,21 @@ impl NodeStore for SqliteStore {
         id: &NodeId,
         serial: &str,
         not_after: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_node_cert").await?;
         let result =
             sqlx::query("UPDATE nodes SET cert_serial = ?, cert_not_after = ? WHERE id = ?")
                 .bind(serial)
                 .bind(ts(&not_after))
                 .bind(id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db("update node cert", "node"))?;
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("node", id));
         }
-        Ok(())
+        finish(tx, audit, "update_node_cert").await
     }
 
     async fn touch_node(&self, id: &NodeId, at: DateTime<Utc>) -> Result<(), StoreError> {
@@ -1159,19 +1259,25 @@ impl NodeStore for SqliteStore {
         Ok(())
     }
 
-    async fn revoke_node(&self, id: &NodeId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_node(
+        &self,
+        id: &NodeId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("revoke_node").await?;
         let result =
             sqlx::query("UPDATE nodes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
                 .bind(ts(&at))
                 .bind(id.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db("revoke node", "node"))?;
         if result.rows_affected() == 1 {
-            return Ok(true);
+            return finish(tx, audit, "revoke_node").await.map(|()| true);
         }
-        if self.exists("nodes", &id.to_string()).await? {
-            Ok(false)
+        if exists_tx(&mut tx, "nodes", &id.to_string()).await? {
+            finish(tx, audit, "revoke_node").await.map(|()| false)
         } else {
             Err(StoreError::not_found("node", id))
         }

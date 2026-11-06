@@ -32,6 +32,7 @@ pub trait CredentialStore: Send + Sync {
         &self,
         meta: CredentialMeta,
         ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn get_credential(&self, id: &CredentialId)
         -> Result<Option<CredentialMeta>, StoreError>;
@@ -47,9 +48,14 @@ pub trait CredentialStore: Send + Sync {
         ciphertext: Vec<u8>,
         field_names: Vec<String>,
         updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     /// `NotFound` if the credential does not exist.
-    async fn delete_credential(&self, id: &CredentialId) -> Result<(), StoreError>;
+    async fn delete_credential(
+        &self,
+        id: &CredentialId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     async fn load_secret_ciphertext(
         &self,
         id: &CredentialId,
@@ -60,12 +66,16 @@ pub trait CredentialStore: Send + Sync {
 #[async_trait]
 pub trait PolicyStore: Send + Sync {
     /// `Conflict` if a vault with the same name exists.
-    async fn insert_vault(&self, vault: Vault) -> Result<(), StoreError>;
+    async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
 
     /// Inserts a template version. `Conflict` if that id+version exists.
-    async fn insert_template(&self, template: StoredTemplate) -> Result<(), StoreError>;
+    async fn insert_template(
+        &self,
+        template: StoredTemplate,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     async fn get_template(
         &self,
         id: &str,
@@ -78,9 +88,10 @@ pub trait PolicyStore: Send + Sync {
         id: &str,
         version: u32,
         approved_by: &str,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
 
-    async fn insert_rule(&self, rule: Rule) -> Result<(), StoreError>;
+    async fn insert_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_rule(&self, id: &RuleId) -> Result<Option<Rule>, StoreError>;
     async fn list_rules(
         &self,
@@ -91,10 +102,14 @@ pub trait PolicyStore: Send + Sync {
     async fn list_enabled_rules(&self) -> Result<Vec<Rule>, StoreError>;
     async fn count_rules_for_credential(&self, id: &CredentialId) -> Result<u64, StoreError>;
     /// `NotFound` if the rule does not exist.
-    async fn update_rule(&self, rule: Rule) -> Result<(), StoreError>;
-    async fn delete_rule(&self, id: &RuleId) -> Result<(), StoreError>;
+    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError>;
+    async fn delete_rule(&self, id: &RuleId, audit: &[AuditEvent]) -> Result<(), StoreError>;
 
-    async fn insert_session(&self, session: ProxySession) -> Result<(), StoreError>;
+    async fn insert_session(
+        &self,
+        session: ProxySession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError>;
     async fn list_sessions(
         &self,
@@ -102,7 +117,12 @@ pub trait PolicyStore: Send + Sync {
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError>;
     /// Returns false if it was already revoked. `NotFound` if missing.
-    async fn revoke_session(&self, id: &SessionId, at: DateTime<Utc>) -> Result<bool, StoreError>;
+    async fn revoke_session(
+        &self,
+        id: &SessionId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
     /// Revoked sessions that have not yet expired (the set nodes must know).
     async fn list_revoked_unexpired(
         &self,
@@ -115,7 +135,11 @@ pub trait PolicyStore: Send + Sync {
     ) -> Result<Vec<(SessionId, u64)>, StoreError>;
 
     async fn get_settings(&self) -> Result<Settings, StoreError>;
-    async fn put_settings(&self, settings: Settings) -> Result<(), StoreError>;
+    async fn put_settings(
+        &self,
+        settings: Settings,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
 }
 
 /// Append-only audit log.
@@ -160,21 +184,30 @@ impl Authorizer for RbacAuthorizer {
 pub trait IdentityStore: Send + Sync {
     async fn count_users(&self) -> Result<u64, StoreError>;
     /// `Conflict` if the username is taken.
-    async fn insert_user(&self, user: User) -> Result<(), StoreError>;
+    async fn insert_user(&self, user: User, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_user(&self, id: &UserId) -> Result<Option<User>, StoreError>;
     async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError>;
     /// Atomically records a used TOTP step if it is newer than the stored
     /// one. Returns false when the step was already used (replay).
     async fn advance_totp_step(&self, id: &UserId, step: u64) -> Result<bool, StoreError>;
 
-    async fn insert_ui_session(&self, session: UiSession) -> Result<(), StoreError>;
+    async fn insert_ui_session(
+        &self,
+        session: UiSession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     async fn get_ui_session(&self, token_hash: &str) -> Result<Option<UiSession>, StoreError>;
     async fn set_ui_session_step_up(
         &self,
         token_hash: &str,
         at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    async fn delete_ui_session(&self, token_hash: &str) -> Result<(), StoreError>;
+    async fn delete_ui_session(
+        &self,
+        token_hash: &str,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
 
     /// Replaces any outstanding setup token with this one.
@@ -188,18 +221,27 @@ pub trait IdentityStore: Send + Sync {
     async fn consume_setup_token(&self, token_hash: &str) -> Result<bool, StoreError>;
 
     /// `Conflict` if the prefix exists.
-    async fn insert_api_key(&self, key: ApiKey) -> Result<(), StoreError>;
+    async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_api_key_by_prefix(&self, prefix: &str) -> Result<Option<ApiKey>, StoreError>;
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError>;
     /// Returns false if already revoked. `NotFound` if missing.
-    async fn revoke_api_key(&self, id: &ApiKeyId, at: DateTime<Utc>) -> Result<bool, StoreError>;
+    async fn revoke_api_key(
+        &self,
+        id: &ApiKeyId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
     async fn touch_api_key(&self, id: &ApiKeyId, at: DateTime<Utc>) -> Result<(), StoreError>;
 }
 
 /// Data plane nodes, join tokens, key material and the snapshot counter.
 #[async_trait]
 pub trait NodeStore: Send + Sync {
-    async fn insert_join_token(&self, token: JoinTokenRecord) -> Result<(), StoreError>;
+    async fn insert_join_token(
+        &self,
+        token: JoinTokenRecord,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     /// Atomically consumes an unexpired, unconsumed token whose hash matches.
     async fn consume_join_token(
         &self,
@@ -208,7 +250,7 @@ pub trait NodeStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<bool, StoreError>;
 
-    async fn insert_node(&self, node: Node) -> Result<(), StoreError>;
+    async fn insert_node(&self, node: Node, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_node(&self, id: &NodeId) -> Result<Option<Node>, StoreError>;
     async fn list_nodes(&self, page: PageRequest) -> Result<Page<Node>, StoreError>;
     async fn update_node_cert(
@@ -216,10 +258,16 @@ pub trait NodeStore: Send + Sync {
         id: &NodeId,
         serial: &str,
         not_after: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn touch_node(&self, id: &NodeId, at: DateTime<Utc>) -> Result<(), StoreError>;
     /// Returns false if already revoked. `NotFound` if missing.
-    async fn revoke_node(&self, id: &NodeId, at: DateTime<Utc>) -> Result<bool, StoreError>;
+    async fn revoke_node(
+        &self,
+        id: &NodeId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
 
     async fn get_key_material(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError>;
     /// Stores `value` unless `name` exists; returns whichever value is stored.

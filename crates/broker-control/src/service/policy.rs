@@ -306,15 +306,18 @@ impl PolicyService {
             }
             info!(template = %template.id, version = template.version, "seeding built-in template");
             self.policy
-                .insert_template(StoredTemplate {
-                    template,
-                    yaml: yaml.to_string(),
-                    source: TemplateSource::Builtin,
-                    status: TemplateStatus::Approved,
-                    imported_by: None,
-                    approved_by: Some("system".into()),
-                    created_at: Utc::now(),
-                })
+                .insert_template(
+                    StoredTemplate {
+                        template,
+                        yaml: yaml.to_string(),
+                        source: TemplateSource::Builtin,
+                        status: TemplateStatus::Approved,
+                        imported_by: None,
+                        approved_by: Some("system".into()),
+                        created_at: Utc::now(),
+                    },
+                    &[],
+                )
                 .await?;
         }
         Ok(())
@@ -332,15 +335,11 @@ impl PolicyService {
             scope: Scope::for_vault(&id),
             created_at: Utc::now(),
         };
-        self.policy.insert_vault(vault.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "vault.create", AuditOutcome::Success)
-                    .vault(id)
-                    .target(format!("vault:{id}"))
-                    .detail("name", vault.name.clone()),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "vault.create", AuditOutcome::Success)
+            .vault(id)
+            .target(format!("vault:{id}"))
+            .detail("name", vault.name.clone());
+        self.policy.insert_vault(vault.clone(), &[event]).await?;
         Ok(vault)
     }
 
@@ -440,21 +439,19 @@ impl PolicyService {
             approved_by: None,
             created_at: Utc::now(),
         };
-        self.policy.insert_template(stored.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "template.import", AuditOutcome::Success)
-                    .target(format!(
-                        "template:{}@{}",
-                        stored.template.id, stored.template.version
-                    ))
-                    .detail("hosts", hosts_string(&stored.template.hosts))
-                    .detail(
-                        "host_override_allowed",
-                        stored.template.host_override.allowed.to_string(),
-                    ),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "template.import", AuditOutcome::Success)
+            .target(format!(
+                "template:{}@{}",
+                stored.template.id, stored.template.version
+            ))
+            .detail("hosts", hosts_string(&stored.template.hosts))
+            .detail(
+                "host_override_allowed",
+                stored.template.host_override.allowed.to_string(),
+            );
+        self.policy
+            .insert_template(stored.clone(), &[event])
+            .await?;
         Ok(stored)
     }
 
@@ -475,20 +472,16 @@ impl PolicyService {
         if existing.status == TemplateStatus::Approved {
             return Ok(existing);
         }
+        let event = AuditEvent::new(caller.actor(), "template.approve", AuditOutcome::Success)
+            .target(format!("template:{id}@{version}"))
+            .detail("hosts", hosts_string(&existing.template.hosts))
+            .detail(
+                "host_override_allowed",
+                existing.template.host_override.allowed.to_string(),
+            );
         self.policy
-            .approve_template(id, version, caller.actor())
+            .approve_template(id, version, caller.actor(), &[event])
             .await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "template.approve", AuditOutcome::Success)
-                    .target(format!("template:{id}@{version}"))
-                    .detail("hosts", hosts_string(&existing.template.hosts))
-                    .detail(
-                        "host_override_allowed",
-                        existing.template.host_override.allowed.to_string(),
-                    ),
-            )
-            .await;
         self.notifier.bump_content();
         self.get_template(caller, id, version).await
     }
@@ -565,9 +558,6 @@ impl PolicyService {
         let ciphertext = self
             .cipher
             .encrypt(&plaintext, &credential_aad(&id, vault_id))?;
-        self.credentials
-            .insert_credential(meta.clone(), ciphertext)
-            .await?;
         let mut event = AuditEvent::new(caller.actor(), "credential.create", AuditOutcome::Success)
             .vault(*vault_id)
             .target(format!("credential:{id}"))
@@ -578,7 +568,9 @@ impl PolicyService {
                 .detail("widened", "true")
                 .detail("host_override", hosts_string(&host_override));
         }
-        self.audit.record(event).await;
+        self.credentials
+            .insert_credential(meta.clone(), ciphertext, &[event])
+            .await?;
         Ok(meta)
     }
 
@@ -605,16 +597,12 @@ impl PolicyService {
         let ciphertext = self
             .cipher
             .encrypt(&plaintext, &credential_aad_for(&meta))?;
+        let event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
+            .vault(meta.vault_id)
+            .target(format!("credential:{id}"));
         self.credentials
-            .replace_secret(id, ciphertext, fields.names(), Utc::now())
+            .replace_secret(id, ciphertext, fields.names(), Utc::now(), &[event])
             .await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
-                    .vault(meta.vault_id)
-                    .target(format!("credential:{id}")),
-            )
-            .await;
         self.notifier.bump_content();
         self.credential_meta(id).await
     }
@@ -636,14 +624,10 @@ impl PolicyService {
                 ),
             });
         }
-        self.credentials.delete_credential(id).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "credential.delete", AuditOutcome::Success)
-                    .vault(meta.vault_id)
-                    .target(format!("credential:{id}")),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "credential.delete", AuditOutcome::Success)
+            .vault(meta.vault_id)
+            .target(format!("credential:{id}"));
+        self.credentials.delete_credential(id, &[event]).await?;
         self.notifier.bump_content();
         Ok(())
     }
@@ -740,16 +724,12 @@ impl PolicyService {
             created_at: now,
             updated_at: now,
         };
-        self.policy.insert_rule(rule.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "rule.create", AuditOutcome::Success)
-                    .vault(*vault_id)
-                    .target(format!("rule:{}", rule.id))
-                    .detail("credential", meta.id.to_string())
-                    .detail("hosts", hosts_string(&rule.allow.hosts)),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "rule.create", AuditOutcome::Success)
+            .vault(*vault_id)
+            .target(format!("rule:{}", rule.id))
+            .detail("credential", meta.id.to_string())
+            .detail("hosts", hosts_string(&rule.allow.hosts));
+        self.policy.insert_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)
     }
@@ -794,17 +774,13 @@ impl PolicyService {
             self.guard.require_step_up(caller, Action::RuleWrite)?;
         }
         rule.updated_at = Utc::now();
-        self.policy.update_rule(rule.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "rule.update", AuditOutcome::Success)
-                    .vault(rule.vault_id)
-                    .target(format!("rule:{id}"))
-                    .detail("widened", widened.to_string())
-                    .detail("enabled", rule.enabled.to_string())
-                    .detail("hosts", hosts_string(&rule.allow.hosts)),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "rule.update", AuditOutcome::Success)
+            .vault(rule.vault_id)
+            .target(format!("rule:{id}"))
+            .detail("widened", widened.to_string())
+            .detail("enabled", rule.enabled.to_string())
+            .detail("hosts", hosts_string(&rule.allow.hosts));
+        self.policy.update_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)
     }
@@ -818,14 +794,10 @@ impl PolicyService {
         self.guard
             .check(caller, Action::RuleDelete, Some(&rule.vault_id))
             .await?;
-        self.policy.delete_rule(id).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "rule.delete", AuditOutcome::Success)
-                    .vault(rule.vault_id)
-                    .target(format!("rule:{id}")),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "rule.delete", AuditOutcome::Success)
+            .vault(rule.vault_id)
+            .target(format!("rule:{id}"));
+        self.policy.delete_rule(id, &[event]).await?;
         self.notifier.bump_content();
         Ok(())
     }
@@ -880,30 +852,26 @@ impl PolicyService {
             // Opening egress is as sensitive as widening a rule.
             self.guard.require_step_up(caller, Action::SettingsWrite)?;
         }
-        self.policy.put_settings(settings.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "settings.update", AuditOutcome::Success)
-                    .detail(
-                        "unmatched_host_policy",
-                        format!("{:?}", settings.unmatched_host_policy).to_ascii_lowercase(),
-                    )
-                    .detail(
-                        "egress_block_private",
-                        settings.egress.block_private.to_string(),
-                    )
-                    .detail(
-                        "egress_allow",
-                        settings
-                            .egress
-                            .allow
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(","),
-                    ),
+        let event = AuditEvent::new(caller.actor(), "settings.update", AuditOutcome::Success)
+            .detail(
+                "unmatched_host_policy",
+                format!("{:?}", settings.unmatched_host_policy).to_ascii_lowercase(),
             )
-            .await;
+            .detail(
+                "egress_block_private",
+                settings.egress.block_private.to_string(),
+            )
+            .detail(
+                "egress_allow",
+                settings
+                    .egress
+                    .allow
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+        self.policy.put_settings(settings.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(settings)
     }

@@ -33,6 +33,11 @@ async fn memory_store_passes_node_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_audited_writes_suite() {
+    audited_writes_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn rbac_authorizer_passes_authorizer_suite() {
     authorizer_suite(&RbacAuthorizer).await.unwrap();
 }

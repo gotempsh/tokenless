@@ -63,7 +63,12 @@ fn newest_first<T: Clone>(mut items: Vec<T>, key: impl Fn(&T) -> DateTime<Utc>) 
 
 #[async_trait]
 impl CredentialStore for MemoryStore {
-    async fn insert_credential(&self, meta: CredentialMeta, ct: Vec<u8>) -> Result<(), StoreError> {
+    async fn insert_credential(
+        &self,
+        meta: CredentialMeta,
+        ct: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner.credentials.contains_key(&meta.id) {
             return Err(StoreError::Conflict {
@@ -82,6 +87,7 @@ impl CredentialStore for MemoryStore {
             });
         }
         inner.credentials.insert(meta.id, (meta, ct));
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -113,6 +119,7 @@ impl CredentialStore for MemoryStore {
         ct: Vec<u8>,
         field_names: Vec<String>,
         updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let (meta, stored) = inner
@@ -122,15 +129,23 @@ impl CredentialStore for MemoryStore {
         meta.field_names = field_names;
         meta.updated_at = updated_at;
         *stored = ct;
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
-    async fn delete_credential(&self, id: &CredentialId) -> Result<(), StoreError> {
-        self.lock()?
+    async fn delete_credential(
+        &self,
+        id: &CredentialId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner
             .credentials
             .remove(id)
             .map(|_| ())
-            .ok_or_else(|| StoreError::not_found("credential", id))
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
     }
 
     async fn load_secret_ciphertext(
@@ -143,7 +158,7 @@ impl CredentialStore for MemoryStore {
 
 #[async_trait]
 impl PolicyStore for MemoryStore {
-    async fn insert_vault(&self, vault: Vault) -> Result<(), StoreError> {
+    async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner.vaults.values().any(|v| v.name == vault.name) {
             return Err(StoreError::Conflict {
@@ -152,6 +167,7 @@ impl PolicyStore for MemoryStore {
             });
         }
         inner.vaults.insert(vault.id, vault);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -164,7 +180,11 @@ impl PolicyStore for MemoryStore {
         Ok(page.apply(&newest_first(items, |v| v.created_at)))
     }
 
-    async fn insert_template(&self, template: StoredTemplate) -> Result<(), StoreError> {
+    async fn insert_template(
+        &self,
+        template: StoredTemplate,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let key = (template.template.id.clone(), template.template.version);
         if inner.templates.contains_key(&key) {
@@ -174,6 +194,7 @@ impl PolicyStore for MemoryStore {
             });
         }
         inner.templates.insert(key, template);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -193,7 +214,13 @@ impl PolicyStore for MemoryStore {
         Ok(self.lock()?.templates.values().cloned().collect())
     }
 
-    async fn approve_template(&self, id: &str, version: u32, by: &str) -> Result<(), StoreError> {
+    async fn approve_template(
+        &self,
+        id: &str,
+        version: u32,
+        by: &str,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let t = inner
             .templates
@@ -201,10 +228,11 @@ impl PolicyStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("template", format!("{id}@{version}")))?;
         t.status = crate::model::TemplateStatus::Approved;
         t.approved_by = Some(by.to_string());
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
-    async fn insert_rule(&self, rule: Rule) -> Result<(), StoreError> {
+    async fn insert_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner
             .rules
@@ -217,6 +245,7 @@ impl PolicyStore for MemoryStore {
             });
         }
         inner.rules.insert(rule.id, rule);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -260,26 +289,36 @@ impl PolicyStore for MemoryStore {
             .count() as u64)
     }
 
-    async fn update_rule(&self, rule: Rule) -> Result<(), StoreError> {
+    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let slot = inner
             .rules
             .get_mut(&rule.id)
             .ok_or_else(|| StoreError::not_found("rule", rule.id))?;
         *slot = rule;
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
-    async fn delete_rule(&self, id: &RuleId) -> Result<(), StoreError> {
-        self.lock()?
+    async fn delete_rule(&self, id: &RuleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner
             .rules
             .remove(id)
             .map(|_| ())
-            .ok_or_else(|| StoreError::not_found("rule", id))
+            .ok_or_else(|| StoreError::not_found("rule", id))?;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
     }
 
-    async fn insert_session(&self, session: ProxySession) -> Result<(), StoreError> {
-        self.lock()?.sessions.insert(session.id, session);
+    async fn insert_session(
+        &self,
+        session: ProxySession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner.sessions.insert(session.id, session);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -302,16 +341,23 @@ impl PolicyStore for MemoryStore {
         Ok(page.apply(&newest_first(items, |s| s.created_at)))
     }
 
-    async fn revoke_session(&self, id: &SessionId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_session(
+        &self,
+        id: &SessionId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let s = inner
             .sessions
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("session", id))?;
         if s.revoked_at.is_some() {
+            inner.audit.extend_from_slice(audit);
             return Ok(false);
         }
         s.revoked_at = Some(at);
+        inner.audit.extend_from_slice(audit);
         Ok(true)
     }
 
@@ -349,8 +395,14 @@ impl PolicyStore for MemoryStore {
         Ok(self.lock()?.settings.clone().unwrap_or_default())
     }
 
-    async fn put_settings(&self, settings: Settings) -> Result<(), StoreError> {
-        self.lock()?.settings = Some(settings);
+    async fn put_settings(
+        &self,
+        settings: Settings,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner.settings = Some(settings);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 }
@@ -386,7 +438,7 @@ impl IdentityStore for MemoryStore {
         Ok(self.lock()?.users.len() as u64)
     }
 
-    async fn insert_user(&self, user: User) -> Result<(), StoreError> {
+    async fn insert_user(&self, user: User, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner.users.values().any(|u| u.username == user.username) {
             return Err(StoreError::Conflict {
@@ -395,6 +447,7 @@ impl IdentityStore for MemoryStore {
             });
         }
         inner.users.insert(user.id, user);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -424,10 +477,16 @@ impl IdentityStore for MemoryStore {
         Ok(true)
     }
 
-    async fn insert_ui_session(&self, session: UiSession) -> Result<(), StoreError> {
-        self.lock()?
+    async fn insert_ui_session(
+        &self,
+        session: UiSession,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner
             .ui_sessions
             .insert(session.token_hash.clone(), session);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -439,6 +498,7 @@ impl IdentityStore for MemoryStore {
         &self,
         token_hash: &str,
         at: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let s = inner
@@ -446,11 +506,18 @@ impl IdentityStore for MemoryStore {
             .get_mut(token_hash)
             .ok_or_else(|| StoreError::not_found("ui_session", "<hash>"))?;
         s.step_up_at = Some(at);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
-    async fn delete_ui_session(&self, token_hash: &str) -> Result<(), StoreError> {
-        self.lock()?.ui_sessions.remove(token_hash);
+    async fn delete_ui_session(
+        &self,
+        token_hash: &str,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner.ui_sessions.remove(token_hash);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -481,7 +548,7 @@ impl IdentityStore for MemoryStore {
         }
     }
 
-    async fn insert_api_key(&self, key: ApiKey) -> Result<(), StoreError> {
+    async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if inner.api_keys.values().any(|k| k.prefix == key.prefix) {
             return Err(StoreError::Conflict {
@@ -490,6 +557,7 @@ impl IdentityStore for MemoryStore {
             });
         }
         inner.api_keys.insert(key.id, key);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -507,16 +575,23 @@ impl IdentityStore for MemoryStore {
         Ok(page.apply(&newest_first(items, |k| k.created_at)))
     }
 
-    async fn revoke_api_key(&self, id: &ApiKeyId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_api_key(
+        &self,
+        id: &ApiKeyId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let k = inner
             .api_keys
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("api_key", id))?;
         if k.revoked_at.is_some() {
+            inner.audit.extend_from_slice(audit);
             return Ok(false);
         }
         k.revoked_at = Some(at);
+        inner.audit.extend_from_slice(audit);
         Ok(true)
     }
 
@@ -530,8 +605,14 @@ impl IdentityStore for MemoryStore {
 
 #[async_trait]
 impl NodeStore for MemoryStore {
-    async fn insert_join_token(&self, token: JoinTokenRecord) -> Result<(), StoreError> {
-        self.lock()?.join_tokens.insert(token.id.clone(), token);
+    async fn insert_join_token(
+        &self,
+        token: JoinTokenRecord,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner.join_tokens.insert(token.id.clone(), token);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -555,8 +636,10 @@ impl NodeStore for MemoryStore {
         Ok(true)
     }
 
-    async fn insert_node(&self, node: Node) -> Result<(), StoreError> {
-        self.lock()?.nodes.insert(node.id, node);
+    async fn insert_node(&self, node: Node, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner.nodes.insert(node.id, node);
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -574,6 +657,7 @@ impl NodeStore for MemoryStore {
         id: &NodeId,
         serial: &str,
         not_after: DateTime<Utc>,
+        audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let n = inner
@@ -582,6 +666,7 @@ impl NodeStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("node", id))?;
         n.cert_serial = serial.to_string();
         n.cert_not_after = not_after;
+        inner.audit.extend_from_slice(audit);
         Ok(())
     }
 
@@ -592,16 +677,23 @@ impl NodeStore for MemoryStore {
         Ok(())
     }
 
-    async fn revoke_node(&self, id: &NodeId, at: DateTime<Utc>) -> Result<bool, StoreError> {
+    async fn revoke_node(
+        &self,
+        id: &NodeId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let n = inner
             .nodes
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("node", id))?;
         if n.revoked_at.is_some() {
+            inner.audit.extend_from_slice(audit);
             return Ok(false);
         }
         n.revoked_at = Some(at);
+        inner.audit.extend_from_slice(audit);
         Ok(true)
     }
 

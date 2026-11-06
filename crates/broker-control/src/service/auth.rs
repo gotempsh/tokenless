@@ -269,15 +269,11 @@ impl AuthService {
             role: Role::Admin,
             created_at: Utc::now(),
         };
-        self.identity.insert_user(user.clone()).await?;
+        let event = AuditEvent::new(format!("user:{id}"), "auth.setup", AuditOutcome::Success)
+            .target(format!("user:{id}"))
+            .detail("username", user.username.clone());
+        self.identity.insert_user(user.clone(), &[event]).await?;
         info!(user_id = %id, username = %user.username, "first admin created from setup token");
-        self.audit
-            .record(
-                AuditEvent::new(format!("user:{id}"), "auth.setup", AuditOutcome::Success)
-                    .target(format!("user:{id}"))
-                    .detail("username", user.username.clone()),
-            )
-            .await;
         Ok(UserSummary::from(&user))
     }
 
@@ -332,25 +328,24 @@ impl AuthService {
         let expires_at = now + Duration::seconds(i64::try_from(max_age).unwrap_or(43_200));
         let plaintext = token::new_token(token::SESSION_PREFIX);
         let token_hash = token::hash_token(&plaintext);
+        let event = AuditEvent::new(
+            format!("user:{}", user.id),
+            "auth.login",
+            AuditOutcome::Success,
+        )
+        .detail("username", user.username.clone());
         self.identity
-            .insert_ui_session(UiSession {
-                token_hash: token_hash.clone(),
-                user_id: user.id,
-                created_at: now,
-                expires_at,
-                step_up_at: Some(now),
-            })
-            .await?;
-        self.audit
-            .record(
-                AuditEvent::new(
-                    format!("user:{}", user.id),
-                    "auth.login",
-                    AuditOutcome::Success,
-                )
-                .detail("username", user.username.clone()),
+            .insert_ui_session(
+                UiSession {
+                    token_hash: token_hash.clone(),
+                    user_id: user.id,
+                    created_at: now,
+                    expires_at,
+                    step_up_at: Some(now),
+                },
+                &[event],
             )
-            .await;
+            .await?;
         Ok(LoginOutcome {
             token: plaintext,
             csrf_token: csrf::derive(&self.keys.csrf_key, &token_hash),
@@ -377,7 +372,7 @@ impl AuthService {
             .await?
             .ok_or_else(|| unauth("session is unknown or has been logged out"))?;
         if session.expires_at <= Utc::now() {
-            self.identity.delete_ui_session(&token_hash).await?;
+            self.identity.delete_ui_session(&token_hash, &[]).await?;
             return Err(unauth("session has expired"));
         }
         let user = self
@@ -432,28 +427,18 @@ impl AuthService {
             });
         }
         let now = Utc::now();
+        let event = AuditEvent::new(auth.caller.actor(), "auth.step_up", AuditOutcome::Success);
         self.identity
-            .set_ui_session_step_up(&auth.token_hash, now)
+            .set_ui_session_step_up(&auth.token_hash, now, &[event])
             .await?;
-        self.audit
-            .record(AuditEvent::new(
-                auth.caller.actor(),
-                "auth.step_up",
-                AuditOutcome::Success,
-            ))
-            .await;
         Ok(now)
     }
 
     pub async fn logout(&self, auth: &SessionAuth) -> Result<(), ControlError> {
-        self.identity.delete_ui_session(&auth.token_hash).await?;
-        self.audit
-            .record(AuditEvent::new(
-                auth.caller.actor(),
-                "auth.logout",
-                AuditOutcome::Success,
-            ))
-            .await;
+        let event = AuditEvent::new(auth.caller.actor(), "auth.logout", AuditOutcome::Success);
+        self.identity
+            .delete_ui_session(&auth.token_hash, &[event])
+            .await?;
         Ok(())
     }
 
@@ -540,16 +525,12 @@ impl AuthService {
             revoked_at: None,
             last_used_at: None,
         };
-        self.identity.insert_api_key(key.clone()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "api_key.create", AuditOutcome::Success)
-                    .vault(req.vault_id)
-                    .target(format!("api_key:{}", key.prefix))
-                    .detail("role", key.role.as_str())
-                    .detail("expires_at", key.expires_at.to_rfc3339()),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "api_key.create", AuditOutcome::Success)
+            .vault(req.vault_id)
+            .target(format!("api_key:{}", key.prefix))
+            .detail("role", key.role.as_str())
+            .detail("expires_at", key.expires_at.to_rfc3339());
+        self.identity.insert_api_key(key.clone(), &[event]).await?;
         Ok((parts.full, key))
     }
 
@@ -564,14 +545,11 @@ impl AuthService {
 
     pub async fn revoke_api_key(&self, caller: &Caller, id: &ApiKeyId) -> Result<(), ControlError> {
         self.guard.check(caller, Action::ApiKeyManage, None).await?;
-        let changed = self.identity.revoke_api_key(id, Utc::now()).await?;
-        self.audit
-            .record(
-                AuditEvent::new(caller.actor(), "api_key.revoke", AuditOutcome::Success)
-                    .target(format!("api_key:{id}"))
-                    .detail("already_revoked", (!changed).to_string()),
-            )
-            .await;
+        let event = AuditEvent::new(caller.actor(), "api_key.revoke", AuditOutcome::Success)
+            .target(format!("api_key:{id}"));
+        self.identity
+            .revoke_api_key(id, Utc::now(), &[event])
+            .await?;
         Ok(())
     }
 
