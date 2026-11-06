@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { Plus, Vault as VaultIcon } from "lucide-react";
+import { FolderLock as VaultIcon, Plus } from "lucide-react";
 import { get, post, type Page, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Loading, Mono, Pager, Panel, When } from "../components/common";

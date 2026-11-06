@@ -8,6 +8,7 @@ import {
   Braces,
   ChevronRight,
   FileCode2,
+  FolderLock as VaultIcon,
   KeySquare,
   LogOut,
   Menu,
@@ -21,7 +22,6 @@ import {
   Sun,
   Timer,
   Users,
-  Vault as VaultIcon,
   type LucideIcon,
 } from "lucide-react";
 import {
