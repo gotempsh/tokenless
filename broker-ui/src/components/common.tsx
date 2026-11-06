@@ -117,13 +117,21 @@ export function Panel({ className, children }: { className?: string; children: R
   return <div className={cn("rounded-lg border bg-card text-card-foreground", className)}>{children}</div>;
 }
 
-export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
+/**
+ * Copies `value`. `iconOnly` is for a value shown right beside it: a small
+ * ghost icon that keeps `label` as its accessible name and tooltip.
+ */
+export function CopyButton({ value, label = "Copy", iconOnly = false }: { value: string; label?: string; iconOnly?: boolean }) {
   const [copied, setCopied] = useState(false);
+  const text = copied ? "Copied" : label;
   return (
     <Button
       type="button"
-      variant="outline"
-      size="sm"
+      variant={iconOnly ? "ghost" : "outline"}
+      size={iconOnly ? "icon" : "sm"}
+      className={iconOnly ? "size-8 shrink-0" : undefined}
+      aria-label={iconOnly ? text : undefined}
+      title={iconOnly ? text : undefined}
       onClick={() => {
         void navigator.clipboard.writeText(value).then(() => {
           setCopied(true);
@@ -132,7 +140,7 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
       }}
     >
       {copied ? <Check /> : <Copy />}
-      <span className="hidden sm:inline">{copied ? "Copied" : label}</span>
+      {!iconOnly && <span className="hidden sm:inline">{text}</span>}
     </Button>
   );
 }
