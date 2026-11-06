@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef } from "react";
 import { AlertTriangle, Ban, Server } from "lucide-react";
 import { ApiError, get, post, type NodeInfo } from "../api";
 import { useBreadcrumbs } from "../breadcrumbs";
@@ -12,6 +12,8 @@ import {
   Empty,
   ErrorBanner,
   Exact,
+  Fact,
+  Facts,
   Mono,
   Panel,
   Relative,
@@ -101,36 +103,34 @@ export function ProxyDetail({ nodeId }: { nodeId: string }) {
         <Skeleton className="h-72 w-full rounded-lg" />
       ) : (
         n && (
-          <Panel>
-            <dl className="divide-y">
-              <Fact label="Last seen">
-                <Relative at={n.last_seen_at} />
+          <Facts>
+            <Fact label="Last seen">
+              <Relative at={n.last_seen_at} />
+            </Fact>
+            <Fact label="Enrolled">
+              <Exact at={n.enrolled_at} />
+            </Fact>
+            {n.revoked_at && (
+              <Fact label="Revoked">
+                <Exact at={n.revoked_at} />
               </Fact>
-              <Fact label="Enrolled">
-                <Exact at={n.enrolled_at} />
-              </Fact>
-              {n.revoked_at && (
-                <Fact label="Revoked">
-                  <Exact at={n.revoked_at} />
-                </Fact>
-              )}
-              <Fact label="Certificate">
-                Valid until <Exact at={n.cert_not_after} />, renewed automatically
-              </Fact>
-              <Fact label="Proxy ID">
-                <span className="flex min-w-0 items-center gap-1">
-                  <Mono className="min-w-0">{n.id}</Mono>
-                  <CopyButton value={n.id} label="Copy proxy ID" iconOnly />
-                </span>
-              </Fact>
-              <Fact label="Certificate serial">
-                <Mono>{n.cert_serial}</Mono>
-              </Fact>
-              <Fact label="Sealing key">
-                <Mono>{n.seal_public_key}</Mono>
-              </Fact>
-            </dl>
-          </Panel>
+            )}
+            <Fact label="Certificate">
+              Valid until <Exact at={n.cert_not_after} />, renewed automatically
+            </Fact>
+            <Fact label="Proxy ID">
+              <span className="flex min-w-0 items-center gap-1">
+                <Mono className="min-w-0">{n.id}</Mono>
+                <CopyButton value={n.id} label="Copy proxy ID" iconOnly />
+              </span>
+            </Fact>
+            <Fact label="Certificate serial">
+              <Mono>{n.cert_serial}</Mono>
+            </Fact>
+            <Fact label="Sealing key">
+              <Mono>{n.seal_public_key}</Mono>
+            </Fact>
+          </Facts>
         )
       )}
       <ConfirmDialog
@@ -145,15 +145,5 @@ export function ProxyDetail({ nodeId }: { nodeId: string }) {
         }}
       />
     </PageContainer>
-  );
-}
-
-/** A label and its value, side by side once there is room. */
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 text-sm [overflow-wrap:anywhere]">{children}</dd>
-    </div>
   );
 }

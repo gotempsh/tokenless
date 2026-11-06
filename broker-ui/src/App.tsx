@@ -55,6 +55,7 @@ import { ApiKeys } from "./pages/ApiKeys";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
 import { ProxyDetail } from "./pages/ProxyDetail";
+import { ServiceDetail } from "./pages/ServiceDetail";
 import { Sessions } from "./pages/Sessions";
 import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
@@ -201,7 +202,7 @@ export function App() {
     );
 
   const { user } = boot.session;
-  const [rawSection = "vaults", id, tab] = route;
+  const [rawSection = "vaults", id, tab, sub] = route;
   // "nodes" was the old name of the proxies page; keep old links working.
   const section = rawSection === "nodes" ? "proxies" : rawSection;
   const isAdmin = user.role === "admin";
@@ -209,7 +210,10 @@ export function App() {
   return (
     <Shell section={section} user={user} onLogout={() => void logout()}>
       {section === "vaults" && !id && <Vaults canCreate={isAdmin} />}
-      {section === "vaults" && id && (
+      {section === "vaults" && id && tab === "services" && sub && (
+        <ServiceDetail vaultId={id} credentialId={sub} user={user} />
+      )}
+      {section === "vaults" && id && !(tab === "services" && sub) && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}

@@ -112,6 +112,25 @@ export function Section({
   );
 }
 
+/** A record's facts on a detail page: one row per label, values beside them once there is room. */
+export function Facts({ children }: { children: ReactNode }) {
+  return (
+    <Panel>
+      <dl className="divide-y">{children}</dl>
+    </Panel>
+  );
+}
+
+/** One row of {@link Facts}. */
+export function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
+      <dt className="text-sm text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 text-sm [overflow-wrap:anywhere]">{children}</dd>
+    </div>
+  );
+}
+
 /** The bordered surface a table or form sits on. No shadow, per the Temps design rules. */
 export function Panel({ className, children }: { className?: string; children: ReactNode }) {
   return <div className={cn("rounded-lg border bg-card text-card-foreground", className)}>{children}</div>;
