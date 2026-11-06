@@ -13,6 +13,8 @@ import {
   Menu,
   Monitor,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
   ScrollText,
   Server,
   Settings as SettingsIcon,
@@ -26,11 +28,13 @@ import { ApiError, get, post, setCsrfToken, setStepUpHandler, type SessionInfo, 
 import { useHashQuery, useHashRoute } from "./hooks";
 import { parseAddServiceContext } from "./addService";
 import { useTheme, type Theme } from "./theme";
+import { useSidebarCollapsed } from "./sidebar";
 import { cn } from "./lib/utils";
 import { ErrorBanner } from "./components/common";
 import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Auth";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
 import { Bundles } from "./pages/Bundles";
@@ -230,97 +234,163 @@ function Shell({
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useTheme();
-  const sidebar = <SidebarContent section={section} user={user} onLogout={onLogout} onNavigate={() => setMobileOpen(false)} />;
+  const [collapsed, toggleCollapsed] = useSidebarCollapsed();
+  const sidebar = (iconsOnly: boolean) => (
+    <SidebarContent
+      section={section}
+      user={user}
+      collapsed={iconsOnly}
+      onLogout={onLogout}
+      onNavigate={() => setMobileOpen(false)}
+    />
+  );
 
   return (
-    <div className="flex min-h-svh w-full">
-      <aside className="sticky top-0 hidden h-svh w-64 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground md:flex">
-        {sidebar}
-      </aside>
-      <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobileOpen}>
-        <DialogPrimitive.Portal>
-          <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0 md:hidden" />
-          <DialogPrimitive.Content className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r bg-sidebar text-sidebar-foreground data-[state=open]:animate-in data-[state=open]:slide-in-from-left md:hidden">
-            <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
-            <DialogPrimitive.Description className="sr-only">Sections of the console</DialogPrimitive.Description>
-            {sidebar}
-          </DialogPrimitive.Content>
-        </DialogPrimitive.Portal>
-      </DialogPrimitive.Root>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex h-16 shrink-0 items-center gap-2 border-b bg-background px-4">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 md:hidden"
-            aria-label="Open navigation"
-            onClick={() => setMobileOpen(true)}
-          >
-            <Menu />
-          </Button>
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-            {detail ? (
-              <>
-                <a href={`#/${section}`} className="text-muted-foreground hover:text-foreground">
-                  {LABELS[section] ?? section}
-                </a>
-                <ChevronRight className="size-3.5 text-muted-foreground" />
-                <span className="truncate font-medium">{detail}</span>
-              </>
-            ) : (
-              <span className="truncate font-medium">{LABELS[section] ?? section}</span>
-            )}
-          </nav>
-          <div className="ml-auto">
-            <ThemeToggle theme={theme} onChange={setTheme} />
-          </div>
-        </header>
-        <main className="min-w-0 flex-1">{children}</main>
+    <TooltipProvider delayDuration={200}>
+      <div className="flex min-h-svh w-full">
+        <aside
+          data-collapsed={collapsed}
+          className={cn(
+            "sticky top-0 hidden h-svh shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground transition-[width] duration-200 md:flex",
+            collapsed ? "w-14" : "w-64",
+          )}
+        >
+          {sidebar(collapsed)}
+        </aside>
+        <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobileOpen}>
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=open]:fade-in-0 md:hidden" />
+            <DialogPrimitive.Content className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col border-r bg-sidebar text-sidebar-foreground data-[state=open]:animate-in data-[state=open]:slide-in-from-left md:hidden">
+              <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
+              <DialogPrimitive.Description className="sr-only">Sections of the console</DialogPrimitive.Description>
+              {sidebar(false)}
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-10 flex h-16 shrink-0 items-center gap-2 border-b bg-background px-4">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 md:hidden"
+              aria-label="Open navigation"
+              onClick={() => setMobileOpen(true)}
+            >
+              <Menu />
+            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="hidden size-8 md:inline-flex"
+                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-expanded={!collapsed}
+                  onClick={toggleCollapsed}
+                >
+                  {collapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {collapsed ? "Expand sidebar" : "Collapse sidebar"} <kbd className="ml-1 text-xs text-muted-foreground">{shortcutLabel()}</kbd>
+              </TooltipContent>
+            </Tooltip>
+            <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
+              {detail ? (
+                <>
+                  <a href={`#/${section}`} className="text-muted-foreground hover:text-foreground">
+                    {LABELS[section] ?? section}
+                  </a>
+                  <ChevronRight className="size-3.5 text-muted-foreground" />
+                  <span className="truncate font-medium">{detail}</span>
+                </>
+              ) : (
+                <span className="truncate font-medium">{LABELS[section] ?? section}</span>
+              )}
+            </nav>
+            <div className="ml-auto">
+              <ThemeToggle theme={theme} onChange={setTheme} />
+            </div>
+          </header>
+          <main className="min-w-0 flex-1">{children}</main>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
+  );
+}
+
+function shortcutLabel(): string {
+  return /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘B" : "Ctrl+B";
+}
+
+/** In the icon-only sidebar, a control's name shows as a tooltip to its right. */
+function SideTip({ label, show, children }: { label: string; show: boolean; children: ReactNode }) {
+  if (!show) return <>{children}</>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
 function SidebarContent({
   section,
   user,
+  collapsed,
   onLogout,
   onNavigate,
 }: {
   section: string;
   user: UserSummary;
+  /** Icons only, each named by a tooltip. */
+  collapsed: boolean;
   onLogout: () => void;
   onNavigate: () => void;
 }) {
+  const role = user.role.replace("_", " ");
   return (
     <>
-      <div className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
+      <div className={cn("flex h-16 shrink-0 items-center gap-2 border-b", collapsed ? "justify-center px-2" : "px-4")}>
         <BrandMark />
-        <div className="min-w-0 leading-tight">
-          <div className="truncate text-sm font-semibold">Credential Broker</div>
-          <div className="truncate text-xs text-sidebar-foreground/70">Console</div>
-        </div>
+        {!collapsed && (
+          <div className="min-w-0 leading-tight">
+            <div className="truncate text-sm font-semibold">Credential Broker</div>
+            <div className="truncate text-xs text-sidebar-foreground/70">Console</div>
+          </div>
+        )}
       </div>
-      <nav className="flex-1 overflow-y-auto p-2">
-        {NAV.map((g) => (
+      <nav aria-label="Sections" className="flex-1 overflow-y-auto overflow-x-hidden p-2">
+        {NAV.map((g, i) => (
           <div key={g.group} className="mb-2">
-            <div className="flex h-8 items-center px-2 text-xs font-medium text-sidebar-foreground/70">{g.group}</div>
+            {collapsed ? (
+              i > 0 && <div role="separator" aria-label={g.group} className="mx-2 my-2 border-t" />
+            ) : (
+              <div className="flex h-8 items-center px-2 text-xs font-medium text-sidebar-foreground/70">{g.group}</div>
+            )}
             <ul className="flex flex-col gap-1">
               {g.items.map((item) => {
                 const active = section === item.key;
                 return (
                   <li key={item.key}>
-                    <a
-                      href={`#/${item.key}`}
-                      onClick={onNavigate}
-                      data-active={active}
-                      aria-current={active ? "page" : undefined}
-                      className="flex h-8 w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground [&>svg]:size-4 [&>svg]:shrink-0"
-                    >
-                      <item.icon />
-                      <span className="truncate">{item.label}</span>
-                    </a>
+                    <SideTip label={item.label} show={collapsed}>
+                      <a
+                        href={`#/${item.key}`}
+                        onClick={onNavigate}
+                        data-active={active}
+                        aria-current={active ? "page" : undefined}
+                        aria-label={collapsed ? item.label : undefined}
+                        className={cn(
+                          "flex h-8 w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground [&>svg]:size-4 [&>svg]:shrink-0",
+                          collapsed && "justify-center",
+                        )}
+                      >
+                        <item.icon />
+                        {!collapsed && <span className="truncate">{item.label}</span>}
+                      </a>
+                    </SideTip>
                   </li>
                 );
               })}
@@ -328,17 +398,35 @@ function SidebarContent({
           </div>
         ))}
       </nav>
-      <div className="flex items-center gap-2 border-t p-3">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold uppercase">
-          {user.username.slice(0, 2)}
-        </span>
-        <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate text-sm font-medium">{user.username}</div>
-          <div className="truncate text-xs text-sidebar-foreground/70">{user.role.replace("_", " ")}</div>
-        </div>
-        <Button type="button" variant="ghost" size="icon" className="size-8" aria-label="Sign out" title="Sign out" onClick={onLogout}>
-          <LogOut />
-        </Button>
+      <div className={cn("flex items-center gap-2 border-t p-3", collapsed && "flex-col px-2")}>
+        <SideTip label={`${user.username} · ${role}`} show={collapsed}>
+          <span
+            className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sidebar-accent text-xs font-semibold uppercase"
+            aria-label={collapsed ? `${user.username}, ${role}` : undefined}
+            role={collapsed ? "img" : undefined}
+          >
+            {user.username.slice(0, 2)}
+          </span>
+        </SideTip>
+        {!collapsed && (
+          <div className="min-w-0 flex-1 leading-tight">
+            <div className="truncate text-sm font-medium">{user.username}</div>
+            <div className="truncate text-xs text-sidebar-foreground/70">{role}</div>
+          </div>
+        )}
+        <SideTip label="Sign out" show={collapsed}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label="Sign out"
+            title={collapsed ? undefined : "Sign out"}
+            onClick={onLogout}
+          >
+            <LogOut />
+          </Button>
+        </SideTip>
       </div>
     </>
   );
