@@ -378,6 +378,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
+ "hex",
  "hkdf",
  "rand 0.8.8",
  "serde",
