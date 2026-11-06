@@ -39,6 +39,7 @@ import { addServiceHref } from "../addService";
 import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "../bundleConnect";
 import { claudeMcpCommand, DEFAULT_GATEWAY, mcpClientJson, mcpCredentials, mcpEndpoints, type McpEndpoint } from "../mcpConnect";
 import {
+  fromWidth,
   CheckField,
   ChoiceCards,
   ConfirmDialog,
@@ -63,6 +64,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { ServiceLogo } from "../components/ServiceLogo";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -417,9 +419,9 @@ function BundleServices({
             <TableHeader>
               <TableRow>
                 <TableHead>Service</TableHead>
-                <TableHead>Allowed</TableHead>
-                <TableHead className="hidden lg:table-cell">Hosts</TableHead>
-                <TableHead className="hidden md:table-cell">Placeholders</TableHead>
+                <TableHead className={fromWidth.xl}>Allowed</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Hosts</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Placeholders</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -443,15 +445,16 @@ function BundleServices({
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <ServiceLogo template={t ?? (c ? { id: c.template_id, kind: "http" } : undefined)} size="sm" />
-                        <div className="min-w-0">
-                          <div className="truncate font-medium">{c?.name ?? "Unknown service"}</div>
-                          <div className="truncate text-xs text-muted-foreground">
+                        <div className="min-w-0 [overflow-wrap:anywhere]">
+                          <div className="font-medium">{c?.name ?? "Unknown service"}</div>
+                          <div className="text-xs text-muted-foreground">
                             {t?.name ?? c?.template_id} · rule {rule.name}
                           </div>
+                          <div className="text-xs text-muted-foreground @xl:hidden">{allowedLabel(rule)}</div>
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm">
+                    <TableCell className={cn(fromWidth.xl, "text-sm")}>
                       {allowedLabel(rule)}
                       {rule.allow.mcp_tools !== undefined && (
                         <div className="text-xs text-muted-foreground">
@@ -459,10 +462,10 @@ function BundleServices({
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="hidden lg:table-cell">
+                    <TableCell className={fromWidth["4xl"]}>
                       <Tags values={rule.allow.hosts} />
                     </TableCell>
-                    <TableCell className="hidden md:table-cell">
+                    <TableCell className={fromWidth["3xl"]}>
                       {c && c.substitutions.length > 0 ? (
                         <div className="flex flex-col gap-1">
                           {c.substitutions.map((s) => (
@@ -696,9 +699,9 @@ function BundleSessions({
             <TableHeader>
               <TableRow>
                 <TableHead>Label</TableHead>
-                <TableHead className="hidden md:table-cell">Started by</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Expires</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Started by</TableHead>
+                <TableHead className={fromWidth.xl}>Started</TableHead>
+                <TableHead className={fromWidth.lg}>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -707,11 +710,11 @@ function BundleSessions({
               {sessions.data?.items.map((s) => (
                 <TableRow key={s.id} title="Open this session's logs" {...rowOpener(() => setViewing(s))}>
                   <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
-                  <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>{s.created_by}</TableCell>
+                  <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
                     <Relative at={s.created_at} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                     <Relative at={s.expires_at} />
                   </TableCell>
                   <TableCell>{sessionStatus(s)}</TableCell>

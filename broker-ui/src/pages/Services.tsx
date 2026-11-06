@@ -23,6 +23,7 @@ import {
 import { KIND_LABEL, targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
 import {
+  fromWidth,
   ConfirmDialog,
   DialogActions,
   Empty,
@@ -40,6 +41,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { ServiceLogo } from "../components/ServiceLogo";
 import { addServiceHref } from "../addService";
 import {
@@ -143,10 +145,10 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
             <TableHeader>
               <TableRow>
                 <TableHead>Service</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead>Secret</TableHead>
-                <TableHead>Updated</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Type</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Target</TableHead>
+                <TableHead className={fromWidth.xl}>Secret</TableHead>
+                <TableHead className={fromWidth.lg}>Updated</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -157,7 +159,7 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
                 return (
                   <TableRow key={c.id}>
                     <TableCell>
-                      <div className="flex min-w-48 items-center gap-3">
+                      <div className="flex min-w-0 items-center gap-3">
                         <ServiceLogo template={tpl ?? { id: c.template_id, kind: "http" }} size="sm" />
                         <div className="min-w-0">
                           <div className="truncate font-medium">{c.name}</div>
@@ -167,14 +169,14 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{KIND_LABEL[tpl?.kind ?? "http"]}</TableCell>
-                    <TableCell>
+                    <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>{KIND_LABEL[tpl?.kind ?? "http"]}</TableCell>
+                    <TableCell className={fromWidth["2xl"]}>
                       <Tags values={targetHosts(tpl, c.host_override)} />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className={fromWidth.xl}>
                       <SecretSummary credential={c} />
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                       <When at={c.updated_at} />
                     </TableCell>
                     <TableCell>

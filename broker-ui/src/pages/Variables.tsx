@@ -6,6 +6,7 @@ import { Braces, Lock, Plus, RefreshCw, Search, ShieldCheck, Trash2 } from "luci
 import { del, get, post, put, type Page, type Variable } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
+  fromWidth,
   ConfirmDialog,
   DialogActions,
   Empty,
@@ -21,6 +22,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -116,9 +118,9 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Key</TableHead>
-                    <TableHead>Value</TableHead>
-                    <TableHead>Used by</TableHead>
-                    <TableHead>Updated</TableHead>
+                    <TableHead className={fromWidth["3xl"]}>Value</TableHead>
+                    <TableHead className={fromWidth.xl}>Used by</TableHead>
+                    <TableHead className={fromWidth.lg}>Updated</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -126,9 +128,14 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                   {items.map((v) => (
                     <TableRow key={v.id}>
                       <TableCell>
-                        <Mono className="font-medium">{v.key}</Mono>
+                        <Mono className="font-medium [overflow-wrap:anywhere]">{v.key}</Mono>
+                        <div className="text-xs text-muted-foreground @xl:hidden">
+                          {v.used_by.length === 0
+                            ? "not used"
+                            : `used by ${v.used_by.length} service${v.used_by.length === 1 ? "" : "s"}`}
+                        </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className={fromWidth["3xl"]}>
                         <span
                           className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
                           title="Write-only: the value cannot be shown"
@@ -137,7 +144,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                           ••••••••
                         </span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className={fromWidth.xl}>
                         {v.used_by.length === 0 ? (
                           <span className="text-xs text-muted-foreground">not used</span>
                         ) : (
@@ -155,7 +162,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                           </div>
                         )}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">
+                      <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                         <When at={v.updated_at} />
                       </TableCell>
                       <TableCell>

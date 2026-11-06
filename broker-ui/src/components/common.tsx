@@ -45,6 +45,22 @@ export function ErrorBanner({ error, title = "Something went wrong" }: { error: 
   );
 }
 
+/**
+ * Table columns that show only once the table is at least this wide
+ * (Tailwind container sizes: md 28rem, lg 32rem, xl 36rem, 2xl 42rem,
+ * 3xl 48rem, 4xl 56rem). Tables never scroll sideways: a narrow table keeps
+ * the record's name, its state and its actions, and moves anything needed
+ * to act under the name. Put the same class on the head and the cells.
+ */
+export const fromWidth = {
+  md: "hidden @md:table-cell",
+  lg: "hidden @lg:table-cell",
+  xl: "hidden @xl:table-cell",
+  "2xl": "hidden @2xl:table-cell",
+  "3xl": "hidden @3xl:table-cell",
+  "4xl": "hidden @4xl:table-cell",
+} as const;
+
 /** Placeholder rows shaped like a table while its data loads. */
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
@@ -207,8 +223,16 @@ export function Exact({ at }: { at: string | null | undefined }) {
   );
 }
 
+/**
+ * Identifiers, hosts and commands. They break anywhere when the line is too
+ * short, so a long one wraps instead of pushing its table sideways.
+ */
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
-  return <code className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-xs", className)}>{children}</code>;
+  return (
+    <code className={cn("rounded bg-muted px-1.5 py-0.5 font-mono text-xs [overflow-wrap:anywhere]", className)}>
+      {children}
+    </code>
+  );
 }
 
 export function Tags({ values }: { values: string[] }) {

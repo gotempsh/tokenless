@@ -6,6 +6,7 @@ import { Mail, ShieldCheck, UserPlus } from "lucide-react";
 import { del, get, patch, post, type Invite, type Page, type Role, type UserSummary } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
+  fromWidth,
   ChoiceCards,
   ConfirmDialog,
   DialogActions,
@@ -27,6 +28,7 @@ import {
   type Choice,
   type Tone,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -147,9 +149,9 @@ export function People({ me }: { me: UserSummary }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Username</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Sign-in</TableHead>
-                      <TableHead>Since</TableHead>
+                      <TableHead className={fromWidth["2xl"]}>Role</TableHead>
+                      <TableHead className={fromWidth["3xl"]}>Sign-in</TableHead>
+                      <TableHead className={fromWidth["4xl"]}>Since</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -160,8 +162,9 @@ export function People({ me }: { me: UserSummary }) {
                         <TableCell className="font-medium">
                           {u.username}
                           {u.id === me.id && <span className="ml-1 font-normal text-muted-foreground">(you)</span>}
+                          <div className="text-xs font-normal text-muted-foreground @2xl:hidden">{u.role}</div>
                         </TableCell>
-                        <TableCell className="w-40">
+                        <TableCell className={cn(fromWidth["2xl"], "w-40")}>
                           <SelectField
                             value={u.role}
                             onChange={(role) =>
@@ -179,14 +182,14 @@ export function People({ me }: { me: UserSummary }) {
                             className="h-9"
                           />
                         </TableCell>
-                        <TableCell>
+                        <TableCell className={fromWidth["3xl"]}>
                           {u.totp_enrolled ? (
                             <Status tone="success">password + authenticator</Status>
                           ) : (
                             <Status tone="warning">password only</Status>
                           )}
                         </TableCell>
-                        <TableCell className="text-muted-foreground">
+                        <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
                           <When at={u.created_at} />
                         </TableCell>
                         <TableCell>
@@ -259,8 +262,8 @@ export function People({ me }: { me: UserSummary }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Role</TableHead>
-                      <TableHead>Created by</TableHead>
-                      <TableHead>Expires</TableHead>
+                      <TableHead className={fromWidth.xl}>Created by</TableHead>
+                      <TableHead className={fromWidth.lg}>Expires</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -271,10 +274,10 @@ export function People({ me }: { me: UserSummary }) {
                       return (
                         <TableRow key={i.id}>
                           <TableCell className="font-medium">{i.role}</TableCell>
-                          <TableCell>
+                          <TableCell className={fromWidth.xl}>
                             <Mono>{i.created_by}</Mono>
                           </TableCell>
-                          <TableCell className="text-muted-foreground">
+                          <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                             <When at={i.expires_at} />
                           </TableCell>
                           <TableCell>

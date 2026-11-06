@@ -6,6 +6,7 @@ import { KeySquare, Plus } from "lucide-react";
 import { del, get, post, type ApiKey, type Page, type Role, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
+  fromWidth,
   ChoiceCards,
   ConfirmDialog,
   DialogActions,
@@ -25,6 +26,7 @@ import {
   When,
   type Choice,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -112,31 +114,37 @@ export function ApiKeys() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Prefix</TableHead>
-                <TableHead>Vault</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Expires</TableHead>
-                <TableHead>Last used</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Prefix</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Vault</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Role</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Expires</TableHead>
+                <TableHead className={fromWidth.xl}>Last used</TableHead>
+                <TableHead className={fromWidth.md}>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {keys.data?.items.map((k) => (
                 <TableRow key={k.id}>
-                  <TableCell className="font-medium">{k.name}</TableCell>
                   <TableCell>
+                    <div className="font-medium">{k.name}</div>
+                    <div className="text-xs text-muted-foreground @3xl:hidden">
+                      {k.role.replace("_", " ")} · {vaultName(k.vault_id)}
+                    </div>
+                    <div className="mt-1 @md:hidden">{keyStatus(k)}</div>
+                  </TableCell>
+                  <TableCell className={fromWidth["4xl"]}>
                     <Mono>{k.prefix}</Mono>
                   </TableCell>
-                  <TableCell>{vaultName(k.vault_id)}</TableCell>
-                  <TableCell>{k.role.replace("_", " ")}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={fromWidth["2xl"]}>{vaultName(k.vault_id)}</TableCell>
+                  <TableCell className={fromWidth["3xl"]}>{k.role.replace("_", " ")}</TableCell>
+                  <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
                     <When at={k.expires_at} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
                     <When at={k.last_used_at} />
                   </TableCell>
-                  <TableCell>{keyStatus(k)}</TableCell>
+                  <TableCell className={fromWidth.md}>{keyStatus(k)}</TableCell>
                   <TableCell>
                     <RowActions>
                       {!k.revoked_at && (

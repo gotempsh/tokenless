@@ -21,6 +21,7 @@ import { useAction, useLoad } from "../hooks";
 import { Bundles, CommandSnippet, runCommand } from "./Bundles";
 import { Services } from "./Services";
 import {
+  fromWidth,
   CheckField,
   ChoiceCards,
   ConfirmDialog,
@@ -44,6 +45,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -311,10 +313,10 @@ function Rules({ vaultId }: { vaultId: string }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Credential</TableHead>
-                <TableHead>Hosts</TableHead>
-                <TableHead>Paths</TableHead>
-                <TableHead>Methods</TableHead>
+                <TableHead className={fromWidth.xl}>Credential</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Hosts</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Paths</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Methods</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -322,15 +324,18 @@ function Rules({ vaultId }: { vaultId: string }) {
             <TableBody>
               {rules.data?.items.map((r) => (
                 <TableRow key={r.id}>
-                  <TableCell className="font-medium">{r.name}</TableCell>
-                  <TableCell>{credName(r.credential_id)}</TableCell>
                   <TableCell>
+                    <div className="font-medium">{r.name}</div>
+                    <div className="text-xs text-muted-foreground @xl:hidden">{credName(r.credential_id)}</div>
+                  </TableCell>
+                  <TableCell className={fromWidth.xl}>{credName(r.credential_id)}</TableCell>
+                  <TableCell className={fromWidth["2xl"]}>
                     <Tags values={r.allow.hosts} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={fromWidth["4xl"]}>
                     <Tags values={r.allow.paths} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={fromWidth["3xl"]}>
                     <Tags values={r.allow.methods} />
                     {r.allow.mcp_tools !== undefined && (
                       <p className="mt-1 max-w-48 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
@@ -346,7 +351,9 @@ function Rules({ vaultId }: { vaultId: string }) {
                         onCheckedChange={() => void toggle(r)}
                         aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
                       />
-                      <Status tone={r.enabled ? "success" : "neutral"}>{r.enabled ? "enabled" : "disabled"}</Status>
+                      <span className="hidden @lg:inline">
+                        <Status tone={r.enabled ? "success" : "neutral"}>{r.enabled ? "enabled" : "disabled"}</Status>
+                      </span>
                     </div>
                   </TableCell>
                   <TableCell>
@@ -578,11 +585,11 @@ function Sessions({ vaultId }: { vaultId: string }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Session</TableHead>
-                <TableHead>Bundle</TableHead>
-                <TableHead>Labels</TableHead>
-                <TableHead>Limit</TableHead>
-                <TableHead>Created by</TableHead>
-                <TableHead>Expires</TableHead>
+                <TableHead className={fromWidth.xl}>Bundle</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Labels</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Limit</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
+                <TableHead className={fromWidth.lg}>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -592,16 +599,19 @@ function Sessions({ vaultId }: { vaultId: string }) {
                 <TableRow key={s.id}>
                   <TableCell>
                     <Mono>{s.id.slice(0, 8)}</Mono>
+                    {s.bundle && <div className="text-xs text-muted-foreground @xl:hidden">{s.bundle.name}</div>}
                   </TableCell>
-                  <TableCell>{s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}</TableCell>
-                  <TableCell>
+                  <TableCell className={fromWidth.xl}>
+                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
+                  </TableCell>
+                  <TableCell className={fromWidth["3xl"]}>
                     <Tags values={Object.entries(s.labels).map(([k, v]) => `${k}=${v}`)} />
                   </TableCell>
-                  <TableCell className="tabular-nums">{s.request_limit ?? "—"}</TableCell>
-                  <TableCell>
+                  <TableCell className={cn(fromWidth["4xl"], "tabular-nums")}>{s.request_limit ?? "—"}</TableCell>
+                  <TableCell className={fromWidth["4xl"]}>
                     <Mono>{s.created_by}</Mono>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                     <When at={s.expires_at} />
                   </TableCell>
                   <TableCell>{sessionStatus(s)}</TableCell>

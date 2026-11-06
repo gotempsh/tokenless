@@ -7,6 +7,7 @@ import { get, post, type NodeInfo, type Page } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { proxyAttention, proxyState, type Attention, type ProxyState } from "../proxyHealth";
 import {
+  fromWidth,
   ConfirmDialog,
   CopyButton,
   DialogActions,
@@ -26,6 +27,7 @@ import {
   useConfirm,
   type Tone,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { CommandSnippet } from "./Bundles";
 import { Button } from "../components/ui/button-components";
@@ -158,7 +160,7 @@ export function Nodes() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Last seen</TableHead>
+                <TableHead className={fromWidth.md}>Last seen</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -169,7 +171,7 @@ export function Nodes() {
                   <TableCell>
                     <ProxyStatus node={n} now={now} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.md, "text-muted-foreground")}>
                     <Relative at={n.last_seen_at} />
                   </TableCell>
                   <TableCell>

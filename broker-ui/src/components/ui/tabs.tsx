@@ -18,7 +18,8 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      'flex min-h-10 w-full items-center justify-start gap-5 overflow-x-auto border-b bg-transparent p-0 text-muted-foreground',
+      // Tabs wrap to a second line rather than scroll sideways.
+      'flex min-h-10 w-full flex-wrap items-center justify-start gap-x-5 border-b bg-transparent p-0 text-muted-foreground',
       className
     )}
     {...props}

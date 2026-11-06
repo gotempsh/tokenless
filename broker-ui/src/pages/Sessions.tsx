@@ -9,6 +9,7 @@ import { Ban, ScrollText, Tags, Timer } from "lucide-react";
 import { get, patch, post, type AuditEvent, type Page, type ProxySession, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
+  fromWidth,
   ConfirmDialog,
   DialogActions,
   Empty,
@@ -28,6 +29,7 @@ import {
   Status,
   useConfirm,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Textarea } from "../components/ui/textarea";
@@ -112,11 +114,11 @@ export function Sessions() {
             <TableHeader>
               <TableRow>
                 <TableHead>Label</TableHead>
-                <TableHead>Vault</TableHead>
-                <TableHead className="hidden md:table-cell">Bundle</TableHead>
-                <TableHead className="hidden md:table-cell">Created by</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Expires</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Vault</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Bundle</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
+                <TableHead className={fromWidth.xl}>Created</TableHead>
+                <TableHead className={fromWidth.lg}>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -124,18 +126,23 @@ export function Sessions() {
             <TableBody>
               {sessions.data?.items.map((s) => (
                 <TableRow key={s.id} title="Open this session's logs" {...rowOpener(() => setViewing(s))}>
-                  <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
                   <TableCell>
+                    <div className="font-medium">{sessionLabel(s)}</div>
+                    <div className="text-xs text-muted-foreground @3xl:hidden">
+                      {[names[s.vault_id], s.bundle?.name].filter(Boolean).join(" · ")}
+                    </div>
+                  </TableCell>
+                  <TableCell className={fromWidth["2xl"]}>
                     {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
                   </TableCell>
-                  <TableCell className="hidden md:table-cell">
+                  <TableCell className={fromWidth["3xl"]}>
                     {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
                   </TableCell>
-                  <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>{s.created_by}</TableCell>
+                  <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
                     <Relative at={s.created_at} />
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                     <Relative at={s.expires_at} />
                   </TableCell>
                   <TableCell>{sessionStatus(s)}</TableCell>
@@ -330,7 +337,7 @@ export function SessionDetail({
                   <TableHead>Time</TableHead>
                   <TableHead>Outcome</TableHead>
                   <TableHead>Request</TableHead>
-                  <TableHead className="text-right">Time taken</TableHead>
+                  <TableHead className={cn(fromWidth.lg, "text-right")}>Time taken</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -351,7 +358,7 @@ export function SessionDetail({
                         <p className="mt-1 text-xs text-muted-foreground">Body not searched: {r.bodySkipped}</p>
                       )}
                     </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
+                    <TableCell className={cn(fromWidth.lg, "text-right text-muted-foreground")}>
                       {r.durationMs !== undefined ? `${r.durationMs} ms` : ""}
                     </TableCell>
                   </TableRow>

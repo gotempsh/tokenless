@@ -5,7 +5,9 @@ import { useState } from "react";
 import { ScrollText, Search } from "lucide-react";
 import { get, type AuditEvent, type Page } from "../api";
 import { useLoad } from "../hooks";
-import { Empty, ErrorBanner, Loading, Mono, Pager, Panel, Status, Tags, When } from "../components/common";
+import {
+  fromWidth, Empty, ErrorBanner, Loading, Mono, Pager, Panel, Status, Tags, When } from "../components/common";
+import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -92,31 +94,43 @@ export function Audit() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>When</TableHead>
-                <TableHead>Actor</TableHead>
+                <TableHead className={fromWidth.md}>When</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Actor</TableHead>
                 <TableHead>Action</TableHead>
-                <TableHead>Outcome</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead>Detail</TableHead>
+                <TableHead className={fromWidth.lg}>Outcome</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Target</TableHead>
+                <TableHead className={fromWidth["4xl"]}>Detail</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.data?.items.map((e) => (
                 <TableRow key={e.id}>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className={cn(fromWidth.md, "text-muted-foreground")}>
                     <When at={e.at} />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={fromWidth["2xl"]}>
                     <Mono>{e.actor}</Mono>
                   </TableCell>
                   <TableCell>
                     <Mono>{e.action}</Mono>
+                    {/* Narrow tables fold who did it, and a failure, in here. */}
+                    <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground @2xl:hidden">
+                      <span className="@md:hidden">
+                        <When at={e.at} /> ·
+                      </span>
+                      by {e.actor}
+                      {e.outcome !== "success" && (
+                        <span className="@lg:hidden">
+                          <Status tone="destructive">{e.outcome}</Status>
+                        </span>
+                      )}
+                    </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className={fromWidth.lg}>
                     <Status tone={e.outcome === "success" ? "success" : "destructive"}>{e.outcome}</Status>
                   </TableCell>
-                  <TableCell>{e.target && <Mono>{e.target}</Mono>}</TableCell>
-                  <TableCell className="max-w-md">
+                  <TableCell className={fromWidth["3xl"]}>{e.target && <Mono>{e.target}</Mono>}</TableCell>
+                  <TableCell className={cn(fromWidth["4xl"], "max-w-md")}>
                     <Tags values={Object.entries(e.detail).map(([k, v]) => `${k}=${v}`)} />
                   </TableCell>
                 </TableRow>

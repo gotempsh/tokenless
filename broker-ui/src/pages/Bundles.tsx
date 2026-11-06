@@ -23,6 +23,7 @@ import {
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import {
+  fromWidth,
   CheckField,
   ConfirmDialog,
   CopyButton,
@@ -45,6 +46,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -206,9 +208,9 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                {!scoped && <TableHead>Vault</TableHead>}
-                <TableHead>Services</TableHead>
-                <TableHead className="hidden md:table-cell">Updated</TableHead>
+                {!scoped && <TableHead className={fromWidth["2xl"]}>Vault</TableHead>}
+                <TableHead className={fromWidth.md}>Services</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Updated</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -218,13 +220,22 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                   <TableCell>
                     <span className="font-mono font-medium">{b.name}</span>
                     {b.description && <p className="text-xs text-muted-foreground">{b.description}</p>}
+                    {/* Narrow tables fold the services and vault in here. */}
+                    <p className="text-xs text-muted-foreground @md:hidden">
+                      {b.rule_ids.length === 0 ? (
+                        <Status tone="warning">no services</Status>
+                      ) : (
+                        `${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"}`
+                      )}
+                    </p>
+                    {!scoped && <p className="text-xs text-muted-foreground @2xl:hidden">in {vaultName(b.vault_id)}</p>}
                   </TableCell>
                   {!scoped && (
-                    <TableCell>
+                    <TableCell className={cn(fromWidth["2xl"], "whitespace-nowrap")}>
                       {vaultName(b.vault_id)}
                     </TableCell>
                   )}
-                  <TableCell>
+                  <TableCell className={fromWidth.md}>
                     {b.rule_ids.length === 0 ? (
                       <div className="flex flex-wrap items-center gap-2">
                         <Status tone="warning">no services</Status>
@@ -244,7 +255,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                       <BundleRules ids={b.rule_ids} ruleById={ruleById} credName={credName} />
                     )}
                   </TableCell>
-                  <TableCell className="hidden text-muted-foreground md:table-cell">
+                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>
                     <When at={b.updated_at} />
                   </TableCell>
                   <TableCell>
@@ -366,11 +377,12 @@ function BundleRules({
         return (
           <span
             key={id}
-            className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-xs"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded border bg-muted/40 px-1.5 py-0.5 text-xs"
             title={rule.allow.hosts.join(", ")}
           >
             {credName(rule.credential_id)}
-            <span className="text-muted-foreground">· {rule.name}</span>
+            {/* The rule is worth naming only when it is not the service's own name. */}
+            {rule.name !== credName(rule.credential_id) && <span className="text-muted-foreground">· {rule.name}</span>}
             {!rule.enabled && <span className="text-muted-foreground">(disabled)</span>}
           </span>
         );
