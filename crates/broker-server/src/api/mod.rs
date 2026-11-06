@@ -94,6 +94,10 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/sessions", get(list_all_sessions))
         .route("/sessions/revoke-self", post(revoke_own_session))
         .route("/sessions/self", get(discover_own_session))
+        .route(
+            "/sessions/{session_id}",
+            axum::routing::patch(update_session),
+        )
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(

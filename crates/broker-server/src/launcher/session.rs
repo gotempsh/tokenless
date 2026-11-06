@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A session that outlives the one-hour session cap: it is minted from a
+//! A session that outlives the session lifetime cap: it is minted from a
 //! bundle, renewed before it expires, and every token it minted is ended
 //! when it stops.
 

@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { get, put, type Settings as SettingsModel } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { ChoiceCards, ErrorBanner, Field, lines, Panel, Section } from "../components/common";
+import { ChoiceCards, ErrorBanner, Field, lines, Panel, Section, SelectField } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Label } from "../components/ui/label";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -13,6 +13,19 @@ import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 
 type Unmatched = SettingsModel["unmatched_host_policy"];
+
+const LIFETIMES = [
+  { value: String(15 * 60), label: "15 minutes" },
+  { value: String(60 * 60), label: "1 hour (default)" },
+  { value: String(8 * 3600), label: "8 hours" },
+  { value: String(24 * 3600), label: "1 day" },
+  { value: String(7 * 24 * 3600), label: "7 days" },
+];
+
+function lifetimeOptions(current: number) {
+  if (LIFETIMES.some((o) => o.value === String(current))) return LIFETIMES;
+  return [...LIFETIMES, { value: String(current), label: `${Math.round(current / 60)} minutes` }];
+}
 
 export function Settings() {
   const settings = useLoad(() => get<SettingsModel>("/settings"), []);
@@ -65,6 +78,23 @@ export function Settings() {
                 },
               ]}
             />
+          </Section>
+          <Section
+            title="Session lifetime"
+            description="The longest proxy session anyone may mint. credential-broker run and session start renew sessions before they expire, so agents work for longer than this either way; a short lifetime limits how long a leaked token is useful."
+          >
+            <Panel>
+              <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <Label htmlFor="max-ttl">Longest session</Label>
+                <SelectField
+                  id="max-ttl"
+                  className="w-full sm:w-[200px]"
+                  value={String(current.max_session_ttl_secs)}
+                  onChange={(v) => void save({ ...current, max_session_ttl_secs: Number(v) })}
+                  options={lifetimeOptions(current.max_session_ttl_secs)}
+                />
+              </div>
+            </Panel>
           </Section>
           <Section
             title="Always reachable"

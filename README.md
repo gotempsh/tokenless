@@ -84,7 +84,8 @@ that adds the session to every request and relays it to the proxy. The
 agent is started with `HTTPS_PROXY=http://127.0.0.1:<port>`, trust files
 that include the broker's interception CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others), and no session
-token anywhere in its environment. Sessions last at most an hour, so the
+token anywhere in its environment. Sessions are capped at an hour unless
+an admin raises it (**Settings → Session lifetime**, up to 7 days), so the
 port renews the session before it expires. When the agent exits, every
 session the run minted is ended and `run` exits with the agent's code.
 
@@ -151,8 +152,11 @@ uses the session; on a shared machine, other local users can too.
 
 A bundle is a convenience over picking rules, not a grant of its own:
 a session keeps the rules it was minted with, and disabled rules are
-skipped when minting. To cut a running agent off, revoke its session or
-disable the rule. Holding a session's token is enough to end that
+skipped when minting. To cut a running agent off, revoke its session,
+disable the rule, or delete the bundle, which also ends every live
+session minted from it. Session labels can be changed afterwards
+(`PATCH /api/v1/sessions/{id}`); traffic records keep the labels the
+session was minted with. Holding a session's token is enough to end that
 session (`POST /api/v1/sessions/revoke-self`), which is how `run` cleans
 up with only a `session_issuer` key.
 

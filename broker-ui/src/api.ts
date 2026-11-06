@@ -259,6 +259,8 @@ export interface Settings {
   egress: EgressPolicy;
   /** Tunnelled untouched even under "deny"; never given a credential. */
   passthrough_hosts: string[];
+  /** The longest session anyone may mint. */
+  max_session_ttl_secs: number;
 }
 
 export interface CredentialValidation {

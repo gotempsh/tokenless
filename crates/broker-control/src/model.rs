@@ -220,6 +220,13 @@ pub struct Settings {
     /// package registries. Never intercepted, never given a credential.
     #[serde(default)]
     pub passthrough_hosts: Vec<HostPattern>,
+    /// The longest session anyone may mint, in seconds.
+    #[serde(default = "default_max_session_ttl")]
+    pub max_session_ttl_secs: u64,
+}
+
+fn default_max_session_ttl() -> u64 {
+    broker_core::session::DEFAULT_MAX_SESSION_TTL_SECS
 }
 
 impl Default for Settings {
@@ -228,6 +235,7 @@ impl Default for Settings {
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
             egress: EgressPolicy::default(),
             passthrough_hosts: Vec::new(),
+            max_session_ttl_secs: default_max_session_ttl(),
         }
     }
 }

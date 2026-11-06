@@ -9,6 +9,8 @@
 //! enrolment flows. `broker-conformance` holds the behaviour every
 //! implementation must exhibit.
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::{rbac_decide, Action, Decision, Principal, Role};
@@ -190,7 +192,14 @@ pub trait PolicyStore: Send + Sync {
         bundle: AccessBundle,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError>;
+    /// Deletes the bundle and revokes, at `at`, its sessions that are still
+    /// live. Returns how many were revoked; `NotFound` if missing.
+    async fn delete_bundle(
+        &self,
+        id: &BundleId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError>;
 
     async fn insert_session(
         &self,
@@ -211,6 +220,13 @@ pub trait PolicyStore: Send + Sync {
         at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError>;
+    /// Replaces a session's labels; `NotFound` if missing.
+    async fn update_session_labels(
+        &self,
+        id: &SessionId,
+        labels: BTreeMap<String, String>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     /// Revoked sessions that have not yet expired (the set nodes must know).
     async fn list_revoked_unexpired(
         &self,

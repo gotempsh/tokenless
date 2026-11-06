@@ -7,6 +7,7 @@
 //! beyond `ON CONFLICT DO NOTHING` and `RETURNING`, both of which PostgreSQL
 //! shares, so a Postgres store can reuse them with `$n` placeholders.
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -1043,7 +1044,12 @@ impl PolicyStore for SqliteStore {
         finish(tx, audit, "update_bundle").await
     }
 
-    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+    async fn delete_bundle(
+        &self,
+        id: &BundleId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
         let mut tx = self.begin("delete_bundle").await?;
         let result = sqlx::query("DELETE FROM access_bundles WHERE id = ?")
             .bind(id.to_string())
@@ -1058,7 +1064,17 @@ impl PolicyStore for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(db("delete access bundle rules", "access_bundle"))?;
-        finish(tx, audit, "delete_bundle").await
+        let revoked = sqlx::query(
+            "UPDATE proxy_sessions SET revoked_at = ? WHERE bundle_id = ? AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(ts(&at))
+        .bind(id.to_string())
+        .bind(ts(&at))
+        .execute(&mut *tx)
+        .await
+        .map_err(db("revoke access bundle sessions", "session"))?
+        .rows_affected();
+        finish(tx, audit, "delete_bundle").await.map(|()| revoked)
     }
 
     async fn insert_session(
@@ -1155,6 +1171,25 @@ impl PolicyStore for SqliteStore {
         } else {
             Err(StoreError::not_found("session", id))
         }
+    }
+
+    async fn update_session_labels(
+        &self,
+        id: &SessionId,
+        labels: BTreeMap<String, String>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_session_labels").await?;
+        let result = sqlx::query("UPDATE proxy_sessions SET labels = ? WHERE id = ?")
+            .bind(to_json("labels", &labels)?)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("update session labels", "session"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("session", id));
+        }
+        finish(tx, audit, "update_session_labels").await
     }
 
     async fn list_revoked_unexpired(

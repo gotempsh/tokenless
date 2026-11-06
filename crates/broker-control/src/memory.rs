@@ -556,14 +556,27 @@ impl PolicyStore for MemoryStore {
         Ok(())
     }
 
-    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+    async fn delete_bundle(
+        &self,
+        id: &BundleId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
         let mut inner = self.lock()?;
         inner
             .bundles
             .remove(id)
             .ok_or_else(|| StoreError::not_found("access_bundle", id))?;
+        let mut revoked = 0;
+        for session in inner.sessions.values_mut() {
+            let live = session.revoked_at.is_none() && session.expires_at > at;
+            if live && session.bundle.as_ref().is_some_and(|b| &b.id == id) {
+                session.revoked_at = Some(at);
+                revoked += 1;
+            }
+        }
         inner.audit.extend_from_slice(audit);
-        Ok(())
+        Ok(revoked)
     }
 
     async fn insert_session(
@@ -614,6 +627,22 @@ impl PolicyStore for MemoryStore {
         s.revoked_at = Some(at);
         inner.audit.extend_from_slice(audit);
         Ok(true)
+    }
+
+    async fn update_session_labels(
+        &self,
+        id: &SessionId,
+        labels: BTreeMap<String, String>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("session", id))?
+            .labels = labels;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
     }
 
     async fn list_revoked_unexpired(

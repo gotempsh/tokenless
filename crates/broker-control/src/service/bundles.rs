@@ -15,11 +15,12 @@ use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Action;
 use broker_core::ids::{BundleId, RuleId, VaultId};
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Caller, Guard};
 use crate::error::ControlError;
 use crate::model::{AccessBundle, Page, PageRequest};
+use crate::notify::PolicyNotifier;
 use crate::store::PolicyStore;
 
 pub const MAX_BUNDLE_NAME: usize = 64;
@@ -79,11 +80,23 @@ fn validate_description(description: &str) -> Result<String, ControlError> {
 pub struct BundleService {
     policy: Arc<dyn PolicyStore>,
     guard: Guard,
+    notifier: Arc<PolicyNotifier>,
+}
+
+/// What deleting a bundle did.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedBundle {
+    /// Live sessions minted from it, now ended.
+    pub sessions_revoked: u64,
 }
 
 impl BundleService {
-    pub fn new(policy: Arc<dyn PolicyStore>, guard: Guard) -> Self {
-        Self { policy, guard }
+    pub fn new(policy: Arc<dyn PolicyStore>, guard: Guard, notifier: Arc<PolicyNotifier>) -> Self {
+        Self {
+            policy,
+            guard,
+            notifier,
+        }
     }
 
     /// Every rule must exist and belong to the bundle's vault. Disabled
@@ -183,17 +196,30 @@ impl BundleService {
         Ok(bundle)
     }
 
-    pub async fn delete(&self, caller: &Caller, id: &BundleId) -> Result<(), ControlError> {
+    /// Deletes the bundle and ends the live sessions minted from it, so
+    /// removing a bundle cuts its agents off at the next policy refresh.
+    pub async fn delete(
+        &self,
+        caller: &Caller,
+        id: &BundleId,
+    ) -> Result<DeletedBundle, ControlError> {
         let bundle = self.find(id).await?;
         self.guard
             .check(caller, Action::RuleDelete, Some(&bundle.vault_id))
             .await?;
+        self.guard
+            .check(caller, Action::SessionRevoke, Some(&bundle.vault_id))
+            .await?;
         let event = AuditEvent::new(caller.actor(), "bundle.delete", AuditOutcome::Success)
             .vault(bundle.vault_id)
             .target(format!("access_bundle:{id}"))
-            .detail("name", bundle.name.clone());
-        self.policy.delete_bundle(id, &[event]).await?;
-        Ok(())
+            .detail("name", bundle.name.clone())
+            .detail("ends_live_sessions", "true");
+        let sessions_revoked = self.policy.delete_bundle(id, Utc::now(), &[event]).await?;
+        if sessions_revoked > 0 {
+            self.notifier.bump_sessions();
+        }
+        Ok(DeletedBundle { sessions_revoked })
     }
 
     pub async fn get(&self, caller: &Caller, id: &BundleId) -> Result<AccessBundle, ControlError> {

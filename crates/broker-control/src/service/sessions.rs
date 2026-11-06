@@ -11,7 +11,7 @@ use broker_core::authz::Action;
 use broker_core::ids::{BundleId, RuleId, SessionId, VaultId};
 use broker_core::scope::Scope;
 use broker_core::session::{
-    key_id, verify_session, SessionClaims, SessionError, DEFAULT_SESSION_TTL_SECS,
+    key_id, validate_labels, verify_session, SessionClaims, SessionError, DEFAULT_SESSION_TTL_SECS,
 };
 use broker_core::substitution::SubstitutionLocation;
 use chrono::Utc;
@@ -162,13 +162,16 @@ impl SessionService {
                 )));
             }
         }
+        let max_ttl = self.policy.get_settings().await?.max_session_ttl_secs;
         let claims = SessionClaims::new(
             Scope::for_vault(&vault.id),
             rule_ids.clone(),
-            req.ttl_secs.unwrap_or(DEFAULT_SESSION_TTL_SECS),
+            req.ttl_secs
+                .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl)),
             req.request_limit,
             req.labels.clone(),
             Utc::now(),
+            max_ttl,
         )?;
         let token = self.keys.session_signer.sign(&claims)?;
         let session = ProxySession {
@@ -246,6 +249,43 @@ impl SessionService {
             }
         }
         Ok((enabled, skipped))
+    }
+
+    /// Replaces a session's labels. They describe the session record; the
+    /// proxies' traffic records keep the labels it was minted with, which
+    /// are signed into its token.
+    pub async fn update_labels(
+        &self,
+        caller: &Caller,
+        id: &SessionId,
+        labels: BTreeMap<String, String>,
+    ) -> Result<ProxySession, ControlError> {
+        let session = self
+            .policy
+            .get_session(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("session", id))?;
+        self.guard
+            .check(caller, Action::SessionMint, Some(&session.vault_id))
+            .await?;
+        validate_labels(&labels)?;
+        let mut event = AuditEvent::new(
+            caller.actor(),
+            "session.update_labels",
+            AuditOutcome::Success,
+        )
+        .vault(session.vault_id)
+        .target(format!("session:{id}"));
+        for (k, v) in &labels {
+            event = event.detail(&format!("label.{k}"), v.clone());
+        }
+        self.policy
+            .update_session_labels(id, labels, &[event])
+            .await?;
+        self.policy
+            .get_session(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("session", id))
     }
 
     pub async fn revoke(

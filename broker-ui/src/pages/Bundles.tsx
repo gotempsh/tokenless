@@ -7,7 +7,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import { Boxes, Pencil, Plus, Terminal, Trash2 } from "lucide-react";
-import { del, get, patch, post, type AccessBundle, type CredentialMeta, type Page, type Rule } from "../api";
+import { api, get, patch, post, type AccessBundle, type CredentialMeta, type Page, type Rule } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
   CheckField,
@@ -29,6 +29,7 @@ import {
   useConfirm,
   When,
 } from "../components/common";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
@@ -75,9 +76,11 @@ export function Bundles({ vaultId }: { vaultId: string }) {
   const ruleById = useMemo(() => new Map((rules.data?.items ?? []).map((r) => [r.id, r])), [rules.data]);
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id.slice(0, 8);
 
+  const [removed, setRemoved] = useState<{ name: string; sessions: number } | null>(null);
   const remove = async (b: AccessBundle) => {
-    await action.run(() => del(`/bundles/${b.id}`));
+    const result = await action.run(() => api<{ sessions_revoked: number }>("DELETE", `/bundles/${b.id}`));
     confirm.close();
+    if (result) setRemoved({ name: b.name, sessions: result.sessions_revoked });
     bundles.reload();
   };
 
@@ -95,6 +98,17 @@ export function Bundles({ vaultId }: { vaultId: string }) {
       actions={addButton}
     >
       <ErrorBanner error={bundles.error ?? action.error} />
+      {removed && (
+        <Alert>
+          <Boxes className="size-4" />
+          <AlertTitle>Deleted bundle "{removed.name}"</AlertTitle>
+          <AlertDescription>
+            {removed.sessions === 0
+              ? "No live sessions were using it."
+              : `Ended ${removed.sessions} live session${removed.sessions === 1 ? "" : "s"} minted from it; proxies refuse them at their next policy refresh.`}
+          </AlertDescription>
+        </Alert>
+      )}
       <Panel>
         {bundles.loading && !bundles.data ? (
           <Loading />
@@ -209,7 +223,7 @@ export function Bundles({ vaultId }: { vaultId: string }) {
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}
         title={`Delete bundle "${confirm.target?.name ?? ""}"?`}
-        description="Agents can no longer start with it. Sessions already minted from it keep working until they expire or are revoked."
+        description="Agents can no longer start with it, and the live sessions minted from it are ended: proxies refuse them at their next policy refresh."
         confirmLabel="Delete bundle"
         destructive
         busy={action.busy}

@@ -598,10 +598,9 @@ pub async fn delete_bundle(
     State(s): St,
     authed: Authed,
     Path(bundle_id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<impl IntoResponse> {
     let id: BundleId = parse_id("access bundle", &bundle_id)?;
-    s.control.bundles.delete(&authed.caller, &id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(s.control.bundles.delete(&authed.caller, &id).await?))
 }
 
 // ----- proxy sessions ----------------------------------------------------
@@ -653,6 +652,28 @@ pub async fn revoke_session(
 ) -> ApiResult<impl IntoResponse> {
     let id: SessionId = parse_id("session", &session_id)?;
     Ok(Json(s.control.sessions.revoke(&authed.caller, &id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSessionRequest {
+    labels: std::collections::BTreeMap<String, String>,
+}
+
+/// `PATCH /sessions/{id}`: replaces the session's labels.
+pub async fn update_session(
+    State(s): St,
+    authed: Authed,
+    Path(session_id): Path<String>,
+    ApiJson(req): ApiJson<UpdateSessionRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let id: SessionId = parse_id("session", &session_id)?;
+    Ok(Json(
+        s.control
+            .sessions
+            .update_labels(&authed.caller, &id, req.labels)
+            .await?,
+    ))
 }
 
 // ----- API keys ----------------------------------------------------------

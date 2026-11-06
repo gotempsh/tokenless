@@ -849,6 +849,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             block_private: false,
             allow: vec![allow],
         },
+        max_session_ttl_secs: 8 * 3600,
         passthrough_hosts: vec![broker_core::host::HostPattern::parse("registry.npmjs.org")
             .map_err(|e| ConformanceFailure {
                 suite: S,
@@ -1053,17 +1054,55 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         got.as_ref() == Some(&minted),
         "expected {minted:?}, got {got:?}"
     );
-
+    let mut expired = session(v1.id, -5, None);
+    expired.bundle = minted.bundle.clone();
     store
-        .delete_bundle(&review.id, &[])
+        .insert_session(expired.clone(), &[])
+        .await
+        .map_err(backend(S, "expired_insert"))?;
+
+    // Labels can be replaced after minting.
+    let relabelled = BTreeMap::from([("ticket".to_string(), "T-1".to_string())]);
+    store
+        .update_session_labels(&minted.id, relabelled.clone(), &[])
+        .await
+        .map_err(backend(S, "labels"))?;
+    let got = store
+        .get_session(&minted.id)
+        .await
+        .map_err(backend(S, "labels_get"))?;
+    ensure!(
+        S,
+        "labels_replaced",
+        got.as_ref().map(|s| &s.labels) == Some(&relabelled),
+        "expected {relabelled:?}, got {got:?}"
+    );
+    let missing = store
+        .update_session_labels(&SessionId::new(), BTreeMap::new(), &[])
+        .await;
+    ensure!(
+        S,
+        "labels_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+
+    let revoked = store
+        .delete_bundle(&review.id, at(1), &[])
         .await
         .map_err(backend(S, "delete"))?;
+    ensure!(
+        S,
+        "delete_revokes_live_sessions",
+        revoked == 1,
+        "only the live session minted from the bundle is revoked, got {revoked}"
+    );
     let gone = store
         .get_bundle(&review.id)
         .await
         .map_err(backend(S, "delete_get"))?;
     ensure!(S, "delete", gone.is_none(), "got {gone:?}");
-    let missing = store.delete_bundle(&review.id, &[]).await;
+    let missing = store.delete_bundle(&review.id, at(1), &[]).await;
     ensure!(
         S,
         "delete_missing",
@@ -1077,8 +1116,22 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     ensure!(
         S,
         "session_outlives_bundle",
-        got.and_then(|s| s.bundle).map(|b| b.name) == Some("code-review".into()),
-        "a session keeps the bundle name it was minted with"
+        got.as_ref()
+            .and_then(|s| s.bundle.as_ref())
+            .map(|b| b.name.as_str())
+            == Some("code-review")
+            && got.as_ref().and_then(|s| s.revoked_at) == Some(at(1)),
+        "a session keeps the bundle name it was minted with and is revoked: {got:?}"
+    );
+    let untouched = store
+        .get_session(&expired.id)
+        .await
+        .map_err(backend(S, "expired_after_delete"))?;
+    ensure!(
+        S,
+        "expired_session_untouched",
+        untouched.and_then(|s| s.revoked_at).is_none(),
+        "an expired session is not revoked"
     );
     Ok(())
 }

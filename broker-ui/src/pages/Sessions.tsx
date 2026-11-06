@@ -4,16 +4,18 @@
 // Proxy sessions across every vault the caller can see, with each
 // session's traffic from the audit log.
 
-import { useMemo, useState, type ReactNode } from "react";
-import { ScrollText, Timer } from "lucide-react";
-import { get, post, type AuditEvent, type Page, type ProxySession, type Vault } from "../api";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { ScrollText, Tags, Timer } from "lucide-react";
+import { get, patch, post, type AuditEvent, type Page, type ProxySession, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
   ConfirmDialog,
   DialogActions,
   Empty,
   ErrorBanner,
+  Field,
   FormDialog,
+  lines,
   Loading,
   Mono,
   Pager,
@@ -26,6 +28,7 @@ import {
 } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
+import { Textarea } from "../components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { logRows, type LogRow } from "./sessionLogs";
 
@@ -170,6 +173,10 @@ export function Sessions() {
             vaultName={names[viewing.vault_id]}
             onRevoke={() => confirm.ask(viewing)}
             onClose={() => setViewing(null)}
+            onChanged={(s) => {
+              setViewing(s);
+              sessions.reload();
+            }}
           />
         )}
       </FormDialog>
@@ -202,12 +209,31 @@ export function SessionDetail({
   vaultName,
   onRevoke,
   onClose,
+  onChanged,
 }: {
   session: ProxySession;
   vaultName?: string;
   onRevoke: () => void;
   onClose: () => void;
+  /** Called with the updated record after its labels are saved. */
+  onChanged?: (session: ProxySession) => void;
 }) {
+  const [labelText, setLabelText] = useState<string | null>(null);
+  const labelAction = useAction();
+  const saveLabels = async (e: FormEvent) => {
+    e.preventDefault();
+    const labels = Object.fromEntries(
+      lines(labelText ?? "").map((l) => {
+        const i = l.indexOf("=");
+        return i < 0 ? [l.trim(), ""] : [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+      }),
+    );
+    const saved = await labelAction.run(() => patch<ProxySession>(`/sessions/${session.id}`, { labels }));
+    if (saved) {
+      setLabelText(null);
+      onChanged?.(saved);
+    }
+  };
   const [page, setPage] = useState(1);
   const logs = useLoad(
     () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&page=${page}&page_size=50`),
@@ -233,14 +259,57 @@ export function SessionDetail({
           <Mono>{session.id.slice(0, 8)}</Mono>
         </Meta>
       </dl>
-      {Object.keys(session.labels).length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+      {labelText === null ? (
+        <div className="flex flex-wrap items-center gap-1.5">
           {Object.entries(session.labels).map(([k, v]) => (
             <Mono key={k}>
               {k}={v}
             </Mono>
           ))}
+          {Object.keys(session.labels).length === 0 && <span className="text-sm text-muted-foreground">No labels</span>}
+          {onChanged && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() =>
+                setLabelText(
+                  Object.entries(session.labels)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join("\n"),
+                )
+              }
+            >
+              <Tags className="size-4" />
+              Edit labels
+            </Button>
+          )}
         </div>
+      ) : (
+        <form className="space-y-2" onSubmit={saveLabels}>
+          <ErrorBanner error={labelAction.error} />
+          <Field
+            label="Labels"
+            htmlFor="session-labels"
+            hint="key=value, one per line. This updates the session record; traffic already logged, and traffic still to come, keeps the labels the session was minted with."
+          >
+            <Textarea
+              id="session-labels"
+              rows={3}
+              className="font-mono"
+              value={labelText}
+              onChange={(e) => setLabelText(e.target.value)}
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setLabelText(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={labelAction.busy}>
+              Save labels
+            </Button>
+          </div>
+        </form>
       )}
       <div className="space-y-2">
         <div className="text-sm font-medium">Session logs</div>

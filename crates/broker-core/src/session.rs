@@ -20,7 +20,11 @@ use crate::ids::{RuleId, SessionId};
 use crate::scope::Scope;
 
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 15 * 60;
-pub const MAX_SESSION_TTL_SECS: u64 = 60 * 60;
+/// The instance's session lifetime cap until an admin changes it.
+pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 60 * 60;
+/// The highest cap an admin may set: revoked sessions stay in every
+/// snapshot until they expire, so the cap bounds that list's lifetime.
+pub const SESSION_TTL_CEILING_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_RULES_PER_SESSION: usize = 64;
 pub const MAX_LABELS: usize = 16;
 pub const ISSUER: &str = "credential-broker";
@@ -85,11 +89,13 @@ impl SessionClaims {
         request_limit: Option<u64>,
         labels: BTreeMap<String, String>,
         now: DateTime<Utc>,
+        max_ttl_secs: u64,
     ) -> Result<Self, CoreError> {
-        if ttl_secs == 0 || ttl_secs > MAX_SESSION_TTL_SECS {
+        let max_secs = max_ttl_secs.min(SESSION_TTL_CEILING_SECS);
+        if ttl_secs == 0 || ttl_secs > max_secs {
             return Err(CoreError::InvalidTtl {
                 requested_secs: ttl_secs,
-                max_secs: MAX_SESSION_TTL_SECS,
+                max_secs,
             });
         }
         if rules.is_empty() || rules.len() > MAX_RULES_PER_SESSION {
@@ -344,6 +350,7 @@ mod tests {
             Some(10),
             BTreeMap::from([("agent".to_string(), "ci-bot".to_string())]),
             Utc::now(),
+            DEFAULT_MAX_SESSION_TTL_SECS,
         )
         .unwrap();
         (signer, keys, claims)
@@ -411,11 +418,33 @@ mod tests {
                 limit,
                 BTreeMap::new(),
                 Utc::now(),
+                DEFAULT_MAX_SESSION_TTL_SECS,
             )
         };
         assert!(mk(0, vec![RuleId::new()], None).is_err());
-        assert!(mk(MAX_SESSION_TTL_SECS + 1, vec![RuleId::new()], None).is_err());
-        assert!(mk(MAX_SESSION_TTL_SECS, vec![RuleId::new()], None).is_ok());
+        assert!(mk(DEFAULT_MAX_SESSION_TTL_SECS + 1, vec![RuleId::new()], None).is_err());
+        assert!(mk(DEFAULT_MAX_SESSION_TTL_SECS, vec![RuleId::new()], None).is_ok());
+        // A raised cap allows longer sessions, never past the ceiling.
+        let long = |ttl, max| {
+            SessionClaims::new(
+                scope.clone(),
+                vec![RuleId::new()],
+                ttl,
+                None,
+                BTreeMap::new(),
+                Utc::now(),
+                max,
+            )
+        };
+        assert!(long(86_400, 86_400).is_ok());
+        let err = long(SESSION_TTL_CEILING_SECS + 1, u64::MAX).unwrap_err();
+        assert_eq!(
+            err,
+            CoreError::InvalidTtl {
+                requested_secs: SESSION_TTL_CEILING_SECS + 1,
+                max_secs: SESSION_TTL_CEILING_SECS
+            }
+        );
         assert!(mk(60, vec![], None).is_err());
         assert!(mk(60, vec![RuleId::new()], Some(0)).is_err());
     }

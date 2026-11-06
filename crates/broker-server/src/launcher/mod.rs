@@ -9,7 +9,7 @@
 //! proxy request to carry the current session token and then relays bytes
 //! to the data plane proxy, so the agent is configured with a plain
 //! `HTTPS_PROXY=http://127.0.0.1:<port>` and never sees a token. Because
-//! sessions last at most an hour, the port renews its session before it
+//! sessions are capped (an hour unless an admin changes it), the port renews its session before it
 //! expires, and every session it minted is ended when it stops.
 
 pub mod client;

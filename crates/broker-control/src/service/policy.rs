@@ -1054,6 +1054,14 @@ impl PolicyService {
                 settings.passthrough_hosts.len()
             )));
         }
+        let ceiling = broker_core::session::SESSION_TTL_CEILING_SECS;
+        if !(60..=ceiling).contains(&settings.max_session_ttl_secs) {
+            return Err(ControlError::validation(format!(
+                "the longest session must be between 60 seconds and {} days, got {}s",
+                ceiling / 86_400,
+                settings.max_session_ttl_secs
+            )));
+        }
         let previous = self.policy.get_settings().await?;
         let adds_exception = settings
             .passthrough_hosts
@@ -1062,7 +1070,8 @@ impl PolicyService {
         let widens = settings.egress.widens(&previous.egress)
             || (previous.unmatched_host_policy == UnmatchedHostPolicy::Deny
                 && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough)
-            || adds_exception;
+            || adds_exception
+            || settings.max_session_ttl_secs > previous.max_session_ttl_secs;
         if widens {
             // Opening egress is as sensitive as widening a rule.
             self.guard.require_step_up(caller, Action::SettingsWrite)?;
@@ -1085,6 +1094,10 @@ impl PolicyService {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(","),
+            )
+            .detail(
+                "max_session_ttl_secs",
+                settings.max_session_ttl_secs.to_string(),
             )
             .detail(
                 "passthrough_hosts",

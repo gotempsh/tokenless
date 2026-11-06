@@ -397,15 +397,9 @@ fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
 }
 
 fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
+    // The broker enforces its own cap (Settings → Session lifetime) and
+    // names it in the error; the session port renews, so short is fine.
     let ttl_secs = parse_duration_secs(&args.ttl)?;
-    let max = broker_core::session::MAX_SESSION_TTL_SECS;
-    if ttl_secs > max {
-        return Err(LauncherError::config(format!(
-            "--ttl {} is longer than the {max}s session cap; the session port renews sessions, so a long run does not need a long ttl",
-            args.ttl
-        ))
-        .into());
-    }
     let mut labels = BTreeMap::new();
     for raw in &args.labels {
         let (k, v) = parse_label(raw)?;

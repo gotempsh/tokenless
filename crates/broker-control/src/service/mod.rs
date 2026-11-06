@@ -216,7 +216,8 @@ impl ControlPlane {
             guard.clone(),
             notifier.clone(),
         );
-        let bundles = bundles::BundleService::new(stores.policy.clone(), guard.clone());
+        let bundles =
+            bundles::BundleService::new(stores.policy.clone(), guard.clone(), notifier.clone());
         let sessions = sessions::SessionService::new(
             stores.policy.clone(),
             stores.credentials.clone(),
@@ -1126,7 +1127,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(renamed.rule_ids, vec![rules[1].id]);
-        cp.bundles.delete(&a, &bundle.id).await.unwrap();
+        // Deleting the bundle ends the sessions minted from it.
+        let deleted = cp.bundles.delete(&a, &bundle.id).await.unwrap();
+        assert!(deleted.sessions_revoked >= 2, "{deleted:?}");
+        let ended = cp
+            .sessions
+            .list(&a, &vault.id, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        let first = ended
+            .items
+            .iter()
+            .find(|s| s.id == minted.session.id)
+            .unwrap();
+        assert!(first.revoked_at.is_some());
         assert!(cp
             .bundles
             .list(&a, &vault.id, PageRequest::new(None, None))
@@ -1432,6 +1446,100 @@ mod tests {
             custom_headers: vec![],
             substitutions: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn session_lifetime_cap_is_a_setting_and_labels_are_editable() {
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let cred = cp
+            .policy
+            .create_credential(
+                &a,
+                &vault.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let rule = cp
+            .policy
+            .create_rule(
+                &a,
+                &vault.id,
+                CreateRule {
+                    name: "r".into(),
+                    credential_id: cred.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mint = |ttl: u64| MintSession {
+            rule_ids: vec![rule.id],
+            bundle: None,
+            ttl_secs: Some(ttl),
+            request_limit: None,
+            labels: [("agent".to_string(), "reviewer".to_string())].into(),
+        };
+        let err = cp
+            .sessions
+            .mint(&a, &vault.id, mint(8 * 3600))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("3600"), "{err}");
+
+        let mut settings = cp.policy.get_settings(&a).await.unwrap();
+        settings.max_session_ttl_secs = 8 * 3600;
+        let stale = cp.policy.put_settings(&admin(3600), settings.clone()).await;
+        assert!(
+            matches!(stale, Err(ControlError::StepUpRequired { .. })),
+            "raising the cap needs step-up"
+        );
+        cp.policy.put_settings(&a, settings.clone()).await.unwrap();
+        let long = cp
+            .sessions
+            .mint(&a, &vault.id, mint(8 * 3600))
+            .await
+            .unwrap();
+        assert_eq!(
+            (long.session.expires_at - long.session.created_at).num_seconds(),
+            8 * 3600
+        );
+        settings.max_session_ttl_secs = 30;
+        assert!(cp.policy.put_settings(&a, settings).await.is_err());
+
+        let relabelled = cp
+            .sessions
+            .update_labels(
+                &a,
+                &long.session.id,
+                [("ticket".to_string(), "T-42".to_string())].into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            relabelled.labels.get("ticket").map(String::as_str),
+            Some("T-42")
+        );
+        assert!(!relabelled.labels.contains_key("agent"));
+        let bad = cp
+            .sessions
+            .update_labels(
+                &a,
+                &long.session.id,
+                [("".to_string(), "x".to_string())].into(),
+            )
+            .await;
+        assert!(bad.is_err());
+        let missing = cp
+            .sessions
+            .update_labels(&a, &broker_core::ids::SessionId::new(), Default::default())
+            .await;
+        assert!(matches!(missing, Err(ControlError::NotFound { .. })));
     }
 
     #[tokio::test]

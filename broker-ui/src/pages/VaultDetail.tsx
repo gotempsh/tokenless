@@ -674,12 +674,16 @@ function Sessions({ vaultId }: { vaultId: string }) {
               </div>
             )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Field label="Lifetime (minutes)" htmlFor="mint-ttl" hint="At most 60.">
+              <Field
+                label="Lifetime (minutes)"
+                htmlFor="mint-ttl"
+                hint="Up to the cap an admin sets in Settings → Session lifetime (60 by default)."
+              >
                 <Input
                   id="mint-ttl"
                   type="number"
                   min={1}
-                  max={60}
+                  max={7 * 24 * 60}
                   value={ttlMinutes}
                   onChange={(e) => setTtlMinutes(Number(e.target.value))}
                 />
