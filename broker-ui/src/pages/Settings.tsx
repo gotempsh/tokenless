@@ -57,8 +57,8 @@ export function Settings() {
       ) : (
         <>
           <Section
-            title="Hosts without a rule"
-            description="When an agent connects to a host no rule covers."
+            title="Other hosts"
+            description="Agents send all their HTTPS traffic through the proxy. This decides what happens to hosts that aren't one of their services."
           >
             <ChoiceCards<Unmatched>
               name="unmatched"
@@ -68,13 +68,13 @@ export function Settings() {
               choices={[
                 {
                   value: "passthrough",
-                  title: "Tunnel untouched",
-                  description: "Agents can reach other HTTPS hosts; nothing is injected or decrypted.",
+                  title: "Allow",
+                  description: "Agents can reach any other host. The proxy passes it through without reading it or adding a credential.",
                 },
                 {
                   value: "deny",
-                  title: "Deny",
-                  description: "Only hosts covered by one of the session's rules are reachable.",
+                  title: "Block",
+                  description: "Agents reach only the services in their session, plus the always-reachable hosts below.",
                 },
               ]}
             />
@@ -98,7 +98,7 @@ export function Settings() {
           </Section>
           <Section
             title="Always reachable"
-            description="Reachable from every session, even when hosts without a rule are denied. Never given a credential."
+            description="Reachable from every session even when other hosts are blocked, such as package registries. Never given a credential."
           >
             <Panel>
               <form
@@ -114,7 +114,7 @@ export function Settings() {
                   hint={
                     current.unmatched_host_policy === "deny"
                       ? "One per line, e.g. registry.npmjs.org or *.pythonhosted.org (one label), with :port for ports other than 443. They still obey the egress rules below."
-                      : "Only used while hosts without a rule are denied; with “Tunnel untouched” every host is reachable already."
+                      : "Only used while other hosts are blocked; with “Allow” every host is reachable already."
                   }
                 >
                   <Textarea
@@ -136,7 +136,7 @@ export function Settings() {
           </Section>
           <Section
             title="Egress to private addresses"
-            description="For hosts without a rule and credential tests. Hosts with a rule are always reachable."
+            description="Applies to other hosts and credential tests. A session's own services are always reachable."
           >
             <Panel className="divide-y">
               <div className="flex items-start justify-between gap-4 p-4">
