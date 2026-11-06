@@ -968,7 +968,7 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     );
 
     let page = store
-        .list_bundles(&v1.id, PageRequest::new(None, None))
+        .list_bundles(Some(&v1.id), PageRequest::new(None, None))
         .await
         .map_err(backend(S, "list"))?;
     let names: Vec<_> = page.items.iter().map(|b| b.name.as_str()).collect();
@@ -978,6 +978,18 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         page.total == 2 && names == ["empty", "review"],
         "expected [empty, review] (total 2), got {names:?} (total {})",
         page.total
+    );
+    let every = store
+        .list_bundles(None, PageRequest::new(None, None))
+        .await
+        .map_err(backend(S, "list_all"))?;
+    let names: Vec<_> = every.items.iter().map(|b| b.name.as_str()).collect();
+    ensure!(
+        S,
+        "list_across_vaults",
+        every.total == 3 && names == ["empty", "review", "review"],
+        "expected both vaults' bundles [empty, review, review] (total 3), got {names:?} (total {})",
+        every.total
     );
 
     let mut renamed = review.clone();

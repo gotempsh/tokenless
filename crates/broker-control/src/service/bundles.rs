@@ -239,7 +239,21 @@ impl BundleService {
         self.guard
             .check(caller, Action::RuleRead, Some(vault_id))
             .await?;
-        Ok(self.policy.list_bundles(vault_id, page).await?)
+        Ok(self.policy.list_bundles(Some(vault_id), page).await?)
+    }
+
+    /// Bundles across every vault the caller can see: all of them for
+    /// people, the bound vault's for an API key.
+    pub async fn list_all(
+        &self,
+        caller: &Caller,
+        page: PageRequest,
+    ) -> Result<Page<AccessBundle>, ControlError> {
+        let vault = caller.principal.vault;
+        self.guard
+            .check(caller, Action::RuleRead, vault.as_ref())
+            .await?;
+        Ok(self.policy.list_bundles(vault.as_ref(), page).await?)
     }
 
     async fn find(&self, id: &BundleId) -> Result<AccessBundle, ControlError> {

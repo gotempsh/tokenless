@@ -571,17 +571,21 @@ impl PolicyStore for MemoryStore {
 
     async fn list_bundles(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError> {
         let mut items: Vec<_> = self
             .lock()?
             .bundles
             .values()
-            .filter(|b| &b.vault_id == vault_id)
+            .filter(|b| vault_id.is_none_or(|v| &b.vault_id == v))
             .cloned()
             .collect();
-        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items.sort_by(|a, b| {
+            a.name
+                .cmp(&b.name)
+                .then_with(|| a.vault_id.to_string().cmp(&b.vault_id.to_string()))
+        });
         Ok(page.apply(&items))
     }
 

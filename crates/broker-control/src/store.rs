@@ -195,10 +195,10 @@ pub trait PolicyStore: Send + Sync {
         vault_id: &VaultId,
         name: &str,
     ) -> Result<Option<AccessBundle>, StoreError>;
-    /// Ordered by name.
+    /// Ordered by name, then vault. `None` lists every vault's bundles.
     async fn list_bundles(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError>;
     /// Replaces name, description and rules. `NotFound` if it does not

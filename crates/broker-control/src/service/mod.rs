@@ -1109,6 +1109,44 @@ mod tests {
                 .await,
             Err(ControlError::Store(StoreError::Conflict { .. }))
         ));
+        // People see every vault's bundles in one list; a key sees only
+        // its own vault's.
+        cp.bundles
+            .create(
+                &a,
+                &other.id,
+                CreateBundle {
+                    name: "other-job".into(),
+                    description: String::new(),
+                    rule_ids: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        let every = cp
+            .bundles
+            .list_all(&a, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        let mut vaults: Vec<_> = every
+            .items
+            .iter()
+            .map(|b| (b.name.as_str(), b.vault_id))
+            .collect();
+        vaults.sort_by_key(|(name, _)| *name);
+        assert_eq!(
+            vaults,
+            vec![("code-review", vault.id), ("other-job", other.id)]
+        );
+        let scoped = cp
+            .bundles
+            .list_all(&key, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        assert!(
+            scoped.items.iter().all(|b| b.vault_id == vault.id) && scoped.total == 1,
+            "{scoped:?}"
+        );
 
         // Deleting a rule takes it out of the bundle.
         cp.policy.delete_rule(&a, &rules[0].id).await.unwrap();

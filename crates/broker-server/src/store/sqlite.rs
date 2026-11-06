@@ -1077,18 +1077,26 @@ impl PolicyStore for SqliteStore {
 
     async fn list_bundles(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError> {
-        let total = self
-            .count(
-                "SELECT COUNT(*) AS n FROM access_bundles WHERE vault_id = ?",
-                Some(&vault_id.to_string()),
-            )
-            .await?;
-        let sql = format!("{BUNDLE_SELECT} WHERE b.vault_id = ? ORDER BY b.name LIMIT ? OFFSET ?");
+        // `? IS NULL` selects every vault when no vault is given.
+        let vault = vault_id.map(|v| v.to_string());
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM access_bundles WHERE (? IS NULL OR vault_id = ?)",
+        )
+        .bind(vault.clone())
+        .bind(vault.clone())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db("count access bundles", "access_bundle"))?;
+        let total = to_u64(get::<i64>(&row, "n")?);
+        let sql = format!(
+            "{BUNDLE_SELECT} WHERE (? IS NULL OR b.vault_id = ?) ORDER BY b.name, b.vault_id LIMIT ? OFFSET ?"
+        );
         let rows = sqlx::query(&sql)
-            .bind(vault_id.to_string())
+            .bind(vault.clone())
+            .bind(vault)
             .bind(to_i64(page.page_size))
             .bind(to_i64(page.offset()))
             .fetch_all(&self.pool)

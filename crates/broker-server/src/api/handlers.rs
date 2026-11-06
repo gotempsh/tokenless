@@ -581,6 +581,20 @@ pub async fn create_bundle(
     Ok((StatusCode::CREATED, Json(bundle)))
 }
 
+/// Access bundles across every vault the caller can see.
+pub async fn list_all_bundles(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .bundles
+            .list_all(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
 pub async fn list_bundles(
     State(s): St,
     authed: Authed,

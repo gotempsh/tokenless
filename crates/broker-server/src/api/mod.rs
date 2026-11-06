@@ -91,6 +91,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/rules/{rule_id}",
             get(get_rule).patch(update_rule).delete(delete_rule),
         )
+        .route("/bundles", get(list_all_bundles))
         .route("/sessions", get(list_all_sessions))
         .route("/sessions/revoke-self", post(revoke_own_session))
         .route("/sessions/self", get(discover_own_session))
