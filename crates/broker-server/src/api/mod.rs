@@ -13,8 +13,9 @@ use axum::http::{header, HeaderName, HeaderValue};
 use axum::routing::{get, post, put};
 use axum::Router;
 use broker_control::ControlPlane;
+use tower::Layer;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::set_header::SetResponseHeaderLayer;
+use tower_http::set_header::{SetResponseHeader, SetResponseHeaderLayer};
 
 pub use extract::{ApiJson, ApiQuery, Authed};
 
@@ -109,12 +110,22 @@ fn api_routes() -> Router<Arc<AppState>> {
 
 const UI_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
+/// The UI bundle, with `index.html` as the fallback for client-side routes.
+///
+/// Every response must be revalidated (`no-cache`, answered with a 304
+/// when unchanged): a cached `index.html` keeps pointing at the previous
+/// build's scripts, so an upgraded broker would show the old UI.
+fn ui_service(dir: PathBuf) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValue> {
+    let index = dir.join("index.html");
+    SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))
+        .layer(ServeDir::new(dir).fallback(ServeFile::new(index)))
+}
+
 /// Builds the full router: `/api/v1`, plus the UI bundle when `ui_dir` is set.
 pub fn router(state: Arc<AppState>, ui_dir: Option<PathBuf>) -> Router {
     let mut app = Router::new().nest("/api/v1", api_routes());
     if let Some(dir) = ui_dir {
-        let index = dir.join("index.html");
-        app = app.fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+        app = app.fallback_service(ui_service(dir));
     }
     app.layer(SetResponseHeaderLayer::overriding(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -137,4 +148,39 @@ pub fn router(state: Arc<AppState>, ui_dir: Option<PathBuf>) -> Router {
         HeaderValue::from_static("same-origin"),
     ))
     .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use super::*;
+
+    async fn fetch(dir: &std::path::Path, path: &str) -> (StatusCode, Option<String>) {
+        let response = ui_service(dir.to_path_buf())
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let cache = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .map(|v| v.to_str().unwrap().to_owned());
+        (response.status(), cache)
+    }
+
+    #[tokio::test]
+    async fn ui_responses_are_always_revalidated() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        std::fs::create_dir(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("assets/index-abc.js"), "1").unwrap();
+
+        for path in ["/", "/assets/index-abc.js", "/vaults/some-client-route"] {
+            let (status, cache) = fetch(dir.path(), path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(cache.as_deref(), Some("no-cache"), "{path}");
+        }
+    }
 }
