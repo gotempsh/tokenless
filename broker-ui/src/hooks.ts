@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { errorMessage } from "./api";
 
 export interface Loaded<T> {
@@ -60,13 +60,30 @@ export function useAction() {
   return { busy, error, run, clearError: () => setError(null) };
 }
 
-export function useHashRoute(): string[] {
-  const read = () => window.location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  const [parts, setParts] = useState<string[]>(read);
+function readHash(): { parts: string[]; query: string } {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  const at = raw.indexOf("?");
+  const path = at === -1 ? raw : raw.slice(0, at);
+  return { parts: path.split("/").filter(Boolean), query: at === -1 ? "" : raw.slice(at + 1) };
+}
+
+function useHash() {
+  const [hash, setHash] = useState(readHash);
   useEffect(() => {
-    const onChange = () => setParts(read());
+    const onChange = () => setHash(readHash());
     window.addEventListener("hashchange", onChange);
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
-  return parts;
+  return hash;
+}
+
+/** The hash route's path segments, without any `?query`. */
+export function useHashRoute(): string[] {
+  return useHash().parts;
+}
+
+/** The `?query` after the hash route. */
+export function useHashQuery(): URLSearchParams {
+  const { query } = useHash();
+  return useMemo(() => new URLSearchParams(query), [query]);
 }

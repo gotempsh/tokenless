@@ -40,7 +40,7 @@ import {
   When,
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
-import { AddServiceFlow, type AddServiceRequest } from "../components/AddServiceFlow";
+import { addServiceHref } from "../addService";
 import {
   EMPTY_SECRET,
   initialSecrets,
@@ -66,7 +66,6 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const variables = useVariableKeys(isAdmin);
   const all = useMemo(() => templates.data ?? [], [templates.data]);
-  const [adding, setAdding] = useState<AddServiceRequest | null>(null);
   const [rotating, setRotating] = useState<CredentialMeta | null>(null);
   const [editingHeaders, setEditingHeaders] = useState<CredentialMeta | null>(null);
   const [editingPlaceholders, setEditingPlaceholders] = useState<CredentialMeta | null>(null);
@@ -88,7 +87,9 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
   const addButton = (
     <Button
       type="button"
-      onClick={() => setAdding({ vaultId })}
+      onClick={() => {
+        window.location.hash = addServiceHref({ vault: vaultId, back: `vaults/${vaultId}` });
+      }}
       disabled={!isAdmin}
       title={isAdmin ? undefined : "Only admins can add services"}
     >
@@ -252,7 +253,6 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
         )}
         <Pager page={creds.data} onPage={setPage} />
       </Panel>
-      <AddServiceFlow request={adding} onClose={() => setAdding(null)} user={user} onAdded={() => creds.reload()} />
       <FormDialog
         open={rotating !== null}
         onOpenChange={(o) => {

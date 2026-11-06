@@ -21,7 +21,7 @@ import {
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { AddServiceFlow, type AddServiceRequest } from "../components/AddServiceFlow";
+import { addServiceHref } from "../addService";
 import {
   CheckField,
   ConfirmDialog,
@@ -119,7 +119,10 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   const services = useVaultServices(vaultIds);
   const [editing, setEditing] = useState<AccessBundle | "new" | null>(null);
   const [running, setRunning] = useState<AccessBundle | null>(null);
-  const [adding, setAdding] = useState<AddServiceRequest | null>(null);
+  const here = vaultId ? `vaults/${vaultId}/bundles` : "bundles";
+  const goAdd = (vault?: string, bundle?: string) => {
+    window.location.hash = addServiceHref({ vault, bundle, back: here });
+  };
   const confirm = useConfirm<AccessBundle>();
   const action = useAction();
 
@@ -136,8 +139,15 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
     bundles.reload();
   };
 
+  const canAdd = user.role === "admin";
   const addServiceButton = (variant: "default" | "outline") => (
-    <Button type="button" variant={variant} onClick={() => setAdding({ vaultId })}>
+    <Button
+      type="button"
+      variant={variant}
+      onClick={() => goAdd(vaultId)}
+      disabled={!canAdd}
+      title={canAdd ? undefined : "Only admins can add services"}
+    >
       <Plus />
       Add a service
     </Button>
@@ -232,8 +242,9 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                         type="button"
                         variant="outline"
                         size="sm"
-                        title={`Add a service from the catalogue to ${b.name}`}
-                        onClick={() => setAdding({ vaultId: b.vault_id, bundleId: b.id })}
+                        title={canAdd ? `Add a service from the catalogue to ${b.name}` : "Only admins can add services"}
+                        disabled={!canAdd}
+                        onClick={() => goAdd(b.vault_id, b.id)}
                       >
                         <Plus />
                         <span className="hidden sm:inline">Add service</span>
@@ -270,15 +281,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
         )}
         <Pager page={bundles.data} onPage={setPage} />
       </Panel>
-      <AddServiceFlow
-        request={adding}
-        onClose={() => setAdding(null)}
-        user={user}
-        onAdded={() => {
-          bundles.reload();
-          services.reload();
-        }}
-      />
       <FormDialog
         open={editing !== null}
         onOpenChange={(o) => {

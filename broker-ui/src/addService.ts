@@ -160,3 +160,37 @@ export async function addService(
   }
   return p;
 }
+
+// ----- the page's address ------------------------------------------------
+
+/** What the add-service page starts with; anything given is fixed. */
+export interface AddServiceContext {
+  template?: string;
+  vault?: string;
+  bundle?: string;
+  /** The hash path to return to, such as `vaults/<id>/bundles`. */
+  back?: string;
+}
+
+/** The hash link to the add-service page for `ctx`. */
+export function addServiceHref(ctx: AddServiceContext = {}): string {
+  const path = ctx.template ? `#/add-service/${encodeURIComponent(ctx.template)}` : "#/add-service";
+  const query = new URLSearchParams();
+  if (ctx.vault) query.set("vault", ctx.vault);
+  if (ctx.bundle) query.set("bundle", ctx.bundle);
+  if (ctx.back) query.set("back", ctx.back);
+  const qs = query.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
+/** Reads the page's context back from its route part and hash query. */
+export function parseAddServiceContext(template: string | undefined, query: URLSearchParams): AddServiceContext {
+  const back = query.get("back") ?? undefined;
+  return {
+    template: template ? decodeURIComponent(template) : undefined,
+    vault: query.get("vault") ?? undefined,
+    bundle: query.get("bundle") ?? undefined,
+    // Only an in-app hash path: never a URL somewhere else.
+    back: back && /^[A-Za-z0-9/_-]+$/.test(back) ? back : undefined,
+  };
+}

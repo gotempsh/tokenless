@@ -23,7 +23,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { ApiError, get, post, setCsrfToken, setStepUpHandler, type SessionInfo, type UserSummary } from "./api";
-import { useHashRoute } from "./hooks";
+import { useHashQuery, useHashRoute } from "./hooks";
+import { parseAddServiceContext } from "./addService";
 import { useTheme, type Theme } from "./theme";
 import { cn } from "./lib/utils";
 import { ErrorBanner } from "./components/common";
@@ -32,6 +33,7 @@ import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Auth";
 import { Bundles } from "./pages/Bundles";
+import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
@@ -84,13 +86,17 @@ const NAV: { group: string; items: NavItem[] }[] = [
   },
 ];
 
-const LABELS: Record<string, string> = Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label])));
+const LABELS: Record<string, string> = {
+  ...Object.fromEntries(NAV.flatMap((g) => g.items.map((i) => [i.key, i.label]))),
+  "add-service": "Add a service",
+};
 
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
   const [stepUpOpen, setStepUpOpen] = useState(false);
   const pending = useRef<((ok: boolean) => void) | null>(null);
   const route = useHashRoute();
+  const query = useHashQuery();
 
   const load = useCallback(async () => {
     try {
@@ -188,6 +194,7 @@ export function App() {
       {section === "vaults" && id && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
+      {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
       {section === "bundles" && <Bundles user={user} />}
       {section === "sessions" && <Sessions />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}

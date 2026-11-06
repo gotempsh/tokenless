@@ -3,7 +3,14 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
-import { addService, AddServiceError, type AddServiceApi, type AddServicePlan } from "./addService";
+import {
+  addService,
+  AddServiceError,
+  addServiceHref,
+  parseAddServiceContext,
+  type AddServiceApi,
+  type AddServicePlan,
+} from "./addService";
 
 const at = "2026-01-01T00:00:00Z";
 
@@ -184,5 +191,29 @@ describe("addService", () => {
       api,
     );
     expect(calls).not.toContain("setBundleRules");
+  });
+});
+
+describe("add-service links", () => {
+  test("round-trip the context through the hash", () => {
+    const href = addServiceHref({ template: "github", vault: "v1", bundle: "b1", back: "vaults/v1/bundles" });
+    expect(href).toBe("#/add-service/github?vault=v1&bundle=b1&back=vaults%2Fv1%2Fbundles");
+    const [path, qs = ""] = href.slice(2).split("?");
+    const template = path?.split("/")[1];
+    expect(parseAddServiceContext(template, new URLSearchParams(qs))).toEqual({
+      template: "github",
+      vault: "v1",
+      bundle: "b1",
+      back: "vaults/v1/bundles",
+    });
+  });
+
+  test("the catalogue link has no query when nothing is fixed", () => {
+    expect(addServiceHref()).toBe("#/add-service");
+  });
+
+  test("a return path that is not an in-app route is dropped", () => {
+    const ctx = parseAddServiceContext(undefined, new URLSearchParams("back=https://example.com/x"));
+    expect(ctx.back).toBeUndefined();
   });
 });

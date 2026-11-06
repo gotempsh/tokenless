@@ -7,9 +7,9 @@ import { get, post, type ServiceTemplate, type StoredTemplate, type UserSummary 
 import { CATEGORY_LABEL, injectionSummary, KIND_LABEL } from "../catalog";
 import { useAction, useLoad } from "../hooks";
 import { DialogActions, ErrorBanner, Field, FormDialog, Mono, Tags } from "../components/common";
-import { AddServiceFlow, type AddServiceRequest } from "../components/AddServiceFlow";
+import { addServiceHref } from "../addService";
 import { ServiceLogo } from "../components/ServiceLogo";
-import { TemplateCatalog } from "../components/TemplatePicker";
+import { TemplateCatalog } from "../components/TemplateCatalog";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -76,7 +76,6 @@ export function Templates({ user }: { user: UserSummary }) {
   const [yaml, setYaml] = useState("");
   const [reviewing, setReviewing] = useState<StoredTemplate | null>(null);
   const [viewing, setViewing] = useState<StoredTemplate | null>(null);
-  const [adding, setAdding] = useState<AddServiceRequest | null>(null);
   const importAction = useAction();
   const approveAction = useAction();
 
@@ -104,7 +103,7 @@ export function Templates({ user }: { user: UserSummary }) {
   const open = (t: StoredTemplate) => (t.status !== "approved" && isAdmin ? setReviewing(t) : setViewing(t));
   const addTo = (t: StoredTemplate) => {
     setViewing(null);
-    setAdding({ template: t.template });
+    window.location.hash = addServiceHref({ template: t.template.id, back: "templates" });
   };
 
   const cardAction = (t: StoredTemplate) =>
@@ -152,7 +151,6 @@ export function Templates({ user }: { user: UserSummary }) {
         onOpen={open}
         cardAction={cardAction}
       />
-      <AddServiceFlow request={adding} onClose={() => setAdding(null)} user={user} />
       <FormDialog
         open={viewing !== null}
         onOpenChange={(o) => {

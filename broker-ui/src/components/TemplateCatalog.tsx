@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // The service catalogue as cards: a popular section and one section per
-// category, filtered by type, category and search. Used inline on the
-// Templates page and inside the "Choose a service" dialog.
+// category, filtered by type, category and search. Used on the Templates
+// page and as the first step of the Add a service page.
 
 import { useMemo, useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
@@ -13,7 +13,6 @@ import { cn } from "../lib/utils";
 import { SelectField } from "./common";
 import { ServiceLogo } from "./ServiceLogo";
 import { Badge } from "./ui/badge";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Skeleton } from "./ui/skeleton";
 
@@ -239,37 +238,5 @@ export function TemplateCard({ t, onOpen, action }: { t: StoredTemplate; onOpen:
         {action}
       </div>
     </div>
-  );
-}
-
-export function TemplatePicker({
-  open,
-  onOpenChange,
-  templates,
-  loading,
-  onPick,
-  title = "Choose a service",
-  description = "A template knows the service's hosts and how its credential is sent. You add the secret, or reference a variable, on the next step.",
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  templates: StoredTemplate[];
-  loading: boolean;
-  onPick: (t: StoredTemplate) => void;
-  title?: string;
-  description?: ReactNode;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[85vh] max-h-[85vh] flex-col gap-0 p-0 sm:max-w-5xl">
-        <DialogHeader className="border-b p-6 pb-4">
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-          {open && <TemplateCatalog templates={templates} loading={loading} onOpen={onPick} autoFocus />}
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }

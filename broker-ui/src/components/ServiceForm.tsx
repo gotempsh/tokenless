@@ -160,7 +160,9 @@ export function ServiceForm({
   onSubmit,
   onSaved,
   submitLabel = "Save service",
+  backLabel = "Back",
   showTemplate = true,
+  blocked = null,
 }: {
   template: ServiceTemplate;
   variables: string[];
@@ -170,6 +172,9 @@ export function ServiceForm({
   onSubmit: (body: CredentialBody) => Promise<unknown>;
   onSaved: () => void;
   submitLabel?: string;
+  backLabel?: string;
+  /** Why the form cannot be submitted yet, shown next to the button. */
+  blocked?: string | null;
   /** The template summary at the top; off when the step before showed it. */
   showTemplate?: boolean;
 }) {
@@ -269,10 +274,11 @@ export function ServiceForm({
         </div>
       )}
       <DialogActions>
+        {blocked && <p className="mr-auto self-center text-sm text-muted-foreground">{blocked}</p>}
         <Button type="button" variant="outline" onClick={onBack}>
-          Back
+          {backLabel}
         </Button>
-        <Button type="submit" disabled={action.busy || missingVariable || !isAdmin}>
+        <Button type="submit" disabled={action.busy || missingVariable || !isAdmin || blocked !== null}>
           {submitLabel}
         </Button>
       </DialogActions>
