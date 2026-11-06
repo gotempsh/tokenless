@@ -72,7 +72,7 @@ docker run -d --name tokenless \
   -v tokenless-data:/data \
   -p 127.0.0.1:8080:8080 -p 8443:8443 \
   ghcr.io/gotempsh/tokenless
-docker logs tokenless   # prints the one-time setup token
+docker logs tokenless   # prints the admin username and password, once
 ```
 
 The image is built for `linux/amd64` and `linux/arm64` from the same

@@ -15,9 +15,25 @@ use, for example a GitHub personal access token.
 tokenless serve --data-dir ./tokenless-data
 ```
 
-On first start it prints a **single-use setup token**. Open
-<http://127.0.0.1:8080/>, enter the token and create the admin account.
-Enrolling an authenticator app is optional but recommended.
+On first start it creates the admin account and prints its username and
+password once:
+
+```text
+  Created the first admin. Save these now: the password is shown only once.
+
+    Username  admin
+    Password  k7mq2-...
+```
+
+Put them in a password manager. Only a hash of the password is stored, so
+it can't be shown again; if you lose it, run
+`tokenless admin reset-password --data-dir ./tokenless-data` on the same
+machine. Sign in at <http://127.0.0.1:8080/>. Under **Account** you can
+change the password and turn on an authenticator app, which is
+recommended for admins.
+
+Every step below can also be done from the terminal; see
+[Set up from the terminal](terminal.md).
 
 ## 2. Add a service
 
@@ -47,20 +63,22 @@ Use **Test** on the service's page to check the token works.
 The proxy shows as **Connected** within a few seconds. It listens on
 `127.0.0.1:3128`.
 
-## 4. Create an API key
-
-Open **API keys**, create a key for the `work` vault with the
-**Session issuer** role, and copy it. That key can start sessions in that
-vault and do nothing else.
+## 4. Sign in from the terminal
 
 ```sh
-export TOKENLESS_API_KEY=cbk_...
+tokenless login
 ```
+
+`run` then mints sessions with your account. For CI and other unattended
+runs, use an API key instead: open **API keys**, create one for the
+`work` vault with the **Session issuer** role, and
+`export TOKENLESS_API_KEY=cbk_...`. That key can start sessions in that
+vault and do nothing else.
 
 ## 5. Run something behind it
 
 ```sh
-tokenless run --bundle code-review -- curl -s https://api.github.com/user
+tokenless run --vault work --bundle code-review -- curl -s https://api.github.com/user
 ```
 
 The request reaches GitHub with your token, and `curl` never had it.
@@ -70,7 +88,7 @@ Try a host outside the bundle and the proxy passes it through untouched
 Now start a real agent the same way:
 
 ```sh
-tokenless run --bundle code-review -- claude
+tokenless run --vault work --bundle code-review -- claude
 ```
 
 The session appears under **Sessions**, and every request it makes under

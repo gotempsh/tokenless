@@ -45,13 +45,20 @@ stops all injection within one lease; that is deliberate.
 
 ## Accounts
 
+- On first start the server creates the `admin` account with a generated
+  password, printed once to the terminal (not to the log). Only its
+  argon2id hash is stored. `tokenless admin reset-password`, run on the
+  server's host, replaces a lost one and ends that account's sessions.
 - Passwords are hashed with argon2id. An authenticator app (TOTP) is
-  optional per account and recommended for admins.
+  optional per account, turned on or off under **Account**, and
+  recommended for admins. With one, sign-in needs a code as well.
 - With an authenticator, sensitive actions (adding or widening
   credentials and rules, managing people, API keys, templates and proxies)
-  need a code entered within the last five minutes.
+  need a code entered within the last five minutes. Signing in counts.
+- Changing your password ends your other sessions.
 - The console session cookie is `HttpOnly`, `Secure` and `SameSite=Strict`,
-  and every change carries a CSRF token.
+  and every change carries a CSRF token. `tokenless login` keeps its
+  session in the OS keychain, not in a file.
 - API keys are stored only as hashes and expire.
 
 ## Verifying a release

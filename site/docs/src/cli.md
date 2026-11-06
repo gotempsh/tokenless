@@ -10,6 +10,10 @@ Every command takes `--help` for its full list of options.
 | Command | What it does |
 |---|---|
 | `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](deploy.md). |
+| `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](terminal.md). |
+| `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
+| `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
+| `tokenless admin reset-password` | On the server's host: replace a lost password. |
 | `tokenless node join` | Enrol this machine as a proxy with a one-time join token. |
 | `tokenless node run` | Run the proxy and the MCP gateway. |
 | `tokenless run` | Run a command behind a session from an access bundle. See [Run an agent](agents.md). |
@@ -35,6 +39,33 @@ Every command takes `--help` for its full list of options.
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
 
+## `service add <template>`
+
+| Option | Default | |
+|---|---|---|
+| `--vault` | `default` | Created when missing |
+| `--bundle` | | Access bundle to add the rule to, created when missing |
+| `--name` | the template's ID | Credential name |
+| `--read-only` | | Rule allows only `GET` and `HEAD` |
+
+The template is matched by ID or name. A single-field credential can be
+piped in on standard input.
+
+## `proxy add`
+
+| Option | Default | |
+|---|---|---|
+| `--name` | `node` | Shown under **Proxies** |
+| `--state` | `./node.json` | Where the identity is written |
+| `--control-url` | the server's host, port 8443 | Node API |
+
+## `admin reset-password`
+
+| Option | Default | |
+|---|---|---|
+| `--username` | `admin` | |
+| `--data-dir`, `--database-url` | as for `serve` | |
+
 ## `node run`
 
 | Option | Default | |
@@ -49,7 +80,7 @@ Every command takes `--help` for its full list of options.
 
 ## Client commands
 
-`run`, `exec`, `session` and `mcp` share these:
+`login`, `service`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; the last four also take the rest. Without an API key they use the session from `tokenless login`.
 
 | Flag | Environment | Default |
 |---|---|---|

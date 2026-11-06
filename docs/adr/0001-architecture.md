@@ -197,9 +197,14 @@ node protocol and the snapshot format are unchanged.
   fresh second factor.
   `POST /auth/step-up` refreshes it, and the UI prompts for the code and
   retries the blocked request.
-- The first admin is created with a single-use setup token. It is printed
-  to the terminal on first start (deliberately not to the structured log),
-  stored only as a hash, and consumed atomically.
+- The first admin, `admin`, is created on first start with a generated
+  password (four groups of five characters, about 99 bits). It is printed
+  to the terminal once (deliberately not to the structured log) and stored
+  only as an argon2id hash; when two servers race, the store's uniqueness
+  check lets one win. `tokenless admin reset-password`, run against the
+  data on the server's host, replaces a lost password and ends that
+  account's sessions. It needs no network path, so possession of the host
+  is the recovery factor.
 - Further people join by invitation. An admin creates a single-use
   `cbinv_` link for the `admin`, `editor` or `viewer` role, valid for 1 h
   to 7 days and stored only as a hash. The invitee chooses a username and
@@ -323,11 +328,11 @@ checks every read endpoint and the raw database files for the plaintext.
 | 7 | Snapshot AAD | Sealed rule AAD is `rule|node|rule|credential`, deliberately without the snapshot version | Sealed blobs can then be cached per node and content generation, so a lease renewal does not redo X25519 for every rule. Freshness comes from the signed, versioned envelope. |
 | 8 | Node revocation | mTLS certificates are short-lived (24 h) with no CRL/OCSP; revocation is checked in the store on every node API call | The revoked node's snapshot stream closes at once, so it fails closed within one lease (60 s by default). |
 | 9 | Management API TLS | Plain HTTP on loopback by default. With `--api-tls-cert`/`--api-tls-key` the server serves HTTPS itself, checking the PEM files every minute and reloading them on change. A reload that fails keeps the current certificate. A plain-HTTP listener on a non-loopback address logs a warning. | The `Secure` cookie means browsers only send the session over HTTPS (or `localhost`). Built-in TLS removes the need for a reverse proxy; the certificate stays the operator's choice (for example from an ACME client), rather than one the broker issues itself and nobody trusts. |
-| 10 | Users | The first admin comes from setup; more people join through single-use invites carrying an instance-wide role. Admins change roles and disable accounts. The last enabled admin cannot be demoted or disabled. | Per-vault roles for people would need a membership table and a second authorisation path; API keys already cover vault-scoped automation. OIDC remains phase 2, with `IdentityStore` as the seam. |
+| 10 | Users | The first admin is generated on first start; more people join through single-use invites carrying an instance-wide role. Admins change roles and disable accounts. The last enabled admin cannot be demoted or disabled. | Per-vault roles for people would need a membership table and a second authorisation path; API keys already cover vault-scoped automation. OIDC remains phase 2, with `IdentityStore` as the seam. |
 | 11 | Template validation request | Executed on demand (`POST /credentials/{id}/validate`, step-up required, audited). The request goes only to the credential's own host, over TLS with public roots plus `--validation-ca`. Redirects are not followed, it times out after 10 s, it is subject to the egress policy (#12), and only the status code is returned. | The secret goes nowhere a rule could not already send it. The resolved address is checked and then dialled directly, so DNS rebinding cannot redirect it, and no response body can reflect the secret back to the caller. |
 | 12 | Private upstreams / SSRF | Passthrough tunnels and validation requests refuse non-public addresses by default: loopback, RFC 1918, link-local and metadata, CGNAT, ULA, multicast, documentation ranges, and IPv4 embedded in IPv6. An admin can allow specific CIDR ranges or switch the block off in Settings; widening needs step-up. The policy ships in the signed snapshot. The data plane resolves the name, checks every address, and connects only to checked addresses (403 if blocked). Ruled hosts are exempt. | An agent cannot use the proxy to reach the metadata service or internal admin ports. Ruled hosts were chosen by an admin, and their certificates are verified, so DNS rebinding cannot capture an injected credential. |
 | 13 | Interception CA | One interception CA per control plane, delivered sealed to every node | A compromised node can mint certificates that clients trusting that CA accept. Clients should trust it only inside agent sandboxes. Per-node, name-constrained intermediates are out of scope (see below). |
-| 14 | Setup token output | Printed to the terminal (stderr), not to the JSON log | Logs are often shipped elsewhere; the token is a one-shot admin credential. |
+| 14 | First admin's password | Generated and printed to the terminal (stderr) once, not to the JSON log | Logs are often shipped elsewhere. A generated password removes the window in which whoever reaches the console first claims the instance, which a setup token only narrowed. |
 | 15 | Login rate limiter | In memory, per process | Sufficient for a single-node standalone server. HA would need a shared limiter. |
 | 16 | PASETO | v4.public implemented in `broker-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
 

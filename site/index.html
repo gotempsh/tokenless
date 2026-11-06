@@ -416,7 +416,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
 <span class="ps">$ </span><span class="bin">tokenless</span> serve --data-dir ./tokenless-data</code></pre>
       </figure>
       <div class="notes">
-        <p>The script checks the download against the release's checksums, and its signature when <strong>cosign</strong> is installed. On first start, <strong>serve</strong> prints a single-use setup token. Open <code>http://127.0.0.1:8080/</code>, enter it and create the admin. More people join by invitation as viewer, editor or admin.</p>
+        <p>The script checks the download against the release's checksums, and its signature when <strong>cosign</strong> is installed. On first start, <strong>serve</strong> creates the admin and prints its password once. Sign in at <code>http://127.0.0.1:8080/</code> or with <strong>tokenless login</strong>. More people join by invitation as viewer, editor or admin.</p>
       </div>
     </div>
     <div class="exhibit">

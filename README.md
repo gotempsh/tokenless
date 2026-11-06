@@ -59,14 +59,31 @@ Build the console first: it is embedded in the binary.
 (cd broker-ui && bun install && bun run build)
 cargo build --release
 
-# 1. Start the control plane. On first start it prints a single-use setup token.
+# 1. Start the control plane. On first start it prints the admin's password, once.
 ./target/release/tokenless serve --data-dir ./data
 ```
 
-Open <http://127.0.0.1:8080/> and complete these steps:
+Save the username and password it prints; only a hash is stored. If you
+lose it, `tokenless admin reset-password --data-dir ./data` on the same
+machine prints a new one.
 
-1. Create the admin. Enter the setup token and choose a password.
-   Enrolling an authenticator app (TOTP) is optional but recommended.
+From the terminal:
+
+```sh
+tokenless login                                   # session kept in the OS keychain
+tokenless service add github --vault work --bundle code-review   # asks for the token
+tokenless proxy add --name laptop                 # writes ./node.json
+tokenless node run                                # listens on 127.0.0.1:3128
+```
+
+`service add` creates the vault and the bundle when they don't exist,
+stores the token encrypted and write-only, and adds a rule for it to the
+bundle. See [Set up from the terminal](site/docs/src/terminal.md).
+
+Or in the console at <http://127.0.0.1:8080/>:
+
+1. Sign in. Under **Account**, change the password and, optionally but
+   recommended, turn on an authenticator app (TOTP).
 2. **Vaults → Create vault**.
 3. **Credentials → Add a credential**. Pick a template (for example
    GitHub) and paste the token. The form is write-only.
@@ -76,25 +93,30 @@ Open <http://127.0.0.1:8080/> and complete these steps:
    use the template's maximum, or narrow it.
 5. **Access bundles → Create bundle**, for example `code-review`, and
    tick the rules an agent doing that job needs.
-6. **API keys → Create API key** for the vault with the `session_issuer`
-   role. It can mint sessions in that vault and nothing else.
-7. **Proxies → Create join token**.
-8. Optionally, **People → Invite someone** as `viewer`, `editor` or
+6. **Proxies → Create join token**, then on the proxy's machine:
+
+   ```sh
+   tokenless node join --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
+   tokenless node run --state ./node.json
+   ```
+
+7. Optionally, **People → Invite someone** as `viewer`, `editor` or
    `admin`, and send them the one-time link.
-
-Enrol and run a proxy (data plane) next to the agent:
-
-```sh
-./target/release/tokenless node join \
-  --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
-./target/release/tokenless node run --state ./node.json   # listens on 127.0.0.1:3128
-```
 
 ### Run an agent with an access bundle
 
 ```sh
+tokenless run --vault work --bundle code-review -- claude
+```
+
+Signed in with `tokenless login`, `run` mints sessions with your account.
+For CI and other unattended runs, create an API key for the vault with
+the `session_issuer` role (**API keys → Create API key**); it can mint
+sessions in that vault and nothing else:
+
+```sh
 export TOKENLESS_API_KEY=cbk_...    # or --api-key-file key.txt
-./target/release/tokenless run --bundle code-review -- claude
+tokenless run --bundle code-review -- claude
 ```
 
 `run` mints a session from the bundle and opens a **session port**: a

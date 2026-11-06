@@ -11,6 +11,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 - [Install](install.md)
 - [Quickstart](quickstart.md)
+- [Set up from the terminal](terminal.md)
 - [Concepts](concepts.md)
 
 # Using it
