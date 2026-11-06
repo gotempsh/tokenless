@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: bitbucket
+version: 1
+name: "Bitbucket"
+description: "Repos and pipelines on Bitbucket Cloud."
+category: developer_tools
+suggested_variable: BITBUCKET_TOKEN
+hosts:
+  - api.bitbucket.org
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: hubspot
+version: 1
+name: "HubSpot"
+description: "CRM contacts, companies and deals."
+category: productivity
+aliases: [crm]
+suggested_variable: HUBSPOT_TOKEN
+hosts:
+  - api.hubapi.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Private app token"
+injection:
+  method: bearer
+  field: token

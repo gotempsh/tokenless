@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: cloudflare
+version: 1
+name: "Cloudflare"
+description: "DNS, CDN, Workers and the Cloudflare API."
+category: infrastructure
+suggested_variable: CLOUDFLARE_API_TOKEN
+hosts:
+  - api.cloudflare.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /client/v4/user/tokens/verify
+  expect_status: [200]

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: xai
+version: 1
+name: "xAI (Grok)"
+description: "Grok models from xAI."
+category: llm_providers
+aliases: [grok]
+suggested_variable: XAI_API_KEY
+hosts:
+  - api.x.ai
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/models
+  expect_status: [200]

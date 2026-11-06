@@ -14,16 +14,17 @@ use async_trait::async_trait;
 use broker_control::model::{
     ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
     ProxySession, Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User,
-    Vault,
+    Variable, Vault,
 };
 use broker_control::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Role;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
 use broker_core::template::ServiceTemplate;
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -214,13 +215,33 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         template_version: u32::try_from(get::<i64>(row, "template_version")?).unwrap_or(0),
         host_override: from_json("host_override", &get::<String>(row, "host_override")?)?,
         field_names: from_json("field_names", &get::<String>(row, "field_names")?)?,
+        custom_headers: from_json("custom_headers", &get::<String>(row, "custom_headers")?)?,
+        variable_refs: from_json("variable_refs", &get::<String>(row, "variable_refs")?)?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, created_by, created_at, updated_at";
+
+fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
+    Ok(Variable {
+        id: get_id(row, "id")?,
+        key: get(row, "key")?,
+        created_by: get(row, "created_by")?,
+        created_at: get_ts(row, "created_at")?,
+        updated_by: get(row, "updated_by")?,
+        updated_at: get_ts(row, "updated_at")?,
+    })
+}
+
+const VARIABLE_COLUMNS: &str = "id, key, created_by, created_at, updated_by, updated_at";
+
+/// `?, ?, ...` for an `IN` list of `n` values (at least one).
+fn placeholders(n: usize) -> String {
+    vec!["?"; n.max(1)].join(", ")
+}
 
 #[async_trait]
 impl CredentialStore for SqliteStore {
@@ -232,7 +253,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -241,6 +262,8 @@ impl CredentialStore for SqliteStore {
         .bind(i64::from(meta.template_version))
         .bind(to_json("host_override", &meta.host_override)?)
         .bind(to_json("field_names", &meta.field_names)?)
+        .bind(to_json("custom_headers", &meta.custom_headers)?)
+        .bind(to_json("variable_refs", &meta.variable_refs)?)
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -302,15 +325,17 @@ impl CredentialStore for SqliteStore {
         id: &CredentialId,
         ciphertext: Vec<u8>,
         field_names: Vec<String>,
+        variable_refs: Vec<String>,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("replace_secret").await?;
         let result = sqlx::query(
-            "UPDATE credentials SET secret = ?, field_names = ?, updated_at = ? WHERE id = ?",
+            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
         )
         .bind(ciphertext)
         .bind(to_json("field_names", &field_names)?)
+        .bind(to_json("variable_refs", &variable_refs)?)
         .bind(ts(&updated_at))
         .bind(id.to_string())
         .execute(&mut *tx)
@@ -350,6 +375,204 @@ impl CredentialStore for SqliteStore {
             .map_err(db("load credential secret", "credential"))?
             .map(|r| get::<Vec<u8>>(&r, "secret"))
             .transpose()
+    }
+
+    async fn update_custom_headers(
+        &self,
+        id: &CredentialId,
+        custom_headers: Vec<CustomHeader>,
+        variable_refs: Vec<String>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_custom_headers").await?;
+        let result = sqlx::query(
+            "UPDATE credentials SET custom_headers = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(to_json("custom_headers", &custom_headers)?)
+        .bind(to_json("variable_refs", &variable_refs)?)
+        .bind(ts(&updated_at))
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("update credential custom headers", "credential"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("credential", id));
+        }
+        finish(tx, audit, "update_custom_headers").await
+    }
+
+    async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
+        let sql = format!(
+            "SELECT {CREDENTIAL_COLUMNS} FROM credentials WHERE variable_refs != '[]' ORDER BY name, id"
+        );
+        sqlx::query(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list credentials with variables", "credential"))?
+            .iter()
+            .map(credential_from_row)
+            .collect()
+    }
+
+    async fn insert_variable(
+        &self,
+        variable: Variable,
+        ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_variable").await?;
+        sqlx::query(
+            "INSERT INTO variables (id, key, value, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(variable.id.to_string())
+        .bind(&variable.key)
+        .bind(ciphertext)
+        .bind(&variable.created_by)
+        .bind(ts(&variable.created_at))
+        .bind(&variable.updated_by)
+        .bind(ts(&variable.updated_at))
+        .execute(&mut *tx)
+        .await
+        .map_err(db("insert variable", "variable"))?;
+        finish(tx, audit, "insert_variable").await
+    }
+
+    async fn get_variable(&self, id: &VariableId) -> Result<Option<Variable>, StoreError> {
+        let sql = format!("SELECT {VARIABLE_COLUMNS} FROM variables WHERE id = ?");
+        sqlx::query(&sql)
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get variable", "variable"))?
+            .map(|r| variable_from_row(&r))
+            .transpose()
+    }
+
+    async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError> {
+        let total = self
+            .count("SELECT COUNT(*) AS n FROM variables", None)
+            .await?;
+        let sql = format!("SELECT {VARIABLE_COLUMNS} FROM variables ORDER BY key LIMIT ? OFFSET ?");
+        let rows = sqlx::query(&sql)
+            .bind(to_i64(page.page_size))
+            .bind(to_i64(page.offset()))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list variables", "variable"))?;
+        Ok(Page {
+            items: rows
+                .iter()
+                .map(variable_from_row)
+                .collect::<Result<_, _>>()?,
+            total,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT key FROM variables WHERE key IN ({})",
+            placeholders(keys.len())
+        );
+        let mut q = sqlx::query(&sql);
+        for key in keys {
+            q = q.bind(key.clone());
+        }
+        q.fetch_all(&self.pool)
+            .await
+            .map_err(db("find variable keys", "variable"))?
+            .iter()
+            .map(|r| get::<String>(r, "key"))
+            .collect()
+    }
+
+    async fn replace_variable_value(
+        &self,
+        id: &VariableId,
+        ciphertext: Vec<u8>,
+        updated_by: &str,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("replace_variable_value").await?;
+        let result = sqlx::query(
+            "UPDATE variables SET value = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(ciphertext)
+        .bind(updated_by)
+        .bind(ts(&updated_at))
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("replace variable value", "variable"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("variable", id));
+        }
+        finish(tx, audit, "replace_variable_value").await
+    }
+
+    async fn delete_variable(
+        &self,
+        id: &VariableId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("delete_variable").await?;
+        let key: String = sqlx::query("SELECT key FROM variables WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db("delete variable", "variable"))?
+            .map(|r| get::<String>(&r, "key"))
+            .transpose()?
+            .ok_or_else(|| StoreError::not_found("variable", id))?;
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM credentials, json_each(credentials.variable_refs) WHERE json_each.value = ?",
+        )
+        .bind(&key)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db("delete variable", "variable"))?;
+        let users = to_u64(get::<i64>(&row, "n")?);
+        if users > 0 {
+            return Err(StoreError::Conflict {
+                entity: "variable",
+                detail: format!("'{key}' is referenced by {users} credential(s)"),
+            });
+        }
+        sqlx::query("DELETE FROM variables WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete variable", "variable"))?;
+        finish(tx, audit, "delete_variable").await
+    }
+
+    async fn load_variable_ciphertexts(
+        &self,
+        keys: &[String],
+    ) -> Result<Vec<(Variable, Vec<u8>)>, StoreError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {VARIABLE_COLUMNS}, value FROM variables WHERE key IN ({})",
+            placeholders(keys.len())
+        );
+        let mut q = sqlx::query(&sql);
+        for key in keys {
+            q = q.bind(key.clone());
+        }
+        q.fetch_all(&self.pool)
+            .await
+            .map_err(db("load variable values", "variable"))?
+            .iter()
+            .map(|r| Ok((variable_from_row(r)?, get::<Vec<u8>>(r, "value")?)))
+            .collect()
     }
 }
 
@@ -676,18 +899,24 @@ impl PolicyStore for SqliteStore {
 
     async fn list_sessions(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
-        let total = self
-            .count(
-                "SELECT COUNT(*) AS n FROM proxy_sessions WHERE vault_id = ?",
-                Some(&vault_id.to_string()),
-            )
-            .await?;
-        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE vault_id = ? ORDER BY created_at DESC, id LIMIT ? OFFSET ?");
+        // `? IS NULL` selects every vault when no vault is given.
+        let vault = vault_id.map(|v| v.to_string());
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM proxy_sessions WHERE (? IS NULL OR vault_id = ?)",
+        )
+        .bind(vault.clone())
+        .bind(vault.clone())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db("count sessions", "session"))?;
+        let total = to_u64(get::<i64>(&row, "n")?);
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE (? IS NULL OR vault_id = ?) ORDER BY created_at DESC, id LIMIT ? OFFSET ?");
         let rows = sqlx::query(&sql)
-            .bind(vault_id.to_string())
+            .bind(vault.clone())
+            .bind(vault)
             .bind(to_i64(page.page_size))
             .bind(to_i64(page.offset()))
             .fetch_all(&self.pool)

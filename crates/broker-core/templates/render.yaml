@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: render
+version: 1
+name: "Render"
+description: "Services and deploys on Render."
+category: infrastructure
+suggested_variable: RENDER_API_KEY
+hosts:
+  - api.render.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/services
+  expect_status: [200]

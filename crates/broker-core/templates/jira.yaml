@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: jira
+version: 1
+name: "Jira"
+description: "Atlassian Jira issue tracking. Covers every *.atlassian.net site."
+category: productivity
+logo: jira
+aliases: [atlassian]
+suggested_variable: JIRA_API_TOKEN
+hosts:
+  - "*.atlassian.net"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Email"
+  - name: password
+    label: "API token"
+injection:
+  method: basic
+  username_field: username
+  password_field: password

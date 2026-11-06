@@ -12,20 +12,22 @@ use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::Role;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
     ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
-    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Vault,
+    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
 };
 use crate::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
 #[derive(Default)]
 struct Inner {
     credentials: HashMap<CredentialId, (CredentialMeta, Vec<u8>)>,
+    variables: HashMap<VariableId, (Variable, Vec<u8>)>,
     vaults: HashMap<VaultId, Vault>,
     templates: BTreeMap<(String, u32), StoredTemplate>,
     rules: HashMap<RuleId, Rule>,
@@ -122,6 +124,7 @@ impl CredentialStore for MemoryStore {
         id: &CredentialId,
         ct: Vec<u8>,
         field_names: Vec<String>,
+        variable_refs: Vec<String>,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
@@ -131,10 +134,145 @@ impl CredentialStore for MemoryStore {
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
         meta.field_names = field_names;
+        meta.variable_refs = variable_refs;
         meta.updated_at = updated_at;
         *stored = ct;
         inner.audit.extend_from_slice(audit);
         Ok(())
+    }
+
+    async fn update_custom_headers(
+        &self,
+        id: &CredentialId,
+        custom_headers: Vec<CustomHeader>,
+        variable_refs: Vec<String>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let (meta, _) = inner
+            .credentials
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        meta.custom_headers = custom_headers;
+        meta.variable_refs = variable_refs;
+        meta.updated_at = updated_at;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
+        let mut items: Vec<_> = self
+            .lock()?
+            .credentials
+            .values()
+            .filter(|(m, _)| !m.variable_refs.is_empty())
+            .map(|(m, _)| m.clone())
+            .collect();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(items)
+    }
+
+    async fn insert_variable(
+        &self,
+        variable: Variable,
+        ct: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if inner.variables.values().any(|(v, _)| v.key == variable.key) {
+            return Err(StoreError::Conflict {
+                entity: "variable",
+                detail: format!("key '{}' exists", variable.key),
+            });
+        }
+        inner.variables.insert(variable.id, (variable, ct));
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn get_variable(&self, id: &VariableId) -> Result<Option<Variable>, StoreError> {
+        Ok(self.lock()?.variables.get(id).map(|(v, _)| v.clone()))
+    }
+
+    async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError> {
+        let mut items: Vec<_> = self
+            .lock()?
+            .variables
+            .values()
+            .map(|(v, _)| v.clone())
+            .collect();
+        items.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(page.apply(&items))
+    }
+
+    async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError> {
+        let inner = self.lock()?;
+        Ok(keys
+            .iter()
+            .filter(|k| inner.variables.values().any(|(v, _)| &v.key == *k))
+            .cloned()
+            .collect())
+    }
+
+    async fn replace_variable_value(
+        &self,
+        id: &VariableId,
+        ct: Vec<u8>,
+        updated_by: &str,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let (variable, stored) = inner
+            .variables
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("variable", id))?;
+        variable.updated_by = updated_by.to_string();
+        variable.updated_at = updated_at;
+        *stored = ct;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn delete_variable(
+        &self,
+        id: &VariableId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let key = inner
+            .variables
+            .get(id)
+            .map(|(v, _)| v.key.clone())
+            .ok_or_else(|| StoreError::not_found("variable", id))?;
+        let users = inner
+            .credentials
+            .values()
+            .filter(|(m, _)| m.variable_refs.contains(&key))
+            .count();
+        if users > 0 {
+            return Err(StoreError::Conflict {
+                entity: "variable",
+                detail: format!("'{key}' is referenced by {users} credential(s)"),
+            });
+        }
+        inner.variables.remove(id);
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn load_variable_ciphertexts(
+        &self,
+        keys: &[String],
+    ) -> Result<Vec<(Variable, Vec<u8>)>, StoreError> {
+        Ok(self
+            .lock()?
+            .variables
+            .values()
+            .filter(|(v, _)| keys.contains(&v.key))
+            .cloned()
+            .collect())
     }
 
     async fn delete_credential(
@@ -332,14 +470,14 @@ impl PolicyStore for MemoryStore {
 
     async fn list_sessions(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
         let items: Vec<_> = self
             .lock()?
             .sessions
             .values()
-            .filter(|s| &s.vault_id == vault_id)
+            .filter(|s| vault_id.is_none_or(|v| &s.vault_id == v))
             .cloned()
             .collect();
         Ok(page.apply(&newest_first(items, |s| s.created_at)))

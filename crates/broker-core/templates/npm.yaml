@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: npm
+version: 1
+name: "npm"
+description: "The npm package registry."
+category: developer_tools
+suggested_variable: NPM_TOKEN
+hosts:
+  - registry.npmjs.org
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /-/whoami
+  expect_status: [200]

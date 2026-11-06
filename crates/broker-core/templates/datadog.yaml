@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: datadog
+version: 1
+name: "Datadog"
+description: "Metrics, logs and monitors. Add DD-APPLICATION-KEY as a custom header for most read APIs."
+category: monitoring
+suggested_variable: DATADOG_API_KEY
+hosts:
+  - api.datadoghq.com
+  - api.datadoghq.eu
+  - api.us3.datadoghq.com
+  - api.us5.datadoghq.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "DD-API-KEY"
+  field: api_key
+validation:
+  method: GET
+  path: /api/v1/validate
+  expect_status: [200]

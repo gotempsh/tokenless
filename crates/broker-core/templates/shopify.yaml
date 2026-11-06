@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: shopify
+version: 1
+name: "Shopify"
+description: "Shopify Admin API. Covers every *.myshopify.com store."
+category: commerce
+suggested_variable: SHOPIFY_ACCESS_TOKEN
+hosts:
+  - "*.myshopify.com"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Admin API access token"
+injection:
+  method: header
+  name: "X-Shopify-Access-Token"
+  field: api_key

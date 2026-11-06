@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: asana
+version: 1
+name: "Asana"
+description: "Tasks and projects on Asana."
+category: productivity
+suggested_variable: ASANA_TOKEN
+hosts:
+  - app.asana.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/1.0/users/me
+  expect_status: [200]

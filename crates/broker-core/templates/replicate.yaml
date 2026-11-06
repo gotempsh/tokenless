@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: replicate
+version: 1
+name: "Replicate"
+description: "Run open models with an API."
+category: llm_providers
+suggested_variable: REPLICATE_API_TOKEN
+hosts:
+  - api.replicate.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/account
+  expect_status: [200]

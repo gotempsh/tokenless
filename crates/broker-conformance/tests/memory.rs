@@ -13,6 +13,11 @@ async fn memory_store_passes_credential_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_variable_suite() {
+    variable_store_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn memory_store_passes_policy_suite() {
     policy_store_suite(&MemoryStore::new()).await.unwrap();
 }

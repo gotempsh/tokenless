@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: anthropic
+version: 1
+name: "Anthropic"
+description: "Claude models from Anthropic."
+category: llm_providers
+popular: true
+aliases: [claude]
+suggested_variable: ANTHROPIC_API_KEY
+hosts:
+  - api.anthropic.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "x-api-key"
+  field: api_key
+default_headers:
+  - name: anthropic-version
+    value: "2023-06-01"
+validation:
+  method: GET
+  path: /v1/models
+  expect_status: [200]

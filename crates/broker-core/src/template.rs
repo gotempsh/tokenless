@@ -15,6 +15,7 @@ use crate::host::HostPattern;
 use crate::injection::{InjectionSpec, SecretFields};
 use crate::path::{HttpMethod, PathPattern};
 use crate::rule::RuleScope;
+use crate::variables::{validate_custom_headers, validate_key, CustomHeader};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +37,54 @@ pub struct ServiceTemplate {
     /// Reserved for phase 2. Parsed and validated, never acted upon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuthSpec>,
+
+    // ---- catalog presentation: never affects what is injected ----------
+    #[serde(default)]
+    pub category: TemplateCategory,
+    #[serde(default)]
+    pub kind: ServiceKind,
+    /// Logo key the UI resolves to a bundled image; defaults to the id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+    /// Shown first in the catalog.
+    #[serde(default)]
+    pub popular: bool,
+    /// Extra words the catalog search matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// Variable key the UI suggests for the main secret, e.g. `GITHUB_TOKEN`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_variable: Option<String>,
+    /// Custom headers prefilled on new credentials, e.g. an API version.
+    /// They are copied onto the credential, where they can be edited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub default_headers: Vec<CustomHeader>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateCategory {
+    LlmProviders,
+    DeveloperTools,
+    Infrastructure,
+    Communication,
+    Monitoring,
+    Productivity,
+    Payments,
+    Commerce,
+    Search,
+    #[default]
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceKind {
+    /// A web API the agent calls directly.
+    #[default]
+    Http,
+    /// A remote MCP server reached over streamable HTTP.
+    Mcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +245,19 @@ impl ServiceTemplate {
                 return Err(invalid("oauth.token_url must be an https:// URL".into()));
             }
         }
+        if let Some(logo) = &self.logo {
+            if !is_slug(logo) {
+                return Err(invalid(format!("logo '{logo}' must be a slug")));
+            }
+        }
+        if let Some(key) = &self.suggested_variable {
+            validate_key(key).map_err(|e| invalid(e.to_string()))?;
+        }
+        if self.aliases.len() > 16 || self.aliases.iter().any(|a| a.len() > 32) {
+            return Err(invalid("at most 16 aliases of up to 32 characters".into()));
+        }
+        validate_custom_headers(&self.default_headers, &self.injection.header_names())
+            .map_err(|e| invalid(e.to_string()))?;
         Ok(())
     }
 
@@ -254,10 +316,78 @@ impl ServiceTemplate {
 }
 
 const BUILTIN_YAML: &[(&str, &str)] = &[
+    ("openai", include_str!("../templates/openai.yaml")),
+    ("anthropic", include_str!("../templates/anthropic.yaml")),
+    ("gemini", include_str!("../templates/gemini.yaml")),
+    ("mistral", include_str!("../templates/mistral.yaml")),
+    ("cohere", include_str!("../templates/cohere.yaml")),
+    ("groq", include_str!("../templates/groq.yaml")),
+    ("perplexity", include_str!("../templates/perplexity.yaml")),
+    ("openrouter", include_str!("../templates/openrouter.yaml")),
+    ("together", include_str!("../templates/together.yaml")),
+    ("deepseek", include_str!("../templates/deepseek.yaml")),
+    ("xai", include_str!("../templates/xai.yaml")),
+    ("fireworks", include_str!("../templates/fireworks.yaml")),
+    ("cerebras", include_str!("../templates/cerebras.yaml")),
+    ("huggingface", include_str!("../templates/huggingface.yaml")),
+    ("replicate", include_str!("../templates/replicate.yaml")),
+    ("elevenlabs", include_str!("../templates/elevenlabs.yaml")),
     ("github", include_str!("../templates/github.yaml")),
     ("gitlab", include_str!("../templates/gitlab.yaml")),
+    ("bitbucket", include_str!("../templates/bitbucket.yaml")),
+    ("vercel", include_str!("../templates/vercel.yaml")),
+    ("netlify", include_str!("../templates/netlify.yaml")),
+    ("npm", include_str!("../templates/npm.yaml")),
+    ("supabase", include_str!("../templates/supabase.yaml")),
+    ("neon", include_str!("../templates/neon.yaml")),
+    ("upstash", include_str!("../templates/upstash.yaml")),
+    ("cloudflare", include_str!("../templates/cloudflare.yaml")),
+    (
+        "digitalocean",
+        include_str!("../templates/digitalocean.yaml"),
+    ),
+    ("hetzner", include_str!("../templates/hetzner.yaml")),
+    ("fly", include_str!("../templates/fly.yaml")),
+    ("render", include_str!("../templates/render.yaml")),
+    ("railway", include_str!("../templates/railway.yaml")),
+    ("slack", include_str!("../templates/slack.yaml")),
+    ("discord", include_str!("../templates/discord.yaml")),
+    ("twilio", include_str!("../templates/twilio.yaml")),
+    ("sendgrid", include_str!("../templates/sendgrid.yaml")),
+    ("resend", include_str!("../templates/resend.yaml")),
+    ("postmark", include_str!("../templates/postmark.yaml")),
+    ("mailgun", include_str!("../templates/mailgun.yaml")),
+    ("intercom", include_str!("../templates/intercom.yaml")),
+    ("datadog", include_str!("../templates/datadog.yaml")),
+    ("sentry", include_str!("../templates/sentry.yaml")),
+    ("pagerduty", include_str!("../templates/pagerduty.yaml")),
+    ("grafana", include_str!("../templates/grafana.yaml")),
+    ("posthog", include_str!("../templates/posthog.yaml")),
+    ("notion", include_str!("../templates/notion.yaml")),
+    ("linear", include_str!("../templates/linear.yaml")),
+    ("jira", include_str!("../templates/jira.yaml")),
+    ("confluence", include_str!("../templates/confluence.yaml")),
+    ("asana", include_str!("../templates/asana.yaml")),
+    ("clickup", include_str!("../templates/clickup.yaml")),
+    ("airtable", include_str!("../templates/airtable.yaml")),
+    ("figma", include_str!("../templates/figma.yaml")),
+    ("hubspot", include_str!("../templates/hubspot.yaml")),
     ("stripe", include_str!("../templates/stripe.yaml")),
-    ("openai", include_str!("../templates/openai.yaml")),
+    (
+        "lemonsqueezy",
+        include_str!("../templates/lemonsqueezy.yaml"),
+    ),
+    ("paddle", include_str!("../templates/paddle.yaml")),
+    ("shopify", include_str!("../templates/shopify.yaml")),
+    ("tavily", include_str!("../templates/tavily.yaml")),
+    ("exa", include_str!("../templates/exa.yaml")),
+    ("firecrawl", include_str!("../templates/firecrawl.yaml")),
+    (
+        "brave-search",
+        include_str!("../templates/brave-search.yaml"),
+    ),
+    ("github-mcp", include_str!("../templates/github-mcp.yaml")),
+    ("generic-mcp", include_str!("../templates/generic-mcp.yaml")),
     (
         "generic-bearer",
         include_str!("../templates/generic-bearer.yaml"),
@@ -265,6 +395,10 @@ const BUILTIN_YAML: &[(&str, &str)] = &[
     (
         "generic-api-key",
         include_str!("../templates/generic-api-key.yaml"),
+    ),
+    (
+        "generic-basic",
+        include_str!("../templates/generic-basic.yaml"),
     ),
 ];
 
@@ -294,17 +428,30 @@ mod tests {
     #[test]
     fn all_builtins_parse_and_validate() {
         let builtins = builtin_templates().unwrap();
-        let ids: Vec<_> = builtins.iter().map(|(t, _)| t.id.as_str()).collect();
+        assert!(
+            builtins.len() >= 60,
+            "the catalog ships {} templates",
+            builtins.len()
+        );
+        let mut ids: Vec<_> = builtins.iter().map(|(t, _)| t.id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), builtins.len(), "template ids must be unique");
+        for (t, _) in &builtins {
+            if !t.host_override.required {
+                assert!(!t.hosts.is_empty(), "{} has no hosts", t.id);
+            }
+            assert!(!t.description.is_empty(), "{} has no description", t.id);
+        }
+        // The popular templates lead the catalog.
+        let popular: Vec<_> = builtins
+            .iter()
+            .filter(|(t, _)| t.popular)
+            .map(|(t, _)| t.id.as_str())
+            .collect();
         assert_eq!(
-            ids,
-            [
-                "github",
-                "gitlab",
-                "stripe",
-                "openai",
-                "generic-bearer",
-                "generic-api-key"
-            ]
+            popular,
+            ["openai", "anthropic", "github", "slack", "notion", "stripe"]
         );
     }
 
@@ -328,7 +475,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_rejected() {
         let yaml = include_str!("../templates/github.yaml")
-            .replace("version: 1", "version: 1\nscript: rm -rf /");
+            .replace("version: 2", "version: 2\nscript: rm -rf /");
         assert!(matches!(
             ServiceTemplate::from_yaml(&yaml),
             Err(CoreError::TemplateParse { .. })
@@ -356,7 +503,12 @@ mod tests {
 
     #[test]
     fn field_validation() {
-        let (github, _) = builtin_templates().unwrap().remove(0);
+        let github = builtin_templates()
+            .unwrap()
+            .into_iter()
+            .find(|(t, _)| t.id == "github")
+            .unwrap()
+            .0;
         let ok = SecretFields::new(BTreeMap::from([("token".to_string(), "t".to_string())]));
         assert!(github.validate_fields(&ok).is_ok());
         let missing = SecretFields::new(BTreeMap::new());

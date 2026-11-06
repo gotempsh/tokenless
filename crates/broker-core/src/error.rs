@@ -42,6 +42,18 @@ pub enum CoreError {
     #[error("invalid header name '{name}': {reason}")]
     InvalidHeaderName { name: String, reason: String },
 
+    #[error("invalid variable key '{key}': {reason}")]
+    InvalidVariableKey { key: String, reason: String },
+
+    #[error("invalid variable reference in {context}: {reason}")]
+    InvalidVariableReference { context: String, reason: String },
+
+    #[error("{context} references variable '{key}', which does not exist")]
+    UnknownVariable { context: String, key: String },
+
+    #[error("invalid custom header '{name}': {reason}")]
+    InvalidCustomHeader { name: String, reason: String },
+
     #[error("invalid session label '{key}': {reason}")]
     InvalidLabel { key: String, reason: String },
 

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: discord
+version: 1
+name: "Discord"
+description: "Build and run Discord bots."
+category: communication
+suggested_variable: DISCORD_BOT_TOKEN
+hosts:
+  - discord.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Bot token"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "Bot "

@@ -87,7 +87,7 @@ pub fn validate_header_name(name: &str) -> Result<String, CoreError> {
     Ok(lower)
 }
 
-fn validate_header_value(field: &str, value: &str) -> Result<(), CoreError> {
+pub(crate) fn validate_header_value(field: &str, value: &str) -> Result<(), CoreError> {
     if value.len() > 8192 {
         return Err(CoreError::InvalidFieldValue {
             field: field.to_string(),
@@ -234,6 +234,33 @@ impl SecretFields {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Variable keys the field values reference, in order of first use.
+    pub fn variable_references(&self) -> Result<Vec<String>, CoreError> {
+        let mut keys: Vec<String> = Vec::new();
+        for (name, value) in &self.0 {
+            for key in crate::variables::references(&format!("credential field '{name}'"), value)? {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    /// A copy with every `{{VARIABLE}}` reference replaced by its value.
+    pub fn resolve<'v>(
+        &self,
+        lookup: impl Fn(&str) -> Option<&'v str> + Copy,
+    ) -> Result<SecretFields, CoreError> {
+        let mut out = BTreeMap::new();
+        for (name, value) in &self.0 {
+            let context = format!("credential field '{name}'");
+            let resolved = crate::variables::substitute(&context, value, lookup)?;
+            out.insert(name.clone(), resolved.to_string());
+        }
+        Ok(SecretFields(out))
+    }
 }
 
 impl fmt::Debug for SecretFields {
@@ -259,7 +286,7 @@ pub struct InjectedHeader {
 }
 
 impl InjectedHeader {
-    fn new(name: &str, value: String) -> Self {
+    pub(crate) fn new(name: &str, value: String) -> Self {
         Self {
             name: name.to_string(),
             value,

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: supabase
+version: 1
+name: "Supabase"
+description: "Postgres, auth and storage. Covers every project host."
+category: developer_tools
+suggested_variable: SUPABASE_KEY
+hosts:
+  - "*.supabase.co"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "apikey"
+  field: api_key

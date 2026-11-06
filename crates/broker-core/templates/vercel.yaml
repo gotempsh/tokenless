@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: vercel
+version: 1
+name: "Vercel"
+description: "Deployments and the Vercel API."
+category: developer_tools
+suggested_variable: VERCEL_TOKEN
+hosts:
+  - api.vercel.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/user
+  expect_status: [200]

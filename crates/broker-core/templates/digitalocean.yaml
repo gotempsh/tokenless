@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: digitalocean
+version: 1
+name: "DigitalOcean"
+description: "Droplets, apps and the DigitalOcean API."
+category: infrastructure
+suggested_variable: DIGITALOCEAN_TOKEN
+hosts:
+  - api.digitalocean.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/account
+  expect_status: [200]

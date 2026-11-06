@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: generic-basic
+version: 1
+name: "Custom HTTP API (basic auth)"
+description: "Any HTTPS API behind HTTP basic authentication. The host is chosen per credential (admin only)."
+category: custom
+hosts: []
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Username"
+  - name: password
+    label: "Password"
+injection:
+  method: basic
+  username_field: username
+  password_field: password
+host_override:
+  allowed: true
+  required: true
+  label: "API host (https://host[:port])"

@@ -23,9 +23,11 @@ use broker_control::service::sessions::MintSession;
 use broker_control::service::users::{
     AcceptInviteRequest, CreateInvite, InviteInfo, InviteIssued, UpdateUser,
 };
+use broker_control::service::variables::{CreateVariable, ReplaceVariable};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -321,6 +323,75 @@ pub async fn rotate_credential(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomHeadersRequest {
+    custom_headers: Vec<CustomHeader>,
+}
+
+pub async fn update_custom_headers(
+    State(s): St,
+    authed: Authed,
+    Path(credential_id): Path<String>,
+    ApiJson(req): ApiJson<CustomHeadersRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let id: CredentialId = parse_id("credential", &credential_id)?;
+    Ok(Json(
+        s.control
+            .policy
+            .update_custom_headers(&authed.caller, &id, req.custom_headers)
+            .await?,
+    ))
+}
+
+pub async fn list_variables(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .variables
+            .list(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
+pub async fn create_variable(
+    State(s): St,
+    authed: Authed,
+    ApiJson(req): ApiJson<CreateVariable>,
+) -> ApiResult<impl IntoResponse> {
+    let created = s.control.variables.create(&authed.caller, req).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Replaces a variable's value. There is no endpoint that returns one.
+pub async fn replace_variable(
+    State(s): St,
+    authed: Authed,
+    Path(variable_id): Path<String>,
+    ApiJson(req): ApiJson<ReplaceVariable>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VariableId = parse_id("variable", &variable_id)?;
+    Ok(Json(
+        s.control
+            .variables
+            .replace_value(&authed.caller, &id, req.value)
+            .await?,
+    ))
+}
+
+pub async fn delete_variable(
+    State(s): St,
+    authed: Authed,
+    Path(variable_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let id: VariableId = parse_id("variable", &variable_id)?;
+    s.control.variables.delete(&authed.caller, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Runs the template's validation request with the stored credential.
 /// Returns the outcome (status only), never the response body.
 pub async fn validate_credential(
@@ -440,6 +511,20 @@ pub async fn list_sessions(
         s.control
             .sessions
             .list(&authed.caller, &id, q.request())
+            .await?,
+    ))
+}
+
+/// Sessions across every vault the caller can see.
+pub async fn list_all_sessions(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .sessions
+            .list_all(&authed.caller, q.request())
             .await?,
     ))
 }

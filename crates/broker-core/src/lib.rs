@@ -23,5 +23,6 @@ pub mod seal;
 pub mod session;
 pub mod snapshot;
 pub mod template;
+pub mod variables;
 
 pub use error::CoreError;

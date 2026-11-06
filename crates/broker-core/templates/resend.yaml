@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: resend
+version: 1
+name: "Resend"
+description: "Email built for developers."
+category: communication
+suggested_variable: RESEND_API_KEY
+hosts:
+  - api.resend.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /domains
+  expect_status: [200]

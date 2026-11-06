@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: intercom
+version: 1
+name: "Intercom"
+description: "Customer conversations and contacts."
+category: communication
+suggested_variable: INTERCOM_TOKEN
+hosts:
+  - api.intercom.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /me
+  expect_status: [200]

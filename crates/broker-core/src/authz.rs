@@ -77,6 +77,10 @@ pub enum Action {
     UserRead,
     /// Invite people, change their role, disable them.
     UserManage,
+    /// List variables and where they are used (never their values).
+    VariableRead,
+    /// Create, replace and delete variables.
+    VariableManage,
 }
 
 impl Action {
@@ -91,6 +95,7 @@ impl Action {
                 | Action::TemplateApprove
                 | Action::NodeManage
                 | Action::UserManage
+                | Action::VariableManage
         )
     }
 
@@ -106,6 +111,8 @@ impl Action {
                 | Action::SettingsWrite
                 | Action::UserRead
                 | Action::UserManage
+                | Action::VariableRead
+                | Action::VariableManage
         )
     }
 }

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: clickup
+version: 1
+name: "ClickUp"
+description: "Tasks, docs and goals on ClickUp."
+category: productivity
+suggested_variable: CLICKUP_TOKEN
+hosts:
+  - api.clickup.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Personal token"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+validation:
+  method: GET
+  path: /api/v2/user
+  expect_status: [200]

@@ -13,14 +13,15 @@ use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
     ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
-    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Vault,
+    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
 };
 
 /// Stores credential metadata and an opaque, already-encrypted secret blob.
@@ -49,9 +50,55 @@ pub trait CredentialStore: Send + Sync {
         id: &CredentialId,
         ciphertext: Vec<u8>,
         field_names: Vec<String>,
+        variable_refs: Vec<String>,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
+    /// Replaces the custom headers; `NotFound` if the credential does not exist.
+    async fn update_custom_headers(
+        &self,
+        id: &CredentialId,
+        custom_headers: Vec<CustomHeader>,
+        variable_refs: Vec<String>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Credentials in every vault that reference at least one variable.
+    async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError>;
+
+    /// `Conflict` if a variable with the same key exists.
+    async fn insert_variable(
+        &self,
+        variable: Variable,
+        ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_variable(&self, id: &VariableId) -> Result<Option<Variable>, StoreError>;
+    /// Ordered by key.
+    async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError>;
+    /// The given keys that exist; unknown keys are left out.
+    async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError>;
+    /// `NotFound` if the variable does not exist.
+    async fn replace_variable_value(
+        &self,
+        id: &VariableId,
+        ciphertext: Vec<u8>,
+        updated_by: &str,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// `NotFound` if it does not exist; `Conflict` if a credential still
+    /// references its key. The check and the delete are one transaction.
+    async fn delete_variable(
+        &self,
+        id: &VariableId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Encrypted values of the given keys, for rendering.
+    async fn load_variable_ciphertexts(
+        &self,
+        keys: &[String],
+    ) -> Result<Vec<(Variable, Vec<u8>)>, StoreError>;
     /// `NotFound` if the credential does not exist.
     async fn delete_credential(
         &self,
@@ -113,9 +160,10 @@ pub trait PolicyStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError>;
+    /// Newest first; every vault when `vault_id` is `None`.
     async fn list_sessions(
         &self,
-        vault_id: &VaultId,
+        vault_id: Option<&VaultId>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError>;
     /// Returns false if it was already revoked. `NotFound` if missing.

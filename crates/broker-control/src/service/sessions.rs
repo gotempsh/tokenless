@@ -167,6 +167,20 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionRead, Some(vault_id))
             .await?;
-        Ok(self.policy.list_sessions(vault_id, page).await?)
+        Ok(self.policy.list_sessions(Some(vault_id), page).await?)
+    }
+
+    /// Sessions in every vault the caller can see: all of them for an
+    /// unbound principal, the bound vault's otherwise.
+    pub async fn list_all(
+        &self,
+        caller: &Caller,
+        page: PageRequest,
+    ) -> Result<Page<ProxySession>, ControlError> {
+        let vault = caller.principal.vault;
+        self.guard
+            .check(caller, Action::SessionRead, vault.as_ref())
+            .await?;
+        Ok(self.policy.list_sessions(vault.as_ref(), page).await?)
     }
 }

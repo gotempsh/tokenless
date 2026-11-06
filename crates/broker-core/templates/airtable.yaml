@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: airtable
+version: 1
+name: "Airtable"
+description: "Bases, tables and records."
+category: productivity
+suggested_variable: AIRTABLE_TOKEN
+hosts:
+  - api.airtable.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v0/meta/whoami
+  expect_status: [200]

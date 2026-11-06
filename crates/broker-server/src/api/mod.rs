@@ -62,6 +62,15 @@ fn api_routes() -> Router<Arc<AppState>> {
             put(rotate_credential),
         )
         .route(
+            "/credentials/{credential_id}/headers",
+            put(update_custom_headers),
+        )
+        .route("/variables", get(list_variables).post(create_variable))
+        .route(
+            "/variables/{variable_id}",
+            put(replace_variable).delete(delete_variable),
+        )
+        .route(
             "/credentials/{credential_id}/validate",
             post(validate_credential),
         )
@@ -69,6 +78,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/rules/{rule_id}",
             get(get_rule).patch(update_rule).delete(delete_rule),
         )
+        .route("/sessions", get(list_all_sessions))
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(

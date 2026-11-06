@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mailgun
+version: 1
+name: "Mailgun"
+description: "Email sending and validation."
+category: communication
+suggested_variable: MAILGUN_API_KEY
+hosts:
+  - api.mailgun.net
+  - api.eu.mailgun.net
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Username"
+    description: "Always 'api'."
+  - name: password
+    label: "API key"
+injection:
+  method: basic
+  username_field: username
+  password_field: password
+validation:
+  method: GET
+  path: /v3/domains
+  expect_status: [200]

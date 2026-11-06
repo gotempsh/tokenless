@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: sendgrid
+version: 1
+name: "SendGrid"
+description: "Transactional email delivery."
+category: communication
+suggested_variable: SENDGRID_API_KEY
+hosts:
+  - api.sendgrid.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v3/scopes
+  expect_status: [200]

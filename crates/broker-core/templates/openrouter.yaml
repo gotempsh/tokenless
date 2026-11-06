@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: openrouter
+version: 1
+name: "OpenRouter"
+description: "One key for many AI models."
+category: llm_providers
+suggested_variable: OPENROUTER_API_KEY
+hosts:
+  - openrouter.ai
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v1/key
+  expect_status: [200]

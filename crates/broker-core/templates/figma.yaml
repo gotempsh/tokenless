@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: figma
+version: 1
+name: "Figma"
+description: "Files, comments and design data."
+category: productivity
+suggested_variable: FIGMA_TOKEN
+hosts:
+  - api.figma.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Personal access token"
+injection:
+  method: header
+  name: "X-Figma-Token"
+  field: api_key
+validation:
+  method: GET
+  path: /v1/me
+  expect_status: [200]

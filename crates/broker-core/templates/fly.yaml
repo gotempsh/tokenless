@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: fly
+version: 1
+name: "Fly.io"
+description: "Machines on Fly.io."
+category: infrastructure
+suggested_variable: FLY_API_TOKEN
+hosts:
+  - api.machines.dev
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

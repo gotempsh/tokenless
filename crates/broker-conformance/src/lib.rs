@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 
 use broker_control::model::{
     ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest, ProxySession,
-    Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Vault,
+    Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable,
+    Vault,
 };
 use broker_control::store::{
     AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore,
@@ -22,12 +23,13 @@ use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::{Action, Decision, Principal, PrincipalKind, Role};
 use broker_core::egress::{EgressPolicy, IpCidr};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::template::builtin_templates;
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
@@ -84,6 +86,8 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         template_version: 1,
         host_override: vec![],
         field_names: vec!["token".into()],
+        custom_headers: vec![],
+        variable_refs: vec![],
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -231,6 +235,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
             &first.id,
             b"ct-rotated".to_vec(),
             vec!["token".into(), "extra".into()],
+            vec![],
             at(5),
             &[],
         )
@@ -257,7 +262,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "field names not updated: {meta:?}"
     );
     let missing = store
-        .replace_secret(&CredentialId::new(), vec![], vec![], at(0), &[])
+        .replace_secret(&CredentialId::new(), vec![], vec![], vec![], at(0), &[])
         .await;
     ensure!(
         S,
@@ -291,6 +296,182 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "ciphertext still present after delete"
     );
     let again = store.delete_credential(&first.id, &[]).await;
+    ensure!(
+        S,
+        "delete_missing",
+        matches!(again, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {again:?}"
+    );
+    Ok(())
+}
+
+fn variable(key: &str, created_offset: i64) -> Variable {
+    Variable {
+        id: VariableId::new(),
+        key: key.to_string(),
+        created_by: "user:conformance".into(),
+        created_at: at(created_offset),
+        updated_by: "user:conformance".into(),
+        updated_at: at(created_offset),
+    }
+}
+
+/// Variables, custom headers and the reference bookkeeping that keeps a
+/// variable from being deleted while a credential uses it.
+pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), ConformanceFailure> {
+    const S: &str = "variable_store";
+    let token = variable("GITHUB_TOKEN", -20);
+    let org = variable("ORG_ID", -10);
+    store
+        .insert_variable(token.clone(), b"v-1".to_vec(), &[])
+        .await
+        .map_err(backend(S, "insert"))?;
+    store
+        .insert_variable(org.clone(), b"v-2".to_vec(), &[])
+        .await
+        .map_err(backend(S, "insert"))?;
+    let dup = store
+        .insert_variable(variable("GITHUB_TOKEN", 0), b"v-3".to_vec(), &[])
+        .await;
+    ensure!(
+        S,
+        "duplicate_key",
+        matches!(dup, Err(StoreError::Conflict { .. })),
+        "a second variable with the same key must be a Conflict, got {dup:?}"
+    );
+
+    let fetched = store
+        .get_variable(&token.id)
+        .await
+        .map_err(backend(S, "get"))?;
+    ensure!(
+        S,
+        "get",
+        fetched.as_ref() == Some(&token),
+        "got {fetched:?}"
+    );
+    let page = store
+        .list_variables(PageRequest::new(Some(1), Some(10)))
+        .await
+        .map_err(backend(S, "list"))?;
+    let keys: Vec<&str> = page.items.iter().map(|v| v.key.as_str()).collect();
+    ensure!(
+        S,
+        "list",
+        page.total == 2 && keys == ["GITHUB_TOKEN", "ORG_ID"],
+        "expected both variables ordered by key, got {keys:?} (total {})",
+        page.total
+    );
+    let mut existing = store
+        .existing_variable_keys(&["ORG_ID".into(), "MISSING".into()])
+        .await
+        .map_err(backend(S, "existing"))?;
+    existing.sort();
+    ensure!(S, "existing", existing == ["ORG_ID"], "got {existing:?}");
+
+    store
+        .replace_variable_value(&org.id, b"v-2b".to_vec(), "user:other", at(5), &[])
+        .await
+        .map_err(backend(S, "replace"))?;
+    let loaded = store
+        .load_variable_ciphertexts(&["ORG_ID".into()])
+        .await
+        .map_err(backend(S, "load"))?;
+    ensure!(
+        S,
+        "replace",
+        loaded.len() == 1
+            && loaded[0].1 == b"v-2b"
+            && loaded[0].0.updated_by == "user:other"
+            && loaded[0].0.updated_at == at(5),
+        "replaced value and updater not stored: {:?}",
+        loaded.iter().map(|(v, _)| v).collect::<Vec<_>>()
+    );
+    let missing = store
+        .replace_variable_value(&VariableId::new(), vec![], "x", at(0), &[])
+        .await;
+    ensure!(
+        S,
+        "replace_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+
+    // A credential referencing ORG_ID from a custom header.
+    let mut cred = credential(VaultId::new(), "with-headers", -5);
+    cred.custom_headers = vec![CustomHeader {
+        name: "X-Org".into(),
+        value: "{{ORG_ID}}".into(),
+    }];
+    cred.variable_refs = vec!["ORG_ID".into()];
+    store
+        .insert_credential(cred.clone(), b"ct".to_vec(), &[])
+        .await
+        .map_err(backend(S, "credential_insert"))?;
+    let plain = credential(VaultId::new(), "plain", -4);
+    store
+        .insert_credential(plain.clone(), b"ct".to_vec(), &[])
+        .await
+        .map_err(backend(S, "credential_insert"))?;
+    let using = store
+        .list_credentials_with_variables()
+        .await
+        .map_err(backend(S, "with_variables"))?;
+    ensure!(
+        S,
+        "with_variables",
+        using.len() == 1 && using[0] == cred,
+        "only the referencing credential, with its headers, must be listed: {using:?}"
+    );
+    let blocked = store.delete_variable(&org.id, &[]).await;
+    ensure!(
+        S,
+        "delete_in_use",
+        matches!(blocked, Err(StoreError::Conflict { .. })),
+        "deleting a referenced variable must be a Conflict, got {blocked:?}"
+    );
+
+    // Dropping the reference frees the variable.
+    store
+        .update_custom_headers(&cred.id, vec![], vec![], at(6), &[])
+        .await
+        .map_err(backend(S, "update_headers"))?;
+    let updated = store
+        .get_credential(&cred.id)
+        .await
+        .map_err(backend(S, "update_headers_get"))?;
+    ensure!(
+        S,
+        "update_headers",
+        updated
+            .as_ref()
+            .is_some_and(|m| m.custom_headers.is_empty() && m.variable_refs.is_empty()),
+        "headers and refs not cleared: {updated:?}"
+    );
+    let missing = store
+        .update_custom_headers(&CredentialId::new(), vec![], vec![], at(0), &[])
+        .await;
+    ensure!(
+        S,
+        "update_headers_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+    store
+        .delete_variable(&org.id, &[])
+        .await
+        .map_err(backend(S, "delete"))?;
+    let gone = store
+        .get_variable(&org.id)
+        .await
+        .map_err(backend(S, "delete_get"))?;
+    ensure!(
+        S,
+        "delete",
+        gone.is_none(),
+        "variable still present after delete"
+    );
+    let again = store.delete_variable(&org.id, &[]).await;
     ensure!(
         S,
         "delete_missing",
@@ -575,7 +756,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     let listed = store
-        .list_sessions(&v1.id, PageRequest::default())
+        .list_sessions(Some(&v1.id), PageRequest::default())
         .await
         .map_err(backend(S, "session_list"))?;
     ensure!(
@@ -583,6 +764,26 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "session_list",
         listed.total == 3,
         "expected 3 sessions in vault alpha, got {}",
+        listed.total
+    );
+    store
+        .insert_session(session(VaultId::new(), 30, None), &[])
+        .await
+        .map_err(backend(S, "session_insert_other"))?;
+    let everywhere = store
+        .list_sessions(None, PageRequest::default())
+        .await
+        .map_err(backend(S, "session_list_all"))?;
+    ensure!(
+        S,
+        "session_list_all",
+        everywhere.total > listed.total
+            && everywhere
+                .items
+                .windows(2)
+                .all(|w| w[0].created_at >= w[1].created_at),
+        "listing without a vault must include every vault, newest first; got {} of {}",
+        everywhere.total,
         listed.total
     );
 

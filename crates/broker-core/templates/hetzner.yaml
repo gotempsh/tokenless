@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: hetzner
+version: 1
+name: "Hetzner Cloud"
+description: "Servers, volumes and networks on Hetzner Cloud."
+category: infrastructure
+suggested_variable: HCLOUD_TOKEN
+hosts:
+  - api.hetzner.cloud
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/locations
+  expect_status: [200]

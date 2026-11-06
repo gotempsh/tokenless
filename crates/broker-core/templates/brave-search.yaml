@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: brave-search
+version: 1
+name: "Brave Search"
+description: "Web search API from Brave."
+category: search
+logo: brave
+suggested_variable: BRAVE_API_KEY
+hosts:
+  - api.search.brave.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-Subscription-Token"
+  field: api_key

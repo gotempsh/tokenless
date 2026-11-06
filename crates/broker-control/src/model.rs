@@ -9,12 +9,13 @@ use broker_core::authz::Role;
 use broker_core::egress::EgressPolicy;
 use broker_core::host::HostPattern;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
 };
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::template::ServiceTemplate;
+use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -103,8 +104,27 @@ pub struct CredentialMeta {
     /// Admin-set host override that widened the template (empty if none).
     pub host_override: Vec<HostPattern>,
     pub field_names: Vec<String>,
+    /// Headers sent alongside the injected credential. Configuration, not
+    /// secrets: secret parts come from `{{VARIABLE}}` references.
+    #[serde(default)]
+    pub custom_headers: Vec<CustomHeader>,
+    /// Variable keys referenced by the secret fields and custom headers.
+    #[serde(default)]
+    pub variable_refs: Vec<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// A named secret referenced as `{{KEY}}`. The value is stored encrypted
+/// and is write-only: no role can read it back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Variable {
+    pub id: VariableId,
+    pub key: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_by: String,
     pub updated_at: DateTime<Utc>,
 }
 

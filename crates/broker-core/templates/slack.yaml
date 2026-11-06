@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: slack
+version: 1
+name: "Slack"
+description: "Post messages and build Slack apps."
+category: communication
+popular: true
+suggested_variable: SLACK_TOKEN
+hosts:
+  - slack.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Bot or user token"
+injection:
+  method: bearer
+  field: token

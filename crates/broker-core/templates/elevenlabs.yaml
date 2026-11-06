@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: elevenlabs
+version: 1
+name: "ElevenLabs"
+description: "Voice and speech models."
+category: llm_providers
+aliases: [tts, voice]
+suggested_variable: ELEVENLABS_API_KEY
+hosts:
+  - api.elevenlabs.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "xi-api-key"
+  field: api_key
+validation:
+  method: GET
+  path: /v1/user
+  expect_status: [200]

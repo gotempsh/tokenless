@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: netlify
+version: 1
+name: "Netlify"
+description: "Sites and deploys on Netlify."
+category: developer_tools
+suggested_variable: NETLIFY_AUTH_TOKEN
+hosts:
+  - api.netlify.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v1/user
+  expect_status: [200]

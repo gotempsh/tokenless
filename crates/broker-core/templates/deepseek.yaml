@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: deepseek
+version: 1
+name: "DeepSeek"
+description: "DeepSeek's chat and reasoning models."
+category: llm_providers
+suggested_variable: DEEPSEEK_API_KEY
+hosts:
+  - api.deepseek.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /models
+  expect_status: [200]

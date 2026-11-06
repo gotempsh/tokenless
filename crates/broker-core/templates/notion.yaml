@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: notion
+version: 1
+name: "Notion"
+description: "Pages, databases and the Notion workspace."
+category: productivity
+popular: true
+suggested_variable: NOTION_TOKEN
+hosts:
+  - api.notion.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Integration secret"
+injection:
+  method: bearer
+  field: token
+default_headers:
+  - name: Notion-Version
+    value: "2022-06-28"
+validation:
+  method: GET
+  path: /v1/users/me
+  expect_status: [200]

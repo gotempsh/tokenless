@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: gemini
+version: 1
+name: "Google Gemini"
+description: "Google's Gemini models."
+category: llm_providers
+aliases: [google, bard]
+suggested_variable: GEMINI_API_KEY
+hosts:
+  - generativelanguage.googleapis.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "x-goog-api-key"
+  field: api_key
+validation:
+  method: GET
+  path: /v1beta/models
+  expect_status: [200]

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: postmark
+version: 1
+name: "Postmark"
+description: "Transactional email."
+category: communication
+suggested_variable: POSTMARK_SERVER_TOKEN
+hosts:
+  - api.postmarkapp.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Server token"
+injection:
+  method: header
+  name: "X-Postmark-Server-Token"
+  field: api_key
+validation:
+  method: GET
+  path: /server
+  expect_status: [200]

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: pagerduty
+version: 1
+name: "PagerDuty"
+description: "On-call and incident management."
+category: monitoring
+suggested_variable: PAGERDUTY_TOKEN
+hosts:
+  - api.pagerduty.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "Token token="
+validation:
+  method: GET
+  path: /abilities
+  expect_status: [200]

@@ -13,7 +13,6 @@ use broker_auth::token;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Action;
 use broker_core::ids::{NodeId, VaultId};
-use broker_core::injection::SecretFields;
 use broker_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
     MAX_AUDIT_BATCH,
@@ -29,7 +28,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
-use super::policy::credential_aad_for;
+use super::render::render_credential;
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
@@ -319,16 +318,25 @@ impl NodeService {
                 warn!(rule_id = %rule.id, error = %e, "rule exceeds its template; skipped");
                 continue;
             }
-            let Some(ciphertext) = self.credentials.load_secret_ciphertext(&meta.id).await? else {
-                continue;
+            let rendered = match render_credential(
+                self.credentials.as_ref(),
+                self.cipher.as_ref(),
+                template,
+                &meta,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(ControlError::NotFound { .. }) => continue,
+                Err(ControlError::Core(e)) => {
+                    // A deleted-then-missing variable or a value that cannot be
+                    // sent as a header; the rest of the policy still ships.
+                    warn!(rule_id = %rule.id, credential_id = %meta.id, error = %e, "credential headers could not be rendered; rule skipped");
+                    continue;
+                }
+                Err(e) => return Err(e),
             };
-            let plaintext = self
-                .cipher
-                .decrypt(&ciphertext, &credential_aad_for(&meta))?;
-            let fields: SecretFields = serde_json::from_slice(&plaintext).map_err(|e| {
-                ControlError::crypto("credential.decode", format!("{}: {e}", meta.id))
-            })?;
-            let headers = template.injection.render(&template.id, &fields)?;
+            let headers = rendered.headers;
             let headers_json = Zeroizing::new(
                 serde_json::to_vec(&headers)
                     .map_err(|e| ControlError::crypto("headers.encode", e))?,
@@ -338,7 +346,7 @@ impl NodeService {
                 scope: broker_core::scope::Scope::for_vault(&rule.vault_id),
                 credential_id: meta.id,
                 allow: rule.allow.clone(),
-                strip_headers: template.injection.strip_set(),
+                strip_headers: rendered.strip,
                 headers: seal(
                     &recipient,
                     &headers_json,

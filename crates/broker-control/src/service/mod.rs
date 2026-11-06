@@ -5,8 +5,10 @@ pub mod audit;
 pub mod auth;
 pub mod nodes;
 pub mod policy;
+mod render;
 pub mod sessions;
 pub mod users;
+pub mod variables;
 
 use std::sync::Arc;
 
@@ -168,6 +170,7 @@ pub struct ControlPlane {
     pub sessions: sessions::SessionService,
     pub nodes: nodes::NodeService,
     pub users: users::UserService,
+    pub variables: variables::VariableService,
     pub audit: audit::AuditService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
@@ -204,6 +207,13 @@ impl ControlPlane {
             prober,
         );
         policy.seed_builtin_templates().await?;
+        let variables = variables::VariableService::new(
+            stores.credentials.clone(),
+            stores.policy.clone(),
+            cipher.clone(),
+            guard.clone(),
+            notifier.clone(),
+        );
         let sessions = sessions::SessionService::new(
             stores.policy.clone(),
             keys.clone(),
@@ -229,6 +239,7 @@ impl ControlPlane {
             sessions,
             nodes,
             users,
+            variables,
             audit,
             keys,
             notifier,
@@ -311,6 +322,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            custom_headers: vec![],
         }
     }
 
@@ -1189,6 +1201,7 @@ mod tests {
             template_version: None,
             host_override: vec![],
             fields: [("api_key".to_string(), key.to_string())].into(),
+            custom_headers: vec![],
         }
     }
 
@@ -1245,6 +1258,135 @@ mod tests {
         // Validation exposes the secret to its own host, so it needs step-up.
         let stale = cp.policy.validate_credential(&admin(3600), &meta.id).await;
         assert!(matches!(stale, Err(ControlError::StepUpRequired { .. })));
+    }
+
+    #[tokio::test]
+    async fn variables_fill_fields_and_custom_headers_and_stay_write_only() {
+        use super::variables::{CreateVariable, SecretValue};
+        use broker_core::variables::CustomHeader;
+        let prober = Arc::new(RecordingProber {
+            status: 200,
+            seen: Default::default(),
+        });
+        let cp = plane_with(prober.clone()).await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let key = cp
+            .variables
+            .create(
+                &a,
+                CreateVariable {
+                    key: "OPENAI_KEY".into(),
+                    value: SecretValue::from("sk-from-variable".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        cp.variables
+            .create(
+                &a,
+                CreateVariable {
+                    key: "ORG".into(),
+                    value: SecretValue::from("acme-test".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let duplicate = cp
+            .variables
+            .create(
+                &a,
+                CreateVariable {
+                    key: "ORG".into(),
+                    value: SecretValue::from("x".to_string()),
+                },
+            )
+            .await;
+        assert!(matches!(duplicate, Err(ControlError::Conflict { .. })));
+
+        let header = |name: &str, value: &str| CustomHeader {
+            name: name.into(),
+            value: value.into(),
+        };
+        let mut req = openai("{{OPENAI_KEY}}");
+        req.custom_headers = vec![header("OpenAI-Organization", "org-{{ ORG }}")];
+        let meta = cp
+            .policy
+            .create_credential(&a, &vault.id, req)
+            .await
+            .unwrap();
+        assert_eq!(meta.variable_refs, ["OPENAI_KEY", "ORG"]);
+
+        cp.policy.validate_credential(&a, &meta.id).await.unwrap();
+        let sent = prober.seen.lock().unwrap()[0].4.clone();
+        assert_eq!(
+            sent,
+            vec![
+                ("authorization".into(), "Bearer sk-from-variable".into()),
+                ("openai-organization".into(), "org-acme-test".into()),
+            ]
+        );
+
+        // Replacing the value reaches every credential that uses it.
+        cp.variables
+            .replace_value(&a, &key.id, SecretValue::from("sk-rotated".to_string()))
+            .await
+            .unwrap();
+        cp.policy.validate_credential(&a, &meta.id).await.unwrap();
+        let sent = prober.seen.lock().unwrap()[1].4.clone();
+        assert_eq!(sent[0].1, "Bearer sk-rotated");
+
+        // The list shows where a variable is used, never its value.
+        let listed = cp.variables.list(&a, PageRequest::default()).await.unwrap();
+        let json = serde_json::to_string(&listed).unwrap();
+        assert!(!json.contains("sk-rotated") && !json.contains("acme-test"));
+        let used = &listed
+            .items
+            .iter()
+            .find(|v| v.key == "OPENAI_KEY")
+            .unwrap()
+            .used_by;
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].vault_name, "main");
+
+        // In use: cannot be deleted until the reference goes.
+        let in_use = cp.variables.delete(&a, &key.id).await;
+        assert!(
+            matches!(in_use, Err(ControlError::Conflict { .. })),
+            "{in_use:?}"
+        );
+
+        // Unknown references and shadowing headers are refused up front.
+        let unknown = cp
+            .policy
+            .create_credential(&a, &vault.id, openai("{{NOPE}}"))
+            .await;
+        assert!(
+            matches!(&unknown, Err(ControlError::Validation { message }) if message.contains("NOPE")),
+            "{unknown:?}"
+        );
+        let shadow = cp
+            .policy
+            .update_custom_headers(&a, &meta.id, vec![header("Authorization", "x")])
+            .await;
+        assert!(matches!(shadow, Err(ControlError::Core(_))), "{shadow:?}");
+
+        let cleared = cp
+            .policy
+            .update_custom_headers(&a, &meta.id, vec![])
+            .await
+            .unwrap();
+        assert_eq!(cleared.variable_refs, ["OPENAI_KEY"]);
+        let org = listed.items.iter().find(|v| v.key == "ORG").unwrap();
+        cp.variables.delete(&a, &org.id).await.unwrap();
+
+        // Managing variables is an admin task.
+        let mut viewer = admin(0);
+        viewer.principal.role = Role::Viewer;
+        assert!(matches!(
+            cp.variables.list(&viewer, PageRequest::default()).await,
+            Err(ControlError::Forbidden { .. })
+        ));
     }
 
     #[tokio::test]

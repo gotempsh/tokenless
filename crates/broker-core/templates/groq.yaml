@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: groq
+version: 1
+name: "Groq"
+description: "Fast model inference from Groq."
+category: llm_providers
+suggested_variable: GROQ_API_KEY
+hosts:
+  - api.groq.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /openai/v1/models
+  expect_status: [200]

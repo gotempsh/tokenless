@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: fireworks
+version: 1
+name: "Fireworks AI"
+description: "Fast open-model inference."
+category: llm_providers
+suggested_variable: FIREWORKS_API_KEY
+hosts:
+  - api.fireworks.ai
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

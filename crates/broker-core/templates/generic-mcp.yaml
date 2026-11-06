@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: generic-mcp
+version: 1
+name: "Custom MCP server"
+description: "Any remote MCP server that takes a bearer token. The host is chosen per credential (admin only)."
+category: custom
+kind: mcp
+hosts: []
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Token"
+injection:
+  method: bearer
+  field: token
+host_override:
+  allowed: true
+  required: true
+  label: "MCP server URL (https://host[:port])"

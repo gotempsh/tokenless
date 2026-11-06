@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: huggingface
+version: 1
+name: "Hugging Face"
+description: "Inference providers and the Hub API."
+category: llm_providers
+aliases: [hf]
+suggested_variable: HF_TOKEN
+hosts:
+  - huggingface.co
+  - router.huggingface.co
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/whoami-v2
+  expect_status: [200]

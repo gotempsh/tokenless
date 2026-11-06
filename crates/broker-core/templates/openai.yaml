@@ -1,17 +1,21 @@
 # SPDX-FileCopyrightText: 2026 credential-broker contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 id: openai
-version: 1
-name: OpenAI
-description: OpenAI API with a project API key.
+version: 2
+name: "OpenAI"
+description: "Chat, embeddings and other models from OpenAI."
+category: llm_providers
+popular: true
+aliases: [gpt, chatgpt]
+suggested_variable: OPENAI_API_KEY
 hosts:
   - api.openai.com
 allow:
-  paths: ["/v1/*"]
-  methods: [GET, POST, DELETE]
+  paths: ["/*"]
+  methods: ["*"]
 credential_fields:
   - name: api_key
-    label: API key
+    label: "API key"
 injection:
   method: bearer
   field: api_key

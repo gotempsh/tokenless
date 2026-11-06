@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: firecrawl
+version: 1
+name: "Firecrawl"
+description: "Crawl and scrape sites into clean data."
+category: search
+suggested_variable: FIRECRAWL_API_KEY
+hosts:
+  - api.firecrawl.dev
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

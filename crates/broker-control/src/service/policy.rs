@@ -16,10 +16,12 @@ use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::template::{builtin_templates, ServiceTemplate};
+use broker_core::variables::{validate_custom_headers, CustomHeader};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use super::render::render_credential;
 use super::{AuditRecorder, Caller, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
@@ -41,6 +43,10 @@ pub struct CreateCredential {
     #[serde(default)]
     pub host_override: Vec<String>,
     pub fields: BTreeMap<String, String>,
+    /// Extra headers sent with every injected request; values may use
+    /// `{{VARIABLE}}` references.
+    #[serde(default)]
+    pub custom_headers: Vec<CustomHeader>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -115,6 +121,18 @@ fn credential_aad(id: &CredentialId, vault: &VaultId) -> Vec<u8> {
 
 pub(crate) fn credential_aad_for(meta: &CredentialMeta) -> Vec<u8> {
     credential_aad(&meta.id, &meta.vault_id)
+}
+
+/// Header names only: values may be configuration an admin considers private.
+fn header_names(headers: &[CustomHeader]) -> String {
+    if headers.is_empty() {
+        return "none".into();
+    }
+    headers
+        .iter()
+        .map(|h| h.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn hosts_string(hosts: &[HostPattern]) -> String {
@@ -213,18 +231,14 @@ impl PolicyService {
                 template.id
             )));
         }
-        let ciphertext = self
-            .credentials
-            .load_secret_ciphertext(id)
-            .await?
-            .ok_or_else(|| ControlError::not_found("credential", id))?;
-        let plaintext = self
-            .cipher
-            .decrypt(&ciphertext, &credential_aad_for(&meta))?;
-        let fields: SecretFields = serde_json::from_slice(&plaintext)
-            .map_err(|e| ControlError::crypto("credential.decode", format!("{id}: {e}")))?;
-        let headers = template.injection.render(&template.id, &fields)?;
-        drop(fields);
+        let headers = render_credential(
+            self.credentials.as_ref(),
+            self.cipher.as_ref(),
+            &template,
+            &meta,
+        )
+        .await?
+        .headers;
         let egress = self.policy.get_settings().await?.egress;
         let expected = validation.expect_status.clone();
         let result = self
@@ -513,6 +527,35 @@ impl PolicyService {
 
     // ---- credentials --------------------------------------------------
 
+    /// Every variable `fields` and `custom_headers` reference, after checking
+    /// the headers and that each variable exists.
+    async fn variable_refs(
+        &self,
+        template: &ServiceTemplate,
+        fields: &SecretFields,
+        custom_headers: &[CustomHeader],
+    ) -> Result<Vec<String>, ControlError> {
+        let mut keys = fields.variable_references()?;
+        for key in validate_custom_headers(custom_headers, &template.injection.header_names())? {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+        let existing = self.credentials.existing_variable_keys(&keys).await?;
+        let missing: Vec<&str> = keys
+            .iter()
+            .filter(|k| !existing.contains(k))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            return Err(ControlError::validation(format!(
+                "unknown variable(s) {}; create them under Variables first",
+                missing.join(", ")
+            )));
+        }
+        Ok(keys)
+    }
+
     pub async fn create_credential(
         &self,
         caller: &Caller,
@@ -537,6 +580,9 @@ impl PolicyService {
         template.max_scope(&host_override)?;
         let fields = SecretFields::new(req.fields);
         template.validate_fields(&fields)?;
+        let variable_refs = self
+            .variable_refs(template, &fields, &req.custom_headers)
+            .await?;
         let id = CredentialId::new();
         let now = Utc::now();
         let meta = CredentialMeta {
@@ -547,6 +593,8 @@ impl PolicyService {
             template_version: template.version,
             host_override: host_override.clone(),
             field_names: fields.names(),
+            custom_headers: req.custom_headers,
+            variable_refs,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -567,6 +615,9 @@ impl PolicyService {
             event = event
                 .detail("widened", "true")
                 .detail("host_override", hosts_string(&host_override));
+        }
+        if !meta.custom_headers.is_empty() {
+            event = event.detail("custom_headers", header_names(&meta.custom_headers));
         }
         self.credentials
             .insert_credential(meta.clone(), ciphertext, &[event])
@@ -590,6 +641,9 @@ impl PolicyService {
             .await?;
         let fields = SecretFields::new(fields);
         stored.template.validate_fields(&fields)?;
+        let variable_refs = self
+            .variable_refs(&stored.template, &fields, &meta.custom_headers)
+            .await?;
         let plaintext = zeroize::Zeroizing::new(
             serde_json::to_vec(&fields)
                 .map_err(|e| ControlError::crypto("credential.encode", e))?,
@@ -601,7 +655,58 @@ impl PolicyService {
             .vault(meta.vault_id)
             .target(format!("credential:{id}"));
         self.credentials
-            .replace_secret(id, ciphertext, fields.names(), Utc::now(), &[event])
+            .replace_secret(
+                id,
+                ciphertext,
+                fields.names(),
+                variable_refs,
+                Utc::now(),
+                &[event],
+            )
+            .await?;
+        self.notifier.bump_content();
+        self.credential_meta(id).await
+    }
+
+    /// Replaces a credential's custom headers. The secret is unchanged; its
+    /// own variable references are kept.
+    pub async fn update_custom_headers(
+        &self,
+        caller: &Caller,
+        id: &CredentialId,
+        custom_headers: Vec<CustomHeader>,
+    ) -> Result<CredentialMeta, ControlError> {
+        let meta = self.credential_meta(id).await?;
+        self.guard
+            .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
+            .await?;
+        let stored = self
+            .approved_template(&meta.template_id, Some(meta.template_version))
+            .await?;
+        let ciphertext = self
+            .credentials
+            .load_secret_ciphertext(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("credential", id))?;
+        let plaintext = self
+            .cipher
+            .decrypt(&ciphertext, &credential_aad_for(&meta))?;
+        let fields: SecretFields = serde_json::from_slice(&plaintext)
+            .map_err(|e| ControlError::crypto("credential.decode", format!("{id}: {e}")))?;
+        let variable_refs = self
+            .variable_refs(&stored.template, &fields, &custom_headers)
+            .await?;
+        drop(fields);
+        let event = AuditEvent::new(
+            caller.actor(),
+            "credential.update_headers",
+            AuditOutcome::Success,
+        )
+        .vault(meta.vault_id)
+        .target(format!("credential:{id}"))
+        .detail("custom_headers", header_names(&custom_headers));
+        self.credentials
+            .update_custom_headers(id, custom_headers, variable_refs, Utc::now(), &[event])
             .await?;
         self.notifier.bump_content();
         self.credential_meta(id).await

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: sentry
+version: 1
+name: "Sentry"
+description: "Errors and performance monitoring."
+category: monitoring
+suggested_variable: SENTRY_AUTH_TOKEN
+hosts:
+  - sentry.io
+  - us.sentry.io
+  - de.sentry.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Auth token"
+injection:
+  method: bearer
+  field: token
+host_override:
+  allowed: true
+  required: false
+  label: "Self-hosted Sentry URL (https://host[:port])"
