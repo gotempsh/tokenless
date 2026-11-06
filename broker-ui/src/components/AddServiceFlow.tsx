@@ -416,7 +416,6 @@ function WhereStep({
         <p className="text-sm font-medium">Access bundle</p>
         <ChoiceCards<BundleChoice["kind"]>
           name="add-bundle"
-          columns={3}
           value={where.bundleMode}
           onChange={(bundleMode) => set({ bundleMode })}
           choices={[
@@ -443,7 +442,7 @@ function WhereStep({
         </Field>
       )}
       {where.bundleMode === "new" && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="space-y-4">
           <Field label="Bundle name" htmlFor="add-bundle-name" hint={bundleProblem ?? "Used on the command line: --bundle <name>."}>
             <Input
               id="add-bundle-name"
@@ -457,7 +456,7 @@ function WhereStep({
           <Field label="Description" htmlFor="add-bundle-description" hint="Optional: what the job is.">
             <Textarea
               id="add-bundle-description"
-              rows={1}
+              rows={2}
               value={where.newBundleDescription}
               onChange={(e) => set({ newBundleDescription: e.target.value })}
               placeholder="Read pull requests and post review comments"

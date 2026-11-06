@@ -331,7 +331,6 @@ export function People({ me }: { me: UserSummary }) {
               <p className="text-sm font-medium">Role</p>
               <ChoiceCards
                 name="invite-role"
-                columns={3}
                 value={form.role}
                 onChange={(role) => setForm({ ...form, role })}
                 choices={PERSON_ROLES}

@@ -6,7 +6,7 @@
 
 import { Plus, Trash2 } from "lucide-react";
 import type { Substitution, SubstitutionLocation } from "../api";
-import { SelectField } from "./common";
+import { Field, SelectField } from "./common";
 import { Button } from "./ui/button-components";
 import { Checkbox } from "./ui/checkbox";
 import { Input } from "./ui/input";
@@ -77,42 +77,59 @@ export function SubstitutionsEditor({
       {substitutions.map((s, i) => {
         const problem = substitutionProblem(s, substitutions);
         return (
-          <div key={i} className="space-y-3 rounded-md border p-3">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,3fr)_minmax(0,2fr)_minmax(0,2fr)_2rem]">
-              <Input
-                value={s.placeholder}
-                onChange={(e) => set(i, { placeholder: e.target.value })}
-                placeholder="__GITHUB_TOKEN__"
-                aria-label={`Placeholder ${i + 1}`}
-                aria-invalid={problem !== null}
-                className="font-mono"
-                required
-              />
-              <SelectField
-                value={s.field}
-                onChange={(field) => set(i, { field })}
-                options={fields.map((f) => ({ value: f, label: `replaced by ${f}` }))}
-                placeholder="Secret field"
-              />
-              <Input
-                value={s.env ?? ""}
-                onChange={(e) => set(i, { env: e.target.value || undefined })}
-                placeholder="ENV_VAR (optional)"
-                aria-label={`Environment variable for placeholder ${i + 1}`}
-                className="font-mono"
-              />
+          <div key={i} className="space-y-4 rounded-md border p-4">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">Placeholder {i + 1}</p>
               <Button
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-10 text-muted-foreground hover:text-destructive"
+                className="size-8 text-muted-foreground hover:text-destructive"
                 aria-label={`Remove placeholder ${s.placeholder || i + 1}`}
                 onClick={() => onChange(substitutions.filter((_, j) => j !== i))}
               >
                 <Trash2 />
               </Button>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:gap-4">
+            <Field label="Placeholder" htmlFor={`sub-${i}-placeholder`} hint="What the agent sends instead of the secret.">
+              <Input
+                id={`sub-${i}-placeholder`}
+                value={s.placeholder}
+                onChange={(e) => set(i, { placeholder: e.target.value })}
+                placeholder="__GITHUB_TOKEN__"
+                aria-invalid={problem !== null}
+                className="font-mono"
+                required
+              />
+            </Field>
+            <Field label="Replaced by" htmlFor={`sub-${i}-field`}>
+              <SelectField
+                id={`sub-${i}-field`}
+                value={s.field}
+                onChange={(field) => set(i, { field })}
+                options={fields.map((f) => ({ value: f, label: f }))}
+                placeholder="Secret field"
+              />
+            </Field>
+            <Field
+              label={
+                <>
+                  Environment variable <span className="font-normal text-muted-foreground">(optional)</span>
+                </>
+              }
+              htmlFor={`sub-${i}-env`}
+              hint="Set to the placeholder for agents started with credential-broker run."
+            >
+              <Input
+                id={`sub-${i}-env`}
+                value={s.env ?? ""}
+                onChange={(e) => set(i, { env: e.target.value || undefined })}
+                placeholder="GITHUB_TOKEN"
+                className="font-mono"
+              />
+            </Field>
+            <fieldset className="space-y-2">
+              <legend className="mb-2 text-sm font-medium">Where the proxy looks</legend>
               {LOCATIONS.map((l) => {
                 const id = `sub-${i}-${l.value}`;
                 return (
@@ -127,7 +144,7 @@ export function SubstitutionsEditor({
                   </label>
                 );
               })}
-            </div>
+            </fieldset>
             {problem && <p className="text-xs text-destructive">{problem}</p>}
           </div>
         );

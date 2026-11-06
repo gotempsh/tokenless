@@ -441,7 +441,7 @@ function BundleForm({
           />
         </Field>
       )}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="space-y-4">
         <Field label="Name" htmlFor="bundle-name" hint={nameProblem ?? "Used on the command line: --bundle <name>."}>
           <Input
             id="bundle-name"
@@ -456,7 +456,7 @@ function BundleForm({
         <Field label="Description" htmlFor="bundle-description" hint="Optional: what the bundle is for.">
           <Textarea
             id="bundle-description"
-            rows={1}
+            rows={2}
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
             placeholder="Read pull requests and post review comments"

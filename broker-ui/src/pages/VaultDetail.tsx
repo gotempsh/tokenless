@@ -391,7 +391,7 @@ function Rules({ vaultId }: { vaultId: string }) {
       >
         <form className="space-y-4" onSubmit={create}>
           <ErrorBanner error={createAction.error} />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="space-y-4">
             <Field label="Name" htmlFor="rule-name">
               <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
             </Field>
@@ -419,7 +419,7 @@ function Rules({ vaultId }: { vaultId: string }) {
               placeholder="api.example.com"
             />
           </Field>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="space-y-4">
             <Field label="Paths" htmlFor="rule-paths" hint="Optional, one per line.">
               <Textarea
                 id="rule-paths"
@@ -751,7 +751,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
                 )}
               </div>
             )}
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-4">
               <Field
                 label="Lifetime (minutes)"
                 htmlFor="mint-ttl"

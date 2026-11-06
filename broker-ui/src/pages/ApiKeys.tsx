@@ -180,7 +180,7 @@ export function ApiKeys() {
         ) : (
           <form className="space-y-4" onSubmit={create}>
             <ErrorBanner error={createAction.error} />
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="space-y-4">
               <Field label="Name" htmlFor="key-name">
                 <Input
                   id="key-name"
@@ -214,7 +214,6 @@ export function ApiKeys() {
               <p className="text-sm font-medium">Role</p>
               <ChoiceCards
                 name="key-role"
-                columns={3}
                 value={form.role}
                 onChange={(role) => setForm({ ...form, role })}
                 choices={KEY_ROLES}

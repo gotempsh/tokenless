@@ -63,6 +63,7 @@ export function Settings() {
           >
             <ChoiceCards<Unmatched>
               name="unmatched"
+              columns={2}
               value={current.unmatched_host_policy}
               onChange={(v) => void save({ ...current, unmatched_host_policy: v })}
               choices={[

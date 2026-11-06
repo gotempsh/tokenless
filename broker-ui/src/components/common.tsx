@@ -316,19 +316,22 @@ export interface Choice<T extends string> {
   description: ReactNode;
 }
 
-/** Selectable cards for a small set of exclusive options. */
+/**
+ * Selectable cards for a small set of exclusive options. One per row by
+ * default, as forms in modals are; full-width pages may ask for columns.
+ */
 export function ChoiceCards<T extends string>({
   name,
   value,
   onChange,
   choices,
-  columns = 2,
+  columns = 1,
 }: {
   name: string;
   value: T;
   onChange: (value: T) => void;
   choices: Choice<T>[];
-  columns?: 2 | 3;
+  columns?: 1 | 2 | 3;
 }) {
   return (
     <RadioGroup
@@ -337,7 +340,7 @@ export function ChoiceCards<T extends string>({
         const found = choices.find((c) => c.value === v);
         if (found) onChange(found.value);
       }}
-      className={cn("grid grid-cols-1 gap-3", columns === 3 ? "md:grid-cols-3" : "md:grid-cols-2")}
+      className={cn("grid grid-cols-1 gap-3", columns === 2 && "md:grid-cols-2", columns === 3 && "md:grid-cols-3")}
     >
       {choices.map((c) => {
         const id = `${name}-${c.value}`;
