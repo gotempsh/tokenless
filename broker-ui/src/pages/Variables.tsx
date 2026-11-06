@@ -45,6 +45,9 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
     [vars.data, query],
   );
 
+  // With nothing stored the empty state holds the one call to action.
+  const empty = vars.data?.items.length === 0 && page === 1;
+
   const remove = async (v: Variable) => {
     await action.run(() => del(`/variables/${v.id}`));
     confirm.close();
@@ -64,11 +67,10 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
         title="Variables"
         description={
           <>
-            Secrets stored once and referenced as <Mono>{"{{NAME}}"}</Mono> from a service's credential fields or custom
-            headers. Replacing a value updates every service that uses it at the proxies' next policy refresh.
+            Secrets you store once and use in any service as <Mono>{"{{NAME}}"}</Mono>.
           </>
         }
-        actions={addButton}
+        actions={empty ? undefined : addButton}
       />
       {!isAdmin ? (
         <Alert>
@@ -81,7 +83,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
       ) : (
         <>
           <ErrorBanner error={vars.error ?? action.error} />
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          {!empty && (
             <div className="relative w-full sm:w-72">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -92,11 +94,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                 aria-label="Search variables"
               />
             </div>
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Lock className="size-3.5" />
-              Values are write-only: nobody, admins included, can read one back.
-            </p>
-          </div>
+          )}
           <Panel>
             {vars.loading && !vars.data ? (
               <Loading />
@@ -106,8 +104,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
                 title="No variables yet"
                 description={
                   <>
-                    Store a secret once, for example <Mono>GITHUB_TOKEN</Mono>, then pick it when adding a service or
-                    type <Mono>{"{{GITHUB_TOKEN}}"}</Mono> in a custom header.
+                    Store a token once, then use it in any service as <Mono>{"{{GITHUB_TOKEN}}"}</Mono>.
                   </>
                 }
                 action={addButton}

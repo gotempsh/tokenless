@@ -5,10 +5,11 @@
 // (a value or a variable reference), custom headers and host override.
 
 import { useState, type FormEvent } from "react";
-import { ShieldAlert } from "lucide-react";
+import { Plus } from "lucide-react";
 import { ApiError, get, type CredentialField, type CustomHeader, type Page, type ServiceTemplate, type Variable } from "../api";
 import type { CredentialBody } from "../addService";
 import { useAction, useLoad } from "../hooks";
+import { cn } from "../lib/utils";
 import { DialogActions, ErrorBanner, Field, lines, Mono, SelectField, Tags } from "./common";
 import { ServiceLogo } from "./ServiceLogo";
 import { CustomHeadersEditor } from "./VariableInput";
@@ -184,6 +185,8 @@ export function ServiceForm({
     initialSecrets(template.credential_fields, variables, template.suggested_variable),
   );
   const [headers, setHeaders] = useState<CustomHeader[]>(() => template.default_headers ?? []);
+  // Most services need none; templates that ship some show them.
+  const [showHeaders, setShowHeaders] = useState(headers.length > 0);
   const action = useAction();
   const missingVariable = Object.values(secrets).some((s) => s.mode === "variable" && !s.variable);
 
@@ -224,9 +227,38 @@ export function ServiceForm({
         </Button>
       </div>
       )}
-      <Field label="Name" htmlFor="svc-name" hint="How this service appears in rules and sessions.">
-        <Input id="svc-name" value={name} onChange={(e) => setName(e.target.value)} required />
-      </Field>
+      <div className={cn("grid grid-cols-1 gap-4", template.host_override.allowed && "md:grid-cols-2")}>
+        <Field label="Name" htmlFor="svc-name">
+          <Input id="svc-name" value={name} onChange={(e) => setName(e.target.value)} required />
+        </Field>
+        {template.host_override.allowed && (
+          <Field
+            label={
+              <>
+                {template.host_override.label ?? "Base URL"}
+                {!template.host_override.required && (
+                  <span className="font-normal text-muted-foreground"> (optional)</span>
+                )}
+              </>
+            }
+            htmlFor="svc-host"
+            hint={
+              isAdmin
+                ? "Replaces the template's hosts. Admin only, and audited."
+                : "Only admins can set the host."
+            }
+          >
+            <Input
+              id="svc-host"
+              placeholder="https://api.internal.example:8443"
+              value={hostOverride}
+              onChange={(e) => setHostOverride(e.target.value)}
+              disabled={!isAdmin}
+              required={template.host_override.required && isAdmin}
+            />
+          </Field>
+        )}
+      </div>
       {template.credential_fields.map((f) => (
         <SecretFieldInput
           key={f.name}
@@ -237,41 +269,26 @@ export function ServiceForm({
           suggested={template.suggested_variable}
         />
       ))}
-      <div className="space-y-2">
-        <div>
-          <div className="text-sm font-medium">Custom headers</div>
-          <p className="text-xs text-muted-foreground">
-            Added to every request, for example an API version. Type <Mono>{"{{"}</Mono> to reference a variable.
-          </p>
-        </div>
-        <CustomHeadersEditor
-          headers={headers}
-          onChange={setHeaders}
-          variables={variables}
-          reserved={injectedHeaders(template)}
-        />
-      </div>
-      {template.host_override.allowed && (
-        <div className="space-y-3 rounded-md border border-dashed p-4">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <ShieldAlert className="size-4 text-warning-strong" />
-            Admin only: host override {template.host_override.required ? "(required)" : "(optional)"}
+      {showHeaders ? (
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Custom headers</div>
+            <p className="text-xs text-muted-foreground">
+              Sent with every request. Type <Mono>{"{{"}</Mono> to use a variable.
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Replaces the template's hosts (for example a self-hosted base URL). This widens the template's scope, so it
-            needs an admin and is recorded in the audit log.
-          </p>
-          <Field label={template.host_override.label ?? "Base URL"} htmlFor="svc-host">
-            <Input
-              id="svc-host"
-              placeholder="https://api.internal.example:8443"
-              value={hostOverride}
-              onChange={(e) => setHostOverride(e.target.value)}
-              disabled={!isAdmin}
-              required={template.host_override.required && isAdmin}
-            />
-          </Field>
+          <CustomHeadersEditor
+            headers={headers}
+            onChange={setHeaders}
+            variables={variables}
+            reserved={injectedHeaders(template)}
+          />
         </div>
+      ) : (
+        <Button type="button" variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={() => setShowHeaders(true)}>
+          <Plus />
+          Custom headers
+        </Button>
       )}
       <DialogActions>
         {blocked && <p className="mr-auto self-center text-sm text-muted-foreground">{blocked}</p>}
