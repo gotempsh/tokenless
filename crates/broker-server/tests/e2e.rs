@@ -510,6 +510,131 @@ async fn end_to_end() {
         407
     );
 
+    // --- access bundle + session port (what `run --bundle` does) ------------
+    let bundle = api
+        .post(
+            &format!("/vaults/{vault_id}/bundles"),
+            json!({ "name": "local-review", "description": "e2e", "rule_ids": [rule_id] }),
+        )
+        .await;
+    assert_eq!(bundle["rule_ids"], json!([rule_id]));
+    let listing = api.get(&format!("/vaults/{vault_id}/bundles")).await;
+    assert_eq!(listing["total"], 1);
+    {
+        use broker_server::launcher::client::{ApiClient, MintRequest};
+        use broker_server::launcher::port::SessionPort;
+        use broker_server::launcher::session::LiveSession;
+
+        let launcher = Arc::new(
+            ApiClient::new(
+                &format!("http://{}", server.api_addr),
+                automation.api_key.clone().map(zeroize::Zeroizing::new),
+            )
+            .unwrap(),
+        );
+        // A vault-bound key needs no --vault.
+        let resolved = launcher.resolve_vault(None).await.unwrap();
+        assert_eq!(resolved.to_string(), vault_id);
+        let missing = launcher
+            .mint(
+                &resolved,
+                &MintRequest {
+                    bundle: "no-such-bundle".into(),
+                    ttl_secs: 60,
+                    request_limit: None,
+                    labels: Default::default(),
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            missing.contains("404") && missing.contains("no-such-bundle"),
+            "{missing}"
+        );
+
+        let live = LiveSession::start(
+            launcher.clone(),
+            resolved,
+            MintRequest {
+                bundle: "local-review".into(),
+                ttl_secs: 120,
+                request_limit: None,
+                labels: [("command".to_string(), "e2e".to_string())].into(),
+            },
+        )
+        .await
+        .unwrap();
+        let session = live.current.load_full();
+        assert_eq!(session.bundle.as_ref().unwrap().name, "local-review");
+        assert_eq!(session.rule_ids.len(), 1);
+        let port = SessionPort::start(
+            "127.0.0.1:0".parse().unwrap(),
+            &proxy.to_string(),
+            live.auth.clone(),
+        )
+        .await
+        .unwrap();
+
+        // The agent's client has a plain proxy URL: no token anywhere.
+        let mut builder = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::https(format!("http://{}", port.addr)).unwrap())
+            .tls_built_in_root_certs(false)
+            .timeout(Duration::from_secs(10));
+        for pem in [&ca_pem, &upstream.ca_pem] {
+            builder = builder.add_root_certificate(Certificate::from_pem(pem.as_bytes()).unwrap());
+        }
+        let agent = builder.build().unwrap();
+        let echo: Echo = agent
+            .get(format!("https://localhost:{upstream_port}/via-port"))
+            .header(AUTHORIZATION, CLIENT_SUPPLIED)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            echo.authorization.as_deref(),
+            Some(format!("Bearer {SECRET}").as_str()),
+            "the bundle's credential is injected through the session port"
+        );
+        assert_eq!(echo.proxy_authorization, None);
+
+        // Ending the session (with the token alone) cuts the port off.
+        assert_eq!(live.end().await, 1);
+        let record = api.get(&format!("/vaults/{vault_id}/sessions")).await;
+        let ended = record["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == session.id.to_string())
+            .unwrap()
+            .clone();
+        assert!(ended["revoked_at"].is_string(), "{ended}");
+        assert_eq!(ended["bundle"]["name"], "local-review");
+        let port_addr = port.addr;
+        eventually(
+            "the ended session to be refused",
+            Duration::from_secs(10),
+            || async {
+                connect_status(port_addr, &format!("localhost:{upstream_port}"), None).await == 407
+            },
+        )
+        .await;
+        port.stop();
+
+        // Self-revocation needs a real session token.
+        let bad = launcher
+            .revoke_self("v4.public.garbage")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(bad.contains("401"), "{bad}");
+    }
+
     // --- imported template with a validation request ---------------------
     let yaml = format!(
         "id: local-echo\nversion: 1\nname: Local echo\nhosts: [\"localhost:{upstream_port}\"]\n\

@@ -1,0 +1,352 @@
+// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! The local session port: a loopback listener that adds the current
+//! session to each proxy request and relays it to the data plane proxy.
+//!
+//! Only the request head is touched. Any `Proxy-Authorization` the client
+//! sent is dropped and replaced, then the connection becomes a byte relay,
+//! which is all a `CONNECT` tunnel needs. The proxy refuses plain-HTTP
+//! requests itself, so the port does not need to understand them.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use arc_swap::ArcSwap;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
+
+use super::LauncherError;
+
+/// Largest request head accepted before the port gives up on a client.
+pub const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// Concurrent connections; further clients wait for a slot.
+pub const MAX_CONNECTIONS: usize = 256;
+const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The `Proxy-Authorization` value for a session token, in the form the
+/// proxy accepts (`http://<token>@host:port` produces the same).
+pub fn proxy_authorization(token: &str) -> String {
+    format!("Basic {}", STANDARD.encode(format!("{token}:")))
+}
+
+/// Finds the end of the request head (the blank line), if it has arrived.
+fn head_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+}
+
+/// Rewrites a complete request head so it carries `authorization` as its
+/// only `Proxy-Authorization` header.
+pub fn rewrite_head(head: &[u8], authorization: &str) -> Result<Vec<u8>, &'static str> {
+    let body = head
+        .strip_suffix(b"\r\n\r\n")
+        .ok_or("request head is not terminated by a blank line")?;
+    let mut lines = body
+        .split(|b| *b == b'\n')
+        .map(|l| l.strip_suffix(b"\r").unwrap_or(l));
+    let request_line = lines.next().ok_or("empty request")?;
+    if request_line
+        .split(|b| *b == b' ')
+        .filter(|p| !p.is_empty())
+        .count()
+        != 3
+    {
+        return Err("malformed request line");
+    }
+    let mut out = Vec::with_capacity(head.len() + authorization.len() + 32);
+    out.extend_from_slice(request_line);
+    out.extend_from_slice(b"\r\nProxy-Authorization: ");
+    out.extend_from_slice(authorization.as_bytes());
+    out.extend_from_slice(b"\r\n");
+    for line in lines {
+        let is_proxy_auth =
+            line.len() >= 20 && line[..20].eq_ignore_ascii_case(b"proxy-authorization:");
+        if !is_proxy_auth {
+            out.extend_from_slice(line);
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+    out.extend_from_slice(b"\r\n");
+    Ok(out)
+}
+
+async fn reply(client: &mut TcpStream, status: &str, message: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}",
+        message.len()
+    );
+    // The client may already be gone; there is nobody left to tell.
+    let _ = client.write_all(response.as_bytes()).await;
+}
+
+async fn read_head(client: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 4096];
+    loop {
+        if let Some(end) = head_end(&buf) {
+            let rest = buf.split_off(end);
+            return Ok((buf, rest));
+        }
+        if buf.len() > MAX_HEAD_BYTES {
+            return Err("request head is larger than 16 KiB");
+        }
+        match client.read(&mut chunk).await {
+            Ok(0) => return Err("client closed the connection before sending a request"),
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(_) => return Err("reading the request failed"),
+        }
+    }
+}
+
+async fn handle(mut client: TcpStream, upstream: Arc<str>, auth: Arc<ArcSwap<String>>) {
+    let (head, rest) = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut client)).await {
+        Ok(Ok(parts)) => parts,
+        Ok(Err(reason)) => {
+            debug!(reason, "session port: dropped a client");
+            reply(
+                &mut client,
+                "400 Bad Request",
+                &format!("credential-broker session port: {reason}\n"),
+            )
+            .await;
+            return;
+        }
+        Err(_) => return,
+    };
+    let rewritten = match rewrite_head(&head, auth.load().as_str()) {
+        Ok(h) => h,
+        Err(reason) => {
+            reply(
+                &mut client,
+                "400 Bad Request",
+                &format!("credential-broker session port: {reason}\n"),
+            )
+            .await;
+            return;
+        }
+    };
+    let connect =
+        tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(upstream.as_ref())).await;
+    let mut proxy = match connect {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => {
+            warn!(proxy = %upstream, error = %e, "session port: cannot reach the proxy");
+            reply(
+                &mut client,
+                "502 Bad Gateway",
+                &format!(
+                    "credential-broker session port: cannot reach the proxy at {upstream}: {e}\n"
+                ),
+            )
+            .await;
+            return;
+        }
+        Err(_) => {
+            warn!(proxy = %upstream, "session port: timed out connecting to the proxy");
+            reply(
+                &mut client,
+                "504 Gateway Timeout",
+                &format!("credential-broker session port: timed out connecting to the proxy at {upstream}\n"),
+            )
+            .await;
+            return;
+        }
+    };
+    let _ = proxy.set_nodelay(true);
+    if proxy.write_all(&rewritten).await.is_err() || proxy.write_all(&rest).await.is_err() {
+        reply(
+            &mut client,
+            "502 Bad Gateway",
+            "credential-broker session port: the proxy closed the connection\n",
+        )
+        .await;
+        return;
+    }
+    // Either side closing ends the relay; errors here are ordinary
+    // disconnects, not failures worth reporting.
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut proxy).await;
+}
+
+/// The session port adds a session to whatever reaches it, so it may only
+/// listen where nothing but this machine can connect.
+pub fn check_listen(listen: SocketAddr) -> Result<(), LauncherError> {
+    if listen.ip().is_loopback() {
+        return Ok(());
+    }
+    Err(LauncherError::config(format!(
+        "the session port must listen on a loopback address, not {listen}: anyone who can reach it uses the session"
+    )))
+}
+
+/// A running session port.
+pub struct SessionPort {
+    pub addr: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl SessionPort {
+    /// Binds `listen` (loopback only) and relays to the proxy at
+    /// `upstream` (`host:port`), adding whatever `auth` holds at the time
+    /// each connection arrives.
+    pub async fn start(
+        listen: SocketAddr,
+        upstream: &str,
+        auth: Arc<ArcSwap<String>>,
+    ) -> Result<Self, LauncherError> {
+        check_listen(listen)?;
+        let listener = TcpListener::bind(listen)
+            .await
+            .map_err(LauncherError::io(format!(
+                "binding the session port on {listen}"
+            )))?;
+        let addr = listener
+            .local_addr()
+            .map_err(LauncherError::io("reading the session port address"))?;
+        let upstream: Arc<str> = Arc::from(upstream);
+        let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok(permit) = slots.clone().acquire_owned().await else {
+                    return;
+                };
+                match listener.accept().await {
+                    Ok((client, _)) => {
+                        let _ = client.set_nodelay(true);
+                        let upstream = upstream.clone();
+                        let auth = auth.clone();
+                        tokio::spawn(async move {
+                            handle(client, upstream, auth).await;
+                            drop(permit);
+                        });
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "session port: accept failed");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        });
+        Ok(Self { addr, task })
+    }
+
+    pub fn stop(&self) {
+        self.task.abort();
+    }
+}
+
+impl Drop for SessionPort {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorization_matches_the_proxy_url_form() {
+        let value = proxy_authorization("v4.public.abc");
+        let decoded = STANDARD
+            .decode(value.strip_prefix("Basic ").unwrap())
+            .unwrap();
+        assert_eq!(decoded, b"v4.public.abc:");
+    }
+
+    #[test]
+    fn rewrite_replaces_any_client_proxy_authorization() {
+        let head = b"CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\nproxy-AUTHORIZATION: Basic Zm9vOmJhcg==\r\nUser-Agent: t\r\n\r\n";
+        let out = String::from_utf8(rewrite_head(head, "Basic NEW").unwrap()).unwrap();
+        assert_eq!(
+            out,
+            "CONNECT api.github.com:443 HTTP/1.1\r\nProxy-Authorization: Basic NEW\r\nHost: api.github.com:443\r\nUser-Agent: t\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn rewrite_rejects_garbage() {
+        assert!(rewrite_head(b"CONNECT x\r\n\r\n", "a").is_err());
+        assert!(rewrite_head(b"CONNECT x:443 HTTP/1.1\r\n", "a").is_err());
+    }
+
+    #[tokio::test]
+    async fn refuses_non_loopback_listeners() {
+        let auth = Arc::new(ArcSwap::from_pointee(String::new()));
+        let err = SessionPort::start("0.0.0.0:0".parse().unwrap(), "127.0.0.1:1", auth)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("loopback"), "{err}");
+    }
+
+    /// The port adds the current token and relays the tunnel both ways;
+    /// a token swapped in later is used by later connections.
+    #[tokio::test]
+    async fn relays_with_the_current_token() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap().to_string();
+        let fake_proxy = tokio::spawn(async move {
+            let mut heads = Vec::new();
+            for _ in 0..2 {
+                let (mut conn, _) = upstream.accept().await.unwrap();
+                let (head, _) = read_head(&mut conn).await.unwrap();
+                heads.push(String::from_utf8(head).unwrap());
+                conn.write_all(b"HTTP/1.1 200 Connection established\r\n\r\npong")
+                    .await
+                    .unwrap();
+            }
+            heads
+        });
+        let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization("v4.public.one")));
+        let port = SessionPort::start("127.0.0.1:0".parse().unwrap(), &upstream_addr, auth.clone())
+            .await
+            .unwrap();
+        for token in ["v4.public.one", "v4.public.two"] {
+            auth.store(Arc::new(proxy_authorization(token)));
+            let mut client = TcpStream::connect(port.addr).await.unwrap();
+            client
+                .write_all(
+                    b"CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut got = Vec::new();
+            client.read_to_end(&mut got).await.unwrap();
+            assert!(got.ends_with(b"pong"), "{}", String::from_utf8_lossy(&got));
+        }
+        let heads = fake_proxy.await.unwrap();
+        assert!(heads[0].contains(&proxy_authorization("v4.public.one")));
+        assert!(heads[1].contains(&proxy_authorization("v4.public.two")));
+    }
+
+    #[tokio::test]
+    async fn explains_an_unreachable_proxy() {
+        // Bind then drop to get a port nothing listens on.
+        let free = TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization("t")));
+        let port = SessionPort::start("127.0.0.1:0".parse().unwrap(), &free.to_string(), auth)
+            .await
+            .unwrap();
+        let mut client = TcpStream::connect(port.addr).await.unwrap();
+        client
+            .write_all(b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut got = String::new();
+        client.read_to_string(&mut got).await.unwrap();
+        assert!(got.starts_with("HTTP/1.1 502"), "{got}");
+        assert!(got.contains("cannot reach the proxy"), "{got}");
+    }
+}

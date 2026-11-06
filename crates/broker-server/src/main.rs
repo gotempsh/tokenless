@@ -2,18 +2,30 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! `credential-broker` binary: `serve` runs the control plane, `node join`
-//! enrols a data plane, `node run` runs it.
+//! enrols a data plane, `node run` runs it, and `session` / `run` put an
+//! agent behind it with a session minted from an access bundle.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use broker_dataplane::node::{enroll, NodeIdentity};
 use broker_dataplane::{DataPlane, DataPlaneConfig};
+use broker_server::launcher::client::{ApiClient, MintRequest};
+use broker_server::launcher::port::{check_listen, SessionPort};
+use broker_server::launcher::session::LiveSession;
+use broker_server::launcher::trust::{
+    agent_env, fingerprint, fingerprints_match, shell_quote, write_trust_files, TrustFiles,
+};
+use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
 use broker_server::{Server, ServerConfig};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(
@@ -34,6 +46,123 @@ enum Command {
     Node {
         #[command(subcommand)]
         command: NodeCommand,
+    },
+    /// Proxy sessions for agents: mint one, end one, or open a session port.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
+    /// Run a command behind a session port. Mints a session from an access
+    /// bundle, points the command at the proxy with the broker CA trusted,
+    /// renews the session while it runs and ends it when it exits.
+    ///
+    /// Example: credential-broker run --bundle code-review -- claude
+    Run(RunArgs),
+}
+
+#[derive(clap::Args)]
+struct BrokerArgs {
+    /// Management API URL.
+    #[arg(
+        long,
+        env = "CREDENTIAL_BROKER_URL",
+        default_value = "http://127.0.0.1:8080"
+    )]
+    server: String,
+    /// File holding the API key (`cbk_...`). Without it the key is read
+    /// from CREDENTIAL_BROKER_API_KEY. A session_issuer key is enough.
+    #[arg(long)]
+    api_key_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct MintArgs {
+    #[command(flatten)]
+    broker: BrokerArgs,
+    /// Vault name or id. Not needed with a vault-bound API key.
+    #[arg(long, env = "CREDENTIAL_BROKER_VAULT")]
+    vault: Option<String>,
+    /// Access bundle to mint the session from, by name or id.
+    #[arg(long, env = "CREDENTIAL_BROKER_BUNDLE")]
+    bundle: String,
+    /// Lifetime of each session, at most 1h (e.g. 90s, 15m, 1h). The
+    /// session port renews the session before it runs out.
+    #[arg(long, default_value = "15m")]
+    ttl: String,
+    /// Requests each session may make through the proxy.
+    #[arg(long)]
+    request_limit: Option<u64>,
+    /// Label shown on the Sessions page, as key=value (repeatable).
+    #[arg(long = "label")]
+    labels: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct PortArgs {
+    /// The data plane proxy to relay to (`node run --listen`).
+    #[arg(
+        long,
+        env = "CREDENTIAL_BROKER_PROXY_ADDRESS",
+        default_value = "127.0.0.1:3128"
+    )]
+    proxy: String,
+    /// Refuse to start unless the interception CA has this SHA-256
+    /// fingerprint (copy it from the Proxies page).
+    #[arg(long)]
+    ca_fingerprint: Option<String>,
+    /// PEM roots to combine with the broker CA for the agent (default: the
+    /// system roots, or SSL_CERT_FILE).
+    #[arg(long)]
+    trust_base: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    #[command(flatten)]
+    mint: MintArgs,
+    #[command(flatten)]
+    port: PortArgs,
+    /// Session port address; loopback only. Default: a free port.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    listen: SocketAddr,
+    /// The command to run, after `--`.
+    #[arg(last = true, required = true)]
+    command: Vec<String>,
+}
+
+#[derive(Subcommand)]
+enum SessionCommand {
+    /// Mint a session from an access bundle and print its token.
+    Create {
+        #[command(flatten)]
+        mint: MintArgs,
+        /// Print the session record and token as JSON instead.
+        #[arg(long)]
+        json: bool,
+    },
+    /// End a session: the one whose token is in
+    /// CREDENTIAL_BROKER_SESSION_TOKEN, or `--id` with an API key allowed to
+    /// revoke sessions.
+    Revoke {
+        #[command(flatten)]
+        broker: BrokerArgs,
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Open a session port: a loopback proxy address that adds a session
+    /// from the bundle to every request. Runs until Ctrl-C, renewing the
+    /// session, then ends it. Point agents at it with the printed exports.
+    Start {
+        #[command(flatten)]
+        mint: MintArgs,
+        #[command(flatten)]
+        port: PortArgs,
+        /// Session port address; loopback only.
+        #[arg(long, default_value = "127.0.0.1:17323")]
+        listen: SocketAddr,
+        /// Also write the exports to this file (mode 0600) to `source` it.
+        #[arg(long)]
+        env_file: Option<PathBuf>,
     },
 }
 
@@ -109,13 +238,20 @@ enum NodeCommand {
     },
 }
 
-fn init_logging() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+/// Servers log to stdout at `info`. Agent-side commands log to stderr at
+/// `warn`, because stdout belongs to the token or to the agent.
+fn init_logging(agent_side: bool) {
+    let default = if agent_side { "warn" } else { "info" };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
+    let builder = tracing_subscriber::fmt()
         .json()
         .with_env_filter(filter)
-        .with_current_span(false)
-        .init();
+        .with_current_span(false);
+    if agent_side {
+        builder.with_writer(std::io::stderr).init();
+    } else {
+        builder.init();
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -124,6 +260,8 @@ enum CliError {
     Server(#[from] broker_server::ServerError),
     #[error(transparent)]
     DataPlane(#[from] broker_dataplane::DataPlaneError),
+    #[error(transparent)]
+    Launcher(#[from] LauncherError),
     #[error("I/O failure while {context}: {source}")]
     Io {
         context: String,
@@ -226,18 +364,346 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
     }
 }
 
+// ----- agent side -----------------------------------------------------
+
+fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError> {
+    if let Some(path) = &args.api_key_file {
+        let key = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+            context: format!("reading the API key file {}", path.display()),
+            source: e,
+        })?;
+        return Ok(Some(Zeroizing::new(key.trim().to_string())));
+    }
+    Ok(std::env::var("CREDENTIAL_BROKER_API_KEY")
+        .ok()
+        .map(|k| Zeroizing::new(k.trim().to_string()))
+        .filter(|k| !k.is_empty()))
+}
+
+fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
+    Ok(Arc::new(ApiClient::new(&args.server, read_api_key(args)?)?))
+}
+
+fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
+    let ttl_secs = parse_duration_secs(&args.ttl)?;
+    let max = broker_core::session::MAX_SESSION_TTL_SECS;
+    if ttl_secs > max {
+        return Err(LauncherError::config(format!(
+            "--ttl {} is longer than the {max}s session cap; the session port renews sessions, so a long run does not need a long ttl",
+            args.ttl
+        ))
+        .into());
+    }
+    let mut labels = BTreeMap::new();
+    for raw in &args.labels {
+        let (k, v) = parse_label(raw)?;
+        labels.insert(k, v);
+    }
+    for (k, v) in extra {
+        labels.entry((*k).to_string()).or_insert_with(|| v.clone());
+    }
+    Ok(MintRequest {
+        bundle: args.bundle.clone(),
+        ttl_secs,
+        request_limit: args.request_limit,
+        labels,
+    })
+}
+
+/// Downloads the interception CA, checks a pinned fingerprint and writes
+/// the agent's trust files into `dir`.
+async fn prepare_trust(
+    client: &ApiClient,
+    port: &PortArgs,
+    dir: &std::path::Path,
+) -> Result<(TrustFiles, String), CliError> {
+    let (pem, url) = client.interception_ca().await?;
+    let actual = fingerprint(&pem)?;
+    if let Some(expected) = &port.ca_fingerprint {
+        if !fingerprints_match(expected, &actual) {
+            return Err(LauncherError::CaMismatch {
+                url,
+                expected: expected.clone(),
+                actual,
+            }
+            .into());
+        }
+    }
+    let files = write_trust_files(dir, &pem, port.trust_base.as_deref())?;
+    if files.base.is_none() {
+        eprintln!("credential-broker: no system root bundle found, so HTTPS to hosts outside the bundle may fail; pass --trust-base <roots.pem>");
+    }
+    Ok((files, actual))
+}
+
+fn private_dir() -> Result<tempfile::TempDir, CliError> {
+    // tempfile creates the directory with mode 0700.
+    tempfile::Builder::new()
+        .prefix("credential-broker-")
+        .tempdir()
+        .map_err(|e| CliError::Io {
+            context: "creating a private directory for the trust files".into(),
+            source: e,
+        })
+}
+
+/// Ctrl-C or, on Unix, SIGTERM.
+async fn stop_signal() -> Result<&'static str, CliError> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).map_err(|e| CliError::Io {
+            context: "listening for SIGTERM".into(),
+            source: e,
+        })?;
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.map(|()| "SIGINT").map_err(|e| CliError::Io { context: "waiting for Ctrl-C".into(), source: e }),
+            _ = term.recv() => Ok("SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        wait_for_shutdown().await.map(|()| "Ctrl-C")
+    }
+}
+
+#[derive(Serialize)]
+struct CreatedSession<'a> {
+    token: &'a str,
+    session: &'a broker_control::model::ProxySession,
+}
+
+async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
+    match command {
+        SessionCommand::Create { mint, json } => {
+            let client = client(&mint.broker)?;
+            let vault = client.resolve_vault(mint.vault.as_deref()).await?;
+            let minted = client.mint(&vault, &mint_request(&mint, &[])?).await?;
+            if json {
+                let out = serde_json::to_string_pretty(&CreatedSession {
+                    token: &minted.token,
+                    session: &minted.session,
+                })
+                .map_err(|e| LauncherError::config(format!("encoding the session as JSON: {e}")))?;
+                println!("{out}");
+            } else {
+                println!("{}", minted.token);
+            }
+            eprintln!(
+                "credential-broker: session {} expires at {}",
+                minted.session.id,
+                minted.session.expires_at.to_rfc3339()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        SessionCommand::Revoke { broker, id } => {
+            let client = client(&broker)?;
+            let session = match id {
+                Some(id) => client.revoke_by_id(&id).await?,
+                None => {
+                    let token = std::env::var("CREDENTIAL_BROKER_SESSION_TOKEN")
+                        .ok()
+                        .map(Zeroizing::new)
+                        .filter(|t| !t.trim().is_empty())
+                        .ok_or_else(|| {
+                            LauncherError::config(
+                                "set CREDENTIAL_BROKER_SESSION_TOKEN to the session's token, or pass --id",
+                            )
+                        })?;
+                    client.revoke_self(&token).await?
+                }
+            };
+            eprintln!("credential-broker: session {} ended", session.id);
+            Ok(ExitCode::SUCCESS)
+        }
+        SessionCommand::Start {
+            mint,
+            port,
+            listen,
+            env_file,
+        } => {
+            check_listen(listen)?;
+            let client = client(&mint.broker)?;
+            let vault = client.resolve_vault(mint.vault.as_deref()).await?;
+            let dir = private_dir()?;
+            let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
+            let live = LiveSession::start(client.clone(), vault, mint_request(&mint, &[])?).await?;
+            let session_port =
+                match SessionPort::start(listen, &port.proxy, live.auth.clone()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        live.end().await;
+                        return Err(e.into());
+                    }
+                };
+            let exports: String = agent_env(session_port.addr, &trust)
+                .into_iter()
+                .map(|(k, v)| format!("export {k}={}\n", shell_quote(&v)))
+                .collect();
+            if let Some(path) = &env_file {
+                if let Err(e) = write_private(path, &exports) {
+                    session_port.stop();
+                    live.end().await;
+                    return Err(e);
+                }
+            }
+            let current = live.current.load();
+            eprintln!(
+                "credential-broker: session port {} relays to the proxy at {} with bundle '{}' (session {}, renewed before {}). Interception CA {ca}.",
+                session_port.addr,
+                port.proxy,
+                mint.bundle,
+                current.id,
+                current.expires_at.to_rfc3339()
+            );
+            eprintln!("credential-broker: point agents at it with these exports{}; Ctrl-C ends the session.", env_file.as_ref().map(|p| format!(" (also in {})", p.display())).unwrap_or_default());
+            print!("{exports}");
+            let signal = stop_signal().await?;
+            session_port.stop();
+            let ended = live.end().await;
+            eprintln!("credential-broker: {signal}, ended {ended} session(s)");
+            if let Some(path) = &env_file {
+                let _ = std::fs::remove_file(path);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn write_private(path: &std::path::Path, contents: &str) -> Result<(), CliError> {
+    let io = |e| CliError::Io {
+        context: format!("writing {}", path.display()),
+        source: e,
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    options
+        .open(path)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
+        .map_err(io)
+}
+
+/// The exit code a shell would report for the child.
+fn exit_code(status: std::process::ExitStatus) -> ExitCode {
+    if let Some(code) = status.code() {
+        return ExitCode::from(u8::try_from(code).unwrap_or(1));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return ExitCode::from(u8::try_from(128 + sig).unwrap_or(1));
+        }
+    }
+    ExitCode::FAILURE
+}
+
+/// Asks the child to stop the way a service manager would. `kill(1)` is
+/// used because the workspace forbids `unsafe`, which `libc::kill` needs.
+#[cfg(unix)]
+fn terminate(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+}
+
+async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
+    let program = args.command[0].clone();
+    let name = std::path::Path::new(&program)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| program.clone());
+    check_listen(args.listen)?;
+    let client = client(&args.mint.broker)?;
+    let vault = client.resolve_vault(args.mint.vault.as_deref()).await?;
+    let dir = private_dir()?;
+    let (trust, _) = prepare_trust(&client, &args.port, dir.path()).await?;
+    let request = mint_request(&args.mint, &[("command", name.clone())])?;
+    let live = LiveSession::start(client.clone(), vault, request).await?;
+    let session_port =
+        match SessionPort::start(args.listen, &args.port.proxy, live.auth.clone()).await {
+            Ok(p) => p,
+            Err(e) => {
+                live.end().await;
+                return Err(e.into());
+            }
+        };
+    {
+        let current = live.current.load();
+        eprintln!(
+            "credential-broker: running '{name}' with bundle '{}' (session {}) through {} -> {}",
+            args.mint.bundle, current.id, session_port.addr, args.port.proxy
+        );
+    }
+    let spawned = tokio::process::Command::new(&program)
+        .args(&args.command[1..])
+        .envs(agent_env(session_port.addr, &trust))
+        .spawn();
+    let mut child = match spawned {
+        Ok(c) => c,
+        Err(e) => {
+            session_port.stop();
+            live.end().await;
+            return Err(CliError::Io {
+                context: format!("starting '{program}'"),
+                source: e,
+            });
+        }
+    };
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status,
+            signal = stop_signal() => {
+                let signal = signal?;
+                // Ctrl-C already reached the child through the terminal's
+                // process group; SIGTERM from a service manager did not.
+                #[cfg(unix)]
+                if signal == "SIGTERM" {
+                    if let Some(pid) = child.id() {
+                        terminate(pid);
+                    }
+                }
+                info!(signal, "waiting for the command to exit");
+            }
+        }
+    };
+    session_port.stop();
+    let ended = live.end().await;
+    drop(dir);
+    let status = status.map_err(|e| CliError::Io {
+        context: format!("waiting for '{program}'"),
+        source: e,
+    })?;
+    eprintln!("credential-broker: '{name}' exited ({status}); ended {ended} session(s)");
+    Ok(exit_code(status))
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    init_logging();
     let cli = Cli::parse();
+    let agent_side = matches!(cli.command, Command::Session { .. } | Command::Run(_));
+    init_logging(agent_side);
     let result = match cli.command {
-        Command::Serve(args) => serve(args).await,
-        Command::Node { command } => node(command).await,
+        Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
+        Command::Node { command } => node(command).await.map(|()| ExitCode::SUCCESS),
+        Command::Session { command } => session(command).await,
+        Command::Run(args) => run(args).await,
     };
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(e) => {
-            error!(error = %e, "credential-broker exited with an error");
+            if agent_side {
+                eprintln!("credential-broker: {e}");
+            } else {
+                error!(error = %e, "credential-broker exited with an error");
+            }
             ExitCode::FAILURE
         }
     }

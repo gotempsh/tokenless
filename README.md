@@ -17,6 +17,10 @@ denied, depending on policy).
   token bound to a vault, a subset of rules, a TTL (15 min by default,
   1 h maximum), an optional request limit, and audit labels. Revocation
   reaches the proxy within seconds.
+- **Access bundles and a launcher.** Group a vault's rules by job
+  (`code-review`) and start an agent with
+  `credential-broker run --bundle code-review -- <agent>`: the agent gets
+  a local proxy address, never a token.
 - **Fails closed.** The proxy runs from an Ed25519-signed, leased policy
   snapshot. When the lease lapses it refuses traffic, and it refuses to
   inject when it cannot record an audit event.
@@ -51,11 +55,15 @@ Open <http://127.0.0.1:8080/> and complete these steps:
    (status code only, to the credential's own host).
 4. **Rules → Add a rule** for that credential. Leave the scope empty to
    use the template's maximum, or narrow it.
-5. **Nodes → Create join token**.
-6. Optionally, **People → Invite someone** as `viewer`, `editor` or
+5. **Access bundles → Create bundle**, for example `code-review`, and
+   tick the rules an agent doing that job needs.
+6. **API keys → Create API key** for the vault with the `session_issuer`
+   role. It can mint sessions in that vault and nothing else.
+7. **Proxies → Create join token**.
+8. Optionally, **People → Invite someone** as `viewer`, `editor` or
    `admin`, and send them the one-time link.
 
-Enrol and run a data plane next to the agent:
+Enrol and run a proxy (data plane) next to the agent:
 
 ```sh
 ./target/release/credential-broker node join \
@@ -63,29 +71,74 @@ Enrol and run a data plane next to the agent:
 ./target/release/credential-broker node run --state ./node.json   # listens on 127.0.0.1:3128
 ```
 
-Back in the console, open **Sessions → Mint session**, select the rule,
-and copy the token (it is shown once). Then point the agent at the proxy
-and trust the interception CA:
+### Run an agent with an access bundle
 
 ```sh
-curl -s http://127.0.0.1:8080/api/v1/ca/interception.pem -o broker-ca.pem
-HTTPS_PROXY="http://<session-token>@127.0.0.1:3128" \
-  curl --cacert broker-ca.pem https://api.github.com/user
+export CREDENTIAL_BROKER_API_KEY=cbk_...    # or --api-key-file key.txt
+./target/release/credential-broker run --bundle code-review -- claude
 ```
 
-The request reaches GitHub with `Authorization: Bearer <stored token>`.
-Any `Authorization` header the client sent is replaced. Requests without
-a valid session get `407`.
+`run` mints a session from the bundle and opens a **session port**: a
+loopback proxy address (a free port by default, `--listen` to choose)
+that adds the session to every request and relays it to the proxy. The
+agent is started with `HTTPS_PROXY=http://127.0.0.1:<port>`, trust files
+that include the broker's interception CA (`SSL_CERT_FILE`,
+`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others), and no session
+token anywhere in its environment. Sessions last at most an hour, so the
+port renews the session before it expires. When the agent exits, every
+session the run minted is ended and `run` exits with the agent's code.
+
+To keep a session port open for agents you start yourself:
+
+```sh
+./target/release/credential-broker session start --bundle code-review \
+  --listen 127.0.0.1:17323 --env-file ./agent.env
+# in the agent's shell:
+. ./agent.env && curl https://api.github.com/user
+```
+
+It prints the same exports, renews the session, and ends it on Ctrl-C
+or SIGTERM. For scripts that manage the token themselves:
+
+```sh
+TOKEN=$(credential-broker session create --bundle code-review --ttl 15m)
+HTTPS_PROXY="http://$TOKEN@127.0.0.1:3128" curl --cacert broker-ca.pem https://api.github.com/user
+CREDENTIAL_BROKER_SESSION_TOKEN=$TOKEN credential-broker session revoke
+```
+
+Through any of these, the request reaches GitHub with
+`Authorization: Bearer <stored token>`. Any `Authorization` header the
+agent sent is replaced, requests outside the bundle's rules get `403`
+with the reason, and requests without a valid session get `407`.
+
+| Setting | Flag | Environment |
+|---|---|---|
+| Management API | `--server` | `CREDENTIAL_BROKER_URL` (default `http://127.0.0.1:8080`) |
+| API key | `--api-key-file` | `CREDENTIAL_BROKER_API_KEY` |
+| Vault | `--vault <name or id>` | `CREDENTIAL_BROKER_VAULT` (not needed with a vault-bound key) |
+| Bundle | `--bundle <name or id>` | `CREDENTIAL_BROKER_BUNDLE` |
+| Proxy | `--proxy host:port` | `CREDENTIAL_BROKER_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
+
+Pass `--ca-fingerprint` with the SHA-256 shown on the **Proxies** page
+to refuse to start if the broker presents a different CA. The session
+port only binds loopback addresses, because anything that can reach it
+uses the session; on a shared machine, other local users can too.
+
+A bundle is a convenience over picking rules, not a grant of its own:
+a session keeps the rules it was minted with, and disabled rules are
+skipped when minting. To cut a running agent off, revoke its session or
+disable the rule. Holding a session's token is enough to end that
+session (`POST /api/v1/sessions/revoke-self`), which is how `run` cleans
+up with only a `session_issuer` key.
 
 ### Automation
 
-Create a vault-scoped API key under **API keys** (the `session_issuer`
-role can only mint sessions), then:
+Mint over the API with the `session_issuer` key, by bundle or by rules:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   -H "Authorization: Bearer cbk_..." -H 'content-type: application/json' \
-  -d '{"rule_ids":["<rule-id>"],"ttl_secs":900,"labels":{"agent":"build-bot"}}'
+  -d '{"bundle":"code-review","ttl_secs":900,"labels":{"agent":"build-bot"}}'
 ```
 
 ### Deployment notes
