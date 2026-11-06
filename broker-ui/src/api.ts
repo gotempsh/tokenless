@@ -176,10 +176,24 @@ export interface Rule {
   updated_at: string;
 }
 
+/** A named list of a vault's rules that sessions are minted from. */
+export interface AccessBundle {
+  id: string;
+  vault_id: string;
+  name: string;
+  description: string;
+  rule_ids: string[];
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ProxySession {
   id: string;
   vault_id: string;
   rule_ids: string[];
+  /** The bundle it was minted from, as named at the time. */
+  bundle: { id: string; name: string } | null;
   labels: Record<string, string>;
   request_limit: number | null;
   created_by: string;

@@ -8,6 +8,7 @@ import {
   get,
   patch,
   post,
+  type AccessBundle,
   type CredentialMeta,
   type Page,
   type ProxySession,
@@ -16,9 +17,11 @@ import {
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
+import { Bundles, CommandSnippet, runCommand } from "./Bundles";
 import { Services } from "./Services";
 import {
   CheckField,
+  ChoiceCards,
   ConfirmDialog,
   DialogActions,
   Empty,
@@ -48,10 +51,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 
-type Tab = "credentials" | "rules" | "sessions";
+type Tab = "credentials" | "rules" | "bundles" | "sessions";
 const TABS: { value: Tab; label: string }[] = [
   { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
+  { value: "bundles", label: "Access bundles" },
   { value: "sessions", label: "Sessions" },
 ];
 
@@ -89,6 +93,7 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
       </Tabs>
       {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
       {tab === "rules" && <Rules vaultId={vaultId} />}
+      {tab === "bundles" && <Bundles vaultId={vaultId} />}
       {tab === "sessions" && <Sessions vaultId={vaultId} />}
     </PageContainer>
   );
@@ -322,7 +327,10 @@ function Sessions({ vaultId }: { vaultId: string }) {
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/vaults/${vaultId}/sessions?page=${page}`), [vaultId, page]);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
+  const bundles = useLoad(() => get<Page<AccessBundle>>(`/vaults/${vaultId}/bundles?page_size=100`), [vaultId]);
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"bundle" | "rules">("bundle");
+  const [bundleId, setBundleId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [ttlMinutes, setTtlMinutes] = useState(15);
   const [limit, setLimit] = useState("");
@@ -342,7 +350,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
     }
     const result = await mintAction.run(() =>
       post<Minted>(`/vaults/${vaultId}/sessions`, {
-        rule_ids: selected,
+        ...(mode === "bundle" ? { bundle: bundleId } : { rule_ids: selected }),
         ttl_secs: ttlMinutes * 60,
         request_limit: limit ? Number(limit) : undefined,
         labels: labelMap,
@@ -397,6 +405,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Session</TableHead>
+                <TableHead>Bundle</TableHead>
                 <TableHead>Labels</TableHead>
                 <TableHead>Limit</TableHead>
                 <TableHead>Created by</TableHead>
@@ -411,6 +420,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
                   <TableCell>
                     <Mono>{s.id.slice(0, 8)}</Mono>
                   </TableCell>
+                  <TableCell>{s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}</TableCell>
                   <TableCell>
                     <Tags values={Object.entries(s.labels).map(([k, v]) => `${k}=${v}`)} />
                   </TableCell>
@@ -463,6 +473,12 @@ function Sessions({ vaultId }: { vaultId: string }) {
                     </a>
                     .
                   </p>
+                  {minted.session.bundle && (
+                    <>
+                      <p>Or let the CLI mint, renew and end sessions from this bundle for each run:</p>
+                      <CommandSnippet command={runCommand(minted.session.bundle.name)} />
+                    </>
+                  )}
                 </div>
               }
             />
@@ -475,36 +491,78 @@ function Sessions({ vaultId }: { vaultId: string }) {
         ) : (
           <form className="space-y-4" onSubmit={mint}>
             <ErrorBanner error={mintAction.error} />
-            <div className="space-y-3">
-              <p className="text-sm font-medium">Rules</p>
-              {rules.loading && !rules.data ? (
-                <Skeleton className="h-6 w-full" />
-              ) : enabledRules.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No enabled rules in this vault.{" "}
-                  <a href={`#/vaults/${vaultId}/rules`} className="underline" onClick={() => closeMint(false)}>
-                    Add a rule
-                  </a>{" "}
-                  first.
-                </p>
-              ) : (
-                <div className="space-y-3 rounded-md border p-3">
-                  {enabledRules.map((r) => (
-                    <CheckField
-                      key={r.id}
-                      id={`mint-rule-${r.id}`}
-                      checked={selected.includes(r.id)}
-                      onChange={(checked) =>
-                        setSelected(checked ? [...selected, r.id] : selected.filter((id) => id !== r.id))
-                      }
-                      hint={<Tags values={r.allow.hosts} />}
-                    >
-                      {r.name}
-                    </CheckField>
-                  ))}
-                </div>
-              )}
-            </div>
+            <ChoiceCards
+              name="mint-mode"
+              value={mode}
+              onChange={setMode}
+              choices={[
+                {
+                  value: "bundle",
+                  title: "From an access bundle",
+                  description: "The services of a bundle such as code-review. Disabled rules are skipped.",
+                },
+                { value: "rules", title: "Pick rules", description: "Choose individual rules for a one-off session." },
+              ]}
+            />
+            {mode === "bundle" ? (
+              <Field
+                label="Access bundle"
+                htmlFor="mint-bundle"
+                hint={
+                  bundles.data?.items.length === 0 ? (
+                    <>
+                      No bundles in this vault yet.{" "}
+                      <a href={`#/vaults/${vaultId}/bundles`} className="underline" onClick={() => closeMint(false)}>
+                        Create one
+                      </a>
+                      .
+                    </>
+                  ) : undefined
+                }
+              >
+                <SelectField
+                  id="mint-bundle"
+                  value={bundleId}
+                  onChange={setBundleId}
+                  placeholder="Choose…"
+                  options={(bundles.data?.items ?? []).map((b) => ({
+                    value: b.id,
+                    label: `${b.name} (${b.rule_ids.length} rule${b.rule_ids.length === 1 ? "" : "s"})`,
+                  }))}
+                />
+              </Field>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm font-medium">Rules</p>
+                {rules.loading && !rules.data ? (
+                  <Skeleton className="h-6 w-full" />
+                ) : enabledRules.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No enabled rules in this vault.{" "}
+                    <a href={`#/vaults/${vaultId}/rules`} className="underline" onClick={() => closeMint(false)}>
+                      Add a rule
+                    </a>{" "}
+                    first.
+                  </p>
+                ) : (
+                  <div className="space-y-3 rounded-md border p-3">
+                    {enabledRules.map((r) => (
+                      <CheckField
+                        key={r.id}
+                        id={`mint-rule-${r.id}`}
+                        checked={selected.includes(r.id)}
+                        onChange={(checked) =>
+                          setSelected(checked ? [...selected, r.id] : selected.filter((id) => id !== r.id))
+                        }
+                        hint={<Tags values={r.allow.hosts} />}
+                      >
+                        {r.name}
+                      </CheckField>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Field label="Lifetime (minutes)" htmlFor="mint-ttl" hint="At most 60.">
                 <Input
@@ -534,7 +592,10 @@ function Sessions({ vaultId }: { vaultId: string }) {
               <Button type="button" variant="outline" onClick={() => closeMint(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={mintAction.busy || selected.length === 0}>
+              <Button
+                type="submit"
+                disabled={mintAction.busy || (mode === "bundle" ? !bundleId : selected.length === 0)}
+              >
                 Mint session
               </Button>
             </DialogActions>

@@ -183,7 +183,7 @@ export function App() {
     <Shell section={section} detail={section === "vaults" && id ? "Vault" : undefined} user={user} onLogout={() => void logout()}>
       {section === "vaults" && !id && <Vaults canCreate={isAdmin} />}
       {section === "vaults" && id && (
-        <VaultDetail vaultId={id} tab={tab === "rules" || tab === "sessions" ? tab : "credentials"} user={user} />
+        <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
       {section === "sessions" && <Sessions />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}

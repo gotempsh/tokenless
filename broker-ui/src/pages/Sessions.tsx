@@ -76,8 +76,8 @@ export function Sessions() {
             title="No sessions yet"
             description={
               <>
-                Mint one from a vault's <span className="font-medium text-foreground">Sessions</span> tab, or with an API
-                key from your agent's launcher.
+                Start an agent with <Mono>credential-broker run --bundle &lt;name&gt; -- &lt;agent-command&gt;</Mono>, or mint
+                one from a vault's <span className="font-medium text-foreground">Sessions</span> tab.
               </>
             }
             action={
@@ -92,6 +92,7 @@ export function Sessions() {
               <TableRow>
                 <TableHead>Label</TableHead>
                 <TableHead>Vault</TableHead>
+                <TableHead className="hidden md:table-cell">Bundle</TableHead>
                 <TableHead className="hidden md:table-cell">Created by</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Expires</TableHead>
@@ -107,6 +108,9 @@ export function Sessions() {
                     <a href={`#/vaults/${s.vault_id}/sessions`} className="hover:underline">
                       {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
                     </a>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
                   <TableCell className="text-muted-foreground">
@@ -197,6 +201,7 @@ export function SessionDetail({
     <div className="space-y-5">
       <dl className="grid grid-cols-2 gap-4 rounded-md border p-4 sm:grid-cols-4">
         <Meta label="Vault">{vaultName ?? <Mono>{session.vault_id.slice(0, 8)}</Mono>}</Meta>
+        <Meta label="Access bundle">{session.bundle?.name ?? "none"}</Meta>
         <Meta label="Created">
           <When at={session.created_at} />
         </Meta>
