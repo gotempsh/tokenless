@@ -248,7 +248,7 @@ impl Server {
             }
             None => {
                 if !api_addr.ip().is_loopback() {
-                    warn!(%api_addr, "management API is plain HTTP on a non-loopback address; pass --api-tls-cert/--api-tls-key or put a TLS proxy in front (the session cookie is Secure, so browsers will not sign in over plain HTTP)");
+                    warn!(%api_addr, "management API is plain HTTP on a non-loopback address; pass --api-tls-cert/--api-tls-key or put a TLS proxy in front (the session cookie is Secure, so browsers sign in over plain HTTP only at localhost or 127.0.0.1)");
                 }
                 tasks.push(tokio::spawn(async move {
                     if let Err(e) = axum::serve(api_listener, app).await {

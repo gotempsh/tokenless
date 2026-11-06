@@ -384,6 +384,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn built_in_templates_are_seeded_once() {
+        let cp = plane().await;
+        // `plane()` already seeded them on start; a second start adds none.
+        assert_eq!(cp.policy.seed_builtin_templates().await.unwrap(), 0);
+        assert!(!broker_core::template::builtin_templates()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn first_start_creates_the_admin_with_a_generated_password() {
         let cp = plane().await;
         let creds = cp.auth.create_initial_admin().await.unwrap().unwrap();

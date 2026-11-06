@@ -14,11 +14,11 @@ use std::sync::Arc;
 use broker_dataplane::node::{enroll, NodeIdentity};
 use broker_dataplane::{DataPlane, DataPlaneConfig};
 use broker_server::launcher::account::{
-    self, AddService, ConsoleClient, Keychain, Prompter, SessionVault, SignIn,
+    self, AddService, ConsoleClient, Prompter, SessionStore, SessionVault, SignIn, Stored,
 };
 use broker_server::launcher::client::{ApiClient, Credentials, MintRequest, PortServices};
 use broker_server::launcher::inject::{self, Assignment};
-use broker_server::launcher::port::{check_listen, SessionPort};
+use broker_server::launcher::port::{check_listen, check_proxy, SessionPort};
 use broker_server::launcher::session::LiveSession;
 use broker_server::launcher::skill;
 use broker_server::launcher::trust::{
@@ -524,7 +524,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!(
             "  Sign in at {}://{}/ or with: tokenless login",
             if running.api_tls { "https" } else { "http" },
-            running.api_addr
+            sign_in_addr(running.api_addr)
         );
         eprintln!();
     }
@@ -532,6 +532,20 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     info!("shutting down");
     running.shutdown();
     Ok(())
+}
+
+/// An address to sign in at: a wildcard listener (`0.0.0.0`, `::`, as in
+/// the container image) is reachable on loopback from this host.
+fn sign_in_addr(addr: std::net::SocketAddr) -> std::net::SocketAddr {
+    if addr.ip().is_unspecified() {
+        let loopback = match addr {
+            std::net::SocketAddr::V4(_) => std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST),
+            std::net::SocketAddr::V6(_) => std::net::IpAddr::from(std::net::Ipv6Addr::LOCALHOST),
+        };
+        std::net::SocketAddr::new(loopback, addr.port())
+    } else {
+        addr
+    }
 }
 
 /// Hidden prompts on the terminal, never echoed or logged.
@@ -564,26 +578,34 @@ async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
             }
         }
     };
-    Keychain.save(&session)?;
+    let stored = SessionStore::system().store(&session)?;
     eprintln!(
-        "tokenless: signed in to {} as {} until {}. The session is kept in the OS keychain.",
+        "tokenless: signed in to {} as {} until {}.",
         session.server,
         session.username,
         session.expires_at.format("%Y-%m-%d %H:%M UTC")
     );
+    match stored {
+        Stored::Keychain => eprintln!("tokenless: the session is kept in the OS keychain."),
+        Stored::File { path, reason } => eprintln!(
+            "tokenless: the OS keychain is not available here ({reason}), so the session is in {}, readable only by you. tokenless logout removes it.",
+            path.display()
+        ),
+    }
     Ok(ExitCode::SUCCESS)
 }
 
 async fn logout(server: String) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
-    if let Ok(client) = ConsoleClient::open(&Keychain, &server, &prompter) {
+    let store = SessionStore::system();
+    if let Ok(client) = ConsoleClient::open(&store, &server, &prompter) {
         // Ending it on the server is best effort; the keychain entry goes
         // either way.
         if let Err(e) = client.logout().await {
             tracing::warn!(error = %e, "could not end the session on the server");
         }
     }
-    let removed = Keychain.delete(server.trim().trim_end_matches('/'))?;
+    let removed = store.delete(server.trim().trim_end_matches('/'))?;
     eprintln!(
         "tokenless: {}",
         if removed {
@@ -659,7 +681,7 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             server,
         } => {
             let prompter = TerminalPrompter;
-            let client = ConsoleClient::open(&Keychain, &server, &prompter)?;
+            let client = ConsoleClient::open(&SessionStore::system(), &server, &prompter)?;
             let template = account::pick_template(client.templates().await?, &template)?;
             eprintln!(
                 "tokenless: adding {} to vault '{}'. The credential is stored encrypted and can't be read back.",
@@ -712,7 +734,7 @@ async fn proxy(command: ProxyCommand) -> Result<ExitCode, CliError> {
             server,
         } => {
             let prompter = TerminalPrompter;
-            let client = ConsoleClient::open(&Keychain, &server, &prompter)?;
+            let client = ConsoleClient::open(&SessionStore::system(), &server, &prompter)?;
             let control_url = match control_url {
                 Some(url) => url,
                 None => account::default_control_url(&server)?,
@@ -830,9 +852,9 @@ fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
         Some(key) => Some(Credentials::ApiKey(key)),
         None => {
             let server = args.server.trim().trim_end_matches('/');
-            // A keychain that cannot be read is the same as not signed in:
-            // the error then says how to authenticate.
-            match Keychain.load(server) {
+            // A session store that cannot be read is the same as not signed
+            // in: the error then says how to authenticate.
+            match SessionStore::system().load(server) {
                 Ok(Some(saved)) if saved.expires_at > chrono::Utc::now() => {
                     Some(Credentials::Session {
                         token: Zeroizing::new(saved.token),
@@ -1002,6 +1024,7 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             env_file,
         } => {
             check_listen(listen)?;
+            check_proxy(&port.proxy).await?;
             let client = client(&mint.broker)?;
             let vault = client.resolve_vault(mint.vault.as_deref()).await?;
             let dir = private_dir()?;
@@ -1257,6 +1280,7 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| program.clone());
     check_listen(args.listen)?;
+    check_proxy(&args.port.proxy).await?;
     let client = client(&args.mint.broker)?;
     let vault = client.resolve_vault(args.mint.vault.as_deref()).await?;
     let dir = private_dir()?;
@@ -1403,5 +1427,18 @@ async fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wildcard_listener_is_signed_in_to_on_loopback() {
+        let at = |s: &str| sign_in_addr(s.parse().unwrap()).to_string();
+        assert_eq!(at("0.0.0.0:8080"), "127.0.0.1:8080");
+        assert_eq!(at("[::]:8080"), "[::1]:8080");
+        assert_eq!(at("192.0.2.10:8080"), "192.0.2.10:8080");
     }
 }

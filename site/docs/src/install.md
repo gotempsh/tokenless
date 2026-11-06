@@ -75,6 +75,9 @@ docker run -d --name tokenless \
 docker logs tokenless   # prints the admin username and password, once
 ```
 
+Lost the password? `docker exec tokenless tokenless admin reset-password --data-dir /data`
+prints a new one.
+
 The image is built for `linux/amd64` and `linux/arm64` from the same
 static binaries as the archives, runs as a non-root user, and is signed
 with cosign:
@@ -88,6 +91,11 @@ cosign verify ghcr.io/gotempsh/tokenless:latest \
 `/data` holds the master key and the database: keep it on a volume and
 back it up (see [Deploy to production](deploy.md#backups)). The same image
 runs a proxy: `docker run ... ghcr.io/gotempsh/tokenless node run ...`.
+A proxy that reaches the control plane by a name other than `localhost`
+or `127.0.0.1` (another machine, another container) needs that name in
+the node API's certificate: append
+`serve --data-dir /data --api-listen 0.0.0.0:8080 --node-listen 0.0.0.0:8443 --node-api-name <name>`
+to the `docker run` command.
 
 ## Build from source
 

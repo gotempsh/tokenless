@@ -58,7 +58,8 @@ stops all injection within one lease; that is deliberate.
 - Changing your password ends your other sessions.
 - The console session cookie is `HttpOnly`, `Secure` and `SameSite=Strict`,
   and every change carries a CSRF token. `tokenless login` keeps its
-  session in the OS keychain, not in a file.
+  session in the OS keychain, or in a file only you can read
+  (`~/.config/tokenless/sessions/`) where there is no usable keychain.
 - API keys are stored only as hashes and expire.
 
 ## Verifying a release

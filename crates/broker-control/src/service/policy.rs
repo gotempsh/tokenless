@@ -20,7 +20,7 @@ use broker_core::template::{builtin_templates, ServiceTemplate};
 use broker_core::variables::{validate_custom_headers, CustomHeader};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{debug, info};
 
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, Guard};
@@ -352,9 +352,11 @@ impl PolicyService {
         })
     }
 
-    /// Inserts built-in templates that are not yet stored. Existing versions
-    /// are left untouched so a stored version never changes under a rule.
-    pub async fn seed_builtin_templates(&self) -> Result<(), ControlError> {
+    /// Inserts built-in templates that are not yet stored and returns how
+    /// many. Existing versions are left untouched so a stored version never
+    /// changes under a rule.
+    pub async fn seed_builtin_templates(&self) -> Result<usize, ControlError> {
+        let mut seeded = 0;
         for (template, yaml) in builtin_templates()? {
             if self
                 .policy
@@ -364,7 +366,7 @@ impl PolicyService {
             {
                 continue;
             }
-            info!(template = %template.id, version = template.version, "seeding built-in template");
+            debug!(template = %template.id, version = template.version, "seeding built-in template");
             self.policy
                 .insert_template(
                     StoredTemplate {
@@ -379,8 +381,12 @@ impl PolicyService {
                     &[],
                 )
                 .await?;
+            seeded += 1;
         }
-        Ok(())
+        if seeded > 0 {
+            info!(count = seeded, "added built-in templates");
+        }
+        Ok(seeded)
     }
 
     // ---- vaults -------------------------------------------------------

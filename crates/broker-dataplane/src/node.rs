@@ -206,7 +206,7 @@ async fn send(
     )
     .await
     .map_err(|_| err("TLS handshake timed out".into()))?
-    .map_err(|e| err(format!("TLS handshake failed: {e}")))?;
+    .map_err(|e| err(handshake_failure(&e, &endpoint.host)))?;
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
         .map_err(|e| err(format!("HTTP handshake failed: {e}")))?;
@@ -226,6 +226,31 @@ async fn send(
         .send_request(request)
         .await
         .map_err(|e| err(format!("request failed: {e}")))
+}
+
+/// Why the node API handshake failed, with the fix when the control
+/// plane's certificate does not name the host this node dialled: the
+/// certificate only has the names `serve --node-api-name` was given.
+fn handshake_failure(e: &std::io::Error, host: &str) -> String {
+    let wrong_name = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        .is_some_and(|tls| {
+            matches!(
+                tls,
+                rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::NotValidForName
+                        | rustls::CertificateError::NotValidForNameContext { .. }
+                )
+            )
+        });
+    if wrong_name {
+        format!(
+            "TLS handshake failed: {e}. The control plane's node API certificate does not include '{host}'; start tokenless serve with --node-api-name {host} (repeatable), or reach it by a name it has"
+        )
+    } else {
+        format!("TLS handshake failed: {e}")
+    }
 }
 
 async fn read_json<T: DeserializeOwned>(
@@ -533,6 +558,27 @@ pub async fn run_renewal_loop(client: Arc<NodeClient>, state_path: Option<std::p
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_certificate_without_the_dialled_name_says_how_to_add_it() {
+        let wrong_name = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::NotValidForName),
+        );
+        let reason = handshake_failure(&wrong_name, "broker.internal");
+        assert!(
+            reason.contains("--node-api-name broker.internal"),
+            "{reason}"
+        );
+
+        let other = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
+        );
+        assert!(!handshake_failure(&other, "broker.internal").contains("--node-api-name"));
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert!(!handshake_failure(&reset, "broker.internal").contains("--node-api-name"));
+    }
 
     #[test]
     fn parses_control_urls() {

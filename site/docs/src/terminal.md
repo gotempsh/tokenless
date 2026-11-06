@@ -16,9 +16,15 @@ tokenless login                 # the admin printed by `tokenless serve`
 
 It asks for the password, and an authenticator code if the account has
 one. The session is kept in the operating system's keychain (macOS
-Keychain, Windows Credential Manager, the Linux kernel keyring), never in
-a file, and lasts as long as a console session. `--server` signs in to
-another control plane; `tokenless logout` ends the session.
+Keychain, Windows Credential Manager, the Linux kernel keyring) and lasts
+as long as a console session. `--server` signs in to another control
+plane; `tokenless logout` ends the session.
+
+Where there is no usable keychain, for example in a Docker container
+(its default security profile blocks the kernel keyring), the session
+goes to `~/.config/tokenless/sessions/` instead, in a file only you can
+read, and `login` says so. The Linux kernel keyring also forgets
+everything on reboot; sign in again then.
 
 On macOS the binary is not notarized, so after installing or upgrading it
 the Keychain asks once whether `tokenless` may read its entry. Choose
@@ -52,7 +58,13 @@ tokenless node run
 
 `proxy add` creates a join token and enrols this machine with it in one
 step. It reaches the node API on the control plane's host at port 8443;
-pass `--control-url` when it listens elsewhere.
+pass `--control-url` when it listens elsewhere. The node API's certificate
+names `localhost` and `127.0.0.1` unless `tokenless serve` was started
+with `--node-api-name <host>`, so a proxy on another machine needs the
+control plane started with the name it dials.
+
+`tokenless run` checks that a proxy is answering before it starts the
+agent, and says so when none is.
 
 ## Run an agent
 
@@ -81,4 +93,8 @@ tokenless admin reset-password --data-dir ./tokenless-data
 
 It prints a new password once and ends every session of that account.
 It works while the server is running. With PostgreSQL, pass
-`--database-url` as well.
+`--database-url` as well. For the container image:
+
+```sh
+docker exec tokenless tokenless admin reset-password --data-dir /data
+```

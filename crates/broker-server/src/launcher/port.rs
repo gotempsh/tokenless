@@ -217,6 +217,21 @@ pub fn check_listen(listen: SocketAddr) -> Result<(), LauncherError> {
     )))
 }
 
+/// Checks a proxy is listening at `address` before a session is minted
+/// for it, so a proxy that isn't running is reported up front instead of
+/// as every request the agent makes failing to connect.
+pub async fn check_proxy(address: &str) -> Result<(), LauncherError> {
+    let unreachable = |reason: String| LauncherError::ProxyUnreachable {
+        address: address.to_string(),
+        reason,
+    };
+    match tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(address)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(unreachable(e.to_string())),
+        Err(_) => Err(unreachable("connecting timed out after 3 s".into())),
+    }
+}
+
 /// A running session port.
 pub struct SessionPort {
     pub addr: SocketAddr,
@@ -286,6 +301,22 @@ impl Drop for SessionPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_proxy_that_is_not_running_is_reported_before_minting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = listener.local_addr().unwrap().to_string();
+        check_proxy(&up).await.unwrap();
+
+        drop(listener);
+        let err = check_proxy(&up).await.unwrap_err();
+        assert!(matches!(err, LauncherError::ProxyUnreachable { .. }));
+        let shown = err.to_string();
+        assert!(
+            shown.contains(&up) && shown.contains("tokenless node run"),
+            "{shown}"
+        );
+    }
 
     #[test]
     fn only_an_origin_form_get_of_services_is_answered_locally() {

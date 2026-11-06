@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Acting as a person from the terminal: `tokenless login` signs in like the
-//! console does and keeps the session in the OS keychain, and the commands
+//! console does and keeps the session in the OS keychain (or a private file
+//! where there is none), and the commands
 //! that set up a broker (`service add`, `proxy add`) use it. They go through
 //! the same checks as the console: a person's session with its CSRF token,
 //! and a fresh authenticator code when an action asks for one. API keys
 //! cannot do these things.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -30,7 +32,8 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 const KEYCHAIN_SERVICE: &str = "tokenless";
 
 /// A console session kept between commands. The token is a credential: it
-/// lives in the OS keychain, never in a file.
+/// lives in the OS keychain, or in a file only its owner can read when this
+/// machine has no usable keychain.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SavedSession {
     pub server: String,
@@ -67,9 +70,35 @@ pub trait SessionVault: Send + Sync {
 pub struct Keychain;
 
 impl Keychain {
-    fn entry(server: &str) -> Result<keyring::Entry, LauncherError> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, server).map_err(|e| keychain("opening", server, e))
+    fn get(server: &str) -> Result<Option<Zeroizing<String>>, keyring::Error> {
+        match keyring::Entry::new(KEYCHAIN_SERVICE, server)?.get_password() {
+            Ok(json) => Ok(Some(Zeroizing::new(json))),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
+
+    fn set(server: &str, json: &str) -> Result<(), keyring::Error> {
+        keyring::Entry::new(KEYCHAIN_SERVICE, server)?.set_password(json)
+    }
+
+    fn remove(server: &str) -> Result<bool, keyring::Error> {
+        match keyring::Entry::new(KEYCHAIN_SERVICE, server)?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// The keychain cannot be used at all here, as opposed to failing on one
+/// entry: Docker's default seccomp profile blocks the Linux kernel keyring,
+/// and a headless machine may have no keychain service.
+fn keychain_unavailable(e: &keyring::Error) -> bool {
+    matches!(
+        e,
+        keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)
+    )
 }
 
 fn keychain(operation: &'static str, server: &str, e: keyring::Error) -> LauncherError {
@@ -80,44 +109,239 @@ fn keychain(operation: &'static str, server: &str, e: keyring::Error) -> Launche
     }
 }
 
+fn encode(session: &SavedSession) -> Result<Zeroizing<String>, LauncherError> {
+    serde_json::to_string(session)
+        .map(Zeroizing::new)
+        .map_err(|e| LauncherError::Keychain {
+            operation: "saving",
+            server: session.server.clone(),
+            reason: e.to_string(),
+        })
+}
+
+fn decode(server: &str, json: &str) -> Result<SavedSession, LauncherError> {
+    serde_json::from_str(json).map_err(|e| LauncherError::Keychain {
+        operation: "reading",
+        server: server.to_string(),
+        reason: format!("the saved session is unreadable ({e}); run tokenless login"),
+    })
+}
+
 impl SessionVault for Keychain {
     fn load(&self, server: &str) -> Result<Option<SavedSession>, LauncherError> {
-        match Self::entry(server)?.get_password() {
-            Ok(json) => {
-                serde_json::from_str(&json)
-                    .map(Some)
-                    .map_err(|e| LauncherError::Keychain {
-                        operation: "reading",
-                        server: server.to_string(),
-                        reason: format!(
-                            "the saved session is unreadable ({e}); run tokenless login"
-                        ),
-                    })
-            }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(keychain("reading", server, e)),
+        match Self::get(server).map_err(|e| keychain("reading", server, e))? {
+            Some(json) => decode(server, &json).map(Some),
+            None => Ok(None),
         }
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
-        let json = Zeroizing::new(serde_json::to_string(session).map_err(|e| {
-            LauncherError::Keychain {
-                operation: "saving",
-                server: session.server.clone(),
-                reason: e.to_string(),
-            }
-        })?);
-        Self::entry(&session.server)?
-            .set_password(&json)
+        Self::set(&session.server, &encode(session)?)
             .map_err(|e| keychain("saving", &session.server, e))
     }
 
     fn delete(&self, server: &str) -> Result<bool, LauncherError> {
-        match Self::entry(server)?.delete_credential() {
-            Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
-            Err(e) => Err(keychain("removing", server, e)),
+        Self::remove(server).map_err(|e| keychain("removing", server, e))
+    }
+}
+
+/// Sessions in files only their owner can read (`0600` in a `0700`
+/// directory), one per server, for machines without a usable keychain.
+pub struct SessionFiles {
+    dir: PathBuf,
+}
+
+impl SessionFiles {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    /// `$XDG_CONFIG_HOME/tokenless/sessions`, or
+    /// `~/.config/tokenless/sessions`.
+    pub fn default_dir() -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|h| !h.is_empty())
+                    .map(|home| PathBuf::from(home).join(".config"))
+            })?;
+        Some(config.join("tokenless").join("sessions"))
+    }
+
+    pub fn path(&self, server: &str) -> PathBuf {
+        let name: String = server
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        self.dir.join(format!("{name}.json"))
+    }
+
+    fn io(context: String) -> impl FnOnce(std::io::Error) -> LauncherError {
+        move |source| LauncherError::Io { context, source }
+    }
+}
+
+impl SessionVault for SessionFiles {
+    fn load(&self, server: &str) -> Result<Option<SavedSession>, LauncherError> {
+        let path = self.path(server);
+        let json = match std::fs::read_to_string(&path) {
+            Ok(json) => Zeroizing::new(json),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(Self::io(format!("reading {}", path.display()))(e)),
+        };
+        let session = decode(server, &json)?;
+        // Two servers whose names differ only in punctuation share a file
+        // name; never hand one server's session to the other.
+        Ok((session.server == server).then_some(session))
+    }
+
+    fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        use std::io::Write;
+        let json = encode(session)?;
+        let mut dir = std::fs::DirBuilder::new();
+        dir.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            dir.mode(0o700);
         }
+        dir.create(&self.dir)
+            .map_err(Self::io(format!("creating {}", self.dir.display())))?;
+        let path = self.path(&session.server);
+        let tmp = path.with_extension("tmp");
+        // A leftover temporary file may have wider permissions; the mode
+        // below only applies to a file this call creates.
+        match std::fs::remove_file(&tmp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Self::io(format!("removing {}", tmp.display()))(e)),
+        }
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&tmp)
+            .map_err(Self::io(format!("writing {}", tmp.display())))?;
+        file.write_all(json.as_bytes())
+            .map_err(Self::io(format!("writing {}", tmp.display())))?;
+        drop(file);
+        std::fs::rename(&tmp, &path).map_err(Self::io(format!("replacing {}", path.display())))
+    }
+
+    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let path = self.path(server);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(Self::io(format!("removing {}", path.display()))(e)),
+        }
+    }
+}
+
+/// Where `tokenless login` put the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stored {
+    Keychain,
+    /// The keychain was unavailable for `reason`.
+    File {
+        path: PathBuf,
+        reason: String,
+    },
+}
+
+/// The keychain, falling back to [`SessionFiles`] when this machine has no
+/// usable keychain. Only that case falls back: any other keychain error
+/// is returned.
+pub struct SessionStore {
+    files: Option<SessionFiles>,
+}
+
+impl SessionStore {
+    pub fn new(files: Option<SessionFiles>) -> Self {
+        Self { files }
+    }
+
+    /// The keychain, and files in [`SessionFiles::default_dir`].
+    pub fn system() -> Self {
+        Self::new(SessionFiles::default_dir().map(SessionFiles::new))
+    }
+
+    fn files(&self, server: &str, e: keyring::Error) -> Result<&SessionFiles, LauncherError> {
+        self.files.as_ref().ok_or_else(|| LauncherError::Keychain {
+            operation: "saving",
+            server: server.to_string(),
+            reason: format!(
+                "{e}, and HOME is not set, so there is nowhere else to keep it; set HOME, or use an API key (TOKENLESS_API_KEY)"
+            ),
+        })
+    }
+
+    /// Saves the session and says where it went.
+    pub fn store(&self, session: &SavedSession) -> Result<Stored, LauncherError> {
+        let json = encode(session)?;
+        match Keychain::set(&session.server, &json) {
+            Ok(()) => {
+                // A file from a time without a keychain is now stale.
+                if let Some(files) = &self.files {
+                    files.delete(&session.server)?;
+                }
+                Ok(Stored::Keychain)
+            }
+            Err(e) if keychain_unavailable(&e) => {
+                let reason = e.to_string();
+                let files = self.files(&session.server, e)?;
+                files.save(session)?;
+                Ok(Stored::File {
+                    path: files.path(&session.server),
+                    reason,
+                })
+            }
+            Err(e) => Err(keychain("saving", &session.server, e)),
+        }
+    }
+}
+
+impl SessionVault for SessionStore {
+    fn load(&self, server: &str) -> Result<Option<SavedSession>, LauncherError> {
+        match Keychain::get(server) {
+            Ok(Some(json)) => return decode(server, &json).map(Some),
+            Ok(None) => {}
+            Err(e) if keychain_unavailable(&e) => {}
+            Err(e) => return Err(keychain("reading", server, e)),
+        }
+        match &self.files {
+            Some(files) => files.load(server),
+            None => Ok(None),
+        }
+    }
+
+    fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        self.store(session).map(|_| ())
+    }
+
+    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let in_keychain = match Keychain::remove(server) {
+            Ok(removed) => removed,
+            Err(e) if keychain_unavailable(&e) => false,
+            Err(e) => return Err(keychain("removing", server, e)),
+        };
+        let in_file = match &self.files {
+            Some(files) => files.delete(server)?,
+            None => false,
+        };
+        Ok(in_keychain || in_file)
     }
 }
 
@@ -694,5 +918,84 @@ mod tests {
         assert!(vault.load("http://b").unwrap().is_none());
         assert!(vault.delete("http://a").unwrap());
         assert!(!vault.delete("http://a").unwrap());
+    }
+
+    fn session(server: &str) -> SavedSession {
+        SavedSession {
+            server: server.into(),
+            username: "admin".into(),
+            totp_enrolled: false,
+            token: "cbs_file-token".into(),
+            csrf_token: "c".into(),
+            expires_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn session_files_round_trip_one_file_per_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SessionFiles::new(dir.path().join("tokenless").join("sessions"));
+        assert!(files.load("http://127.0.0.1:8080").unwrap().is_none());
+        files.save(&session("http://127.0.0.1:8080")).unwrap();
+        files.save(&session("https://broker.example.com")).unwrap();
+
+        let loaded = files.load("http://127.0.0.1:8080").unwrap().unwrap();
+        assert_eq!(loaded.token, "cbs_file-token");
+        assert_eq!(
+            files.path("http://127.0.0.1:8080"),
+            dir.path()
+                .join("tokenless/sessions/http___127.0.0.1_8080.json")
+        );
+        assert!(files.delete("http://127.0.0.1:8080").unwrap());
+        assert!(!files.delete("http://127.0.0.1:8080").unwrap());
+        assert!(files.load("http://127.0.0.1:8080").unwrap().is_none());
+        assert!(files.load("https://broker.example.com").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_session_file_is_never_read_for_another_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = SessionFiles::new(dir.path());
+        files.save(&session("http://a:1")).unwrap();
+        // Same file name, different server.
+        assert_eq!(files.path("http://a:1"), files.path("http://a_1"));
+        assert!(files.load("http://a_1").unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_files_are_readable_only_by_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let files = SessionFiles::new(dir.path().join("sessions"));
+        let path = files.path("http://a");
+        // A leftover temporary file anyone can read does not lend its mode.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, "stale").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        files.save(&session("http://a")).unwrap();
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert!(!tmp.exists());
+
+        let fresh = SessionFiles::new(dir.path().join("new"));
+        fresh.save(&session("http://a")).unwrap();
+        assert_eq!(mode(&dir.path().join("new")), 0o700);
+    }
+
+    #[test]
+    fn without_a_home_the_store_says_what_to_do() {
+        let store = SessionStore::new(None);
+        let err = store
+            .files(
+                "http://a",
+                keyring::Error::PlatformFailure("blocked".into()),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("TOKENLESS_API_KEY"), "{err}");
     }
 }
