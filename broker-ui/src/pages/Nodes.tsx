@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState } from "react";
-import { Download, Plus, Server, ShieldCheck } from "lucide-react";
-import { get, post, type NodeInfo, type Page, type Settings } from "../api";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, Ban, Download, Info, Plus, Server, ShieldCheck } from "lucide-react";
+import { get, post, type NodeInfo, type Page } from "../api";
 import { useAction, useLoad } from "../hooks";
+import { cn } from "../lib/utils";
+import { proxyAttention, proxyState, type Attention, type ProxyState } from "../proxyHealth";
 import {
   ConfirmDialog,
   CopyButton,
@@ -17,25 +19,33 @@ import {
   OneTimeSecret,
   Pager,
   Panel,
+  Exact,
+  Relative,
   RowActions,
+  RowMenu,
   Status,
   useConfirm,
-  When,
+  type Tone,
 } from "../components/common";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-/** A proxy polls for policy every few seconds; two leases without contact means it is gone. */
-const HEALTHY_WITHIN_MS = 2 * 60 * 1000;
+const STATUS: Record<ProxyState, { tone: Tone; label: string }> = {
+  healthy: { tone: "success", label: "Connected" },
+  offline: { tone: "warning", label: "Not connected" },
+  never_connected: { tone: "neutral", label: "Never connected" },
+  certificate_expired: { tone: "destructive", label: "Certificate expired" },
+  revoked: { tone: "neutral", label: "Revoked" },
+};
 
-function nodeStatus(n: NodeInfo) {
-  if (n.revoked_at) return <Status tone="destructive">Revoked</Status>;
-  if (new Date(n.cert_not_after) <= new Date()) return <Status tone="warning">Certificate expired</Status>;
-  if (!n.last_seen_at) return <Status tone="neutral">Never connected</Status>;
-  if (Date.now() - new Date(n.last_seen_at).getTime() > HEALTHY_WITHIN_MS)
-    return <Status tone="warning">Not connected</Status>;
-  return <Status tone="success">Healthy</Status>;
+/** Proxies check in every few seconds; refresh often enough that the page tells the truth. */
+const REFRESH_MS = 15_000;
+
+function ProxyStatus({ node, now }: { node: NodeInfo; now: Date }) {
+  const s = STATUS[proxyState(node, now)];
+  return <Status tone={s.tone}>{s.label}</Status>;
 }
 
 /** SHA-256 of the interception CA certificate, as agents' trust stores show it. */
@@ -53,18 +63,27 @@ async function caFingerprint(): Promise<{ pem: string; sha256: string }> {
 export function Nodes() {
   const [page, setPage] = useState(1);
   const nodes = useLoad(() => get<Page<NodeInfo>>(`/nodes?page=${page}`), [page]);
-  const settings = useLoad(() => get<Settings>("/settings"), []);
   const ca = useLoad(caFingerprint, []);
-  const policy =
-    settings.data === undefined
-      ? "…"
-      : settings.data.unmatched_host_policy === "passthrough"
-        ? "Any host"
-        : "Rule hosts only";
   const [joinToken, setJoinToken] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<NodeInfo | null>(null);
+  const [showRevoked, setShowRevoked] = useState(false);
   const confirm = useConfirm<NodeInfo>();
   const tokenAction = useAction();
   const action = useAction();
+
+  const reload = useRef(nodes.reload);
+  reload.current = nodes.reload;
+  useEffect(() => {
+    const timer = window.setInterval(() => reload.current(), REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const now = new Date();
+  const all = nodes.data?.items ?? [];
+  const revokedCount = all.filter((n) => n.revoked_at).length;
+  const rows = showRevoked ? all : all.filter((n) => !n.revoked_at);
+  // Only the first page knows whether anything is enrolled at all.
+  const attention = nodes.data && page === 1 ? proxyAttention(all, now) : null;
 
   const createToken = async () => {
     const r = await tokenAction.run(() => post<{ token: string; expires_at: string }>("/nodes/join-tokens", {}));
@@ -74,11 +93,12 @@ export function Nodes() {
   const revoke = async (n: NodeInfo) => {
     await action.run(() => post<void>(`/nodes/${n.id}/revoke`));
     confirm.close();
+    setViewing(null);
     nodes.reload();
   };
 
-  const createButton = (
-    <Button type="button" onClick={() => void createToken()} disabled={tokenAction.busy}>
+  const createButton = (variant: "default" | "outline" = "default") => (
+    <Button type="button" variant={variant} onClick={() => void createToken()} disabled={tokenAction.busy}>
       <Plus />
       Create join token
     </Button>
@@ -88,22 +108,27 @@ export function Nodes() {
     <PageContainer>
       <PageHeader
         title="Proxies"
-        description="Proxies are the data plane agents connect to. They receive credentials sealed to their own key, add them to agents' requests and fail closed when their policy lease lapses."
-        actions={createButton}
+        description="The proxies agents connect to. They add the credentials to agents' requests."
+        actions={all.length > 0 ? createButton() : undefined}
       />
       <ErrorBanner error={nodes.error ?? ca.error ?? action.error ?? tokenAction.error} />
+      {attention && attention.level !== "ok" && (
+        <AttentionBanner
+          attention={attention}
+          now={now}
+          createButton={createButton(attention.level === "critical" ? "default" : "outline")}
+          onRevoke={(n) => confirm.ask(n)}
+        />
+      )}
       <Panel className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
         <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border bg-muted/40">
           <ShieldCheck className="size-5 text-muted-foreground" />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="text-sm font-medium">Interception CA</div>
-          <p className="text-xs text-muted-foreground">
-            Agents trust this certificate so the proxies can add credentials to HTTPS requests. Check the fingerprint
-            matches before installing it.
-          </p>
+          <p className="text-xs text-muted-foreground">Agents trust it so proxies can add credentials to HTTPS requests.</p>
           <div className="flex min-w-0 items-center gap-2">
-            <span className="text-xs text-muted-foreground">SHA-256</span>
+            <span className="shrink-0 text-xs text-muted-foreground">SHA-256</span>
             <Mono className="truncate">{ca.data?.sha256 ?? "…"}</Mono>
             {ca.data && <CopyButton value={ca.data.sha256} label="Copy fingerprint" />}
           </div>
@@ -116,58 +141,65 @@ export function Nodes() {
         </Button>
       </Panel>
       <Panel>
+        {revokedCount > 0 && (
+          <div className="flex justify-end border-b px-4 py-2">
+            <Button type="button" variant="ghost" size="sm" onClick={() => setShowRevoked(!showRevoked)}>
+              {showRevoked ? "Hide revoked" : `Show revoked (${revokedCount})`}
+            </Button>
+          </div>
+        )}
         {nodes.loading && !nodes.data ? (
           <Loading />
-        ) : nodes.data?.items.length === 0 ? (
+        ) : rows.length === 0 ? (
           <Empty
             icon={Server}
-            title="No proxies connected"
+            title={all.length === 0 ? "No proxies yet" : "No active proxies"}
             description={
-              <p className="text-sm text-muted-foreground">
-                Create a join token and run <Mono>credential-broker node join</Mono> on the data plane host.
-              </p>
+              <>
+                Create a join token, then run <Mono>credential-broker node join</Mono> on the proxy's host.
+              </>
             }
-            action={createButton}
+            action={attention?.level === "critical" ? undefined : createButton()}
           />
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Node</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Traffic policy</TableHead>
-                <TableHead className="hidden md:table-cell">Certificate until</TableHead>
                 <TableHead>Last seen</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {nodes.data?.items.map((n) => (
-                <TableRow key={n.id}>
-                  <TableCell className="font-medium">{n.name}</TableCell>
+              {rows.map((n) => (
+                <TableRow key={n.id} className={cn(n.revoked_at && "text-muted-foreground")}>
                   <TableCell>
-                    <Mono>{n.id.slice(0, 8)}</Mono>
+                    <button
+                      type="button"
+                      className="text-left font-medium underline-offset-4 hover:underline"
+                      onClick={() => setViewing(n)}
+                    >
+                      {n.name}
+                    </button>
                   </TableCell>
-                  <TableCell>{nodeStatus(n)}</TableCell>
                   <TableCell>
-                    <a href="#/settings" className="text-sm hover:underline" title="Change under Settings">
-                      {policy}
-                    </a>
-                  </TableCell>
-                  <TableCell className="hidden text-muted-foreground md:table-cell">
-                    <When at={n.cert_not_after} />
+                    <ProxyStatus node={n} now={now} />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    <When at={n.last_seen_at} />
+                    <Relative at={n.last_seen_at} />
                   </TableCell>
                   <TableCell>
                     <RowActions>
-                      {!n.revoked_at && (
-                        <Button type="button" variant="outline" size="sm" onClick={() => confirm.ask(n)}>
-                          Revoke
-                        </Button>
-                      )}
+                      <RowMenu
+                        label={n.name}
+                        items={[
+                          { label: "View details", icon: Info, onSelect: () => setViewing(n) },
+                          ...(n.revoked_at
+                            ? []
+                            : [{ label: "Revoke proxy", icon: Ban, onSelect: () => confirm.ask(n), destructive: true }]),
+                        ]}
+                      />
                     </RowActions>
                   </TableCell>
                 </TableRow>
@@ -177,6 +209,22 @@ export function Nodes() {
         )}
         <Pager page={nodes.data} onPage={setPage} />
       </Panel>
+      <FormDialog
+        open={viewing !== null}
+        onOpenChange={(o) => {
+          if (!o) setViewing(null);
+        }}
+        title={viewing?.name ?? "Proxy"}
+      >
+        {viewing && (
+          <ProxyDetails
+            node={all.find((n) => n.id === viewing.id) ?? viewing}
+            now={now}
+            onRevoke={(n) => confirm.ask(n)}
+            onClose={() => setViewing(null)}
+          />
+        )}
+      </FormDialog>
       <FormDialog
         open={joinToken !== null}
         onOpenChange={(o) => {
@@ -197,6 +245,9 @@ export function Nodes() {
                 </code>
               }
             />
+            <p className="text-xs text-muted-foreground">
+              Then start it with <Mono>credential-broker node run</Mono>. It shows as connected here within seconds.
+            </p>
             <DialogActions>
               <Button
                 type="button"
@@ -215,7 +266,7 @@ export function Nodes() {
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}
         title={`Revoke proxy "${confirm.target?.name ?? ""}"?`}
-        description="It stops receiving policy and fails closed when its lease lapses. A revoked proxy has to be enrolled again with a new join token."
+        description="It stops receiving policy and fails closed when its lease lapses. To use that host again, enrol it with a new join token."
         confirmLabel="Revoke proxy"
         busy={action.busy}
         onConfirm={() => {
@@ -223,5 +274,154 @@ export function Nodes() {
         }}
       />
     </PageContainer>
+  );
+}
+
+/** What is wrong with a proxy, and what to do about it. */
+function problemText(n: NodeInfo, now: Date): ReactNode {
+  switch (proxyState(n, now)) {
+    case "offline":
+      return (
+        <>
+          Not heard from since <Relative at={n.last_seen_at} />. Start it on its host with{" "}
+          <Mono>credential-broker node run</Mono>, or revoke it if the host is gone.
+        </>
+      );
+    case "never_connected":
+      return (
+        <>
+          Enrolled <Relative at={n.enrolled_at} /> but never connected. Run <Mono>credential-broker node run</Mono> on
+          its host.
+        </>
+      );
+    case "certificate_expired":
+      return (
+        <>
+          Its certificate expired <Relative at={n.cert_not_after} /> without being renewed. Revoke it and enrol the host
+          again with a new join token.
+        </>
+      );
+    case "healthy":
+    case "revoked":
+      return null;
+  }
+}
+
+function AttentionBanner({
+  attention,
+  now,
+  createButton,
+  onRevoke,
+}: {
+  attention: Exclude<Attention, { level: "ok" }>;
+  now: Date;
+  createButton: ReactNode;
+  onRevoke: (n: NodeInfo) => void;
+}) {
+  const critical = attention.level === "critical";
+  const title =
+    attention.kind === "none_enrolled"
+      ? "No proxy is running"
+      : attention.kind === "none_connected"
+        ? "No proxy is connected"
+        : `${attention.problems.length} of your proxies ${attention.problems.length === 1 ? "is" : "are"} not serving agents`;
+  const description =
+    attention.kind === "none_enrolled"
+      ? "Agents can't reach any service through the broker until a proxy is enrolled and running."
+      : attention.kind === "none_connected"
+        ? "Every agent request fails until a proxy checks in."
+        : "Agents routed to them fail; the others keep working.";
+  return (
+    <Alert variant={critical ? "destructive" : "warning"}>
+      <AlertTriangle className="size-4" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="space-y-3">
+        <p>{description}</p>
+        {attention.kind !== "none_enrolled" && (
+          <ul className="space-y-2 text-foreground">
+            {attention.problems.map((n) => (
+              <li key={n.id} className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <span className="text-sm">
+                  <span className="font-medium">{n.name}</span>: {problemText(n, now)}
+                </span>
+                <Button type="button" variant="outline" size="sm" className="shrink-0" onClick={() => onRevoke(n)}>
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {attention.kind === "none_enrolled" && <div>{createButton}</div>}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className="min-w-0 break-all text-sm">{children}</dd>
+    </div>
+  );
+}
+
+function ProxyDetails({
+  node,
+  now,
+  onRevoke,
+  onClose,
+}: {
+  node: NodeInfo;
+  now: Date;
+  onRevoke: (n: NodeInfo) => void;
+  onClose: () => void;
+}) {
+  const problem = problemText(node, now);
+  return (
+    <div className="space-y-4">
+      {problem && <p className="rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">{problem}</p>}
+      <dl className="space-y-3">
+        <Fact label="Status">
+          <ProxyStatus node={node} now={now} />
+        </Fact>
+        <Fact label="Last seen">
+          <Exact at={node.last_seen_at} />
+        </Fact>
+        <Fact label="Enrolled">
+          <Exact at={node.enrolled_at} />
+        </Fact>
+        {node.revoked_at && (
+          <Fact label="Revoked">
+            <Exact at={node.revoked_at} />
+          </Fact>
+        )}
+        <Fact label="Certificate">
+          renewed automatically, current one valid until <Exact at={node.cert_not_after} />
+        </Fact>
+        <Fact label="Proxy ID">
+          <span className="flex items-center gap-2">
+            <Mono>{node.id}</Mono>
+            <CopyButton value={node.id} label="Copy ID" />
+          </span>
+        </Fact>
+        <Fact label="Certificate serial">
+          <Mono>{node.cert_serial}</Mono>
+        </Fact>
+        <Fact label="Sealing key">
+          <Mono>{node.seal_public_key}</Mono>
+        </Fact>
+      </dl>
+      <DialogActions>
+        {!node.revoked_at && (
+          <Button type="button" variant="destructive" onClick={() => onRevoke(node)}>
+            Revoke proxy
+          </Button>
+        )}
+        <Button type="button" variant="outline" onClick={onClose}>
+          Close
+        </Button>
+      </DialogActions>
+    </div>
   );
 }

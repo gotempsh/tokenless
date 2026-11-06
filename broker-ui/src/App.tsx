@@ -24,7 +24,18 @@ import {
   Vault as VaultIcon,
   type LucideIcon,
 } from "lucide-react";
-import { ApiError, get, post, setCsrfToken, setStepUpHandler, type SessionInfo, type UserSummary } from "./api";
+import {
+  ApiError,
+  get,
+  post,
+  setCsrfToken,
+  setStepUpHandler,
+  type NodeInfo,
+  type Page,
+  type SessionInfo,
+  type UserSummary,
+} from "./api";
+import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
 import { parseAddServiceContext } from "./addService";
 import { useTheme, type Theme } from "./theme";
@@ -219,6 +230,38 @@ export function App() {
 
 // ----- shell -------------------------------------------------------------------
 
+type Alerts = Partial<Record<string, "critical" | "warning">>;
+
+const ALERT_POLL_MS = 30_000;
+
+/**
+ * Sections that need someone to act, so the sidebar can say so from any
+ * page. Only admins manage proxies, so only they are asked.
+ */
+function useSectionAlerts(isAdmin: boolean): Alerts {
+  const [alerts, setAlerts] = useState<Alerts>({});
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const nodes = await get<Page<NodeInfo>>("/nodes?page_size=100");
+        const attention = proxyAttention(nodes.items, new Date());
+        if (!cancelled) setAlerts(attention.level === "ok" ? {} : { proxies: attention.level });
+      } catch {
+        // The Proxies page reports its own errors; the sidebar stays quiet.
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), ALERT_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isAdmin]);
+  return alerts;
+}
+
 function Shell({
   section,
   detail,
@@ -235,10 +278,12 @@ function Shell({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useTheme();
   const [collapsed, toggleCollapsed] = useSidebarCollapsed();
+  const alerts = useSectionAlerts(user.role === "admin");
   const sidebar = (iconsOnly: boolean) => (
     <SidebarContent
       section={section}
       user={user}
+      alerts={alerts}
       collapsed={iconsOnly}
       onLogout={onLogout}
       onNavigate={() => setMobileOpen(false)}
@@ -339,12 +384,14 @@ function SideTip({ label, show, children }: { label: string; show: boolean; chil
 function SidebarContent({
   section,
   user,
+  alerts,
   collapsed,
   onLogout,
   onNavigate,
 }: {
   section: string;
   user: UserSummary;
+  alerts: Alerts;
   /** Icons only, each named by a tooltip. */
   collapsed: boolean;
   onLogout: () => void;
@@ -373,22 +420,34 @@ function SidebarContent({
             <ul className="flex flex-col gap-1">
               {g.items.map((item) => {
                 const active = section === item.key;
+                const alert = alerts[item.key];
+                const name = alert ? `${item.label} (needs attention)` : item.label;
                 return (
                   <li key={item.key}>
-                    <SideTip label={item.label} show={collapsed}>
+                    <SideTip label={name} show={collapsed}>
                       <a
                         href={`#/${item.key}`}
                         onClick={onNavigate}
                         data-active={active}
                         aria-current={active ? "page" : undefined}
-                        aria-label={collapsed ? item.label : undefined}
+                        aria-label={collapsed || alert ? name : undefined}
                         className={cn(
-                          "flex h-8 w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground [&>svg]:size-4 [&>svg]:shrink-0",
+                          "relative flex h-8 w-full items-center gap-2 rounded-md p-2 text-sm outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground [&>svg]:size-4 [&>svg]:shrink-0",
                           collapsed && "justify-center",
                         )}
                       >
                         <item.icon />
                         {!collapsed && <span className="truncate">{item.label}</span>}
+                        {alert && (
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-2 shrink-0 rounded-full",
+                              alert === "critical" ? "bg-destructive" : "bg-warning",
+                              collapsed ? "absolute right-1.5 top-1.5" : "ml-auto",
+                            )}
+                          />
+                        )}
                       </a>
                     </SideTip>
                   </li>

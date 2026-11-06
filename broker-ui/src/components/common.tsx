@@ -7,6 +7,7 @@
 import { useState, type ReactNode } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
 import type { Page } from "../api";
+import { compactTime, exactTime, relativeTime } from "../time";
 import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
@@ -173,35 +174,35 @@ export function Pager<T>({ page, onPage }: { page: Page<T> | undefined; onPage: 
   );
 }
 
+/** A table-friendly time: relative within a day, the date after that. Exact on hover. */
 export function When({ at }: { at: string | null | undefined }) {
   if (!at) return <span className="text-muted-foreground">never</span>;
   const d = new Date(at);
   return (
-    <time dateTime={at} title={at} className="whitespace-nowrap">
-      {d.toLocaleString()}
+    <time dateTime={at} title={exactTime(d)} className="whitespace-nowrap">
+      {compactTime(d, new Date())}
     </time>
   );
 }
 
-const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-  ["year", 365 * 24 * 3600],
-  ["month", 30 * 24 * 3600],
-  ["week", 7 * 24 * 3600],
-  ["day", 24 * 3600],
-  ["hour", 3600],
-  ["minute", 60],
-  ["second", 1],
-];
-
 /** "in 5 days" / "3 hours ago", with the exact time on hover. */
 export function Relative({ at }: { at: string | null | undefined }) {
   if (!at) return <span className="text-muted-foreground">never</span>;
-  const secs = (new Date(at).getTime() - Date.now()) / 1000;
-  const [unit, size] = UNITS.find(([, n]) => Math.abs(secs) >= n) ?? ["second", 1];
-  const text = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(secs / size), unit);
+  const d = new Date(at);
   return (
-    <time dateTime={at} title={new Date(at).toLocaleString()} className="whitespace-nowrap">
-      {text}
+    <time dateTime={at} title={exactTime(d)} className="whitespace-nowrap">
+      {relativeTime(d, new Date())}
+    </time>
+  );
+}
+
+/** The full date and time, for detail views. */
+export function Exact({ at }: { at: string | null | undefined }) {
+  if (!at) return <span className="text-muted-foreground">never</span>;
+  const d = new Date(at);
+  return (
+    <time dateTime={at} title={relativeTime(d, new Date())}>
+      {exactTime(d)}
     </time>
   );
 }

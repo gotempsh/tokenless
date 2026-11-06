@@ -13,6 +13,7 @@ import {
   DialogActions,
   Empty,
   ErrorBanner,
+  Exact,
   Field,
   FormDialog,
   lines,
@@ -25,7 +26,6 @@ import {
   RowMenu,
   Status,
   useConfirm,
-  When,
 } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -262,7 +262,7 @@ export function SessionDetail({
         <Meta label="Vault">{vaultName ?? <Mono>{session.vault_id.slice(0, 8)}</Mono>}</Meta>
         <Meta label="Access bundle">{session.bundle?.name ?? "none"}</Meta>
         <Meta label="Created">
-          <When at={session.created_at} />
+          <Exact at={session.created_at} />
         </Meta>
         <Meta label="Expires">
           <Relative at={session.expires_at} />
