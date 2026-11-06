@@ -27,6 +27,22 @@ import {
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { logRows, type LogRow } from "./sessionLogs";
+
+function outcomeBadge(row: LogRow) {
+  switch (row.outcome) {
+    case "brokered": {
+      const tone = row.status === undefined || row.status < 400 ? "success" : row.status < 500 ? "warning" : "destructive";
+      return <Status tone={tone}>brokered{row.status !== undefined ? ` · ${row.status}` : ""}</Status>;
+    }
+    case "blocked":
+      return <Status tone="warning">blocked</Status>;
+    case "passthrough":
+      return <Status tone="neutral">passthrough</Status>;
+    case "error":
+      return <Status tone="destructive">error{row.status !== undefined ? ` · ${row.status}` : ""}</Status>;
+  }
+}
 
 /** The label people set when minting, else the first label, else the id. */
 export function sessionLabel(s: ProxySession): string {
@@ -194,9 +210,10 @@ export function SessionDetail({
 }) {
   const [page, setPage] = useState(1);
   const logs = useLoad(
-    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&page=${page}&page_size=25`),
+    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&page=${page}&page_size=50`),
     [session.id, page],
   );
+  const rows = useMemo(() => logRows(logs.data?.items ?? []), [logs.data]);
   return (
     <div className="space-y-5">
       <dl className="grid grid-cols-2 gap-4 rounded-md border p-4 sm:grid-cols-4">
@@ -235,33 +252,37 @@ export function SessionDetail({
             <Empty
               icon={ScrollText}
               title="No traffic yet"
-              description="Requests the proxies inject into, deny or tunnel for this session appear here. Proxies report them every few seconds."
+              description="Requests the proxies broker, block or tunnel for this session appear here, with the status each API answered. Proxies report them every few seconds."
             />
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Time</TableHead>
-                  <TableHead>Event</TableHead>
+                  <TableHead>Outcome</TableHead>
                   <TableHead>Request</TableHead>
+                  <TableHead className="text-right">Time taken</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {logs.data?.items.map((e) => (
-                  <TableRow key={e.id}>
+                {rows.map((r) => (
+                  <TableRow key={r.key}>
                     <TableCell className="text-muted-foreground">
-                      <Relative at={e.at} />
+                      <Relative at={r.at} />
                     </TableCell>
-                    <TableCell>
-                      <Status tone={e.outcome === "success" ? "success" : e.outcome === "denied" ? "warning" : "destructive"}>
-                        {e.action.replace(/^proxy\./, "")}
-                      </Status>
-                    </TableCell>
+                    <TableCell>{outcomeBadge(r)}</TableCell>
                     <TableCell className="max-w-80">
-                      <Mono className="block truncate">
-                        {[e.detail.method, e.detail.host, e.detail.path].filter(Boolean).join(" ")}
-                      </Mono>
-                      {e.detail.reason && <p className="mt-1 text-xs text-muted-foreground">{e.detail.reason}</p>}
+                      <Mono className="block truncate">{r.request}</Mono>
+                      {r.reason && <p className="mt-1 text-xs text-muted-foreground">{r.reason}</p>}
+                      {r.substituted && (
+                        <p className="mt-1 text-xs text-muted-foreground">Filled in {r.substituted}</p>
+                      )}
+                      {r.bodySkipped && (
+                        <p className="mt-1 text-xs text-muted-foreground">Body not searched: {r.bodySkipped}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground">
+                      {r.durationMs !== undefined ? `${r.durationMs} ms` : ""}
                     </TableCell>
                   </TableRow>
                 ))}

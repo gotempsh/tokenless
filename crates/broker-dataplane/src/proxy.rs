@@ -316,6 +316,23 @@ async fn handle_proxy_request(
     } else {
         Vec::new()
     };
+    if tls_config.is_none() {
+        let reason = if excepted() {
+            "always-reachable host; tunnelled untouched"
+        } else {
+            "no rule covers this host; tunnelled untouched"
+        };
+        audit_best_effort(
+            &shared,
+            &claims,
+            "proxy.tunnel",
+            AuditOutcome::Success,
+            &host,
+            port,
+            None,
+            reason,
+        );
+    }
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
@@ -766,6 +783,7 @@ async fn handle_intercepted(
             );
         }
     }
+    let request_id = new_request_id();
     let mut applied = Applied::default();
     let mut body_skipped = None;
     let req = if rule.substitutions.is_empty() {
@@ -791,7 +809,8 @@ async fn handle_intercepted(
         Some((&method, &path)),
     )
     .target(format!("rule:{}", rule.id))
-    .detail("credential_id", rule.credential_id.to_string());
+    .detail("credential_id", rule.credential_id.to_string())
+    .detail("request_id", request_id.clone());
     if !applied.is_empty() {
         event = event.detail("substituted", applied.placeholders.join(", "));
     }
@@ -807,21 +826,50 @@ async fn handle_intercepted(
     rewrite_headers(req.headers_mut(), rule);
     let rule_id = rule.id;
     drop(snapshot);
-    match ctx.upstream.send(req).await {
+    let started = std::time::Instant::now();
+    let sent = ctx.upstream.send(req).await;
+    // Best effort: the decision above is the record that must exist; this
+    // one only adds what the API answered.
+    let mut outcome = proxy_event(
+        shared,
+        claims,
+        "proxy.response",
+        AuditOutcome::Success,
+        &ctx.host,
+        ctx.port,
+        Some((&method, &path)),
+    )
+    .target(format!("rule:{rule_id}"))
+    .detail("request_id", request_id.clone())
+    .detail("duration_ms", started.elapsed().as_millis().to_string());
+    match sent {
         Ok(response) => {
             Metrics::inc(&shared.metrics.requests_injected_total);
-            debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status = response.status().as_u16(), "injected credential");
+            let status = response.status().as_u16();
+            debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
+            outcome = outcome.detail("status", status.to_string());
+            let _ = shared.audit.try_record(outcome);
             response.map(|b| b.boxed())
         }
         Err(e) => {
             Metrics::inc(&shared.metrics.upstream_errors_total);
             warn!(error = %e, "upstream request failed");
+            outcome.outcome = AuditOutcome::Failure;
+            outcome = outcome
+                .detail("status", "502")
+                .detail("reason", format!("upstream request failed: {e}"));
+            let _ = shared.audit.try_record(outcome);
             respond(
                 StatusCode::BAD_GATEWAY,
                 &format!("upstream request failed: {e}"),
             )
         }
     }
+}
+
+/// Pairs a request's decision record with its response record.
+fn new_request_id() -> String {
+    hex::encode(rand::random::<[u8; 8]>())
 }
 
 #[cfg(test)]

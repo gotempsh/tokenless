@@ -911,6 +911,36 @@ async fn end_to_end() {
     )
     .await;
 
+    // Each injected request is paired with the API's answer, and tunnels
+    // are logged too.
+    eventually(
+        "proxy.response paired with its proxy.inject",
+        Duration::from_secs(10),
+        || async {
+            let page = api.get("/audit?action_prefix=proxy.&page_size=100").await;
+            let items = page["items"].as_array().cloned().unwrap_or_default();
+            let responded = items.iter().find(|e| {
+                e["action"] == "proxy.response"
+                    && e["detail"]["status"] == "200"
+                    && e["detail"]["duration_ms"].is_string()
+            });
+            let paired = responded.is_some_and(|r| {
+                items.iter().any(|e| {
+                    e["action"] == "proxy.inject"
+                        && e["detail"]["request_id"] == r["detail"]["request_id"]
+                })
+            });
+            let tunnelled = items.iter().any(|e| {
+                e["action"] == "proxy.tunnel"
+                    && e["detail"]["reason"]
+                        .as_str()
+                        .is_some_and(|r| r.contains("always-reachable"))
+            });
+            paired && tunnelled
+        },
+    )
+    .await;
+
     // --- secrets are write-only ------------------------------------------------
     let mut bodies = Vec::new();
     for path in [
