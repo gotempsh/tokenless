@@ -55,6 +55,11 @@ pub enum ControlError {
     #[error("forbidden: {reason}")]
     Forbidden { reason: String },
 
+    /// The password was right and the account has an authenticator: sign-in
+    /// continues once the code is sent with the same username and password.
+    #[error("account '{username}' needs a code from its authenticator to sign in")]
+    SecondFactorRequired { username: String },
+
     #[error(
         "'{action}' requires a fresh second factor (step-up MFA within the last {window_secs}s)"
     )]

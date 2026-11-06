@@ -735,7 +735,33 @@ mod tests {
             password: "correct horse battery".into(),
             totp_code: None,
         };
-        assert!(cp.auth.login(without_code.clone()).await.is_err());
+        // The right password without a code asks for the code, as often as
+        // it is tried, without using up the sign-in attempts.
+        for _ in 0..6 {
+            assert!(matches!(
+                cp.auth.login(without_code.clone()).await,
+                Err(ControlError::SecondFactorRequired { ref username }) if username == "admin"
+            ));
+        }
+        // A wrong password never reveals that the account has an authenticator.
+        assert!(matches!(
+            cp.auth
+                .login(LoginRequest {
+                    password: "wrong horse battery".into(),
+                    ..without_code.clone()
+                })
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+        assert!(matches!(
+            cp.auth
+                .login(LoginRequest {
+                    totp_code: Some("000000".into()),
+                    ..without_code.clone()
+                })
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
         let outcome = cp
             .auth
             .login(LoginRequest {

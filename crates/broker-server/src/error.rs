@@ -181,6 +181,11 @@ fn map_control(e: &ControlError) -> Mapped {
             "unauthenticated",
         ),
         ControlError::Forbidden { .. } => mapped(StatusCode::FORBIDDEN, "Forbidden", "forbidden"),
+        ControlError::SecondFactorRequired { .. } => mapped(
+            StatusCode::UNAUTHORIZED,
+            "Authenticator Code Required",
+            "second_factor_required",
+        ),
         ControlError::StepUpRequired { .. } => mapped(
             StatusCode::FORBIDDEN,
             "Step-Up Authentication Required",
@@ -284,6 +289,17 @@ mod tests {
         assert_eq!(p.status, 403);
         assert_eq!(p.code, "step_up_required");
         assert!(p.detail.contains("credential.create"));
+    }
+
+    #[test]
+    fn missing_authenticator_code_maps_to_401_with_code() {
+        let p = ApiError::Control(ControlError::SecondFactorRequired {
+            username: "operator".into(),
+        })
+        .problem();
+        assert_eq!(p.status, 401);
+        assert_eq!(p.code, "second_factor_required");
+        assert!(p.detail.contains("operator"));
     }
 
     #[test]

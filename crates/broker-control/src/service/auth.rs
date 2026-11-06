@@ -399,6 +399,18 @@ impl AuthService {
                 false
             }
         };
+        // The right password for an account with an authenticator, sent
+        // without a code, asks for the code; it is not a failed attempt.
+        if let (Some(u), true) = (&user, password_ok) {
+            if u.disabled_at.is_none()
+                && u.totp_secret_enc.is_some()
+                && non_empty(&req.totp_code).is_none()
+            {
+                return Err(ControlError::SecondFactorRequired {
+                    username: u.username.clone(),
+                });
+            }
+        }
         let user = match (user, password_ok) {
             (Some(u), true)
                 if u.disabled_at.is_none() && self.second_factor_ok(&u, &req.totp_code).await? =>

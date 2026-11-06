@@ -3,7 +3,7 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ChevronLeft, Smartphone } from "lucide-react";
-import { post, type InviteInfo, type SessionInfo, type UserSummary } from "../api";
+import { ApiError, post, type InviteInfo, type SessionInfo, type UserSummary } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { CheckField, CopyButton, DialogActions, ErrorBanner, Field, When } from "../components/common";
 import { BrandMark } from "../components/Brand";
@@ -48,9 +48,9 @@ function AuthenticatorChoice({ checked, onChange }: { checked: boolean; onChange
       id="use-totp"
       checked={checked}
       onChange={onChange}
-      hint="Recommended. You can sign in with just the password if you leave this off."
+      hint="Optional. Every sign-in then also asks for a 6-digit code from the app."
     >
-      Also require a code from an authenticator app at sign-in
+      Use an authenticator app
     </CheckField>
   );
 }
@@ -114,7 +114,7 @@ export function Setup({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");
   const [code, setCode] = useState("");
-  const [useTotp, setUseTotp] = useState(true);
+  const [useTotp, setUseTotp] = useState(false);
   const [stage, setStage] = useState<"name" | "details">("name");
   const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
   const action = useAction();
@@ -203,7 +203,7 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [useTotp, setUseTotp] = useState(true);
+  const [useTotp, setUseTotp] = useState(false);
   const [stage, setStage] = useState<"name" | "details">("name");
   const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
   const [created, setCreated] = useState<UserSummary | null>(null);
@@ -319,20 +319,57 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
   );
 }
 
+/** Username and password; a second screen asks for the code only when the account has an authenticator. */
 export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [stage, setStage] = useState<"password" | "code">("password");
   const action = useAction();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const trimmed = code.trim();
-    const session = await action.run(() =>
-      post<SessionInfo>("/auth/login", { username, password, ...(trimmed ? { totp_code: trimmed } : {}) }),
-    );
-    if (session) onLogin(session);
+    const trimmed = stage === "code" ? code.trim() : "";
+    const result = await action.run(async () => {
+      try {
+        return await post<SessionInfo>("/auth/login", { username, password, ...(trimmed ? { totp_code: trimmed } : {}) });
+      } catch (err) {
+        if (err instanceof ApiError && err.problem.code === "second_factor_required") return "code" as const;
+        if (stage === "code" && err instanceof ApiError && err.problem.code === "unauthenticated")
+          throw new Error("That code is wrong or has expired. Enter the one your app shows now.");
+        throw err;
+      }
+    });
+    if (result === "code") setStage("code");
+    else if (result) onLogin(result);
   };
+
+  const back = () => {
+    setStage("password");
+    setCode("");
+    action.clearError();
+  };
+
+  if (stage === "code")
+    return (
+      <AuthLayout title="Enter your code" description={<>Open your authenticator app and enter the code for {username}.</>}>
+        <form onSubmit={submit} className="space-y-5">
+          <ErrorBanner error={action.error} title="Sign-in failed" />
+          <Field label="Authenticator code" htmlFor="totp-code">
+            <CodeField value={code} onChange={setCode} required autoFocus />
+          </Field>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={back}>
+              <ChevronLeft />
+              Back
+            </Button>
+            <Button type="submit" className="flex-1" disabled={action.busy}>
+              Sign in
+            </Button>
+          </div>
+        </form>
+      </AuthLayout>
+    );
 
   return (
     <AuthLayout title="Sign in">
@@ -350,16 +387,6 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
             autoComplete="current-password"
             required
           />
-        </Field>
-        <Field
-          label={
-            <>
-              Authenticator code <span className="font-normal text-muted-foreground">(only if your account has one)</span>
-            </>
-          }
-          htmlFor="totp-code"
-        >
-          <CodeField value={code} onChange={setCode} />
         </Field>
         <Button type="submit" className="w-full" disabled={action.busy}>
           Sign in
