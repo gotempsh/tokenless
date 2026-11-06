@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The fixed set of injection methods. Templates only parameterise these;

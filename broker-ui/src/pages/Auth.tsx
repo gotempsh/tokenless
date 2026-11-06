@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent, type ReactNode } from "react";
@@ -29,7 +29,7 @@ export function AuthLayout({ title, description, children }: { title: string; de
     <div className="flex min-h-svh flex-col items-center justify-center bg-muted/40 px-4 py-10">
       <div className="mb-6 flex items-center gap-2">
         <BrandMark />
-        <span className="text-sm font-semibold">Credential Broker</span>
+        <span className="text-sm font-semibold">Tokenless</span>
       </div>
       <div className="w-full max-w-md rounded-lg border bg-card p-6 text-card-foreground sm:p-8">
         <div className="mb-6 space-y-1.5">

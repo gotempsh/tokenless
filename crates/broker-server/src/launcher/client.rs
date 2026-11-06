@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! A small client for the parts of the management API a launcher needs.
@@ -109,7 +109,7 @@ impl ApiClient {
     ) -> Result<RequestBuilder, LauncherError> {
         let key = self.api_key.as_ref().ok_or_else(|| {
             LauncherError::config(format!(
-                "{operation} needs an API key: set CREDENTIAL_BROKER_API_KEY or pass --api-key-file"
+                "{operation} needs an API key: set TOKENLESS_API_KEY or pass --api-key-file"
             ))
         })?;
         Ok(builder.bearer_auth(key.as_str()))

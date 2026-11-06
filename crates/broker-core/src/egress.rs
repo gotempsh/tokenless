@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Egress address policy: which resolved IP addresses the broker may open

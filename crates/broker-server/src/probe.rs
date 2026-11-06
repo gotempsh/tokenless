@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! HTTPS prober for credential validation requests.
@@ -120,7 +120,7 @@ impl HttpProber {
             .method(req.method.as_str())
             .uri(req.path.as_str())
             .header(HOST, authority)
-            .header(USER_AGENT, "credential-broker-validation/1");
+            .header(USER_AGENT, "tokenless-validation/1");
         for h in &req.headers.headers {
             let name = HeaderName::from_bytes(h.name.as_bytes())
                 .map_err(|e| fail(format!("invalid injected header name: {e}")))?;

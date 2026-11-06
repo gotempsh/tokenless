@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Access bundles: named lists of a vault's rules, one per kind of job, that
@@ -57,7 +57,7 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** The command that runs an agent behind a session port for `bundle`. */
 export function runCommand(bundle: string, vault?: string): string {
   const vaultFlag = vault ? ` --vault ${vault}` : "";
-  return `credential-broker run${vaultFlag} --bundle ${bundle} -- <agent-command>`;
+  return `tokenless run${vaultFlag} --bundle ${bundle} -- <agent-command>`;
 }
 
 export function CommandSnippet({ command }: { command: string }) {
@@ -525,10 +525,10 @@ function RunInstructions({ bundle, onClose }: { bundle: AccessBundle; onClose: (
             </a>{" "}
             and give it to the agent's machine:
           </p>
-          <CommandSnippet command="export CREDENTIAL_BROKER_API_KEY=cbk_..." />
+          <CommandSnippet command="export TOKENLESS_API_KEY=cbk_..." />
           <p className="text-xs text-muted-foreground">
-            Off this machine, also set <Mono>CREDENTIAL_BROKER_URL</Mono> to the console's address and{" "}
-            <Mono>CREDENTIAL_BROKER_PROXY_ADDRESS</Mono> to a proxy's <Mono>host:port</Mono>.
+            Off this machine, also set <Mono>TOKENLESS_URL</Mono> to the console's address and{" "}
+            <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a proxy's <Mono>host:port</Mono>.
           </p>
         </li>
         <li className="space-y-2">
@@ -545,7 +545,7 @@ function RunInstructions({ bundle, onClose }: { bundle: AccessBundle; onClose: (
         </li>
         <li className="space-y-2">
           <p>Or keep a session port open for agents you start yourself:</p>
-          <CommandSnippet command={`credential-broker session start --bundle ${bundle.name} --env-file ./agent.env`} />
+          <CommandSnippet command={`tokenless session start --bundle ${bundle.name} --env-file ./agent.env`} />
           <p className="text-xs text-muted-foreground">
             Then <Mono>source ./agent.env</Mono> in the agent's shell. Ctrl-C ends the session.
           </p>

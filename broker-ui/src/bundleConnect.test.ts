@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { describe, expect, test } from "bun:test";
@@ -56,10 +56,10 @@ describe("bundle connect commands", () => {
   test("commands and the env file carry the references", () => {
     const refs = envReferences([credential("Work GitHub", "github", [sub("token", "GITHUB_TOKEN")])]);
     expect(runAgentCommand("code-review", "claude", "main vault")).toBe(
-      "credential-broker run --vault 'main vault' --bundle code-review -- claude",
+      "tokenless run --vault 'main vault' --bundle code-review -- claude",
     );
     expect(execCommand("code-review", refs)).toBe(
-      "credential-broker exec --bundle code-review \\\n  GITHUB_TOKEN='cb://Work GitHub/token' \\\n  -- ./script.sh",
+      "tokenless exec --bundle code-review \\\n  GITHUB_TOKEN='cb://Work GitHub/token' \\\n  -- ./script.sh",
     );
     expect(envFile(refs)).toBe('# References, not secrets: safe to commit.\nGITHUB_TOKEN="cb://Work GitHub/token"\n');
   });

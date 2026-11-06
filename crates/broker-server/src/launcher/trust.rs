@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The certificates and environment an agent needs to use the proxy.
@@ -157,7 +157,7 @@ pub fn agent_env(port: SocketAddr, trust: &TrustFiles) -> Vec<(String, String)> 
     ));
     // Node 24+ only sends its built-in fetch through HTTPS_PROXY with this.
     env.push(("NODE_USE_ENV_PROXY".to_string(), "1".to_string()));
-    env.push(("CREDENTIAL_BROKER_PROXY".to_string(), proxy));
+    env.push(("TOKENLESS_PROXY".to_string(), proxy));
     env
 }
 

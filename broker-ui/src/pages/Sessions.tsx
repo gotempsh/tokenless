@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Proxy sessions across every vault the caller can see, with each
@@ -96,7 +96,7 @@ export function Sessions() {
             title="No sessions yet"
             description={
               <>
-                Start an agent with <Mono>credential-broker run --bundle &lt;name&gt; -- &lt;agent-command&gt;</Mono>, or mint
+                Start an agent with <Mono>tokenless run --bundle &lt;name&gt; -- &lt;agent-command&gt;</Mono>, or mint
                 one from a vault's <span className="font-medium text-foreground">Sessions</span> tab.
               </>
             }

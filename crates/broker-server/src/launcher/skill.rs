@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The agent skill: instructions for an agent working behind the broker,
@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 
 use super::LauncherError;
 
-/// `skills/credential-broker/SKILL.md`.
-pub const SKILL_MD: &str = include_str!("../../../../skills/credential-broker/SKILL.md");
+/// `skills/tokenless/SKILL.md`.
+pub const SKILL_MD: &str = include_str!("../../../../skills/tokenless/SKILL.md");
 
 /// The skill's directory name, which is also its `name`.
-pub const SKILL_NAME: &str = "credential-broker";
+pub const SKILL_NAME: &str = "tokenless";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Installed {
@@ -31,7 +31,7 @@ pub fn default_dir() -> Result<PathBuf, LauncherError> {
         })
 }
 
-/// Writes `<skills_dir>/credential-broker/SKILL.md`. A different file
+/// Writes `<skills_dir>/tokenless/SKILL.md`. A different file
 /// already there is only replaced with `force`, since it may hold local
 /// edits.
 pub fn install(skills_dir: &Path, force: bool) -> Result<(PathBuf, Installed), LauncherError> {
@@ -92,7 +92,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (path, outcome) = install(dir.path(), false).unwrap();
         assert_eq!(outcome, Installed::Created);
-        assert_eq!(path, dir.path().join("credential-broker").join("SKILL.md"));
+        assert_eq!(path, dir.path().join("tokenless").join("SKILL.md"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), SKILL_MD);
         assert_eq!(install(dir.path(), false).unwrap().1, Installed::Unchanged);
 

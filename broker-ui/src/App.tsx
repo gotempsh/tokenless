@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -404,7 +404,7 @@ function SidebarContent({
         <BrandMark />
         {!collapsed && (
           <div className="min-w-0 leading-tight">
-            <div className="truncate text-sm font-semibold">Credential Broker</div>
+            <div className="truncate text-sm font-semibold">Tokenless</div>
             <div className="truncate text-xs text-sidebar-foreground/70">Console</div>
           </div>
         )}

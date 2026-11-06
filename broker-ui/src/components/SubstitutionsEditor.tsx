@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Edits a credential's substitutions: the placeholder an agent sends, the
@@ -118,7 +118,7 @@ export function SubstitutionsEditor({
                 </>
               }
               htmlFor={`sub-${i}-env`}
-              hint="Set to the placeholder for agents started with credential-broker run."
+              hint="Set to the placeholder for agents started with tokenless run."
             >
               <Input
                 id={`sub-${i}-env`}

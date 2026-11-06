@@ -1,9 +1,9 @@
 <!--
-SPDX-FileCopyrightText: 2026 credential-broker contributors
+SPDX-FileCopyrightText: 2026 tokenless contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
-# credential-broker
+# tokenless
 
 A credential broker for AI agents. Agents send HTTPS traffic through a
 local forward proxy using a short-lived session token. For hosts that
@@ -19,7 +19,7 @@ denied, depending on policy).
   reaches the proxy within seconds.
 - **Access bundles and a launcher.** Group a vault's rules by job
   (`code-review`) and start an agent with
-  `credential-broker run --bundle code-review -- <agent>`: the agent gets
+  `tokenless run --bundle code-review -- <agent>`: the agent gets
   a local proxy address, never a token.
 - **Fails closed.** The proxy runs from an Ed25519-signed, leased policy
   snapshot. When the lease lapses it refuses traffic, and it refuses to
@@ -41,7 +41,7 @@ cargo build --release
 (cd broker-ui && bun install && bun run build)
 
 # 1. Start the control plane. On first start it prints a single-use setup token.
-./target/release/credential-broker serve --data-dir ./data --ui-dir broker-ui/dist
+./target/release/tokenless serve --data-dir ./data --ui-dir broker-ui/dist
 ```
 
 Open <http://127.0.0.1:8080/> and complete these steps:
@@ -66,16 +66,16 @@ Open <http://127.0.0.1:8080/> and complete these steps:
 Enrol and run a proxy (data plane) next to the agent:
 
 ```sh
-./target/release/credential-broker node join \
+./target/release/tokenless node join \
   --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
-./target/release/credential-broker node run --state ./node.json   # listens on 127.0.0.1:3128
+./target/release/tokenless node run --state ./node.json   # listens on 127.0.0.1:3128
 ```
 
 ### Run an agent with an access bundle
 
 ```sh
-export CREDENTIAL_BROKER_API_KEY=cbk_...    # or --api-key-file key.txt
-./target/release/credential-broker run --bundle code-review -- claude
+export TOKENLESS_API_KEY=cbk_...    # or --api-key-file key.txt
+./target/release/tokenless run --bundle code-review -- claude
 ```
 
 `run` mints a session from the bundle and opens a **session port**: a
@@ -88,8 +88,8 @@ token anywhere in its environment. Sessions are capped at an hour unless
 an admin raises it (**Settings → Session lifetime**, up to 7 days), so the
 port renews the session before it expires. When the agent exits, every
 session the run minted is ended and `run` exits with the agent's code.
-The agent never inherits `CREDENTIAL_BROKER_API_KEY` or
-`CREDENTIAL_BROKER_SESSION_TOKEN` from your shell.
+The agent never inherits `TOKENLESS_API_KEY` or
+`TOKENLESS_SESSION_TOKEN` from your shell.
 
 #### Filling environment variables
 
@@ -97,9 +97,9 @@ The agent never inherits `CREDENTIAL_BROKER_API_KEY` or
 a key from the environment:
 
 ```sh
-credential-broker exec --bundle deploy \
+tokenless exec --bundle deploy \
   GITHUB_TOKEN=cb://github/token REGION=eu-west-1 -- ./release.sh
-credential-broker exec --bundle deploy --env-file .env.broker -- ./release.sh
+tokenless exec --bundle deploy --env-file .env.broker -- ./release.sh
 ```
 
 `cb://<service>/<field>` is replaced by that field's
@@ -117,12 +117,12 @@ the command starts, with the references the session does resolve.
 #### The agent skill
 
 ```sh
-credential-broker skill --install                        # ~/.claude/skills/credential-broker/SKILL.md
-credential-broker skill --install --dir .claude/skills   # for one project
-credential-broker skill                                  # print it
+tokenless skill --install                        # ~/.claude/skills/tokenless/SKILL.md
+tokenless skill --install --dir .claude/skills   # for one project
+tokenless skill                                  # print it
 ```
 
-The skill ([`skills/credential-broker/SKILL.md`](skills/credential-broker/SKILL.md))
+The skill ([`skills/tokenless/SKILL.md`](skills/tokenless/SKILL.md))
 tells an agent behind the broker how to see what it can reach, hand tools
 a placeholder instead of a key, and read the proxy's `403`/`407`/`429`
 answers without trying to work around them. It is built into the binary, so
@@ -132,7 +132,7 @@ it always matches the CLI. A copy with local edits is only replaced with
 To keep a session port open for agents you start yourself:
 
 ```sh
-./target/release/credential-broker session start --bundle code-review \
+./target/release/tokenless session start --bundle code-review \
   --listen 127.0.0.1:17323 --env-file ./agent.env
 # in the agent's shell:
 . ./agent.env && curl https://api.github.com/user
@@ -142,9 +142,9 @@ It prints the same exports, renews the session, and ends it on Ctrl-C
 or SIGTERM. For scripts that manage the token themselves:
 
 ```sh
-TOKEN=$(credential-broker session create --bundle code-review --ttl 15m)
+TOKEN=$(tokenless session create --bundle code-review --ttl 15m)
 HTTPS_PROXY="http://$TOKEN@127.0.0.1:3128" curl --cacert broker-ca.pem https://api.github.com/user
-CREDENTIAL_BROKER_SESSION_TOKEN=$TOKEN credential-broker session revoke
+TOKENLESS_SESSION_TOKEN=$TOKEN tokenless session revoke
 ```
 
 Through any of these, the request reaches GitHub with
@@ -169,21 +169,21 @@ says so). A placeholder with an environment variable is exported by
 An agent can ask what its session reaches:
 
 ```sh
-credential-broker session info           # behind run/session start: asks the session port
-curl "$CREDENTIAL_BROKER_PROXY/services" # the same, as JSON
+tokenless session info           # behind run/session start: asks the session port
+curl "$TOKENLESS_PROXY/services" # the same, as JSON
 ```
 
 It lists the bundle, each service's hosts, allowed methods and paths,
 and its placeholders, never a secret. With only a token, `session info`
-uses `GET /api/v1/sessions/self` and `CREDENTIAL_BROKER_SESSION_TOKEN`.
+uses `GET /api/v1/sessions/self` and `TOKENLESS_SESSION_TOKEN`.
 
 | Setting | Flag | Environment |
 |---|---|---|
-| Management API | `--server` | `CREDENTIAL_BROKER_URL` (default `http://127.0.0.1:8080`) |
-| API key | `--api-key-file` | `CREDENTIAL_BROKER_API_KEY` |
-| Vault | `--vault <name or id>` | `CREDENTIAL_BROKER_VAULT` (not needed with a vault-bound key) |
-| Bundle | `--bundle <name or id>` | `CREDENTIAL_BROKER_BUNDLE` |
-| Proxy | `--proxy host:port` | `CREDENTIAL_BROKER_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
+| Management API | `--server` | `TOKENLESS_URL` (default `http://127.0.0.1:8080`) |
+| API key | `--api-key-file` | `TOKENLESS_API_KEY` |
+| Vault | `--vault <name or id>` | `TOKENLESS_VAULT` (not needed with a vault-bound key) |
+| Bundle | `--bundle <name or id>` | `TOKENLESS_BUNDLE` |
+| Proxy | `--proxy host:port` | `TOKENLESS_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
 
 Pass `--ca-fingerprint` with the SHA-256 shown on the **Proxies** page
 to refuse to start if the broker presents a different CA. The session
@@ -210,8 +210,8 @@ it off). Each MCP server in a bundle gets a URL of the form
 token as its bearer token:
 
 ```sh
-credential-broker mcp --bundle code-review                # prints claude mcp add ... per server
-credential-broker mcp --bundle code-review --format json  # an mcpServers block for other clients
+tokenless mcp --bundle code-review                # prints claude mcp add ... per server
+tokenless mcp --bundle code-review --format json  # an mcpServers block for other clients
 ```
 
 `mcp` mints one session for the bundle, lasting as long as **Settings →
@@ -228,7 +228,7 @@ forwards the request over TLS exactly as an intercepted tunnel would: the
 same rule match, credential, MCP tool allowlist and audit records. It only
 reaches hosts the session's rules cover. The client stores the session
 token, never a service credential, so ending the session (Sessions page,
-`credential-broker session revoke --id ...`, or deleting the bundle) cuts
+`tokenless session revoke --id ...`, or deleting the bundle) cuts
 it off within one snapshot. Only the streamable HTTP transport is
 supported; the older SSE transport's endpoint URLs would bypass the
 `/mcp/<host>` prefix. See [ADR 0003](docs/adr/0003-mcp-gateway.md).
@@ -251,7 +251,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   `Secure`:
 
   ```sh
-  ./target/release/credential-broker serve --data-dir ./data --ui-dir broker-ui/dist \
+  ./target/release/tokenless serve --data-dir ./data --ui-dir broker-ui/dist \
     --api-listen 0.0.0.0:443 --api-tls-cert /etc/broker/fullchain.pem --api-tls-key /etc/broker/privkey.pem
   ```
 
@@ -288,7 +288,7 @@ cargo test                      # unit tests, conformance suites, end-to-end tes
 | `crates/broker-control` | Services and the store / authorizer traits |
 | `crates/broker-conformance` | Suites every trait implementation must pass |
 | `crates/broker-dataplane` | The forward proxy and node client |
-| `crates/broker-server` | HTTP APIs, SQLite store and the `credential-broker` binary |
+| `crates/broker-server` | HTTP APIs, SQLite store and the `tokenless` binary |
 | `broker-ui` | Management console |
 | `tools/catalog` | Source of the built-in service catalogue and its logos |
 

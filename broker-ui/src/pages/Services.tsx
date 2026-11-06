@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // A vault's services: credentials created from a template, each with its
@@ -492,7 +492,7 @@ function PlaceholdersForm({
           {example.env && (
             <>
               {" "}
-              <Mono>credential-broker run</Mono> also sets <Mono>{`${example.env}=${example.placeholder}`}</Mono> for
+              <Mono>tokenless run</Mono> also sets <Mono>{`${example.env}=${example.placeholder}`}</Mono> for
               the agent.
             </>
           )}

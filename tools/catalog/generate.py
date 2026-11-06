@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Generates the built-in service catalogue from tools/catalog/services.toml.
 
@@ -36,7 +36,7 @@ TEMPLATES = Path("crates/broker-core/templates")
 RUST_LIST = Path("crates/broker-core/src/builtin_catalog.rs")
 LOGOS = Path("broker-ui/src/assets/logos")
 
-HEADER = "SPDX-FileCopyrightText: 2026 credential-broker contributors\nSPDX-License-Identifier: MIT OR Apache-2.0"
+HEADER = "SPDX-FileCopyrightText: 2026 tokenless contributors\nSPDX-License-Identifier: MIT OR Apache-2.0"
 
 CATEGORIES = {
     "llm_providers", "developer_tools", "infrastructure", "communication", "monitoring",

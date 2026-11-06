@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Policy snapshots sent from the control plane to a data plane node.
@@ -22,6 +22,8 @@ use crate::seal::Sealed;
 use crate::session::key_id;
 
 pub const SNAPSHOT_FORMAT: u32 = 1;
+// Predates the rename to tokenless and is kept: changing it invalidates
+// existing snapshot signatures.
 const SIGNATURE_CONTEXT: &[u8] = b"credential-broker/snapshot/v1\0";
 
 /// What the data plane does with a CONNECT to a host no session rule covers.

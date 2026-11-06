@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -129,7 +129,7 @@ export function Nodes() {
           </div>
         </div>
         <Button type="button" variant="outline" size="sm" asChild>
-          <a href="/api/v1/ca/interception.pem" download="credential-broker-ca.pem">
+          <a href="/api/v1/ca/interception.pem" download="tokenless-ca.pem">
             <Download />
             Download CA
           </a>
@@ -238,7 +238,7 @@ export function Nodes() {
               </li>
               <li className="space-y-2">
                 <p>Start the proxy:</p>
-                <CommandSnippet command="credential-broker node run" />
+                <CommandSnippet command="tokenless node run" />
                 <p className="text-xs text-muted-foreground">It shows as connected on this page within seconds.</p>
               </li>
             </ol>
@@ -273,7 +273,7 @@ export function Nodes() {
 
 /** The enrol command for `token`, pointed at this console's node API. */
 function joinCommand(token: string): string {
-  return `credential-broker node join --control-url https://${window.location.hostname}:8443 --token ${token}`;
+  return `tokenless node join --control-url https://${window.location.hostname}:8443 --token ${token}`;
 }
 
 /** What is wrong with a proxy, and what to do about it. */
@@ -283,13 +283,13 @@ function problemText(n: NodeInfo, now: Date): ReactNode {
       return (
         <>
           Not heard from since <Relative at={n.last_seen_at} />. Start it on its host with{" "}
-          <Mono>credential-broker node run</Mono>, or revoke it if the host is gone.
+          <Mono>tokenless node run</Mono>, or revoke it if the host is gone.
         </>
       );
     case "never_connected":
       return (
         <>
-          Enrolled <Relative at={n.enrolled_at} /> but never connected. Run <Mono>credential-broker node run</Mono> on
+          Enrolled <Relative at={n.enrolled_at} /> but never connected. Run <Mono>tokenless node run</Mono> on
           its host.
         </>
       );

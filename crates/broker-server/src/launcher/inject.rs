@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Environment variables an agent asks for by reference:
-//! `credential-broker exec GITHUB_TOKEN=cb://github/token -- ./deploy.sh`.
+//! `tokenless exec GITHUB_TOKEN=cb://github/token -- ./deploy.sh`.
 //!
 //! A `cb://<service>/<field>` reference resolves to the placeholder the
 //! proxy swaps for that secret field, never to the secret: stored
@@ -24,10 +24,7 @@ pub const SCHEME: &str = "cb://";
 /// Variables a command never inherits from the shell that started it: the
 /// key that mints sessions and a session token would let it act beyond
 /// its bundle.
-pub const STRIPPED_ENV: &[&str] = &[
-    "CREDENTIAL_BROKER_API_KEY",
-    "CREDENTIAL_BROKER_SESSION_TOKEN",
-];
+pub const STRIPPED_ENV: &[&str] = &["TOKENLESS_API_KEY", "TOKENLESS_SESSION_TOKEN"];
 
 /// `NAME=value` as given on the command line or in an env file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,10 +241,10 @@ pub fn resolve(
     for a in assignments {
         if reserved.iter().any(|r| r == &a.name)
             || STRIPPED_ENV.contains(&a.name.as_str())
-            || a.name.starts_with("CREDENTIAL_BROKER_")
+            || a.name.starts_with("TOKENLESS_")
         {
             return Err(LauncherError::config(format!(
-                "{}: {} is set by credential-broker itself and cannot be assigned",
+                "{}: {} is set by tokenless itself and cannot be assigned",
                 a.origin, a.name
             )));
         }
@@ -428,13 +425,13 @@ mod tests {
         let reserved = vec!["HTTPS_PROXY".to_string()];
         for raw in [
             "HTTPS_PROXY=http://elsewhere",
-            "CREDENTIAL_BROKER_API_KEY=x",
-            "CREDENTIAL_BROKER_PROXY=x",
+            "TOKENLESS_API_KEY=x",
+            "TOKENLESS_PROXY=x",
         ] {
             let e = resolve(&cli(&[raw]), &session(), &reserved)
                 .unwrap_err()
                 .to_string();
-            assert!(e.contains("set by credential-broker itself"), "{e}");
+            assert!(e.contains("set by tokenless itself"), "{e}");
         }
     }
 

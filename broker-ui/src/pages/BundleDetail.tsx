@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // One access bundle: the services it gives an agent, the sessions minted
@@ -860,7 +860,7 @@ function McpConnect({
       });
       setMinted({ token: m.token, session: m.session, endpoints: mcpEndpoints(await tokenServices(m.token)) });
     });
-  const cli = `credential-broker mcp${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)}`;
+  const cli = `tokenless mcp${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)}`;
   return (
     <Section
       title="Connect an MCP client"
@@ -978,10 +978,10 @@ function Connect({
               </a>
               . It can start sessions from the vault's bundles and nothing else.
             </p>
-            <CommandSnippet command="export CREDENTIAL_BROKER_API_KEY=cbk_..." />
+            <CommandSnippet command="export TOKENLESS_API_KEY=cbk_..." />
             <p className="text-xs text-muted-foreground">
-              Off this machine, also set <Mono>CREDENTIAL_BROKER_URL</Mono> to this console's address and{" "}
-              <Mono>CREDENTIAL_BROKER_PROXY_ADDRESS</Mono> to a{" "}
+              Off this machine, also set <Mono>TOKENLESS_URL</Mono> to this console's address and{" "}
+              <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a{" "}
               <a href="#/proxies" className="underline">
                 proxy
               </a>
@@ -1007,7 +1007,7 @@ function Connect({
               The skill tells the agent how to see what it can reach, hand a tool a placeholder instead of a key, and read
               the proxy's 403, 407 and 429 answers instead of working around them.
             </p>
-            <CommandSnippet command="credential-broker skill --install" />
+            <CommandSnippet command="tokenless skill --install" />
           </Step>
           <Step n={4} title="Or run a script that reads keys from its environment">
             {refs.length === 0 ? (
@@ -1030,14 +1030,14 @@ function Connect({
                 </p>
                 <FileSnippet name=".env.broker" contents={envFile(refs)} />
                 <CommandSnippet
-                  command={`credential-broker exec${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file .env.broker -- ./script.sh`}
+                  command={`tokenless exec${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file .env.broker -- ./script.sh`}
                 />
               </>
             )}
           </Step>
           <Step n={5} title="Or keep a session open for agents you start yourself">
             <CommandSnippet
-              command={`credential-broker session start${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file ./agent.env`}
+              command={`tokenless session start${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file ./agent.env`}
             />
             <p className="text-xs text-muted-foreground">
               Then <Mono>. ./agent.env</Mono> in the agent's shell. Ctrl-C ends the session.

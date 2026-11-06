@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Proxy session tokens: PASETO `v4.public` (Ed25519) carrying
@@ -27,6 +27,8 @@ pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 60 * 60;
 pub const SESSION_TTL_CEILING_SECS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_RULES_PER_SESSION: usize = 64;
 pub const MAX_LABELS: usize = 16;
+// Predates the rename to tokenless and is kept: changing it invalidates
+// existing session tokens.
 pub const ISSUER: &str = "credential-broker";
 
 const HEADER: &str = "v4.public.";

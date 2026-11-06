@@ -1,8 +1,8 @@
 ---
-# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
-name: credential-broker
-description: Use when you need to call an API or run a tool that wants an API key or token and CREDENTIAL_BROKER_PROXY is set in your environment, or when asked to run a command with secrets from a credential broker vault. Explains how to see which services you can reach, how to hand a tool a key through placeholders, how to fill environment variables with `credential-broker exec NAME=cb://<service>/<field>`, and what the proxy's 403, 407 and 429 answers mean.
+name: tokenless
+description: Use when you need to call an API or run a tool that wants an API key or token and TOKENLESS_PROXY is set in your environment, or when asked to run a command with secrets from a credential broker vault. Explains how to see which services you can reach, how to hand a tool a key through placeholders, how to fill environment variables with `tokenless exec NAME=cb://<service>/<field>`, and what the proxy's 403, 407 and 429 answers mean.
 ---
 
 # Working behind the credential broker
@@ -12,7 +12,7 @@ that adds the real credential to requests your session is allowed to make.
 **You never see, and never need, the secret itself.** Nobody can read a
 stored secret back, not even an admin, so don't go looking for one.
 
-You are behind the broker when `CREDENTIAL_BROKER_PROXY` is set. Then
+You are behind the broker when `TOKENLESS_PROXY` is set. Then
 `HTTPS_PROXY` points at a local session port and the broker's CA is
 already trusted (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
 `REQUESTS_CA_BUNDLE`, ...). Leave these variables alone. Unsetting or
@@ -21,8 +21,8 @@ overriding them only makes your requests fail.
 ## 1. See what you can reach
 
 ```sh
-credential-broker session info          # readable summary
-credential-broker session info --json   # for scripts
+tokenless session info          # readable summary
+tokenless session info --json   # for scripts
 ```
 
 For each service it lists the hosts, the allowed methods and paths, and the
@@ -67,18 +67,18 @@ Rules of thumb:
 - Don't paste a real-looking key you found elsewhere. Use the placeholder
   from `session info`.
 - Node's built-in `fetch` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1`
-  (Node 24+); `credential-broker run` sets it. Other runtimes with their own
+  (Node 24+); `tokenless run` sets it. Other runtimes with their own
   network stack may also need their proxy settings pointed at
   `$HTTPS_PROXY`.
 
 ## 3. Fill environment variables by reference
 
-People start scripts and agents with `credential-broker exec`. It mints a
+People start scripts and agents with `tokenless exec`. It mints a
 session from an access bundle, starts the command behind it, and fills
 variables by reference:
 
 ```sh
-credential-broker exec --bundle deploy \
+tokenless exec --bundle deploy \
   GITHUB_TOKEN=cb://github/token \
   REGION=eu-west-1 \
   -- ./release.sh
@@ -99,8 +99,8 @@ credential-broker exec --bundle deploy \
 
 - A reference that names nothing stops the run before the command starts,
   and the error lists the references the session does resolve.
-- The command never inherits `CREDENTIAL_BROKER_API_KEY` or
-  `CREDENTIAL_BROKER_SESSION_TOKEN` from the shell that started it.
+- The command never inherits `TOKENLESS_API_KEY` or
+  `TOKENLESS_SESSION_TOKEN` from the shell that started it.
 
 `exec` and `run` are the same command. `exec` needs an API key allowed to
 mint sessions, so you normally can't run it from inside a session yourself.
@@ -116,7 +116,7 @@ plain-text reason:
 | 403 `no rule in this session allows <METHOD> <path> on <host>` | The host is brokered, but not for this method or path | Don't retry another way. Tell the user which access is missing (method, path, host) so they can widen the rule or the bundle |
 | 403 `no rule in this session covers <host>` | The host isn't in your session and unmatched hosts are blocked | Ask the user to add the service to the bundle |
 | 403 `<host> resolves to <ip>, which is ...` | Egress to that address range is blocked | Ask an admin; don't work around it |
-| 407 `proxy session rejected: ...` | The session expired or was revoked | Tell the user; a new session comes from restarting the command with `credential-broker run`/`exec` |
+| 407 `proxy session rejected: ...` | The session expired or was revoked | Tell the user; a new session comes from restarting the command with `tokenless run`/`exec` |
 | 429 `session request limit of <n> reached` | The session has used all the requests it was minted with | Stop and tell the user; retrying won't help |
 | 503 with `retry-after` | The node hasn't caught up with a new session yet | Retry after the given delay |
 | 502 | The upstream service failed or couldn't be reached | Retrying later may help |

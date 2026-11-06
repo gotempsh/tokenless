@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! CSRF tokens derived from the session: HMAC-SHA256(server key, session
@@ -15,6 +15,8 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 
 fn mac(key: &[u8; 32], session_token_hash: &str) -> Option<Hmac<Sha256>> {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    // Predates the rename to tokenless and is kept: changing it invalidates
+    // existing CSRF tokens.
     mac.update(b"credential-broker/csrf/v1\0");
     mac.update(session_token_hash.as_bytes());
     Some(mac)

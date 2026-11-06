@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Sealed envelopes: X25519 ECDH with an ephemeral key, HKDF-SHA256 and
@@ -21,6 +21,8 @@ use crate::error::CoreError;
 
 pub use x25519_dalek::{PublicKey as SealPublicKey, StaticSecret as SealSecretKey};
 
+// Predates the rename to tokenless and is kept: changing it invalidates
+// existing sealed secrets.
 const INFO: &[u8] = b"credential-broker/seal/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

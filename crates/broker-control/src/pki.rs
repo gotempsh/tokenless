@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The control plane's internal certificate authorities.
@@ -25,6 +25,8 @@ use zeroize::Zeroizing;
 
 use crate::error::ControlError;
 
+// Predates the rename to tokenless and is kept: changing it invalidates
+// existing node certificates.
 pub const NODE_URI_PREFIX: &str = "urn:credential-broker:node:";
 const CA_VALIDITY_DAYS: i64 = 3650;
 
@@ -114,7 +116,7 @@ fn random_serial() -> (SerialNumber, String) {
 fn dn(common_name: &str) -> DistinguishedName {
     let mut dn = DistinguishedName::new();
     dn.push(DnType::CommonName, common_name);
-    dn.push(DnType::OrganizationName, "credential-broker");
+    dn.push(DnType::OrganizationName, "tokenless");
     dn
 }
 
@@ -159,7 +161,7 @@ pub fn issue_server_cert(
     let now = Utc::now();
     params.not_before = to_offset(now - chrono::Duration::minutes(5))?;
     params.not_after = to_offset(now + validity)?;
-    params.distinguished_name = dn("credential-broker node API");
+    params.distinguished_name = dn("tokenless node API");
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.serial_number = Some(random_serial().0);

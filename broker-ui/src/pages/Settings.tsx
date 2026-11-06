@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState } from "react";
@@ -82,7 +82,7 @@ export function Settings() {
           </Section>
           <Section
             title="Session lifetime"
-            description="The longest proxy session anyone may mint. credential-broker run and session start renew sessions before they expire, so agents work for longer than this either way; a short lifetime limits how long a leaked token is useful."
+            description="The longest proxy session anyone may mint. tokenless run and session start renew sessions before they expire, so agents work for longer than this either way; a short lifetime limits how long a leaked token is useful."
           >
             <Panel>
               <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">

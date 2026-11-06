@@ -1,12 +1,9 @@
 <!doctype html>
 <!--
-SPDX-FileCopyrightText: 2026 credential-broker contributors
+SPDX-FileCopyrightText: 2026 tokenless contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 <!--
-The command name appears only as <span class="bin">credential-broker</span>.
-To rename it, replace that exact string; see site/README.md.
-
 The :focus-visible styles are in styles.css, which the scanner's per-file
 focus check doesn't read. avoid-ai-design-ignore-file: K7
 -->
@@ -48,7 +45,6 @@ focus check doesn't read. avoid-ai-design-ignore-file: K7
       <a class="button" href="#session">See a session in the terminal</a>
       <a href="#security">Read the security model</a>
     </div>
-    <p class="aside-note">The binary is still called <code><span class="bin">credential-broker</span></code>, so that is what the commands on this page use.</p>
   </div>
 
   <figure class="rewrite">
@@ -79,7 +75,7 @@ Host: api.github.com
     <ol class="route">
       <li>
         <h3>The agent</h3>
-        <span class="addr">started by <span class="bin">credential-broker</span> run</span>
+        <span class="addr">started by <span class="bin">tokenless</span> run</span>
         <p>Its environment has <code>HTTPS_PROXY</code> pointing at a loopback port, trust files for the broker's CA and any placeholders the bundle exports. It has no session token and no API key.</p>
       </li>
       <li>
@@ -102,7 +98,7 @@ Host: api.github.com
     <div class="control-plane">
       <h3>Behind it, the control plane</h3>
       <div>
-        <p><code><span class="bin">credential-broker</span> serve</code> runs the web console and management API on <code>127.0.0.1:8080</code> and the node API on <code>8443</code>. It sends each proxy node an Ed25519-signed policy snapshot with a 60-second lease. When the lease runs out, because the control plane is down or the node was revoked, the proxy refuses all traffic with a <code>503</code> until a fresh snapshot arrives.</p>
+        <p><code><span class="bin">tokenless</span> serve</code> runs the web console and management API on <code>127.0.0.1:8080</code> and the node API on <code>8443</code>. It sends each proxy node an Ed25519-signed policy snapshot with a 60-second lease. When the lease runs out, because the control plane is down or the node was revoked, the proxy refuses all traffic with a <code>503</code> until a fresh snapshot arrives.</p>
       </div>
     </div>
   </div>
@@ -118,9 +114,9 @@ Host: api.github.com
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t1">Your shell</figcaption>
-<pre tabindex="0" aria-labelledby="t1"><code><span class="ps">$ </span>export CREDENTIAL_BROKER_API_KEY=cbk_...
-<span class="ps">$ </span><span class="bin">credential-broker</span> run --bundle code-review -- claude
-<span class="out"><span class="bin">credential-broker</span>: running 'claude' with bundle 'code-review' (session 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f) through 127.0.0.1:52144 -&gt; 127.0.0.1:3128</span></code></pre>
+<pre tabindex="0" aria-labelledby="t1"><code><span class="ps">$ </span>export TOKENLESS_API_KEY=cbk_...
+<span class="ps">$ </span><span class="bin">tokenless</span> run --bundle code-review -- claude
+<span class="out"><span class="bin">tokenless</span>: running 'claude' with bundle 'code-review' (session 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f) through 127.0.0.1:52144 -&gt; 127.0.0.1:3128</span></code></pre>
       </figure>
       <div class="notes">
         <p>The API key has the <strong>session_issuer</strong> role: it can mint sessions in one vault and do nothing else. The agent doesn't inherit it.</p>
@@ -130,7 +126,7 @@ Host: api.github.com
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t2">Inside the agent's shell</figcaption>
-<pre tabindex="0" aria-labelledby="t2"><code><span class="ps">$ </span><span class="bin">credential-broker</span> session info
+<pre tabindex="0" aria-labelledby="t2"><code><span class="ps">$ </span><span class="bin">tokenless</span> session info
 <span class="out">Access bundle: code-review
 
 GitHub — github
@@ -156,7 +152,7 @@ GitHub — github
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t3">Your shell, when the agent exits</figcaption>
-<pre tabindex="0" aria-labelledby="t3"><code><span class="out"><span class="bin">credential-broker</span>: 'claude' exited (exit status: 0); ended 1 session(s)</span></code></pre>
+<pre tabindex="0" aria-labelledby="t3"><code><span class="out"><span class="bin">tokenless</span>: 'claude' exited (exit status: 0); ended 1 session(s)</span></code></pre>
       </figure>
       <div class="notes">
         <p><strong>run</strong> exits with the agent's exit code, after ending every session it minted.</p>
@@ -166,11 +162,11 @@ GitHub — github
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t4">A script that reads its key from the environment</figcaption>
-<pre tabindex="0" aria-labelledby="t4"><code><span class="ps">$ </span><span class="bin">credential-broker</span> exec --bundle deploy \
+<pre tabindex="0" aria-labelledby="t4"><code><span class="ps">$ </span><span class="bin">tokenless</span> exec --bundle deploy \
     GITHUB_TOKEN=cb://github/token -- sh -c 'echo $GITHUB_TOKEN'
-<span class="out"><span class="bin">credential-broker</span>: running 'sh' with bundle 'deploy' (session 2a90d7c1-5e44-4f0b-b3c8-7d1e6f2a9b03) through 127.0.0.1:52190 -&gt; 127.0.0.1:3128</span>
+<span class="out"><span class="bin">tokenless</span>: running 'sh' with bundle 'deploy' (session 2a90d7c1-5e44-4f0b-b3c8-7d1e6f2a9b03) through 127.0.0.1:52190 -&gt; 127.0.0.1:3128</span>
 __GITHUB_TOKEN__
-<span class="out"><span class="bin">credential-broker</span>: 'sh' exited (exit status: 0); ended 1 session(s)</span></code></pre>
+<span class="out"><span class="bin">tokenless</span>: 'sh' exited (exit status: 0); ended 1 session(s)</span></code></pre>
       </figure>
       <div class="notes">
         <p><strong>exec</strong> fills variables by reference. The script gets the placeholder, and the proxy swaps it for the secret only on GitHub's hosts.</p>
@@ -184,13 +180,13 @@ __GITHUB_TOKEN__
   <div class="wrap">
     <div class="section-head">
       <h2 id="mcp-title">MCP clients connect by URL</h2>
-      <p>Claude Code, Cursor and other clients that take a server URL use the proxy node's MCP gateway on <code>127.0.0.1:3129</code>. <code><span class="bin">credential-broker</span> mcp</code> mints one session for the bundle and prints the client configuration, with the session token as the bearer token.</p>
+      <p>Claude Code, Cursor and other clients that take a server URL use the proxy node's MCP gateway on <code>127.0.0.1:3129</code>. <code><span class="bin">tokenless</span> mcp</code> mints one session for the bundle and prints the client configuration, with the session token as the bearer token.</p>
     </div>
 
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t5">Claude Code</figcaption>
-<pre tabindex="0" aria-labelledby="t5"><code><span class="ps">$ </span><span class="bin">credential-broker</span> mcp --bundle code-review
+<pre tabindex="0" aria-labelledby="t5"><code><span class="ps">$ </span><span class="bin">tokenless</span> mcp --bundle code-review
 <span class="out"># GitHub MCP (github-mcp)
 claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubcopilot.com/mcp/ --header 'Authorization: Bearer v4.public...'</span></code></pre>
       </figure>
@@ -203,7 +199,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t6">Cursor and other clients that read an mcpServers block</figcaption>
-<pre tabindex="0" aria-labelledby="t6"><code><span class="ps">$ </span><span class="bin">credential-broker</span> mcp --bundle code-review --format json
+<pre tabindex="0" aria-labelledby="t6"><code><span class="ps">$ </span><span class="bin">tokenless</span> mcp --bundle code-review --format json
 <span class="out">{
   "mcpServers": {
     "github-mcp": {
@@ -278,8 +274,8 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
         <p>Revoke the session on the Sessions page or from the CLI, disable the rule, or delete the bundle, which ends every live session minted from it. The change reaches the proxy in its next signed snapshot, and the agent's next request gets <code>407</code> (an MCP client gets <code>401</code>).</p>
         <figure class="term">
           <figcaption id="t8">Ending the session from the first example</figcaption>
-<pre tabindex="0" aria-labelledby="t8"><code><span class="ps">$ </span><span class="bin">credential-broker</span> session revoke --id 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f
-<span class="out"><span class="bin">credential-broker</span>: session 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f ended</span></code></pre>
+<pre tabindex="0" aria-labelledby="t8"><code><span class="ps">$ </span><span class="bin">tokenless</span> session revoke --id 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f
+<span class="out"><span class="bin">tokenless</span>: session 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f ended</span></code></pre>
         </figure>
       </div>
     </div>
@@ -298,7 +294,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
         </tbody>
       </table>
     </div>
-    <p class="aside-note">Each refusal carries a plain-text reason. <code><span class="bin">credential-broker</span> skill --install</code> adds a skill to Claude Code that tells the agent how to read these answers and not to work around them.</p>
+    <p class="aside-note">Each refusal carries a plain-text reason. <code><span class="bin">tokenless</span> skill --install</code> adds a skill to Claude Code that tells the agent how to read these answers and not to work around them.</p>
   </div>
 </section>
 
@@ -408,7 +404,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
         <figcaption id="t9">The control plane</figcaption>
 <pre tabindex="0" aria-labelledby="t9"><code><span class="ps">$ </span>cargo build --release
 <span class="ps">$ </span>(cd broker-ui &amp;&amp; bun install &amp;&amp; bun run build)
-<span class="ps">$ </span>./target/release/<span class="bin">credential-broker</span> serve \
+<span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> serve \
     --data-dir ./data --ui-dir broker-ui/dist</code></pre>
       </figure>
       <div class="notes">
@@ -418,9 +414,9 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t10">A proxy node, next to the agent</figcaption>
-<pre tabindex="0" aria-labelledby="t10"><code><span class="ps">$ </span>./target/release/<span class="bin">credential-broker</span> node join \
+<pre tabindex="0" aria-labelledby="t10"><code><span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> node join \
     --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
-<span class="ps">$ </span>./target/release/<span class="bin">credential-broker</span> node run --state ./node.json</code></pre>
+<span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> node run --state ./node.json</code></pre>
       </figure>
       <div class="notes">
         <p>Create the join token on the console's <strong>Proxies</strong> page. The node listens on <code>127.0.0.1:3128</code> for agents and <code>127.0.0.1:3129</code> for MCP clients.</p>

@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2026 credential-broker contributors
+SPDX-FileCopyrightText: 2026 tokenless contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
@@ -51,7 +51,7 @@ flowchart LR
     CI["Automation<br/>(vault-scoped API key)"]
   end
 
-  subgraph CP["Control plane: credential-broker serve"]
+  subgraph CP["Control plane: tokenless serve"]
     API["Management API<br/>/api/v1 (loopback, behind TLS proxy)"]
     NAPI["Node API :8443<br/>TLS, mTLS for enrolled nodes"]
     SVC["broker-control services<br/>authz, step-up, audit"]
@@ -155,12 +155,12 @@ node protocol and the snapshot format are unchanged.
 
 ### Deployment modes
 
-1. **Standalone.** `credential-broker serve` runs on its own host or VM.
+1. **Standalone.** `tokenless serve` runs on its own host or VM.
    The management API either serves TLS itself (`--api-tls-cert` and
    `--api-tls-key`, reloaded when the files change) or listens on loopback
    behind a TLS-terminating reverse proxy. The node API listens on a
    private address, and one
-   `credential-broker node run` runs next to each agent runtime.
+   `tokenless node run` runs next to each agent runtime.
 2. **Standalone, hosted as a Temps project.** Only the server and UI are
    deployed behind Temps' HTTP proxy, which applies TLS and the project's
    IP allow rules. The data plane does **not** go through Temps' proxy,
@@ -230,13 +230,13 @@ node protocol and the snapshot format are unchanged.
   its own TLS key (as a CSR) and its own X25519 sealing key; neither
   leaves the node.
 - The control plane signs a client certificate that is valid for 24 h and
-  carries SAN `urn:credential-broker:node:<id>` and the clientAuth EKU.
+  carries SAN `urn:tokenless:node:<id>` and the clientAuth EKU.
   Nodes renew it at two thirds of its lifetime.
 - Every node API call checks the node's revocation flag in the store, so
   revocation is immediate even though the certificate stays
   cryptographically valid until it expires.
 - Snapshots are Ed25519-signed over
-  `credential-broker/snapshot/v1\0 || body`. They carry a strictly
+  `tokenless/snapshot/v1\0 || body`. They carry a strictly
   increasing version (persisted counter; nodes reject `<=` current), a
   node id, and a lease, which is 60 s by default.
 - Without a newer snapshot before the lease runs out, the data plane
@@ -260,7 +260,7 @@ checks every read endpoint and the raw database files for the plaintext.
 
 - A session token is PASETO `v4.public` (Ed25519). The footer carries a
   `kid`, and the implicit assertion is
-  `credential-broker/proxy-session/v1`.
+  `tokenless/proxy-session/v1`.
 - Claims: `jti`, the vault scope (opaque), rule ids (a subset of the
   vault's rules), `iat` and `exp` (TTL default 15 min, max 1 h), an
   optional request limit, and audit labels.

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The local session port: a loopback listener that adds the current
@@ -78,7 +78,7 @@ pub fn rewrite_head(head: &[u8], authorization: &str) -> Result<Vec<u8>, &'stati
 }
 
 /// The path agents fetch from the session port itself to learn what the
-/// session reaches: `curl $CREDENTIAL_BROKER_PROXY/services`.
+/// session reaches: `curl $TOKENLESS_PROXY/services`.
 pub const SERVICES_PATH: &str = "/services";
 
 /// Is this head an origin-form `GET /services`, meant for the port itself?
@@ -141,7 +141,7 @@ async fn handle(
             reply(
                 &mut client,
                 "400 Bad Request",
-                &format!("credential-broker session port: {reason}\n"),
+                &format!("tokenless session port: {reason}\n"),
             )
             .await;
             return;
@@ -158,7 +158,7 @@ async fn handle(
             reply(
                 &mut client,
                 "400 Bad Request",
-                &format!("credential-broker session port: {reason}\n"),
+                &format!("tokenless session port: {reason}\n"),
             )
             .await;
             return;
@@ -173,9 +173,7 @@ async fn handle(
             reply(
                 &mut client,
                 "502 Bad Gateway",
-                &format!(
-                    "credential-broker session port: cannot reach the proxy at {upstream}: {e}\n"
-                ),
+                &format!("tokenless session port: cannot reach the proxy at {upstream}: {e}\n"),
             )
             .await;
             return;
@@ -185,7 +183,9 @@ async fn handle(
             reply(
                 &mut client,
                 "504 Gateway Timeout",
-                &format!("credential-broker session port: timed out connecting to the proxy at {upstream}\n"),
+                &format!(
+                    "tokenless session port: timed out connecting to the proxy at {upstream}\n"
+                ),
             )
             .await;
             return;
@@ -196,7 +196,7 @@ async fn handle(
         reply(
             &mut client,
             "502 Bad Gateway",
-            "credential-broker session port: the proxy closed the connection\n",
+            "tokenless session port: the proxy closed the connection\n",
         )
         .await;
         return;

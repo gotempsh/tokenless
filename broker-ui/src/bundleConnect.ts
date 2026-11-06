@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // The commands a bundle's Connect tab shows: how to start an agent with
@@ -29,7 +29,7 @@ export interface EnvReference {
 /**
  * The references for every placeholder of `credentials`, named after the
  * placeholder's environment variable when it has one. When two claim the
- * same name the first is kept, as `credential-broker run` does.
+ * same name the first is kept, as `tokenless run` does.
  */
 export function envReferences(credentials: CredentialMeta[]): EnvReference[] {
   const out: EnvReference[] = [];
@@ -59,14 +59,14 @@ function vaultFlag(vault?: string): string {
   return vault ? ` --vault ${shellQuote(vault)}` : "";
 }
 
-/** `credential-broker run --bundle <name> -- <command>`. */
+/** `tokenless run --bundle <name> -- <command>`. */
 export function runAgentCommand(bundle: string, command: string, vault?: string): string {
-  return `credential-broker run${vaultFlag(vault)} --bundle ${shellQuote(bundle)} -- ${command}`;
+  return `tokenless run${vaultFlag(vault)} --bundle ${shellQuote(bundle)} -- ${command}`;
 }
 
-/** `credential-broker exec` with each reference as an argument. */
+/** `tokenless exec` with each reference as an argument. */
 export function execCommand(bundle: string, refs: EnvReference[], vault?: string): string {
-  const head = `credential-broker exec${vaultFlag(vault)} --bundle ${shellQuote(bundle)}`;
+  const head = `tokenless exec${vaultFlag(vault)} --bundle ${shellQuote(bundle)}`;
   const args = refs.map((r) => `${r.name}=${shellQuote(r.reference)}`);
   return [head, ...args, "-- ./script.sh"].join(" \\\n  ");
 }

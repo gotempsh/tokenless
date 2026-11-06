@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The forward proxy.
@@ -55,7 +55,7 @@ use crate::upstream::UpstreamHandle;
 
 pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
-const REALM: &str = "Basic realm=\"credential-broker\"";
+const REALM: &str = "Basic realm=\"tokenless\"";
 const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",

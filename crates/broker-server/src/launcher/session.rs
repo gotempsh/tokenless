@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! A session that outlives the session lifetime cap: it is minted from a
@@ -120,7 +120,7 @@ impl LiveSession {
                     ended += 1;
                 }
                 Err(e) => {
-                    eprintln!("credential-broker: could not end a session, it stays valid until {expires_at}: {e}");
+                    eprintln!("tokenless: could not end a session, it stays valid until {expires_at}: {e}");
                 }
             }
         }
@@ -155,7 +155,7 @@ async fn renew_loop(
                 let expired = expires_at <= Utc::now();
                 warn!(error = %e, expired, "session renewal failed; retrying");
                 eprintln!(
-                    "credential-broker: renewing the session failed (retrying in {}s){}: {e}",
+                    "tokenless: renewing the session failed (retrying in {}s){}: {e}",
                     backoff.as_secs(),
                     if expired {
                         ", and the current one has expired, so requests are refused".to_string()

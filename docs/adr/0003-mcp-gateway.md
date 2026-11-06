@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2026 credential-broker contributors
+SPDX-FileCopyrightText: 2026 tokenless contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
@@ -53,7 +53,7 @@ on loopback by default (`node run --mcp-listen 127.0.0.1:3129`).
 - **Tokens.** Sessions minted for MCP clients use `"longest": true`, the
   instance's session lifetime cap (Settings, up to 7 days), because the
   client keeps the token in its configuration and cannot renew it. They
-  carry the label `client=mcp`. `credential-broker mcp` and the bundle's
+  carry the label `client=mcp`. `tokenless mcp` and the bundle's
   Connect tab mint one and print the client configuration.
 
 ## Consequences

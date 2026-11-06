@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Light/dark preference. It is a per-browser display choice, so it lives in
@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 
 export type Theme = "light" | "dark" | "system";
-const KEY = "credential-broker.theme";
+const KEY = "tokenless.theme";
 
 function stored(): Theme {
   const v = window.localStorage.getItem(KEY);

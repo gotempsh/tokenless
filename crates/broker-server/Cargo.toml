@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [package]
 name = "broker-server"
@@ -10,7 +10,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "credential-broker"
+name = "tokenless"
 path = "src/main.rs"
 
 [dependencies]

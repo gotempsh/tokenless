@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Substitutions: the agent sends a placeholder such as `__GITHUB_TOKEN__`
@@ -87,7 +87,7 @@ fn validate_env_name(placeholder: &str, name: &str) -> Result<(), CoreError> {
             ),
         ));
     }
-    if name.starts_with("CREDENTIAL_BROKER_")
+    if name.starts_with("TOKENLESS_")
         || [
             "HTTPS_PROXY",
             "HTTP_PROXY",

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Long-lived key material, created on first start and stored encrypted.
@@ -77,11 +77,11 @@ impl KeyRing {
         let session = load_or_create(store, cipher, SESSION_KEY, || Ok(random_32())).await?;
         let csrf = load_or_create(store, cipher, CSRF_KEY, || Ok(random_32())).await?;
         let node_ca = load_or_create(store, cipher, NODE_CA, || {
-            Ok(generate_ca("credential-broker node CA")?.to_bytes())
+            Ok(generate_ca("tokenless node CA")?.to_bytes())
         })
         .await?;
         let interception_ca = load_or_create(store, cipher, INTERCEPTION_CA, || {
-            Ok(generate_ca("credential-broker interception CA")?.to_bytes())
+            Ok(generate_ca("tokenless interception CA")?.to_bytes())
         })
         .await?;
         Ok(Self {

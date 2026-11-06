@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `credential-broker` binary: `serve` runs the control plane, `node join`
+//! `tokenless` binary: `serve` runs the control plane, `node join`
 //! enrols a data plane, `node run` runs it, and `session` / `run` put an
 //! agent behind it with a session minted from an access bundle.
 
@@ -31,11 +31,7 @@ use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
 #[derive(Parser)]
-#[command(
-    name = "credential-broker",
-    version,
-    about = "Credential broker for AI agents"
-)]
+#[command(name = "tokenless", version, about = "Credential broker for AI agents")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -65,8 +61,8 @@ enum Command {
     /// values are passed through as written.
     ///
     /// Examples:
-    ///   credential-broker run --bundle code-review -- claude
-    ///   credential-broker exec --bundle deploy GITHUB_TOKEN=cb://github/token -- ./release.sh
+    ///   tokenless run --bundle code-review -- claude
+    ///   tokenless exec --bundle deploy GITHUB_TOKEN=cb://github/token -- ./release.sh
     #[command(visible_alias = "exec", verbatim_doc_comment)]
     Run(RunArgs),
     /// Connect an MCP client (Claude Code, Cursor, ...) to the MCP servers
@@ -76,15 +72,15 @@ enum Command {
     /// session on the Sessions page to cut it off.
     ///
     /// Examples:
-    ///   credential-broker mcp --bundle code-review
-    ///   credential-broker mcp --bundle code-review --format json
+    ///   tokenless mcp --bundle code-review
+    ///   tokenless mcp --bundle code-review --format json
     #[command(verbatim_doc_comment)]
     Mcp(McpArgs),
     /// Print the agent skill, or install it where Claude Code finds skills.
     /// It tells an agent behind the broker how to see what it can reach,
     /// use placeholders and read the proxy's errors.
     Skill {
-        /// Write it to <dir>/credential-broker/SKILL.md.
+        /// Write it to <dir>/tokenless/SKILL.md.
         #[arg(long)]
         install: bool,
         /// Skills directory (default: ~/.claude/skills; use .claude/skills
@@ -100,14 +96,10 @@ enum Command {
 #[derive(clap::Args)]
 struct BrokerArgs {
     /// Management API URL.
-    #[arg(
-        long,
-        env = "CREDENTIAL_BROKER_URL",
-        default_value = "http://127.0.0.1:8080"
-    )]
+    #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
     server: String,
     /// File holding the API key (`cbk_...`). Without it the key is read
-    /// from CREDENTIAL_BROKER_API_KEY. A session_issuer key is enough.
+    /// from TOKENLESS_API_KEY. A session_issuer key is enough.
     #[arg(long)]
     api_key_file: Option<PathBuf>,
 }
@@ -117,10 +109,10 @@ struct MintArgs {
     #[command(flatten)]
     broker: BrokerArgs,
     /// Vault name or id. Not needed with a vault-bound API key.
-    #[arg(long, env = "CREDENTIAL_BROKER_VAULT")]
+    #[arg(long, env = "TOKENLESS_VAULT")]
     vault: Option<String>,
     /// Access bundle to mint the session from, by name or id.
-    #[arg(long, env = "CREDENTIAL_BROKER_BUNDLE")]
+    #[arg(long, env = "TOKENLESS_BUNDLE")]
     bundle: String,
     /// Lifetime of each session, at most 1h (e.g. 90s, 15m, 1h). The
     /// session port renews the session before it runs out.
@@ -147,10 +139,10 @@ struct McpArgs {
     #[command(flatten)]
     broker: BrokerArgs,
     /// Vault name or id. Not needed with a vault-bound API key.
-    #[arg(long, env = "CREDENTIAL_BROKER_VAULT")]
+    #[arg(long, env = "TOKENLESS_VAULT")]
     vault: Option<String>,
     /// Access bundle whose MCP services to connect, by name or id.
-    #[arg(long, env = "CREDENTIAL_BROKER_BUNDLE")]
+    #[arg(long, env = "TOKENLESS_BUNDLE")]
     bundle: String,
     /// Lifetime of the token (e.g. 8h, 7d). Default: the longest Settings
     /// allow, since the client keeps it in its configuration.
@@ -162,7 +154,7 @@ struct McpArgs {
     /// The node's MCP gateway (`node run --mcp-listen`).
     #[arg(
         long,
-        env = "CREDENTIAL_BROKER_MCP_GATEWAY",
+        env = "TOKENLESS_MCP_GATEWAY",
         default_value = broker_server::launcher::mcp::DEFAULT_GATEWAY
     )]
     gateway: String,
@@ -175,7 +167,7 @@ struct PortArgs {
     /// The data plane proxy to relay to (`node run --listen`).
     #[arg(
         long,
-        env = "CREDENTIAL_BROKER_PROXY_ADDRESS",
+        env = "TOKENLESS_PROXY_ADDRESS",
         default_value = "127.0.0.1:3128"
     )]
     proxy: String,
@@ -222,7 +214,7 @@ enum SessionCommand {
         json: bool,
     },
     /// End a session: the one whose token is in
-    /// CREDENTIAL_BROKER_SESSION_TOKEN, or `--id` with an API key allowed to
+    /// TOKENLESS_SESSION_TOKEN, or `--id` with an API key allowed to
     /// revoke sessions.
     Revoke {
         #[command(flatten)]
@@ -232,8 +224,8 @@ enum SessionCommand {
     },
     /// Show what a session can reach and which placeholders it accepts.
     /// Inside `run` or behind `session start` it asks the session port
-    /// (CREDENTIAL_BROKER_PROXY); otherwise it uses the token in
-    /// CREDENTIAL_BROKER_SESSION_TOKEN.
+    /// (TOKENLESS_PROXY); otherwise it uses the token in
+    /// TOKENLESS_SESSION_TOKEN.
     Info {
         #[command(flatten)]
         broker: BrokerArgs,
@@ -323,7 +315,7 @@ enum NodeCommand {
         metrics_listen: Option<SocketAddr>,
         /// MCP gateway listener: MCP clients connect to
         /// http://<this>/mcp/<host>/<path> with a session token as a bearer
-        /// token (see `credential-broker mcp`). Keep it on loopback or a
+        /// token (see `tokenless mcp`). Keep it on loopback or a
         /// private address.
         #[arg(long, default_value = "127.0.0.1:3129")]
         mcp_listen: SocketAddr,
@@ -478,7 +470,7 @@ fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError
         })?;
         return Ok(Some(Zeroizing::new(key.trim().to_string())));
     }
-    Ok(std::env::var("CREDENTIAL_BROKER_API_KEY")
+    Ok(std::env::var("TOKENLESS_API_KEY")
         .ok()
         .map(|k| Zeroizing::new(k.trim().to_string()))
         .filter(|k| !k.is_empty()))
@@ -530,7 +522,7 @@ async fn prepare_trust(
     }
     let files = write_trust_files(dir, &pem, port.trust_base.as_deref())?;
     if files.base.is_none() {
-        eprintln!("credential-broker: no system root bundle found, so HTTPS to hosts outside the bundle may fail; pass --trust-base <roots.pem>");
+        eprintln!("tokenless: no system root bundle found, so HTTPS to hosts outside the bundle may fail; pass --trust-base <roots.pem>");
     }
     Ok((files, actual))
 }
@@ -538,7 +530,7 @@ async fn prepare_trust(
 fn private_dir() -> Result<tempfile::TempDir, CliError> {
     // tempfile creates the directory with mode 0700.
     tempfile::Builder::new()
-        .prefix("credential-broker-")
+        .prefix("tokenless-")
         .tempdir()
         .map_err(|e| CliError::Io {
             context: "creating a private directory for the trust files".into(),
@@ -589,7 +581,7 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
                 println!("{}", minted.token);
             }
             eprintln!(
-                "credential-broker: session {} expires at {}",
+                "tokenless: session {} expires at {}",
                 minted.session.id,
                 minted.session.expires_at.to_rfc3339()
             );
@@ -597,7 +589,7 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
         }
         SessionCommand::Info { broker, json } => {
             let client = ApiClient::new(&broker.server, None)?;
-            let port = std::env::var("CREDENTIAL_BROKER_PROXY")
+            let port = std::env::var("TOKENLESS_PROXY")
                 .ok()
                 .filter(|p| !p.trim().is_empty());
             let found = match port {
@@ -630,7 +622,7 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
                     client.revoke_self(&token).await?
                 }
             };
-            eprintln!("credential-broker: session {} ended", session.id);
+            eprintln!("tokenless: session {} ended", session.id);
             Ok(ExitCode::SUCCESS)
         }
         SessionCommand::Start {
@@ -673,19 +665,25 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             }
             let current = live.current.load();
             eprintln!(
-                "credential-broker: session port {} relays to the proxy at {} with bundle '{}' (session {}, renewed before {}). Interception CA {ca}.",
+                "tokenless: session port {} relays to the proxy at {} with bundle '{}' (session {}, renewed before {}). Interception CA {ca}.",
                 session_port.addr,
                 port.proxy,
                 mint.bundle,
                 current.id,
                 current.expires_at.to_rfc3339()
             );
-            eprintln!("credential-broker: point agents at it with these exports{}; Ctrl-C ends the session.", env_file.as_ref().map(|p| format!(" (also in {})", p.display())).unwrap_or_default());
+            eprintln!(
+                "tokenless: point agents at it with these exports{}; Ctrl-C ends the session.",
+                env_file
+                    .as_ref()
+                    .map(|p| format!(" (also in {})", p.display()))
+                    .unwrap_or_default()
+            );
             print!("{exports}");
             let signal = stop_signal().await?;
             session_port.stop();
             let ended = live.end().await;
-            eprintln!("credential-broker: {signal}, ended {ended} session(s)");
+            eprintln!("tokenless: {signal}, ended {ended} session(s)");
             if let Some(path) = &env_file {
                 let _ = std::fs::remove_file(path);
             }
@@ -695,13 +693,13 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
 }
 
 fn session_token_from_env() -> Result<Zeroizing<String>, CliError> {
-    std::env::var("CREDENTIAL_BROKER_SESSION_TOKEN")
+    std::env::var("TOKENLESS_SESSION_TOKEN")
         .ok()
         .map(Zeroizing::new)
         .filter(|t| !t.trim().is_empty())
         .ok_or_else(|| {
             LauncherError::config(
-                "set CREDENTIAL_BROKER_SESSION_TOKEN to the session's token (or run this behind a session port, which sets CREDENTIAL_BROKER_PROXY)",
+                "set TOKENLESS_SESSION_TOKEN to the session's token (or run this behind a session port, which sets TOKENLESS_PROXY)",
             )
             .into()
         })
@@ -764,7 +762,7 @@ async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
         }
     }
     eprintln!(
-        "credential-broker: session {} for bundle '{}' lasts until {}. The token above is what the client stores, never the services' credentials; end the session on the Sessions page or with `credential-broker session revoke --id {}` to cut the client off. The proxy node must be running with its MCP gateway at {gateway}.",
+        "tokenless: session {} for bundle '{}' lasts until {}. The token above is what the client stores, never the services' credentials; end the session on the Sessions page or with `tokenless session revoke --id {}` to cut the client off. The proxy node must be running with its MCP gateway at {gateway}.",
         minted.session.id,
         args.bundle,
         minted.session.expires_at.to_rfc3339(),
@@ -929,7 +927,7 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
     {
         let current = live.current.load();
         eprintln!(
-            "credential-broker: running '{name}' with bundle '{}' (session {}) through {} -> {}",
+            "tokenless: running '{name}' with bundle '{}' (session {}) through {} -> {}",
             args.mint.bundle, current.id, session_port.addr, args.port.proxy
         );
     }
@@ -969,7 +967,7 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
         context: format!("waiting for '{program}'"),
         source: e,
     })?;
-    eprintln!("credential-broker: '{name}' exited ({status}); ended {ended} session(s)");
+    eprintln!("tokenless: '{name}' exited ({status}); ended {ended} session(s)");
     Ok(exit_code(status))
 }
 
@@ -988,7 +986,7 @@ fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<Exi
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
     };
-    eprintln!("credential-broker: skill {what} at {}", path.display());
+    eprintln!("tokenless: skill {what} at {}", path.display());
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1016,9 +1014,9 @@ async fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             if agent_side {
-                eprintln!("credential-broker: {e}");
+                eprintln!("tokenless: {e}");
             } else {
-                error!(error = %e, "credential-broker exited with an error");
+                error!(error = %e, "tokenless exited with an error");
             }
             ExitCode::FAILURE
         }

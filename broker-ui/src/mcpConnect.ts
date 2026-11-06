@@ -1,8 +1,8 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // The MCP gateway URLs of a session's MCP services and the client
-// configuration that uses them. Mirrors `credential-broker mcp`.
+// configuration that uses them. Mirrors `tokenless mcp`.
 
 import type { CredentialMeta, DiscoveredService, StoredTemplate } from "./api";
 import { shellQuote } from "./bundleConnect";

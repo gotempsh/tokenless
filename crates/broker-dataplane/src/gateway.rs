@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! The MCP gateway: a plain-HTTP reverse proxy for clients that connect to
@@ -89,7 +89,7 @@ fn unauthorized(message: &str) -> Response<ProxyBody> {
     let mut response = respond(StatusCode::UNAUTHORIZED, message);
     response.headers_mut().insert(
         WWW_AUTHENTICATE,
-        HeaderValue::from_static("Bearer realm=\"credential-broker\""),
+        HeaderValue::from_static("Bearer realm=\"tokenless\""),
     );
     response
 }
@@ -199,7 +199,7 @@ async fn handle(
     let Some(token) = bearer_token(req.headers()) else {
         Metrics::inc(&shared.metrics.gateway_auth_failures_total);
         return unauthorized(
-            "a session token is required: send Authorization: Bearer <session token> (credential-broker mcp prints one)",
+            "a session token is required: send Authorization: Bearer <session token> (tokenless mcp prints one)",
         );
     };
     let claims = match verify_session(&token, &snapshot.session_keys, Utc::now()) {

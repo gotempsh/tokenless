@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! `credential-broker mcp`: the gateway URLs of a session's MCP services
+//! `tokenless mcp`: the gateway URLs of a session's MCP services
 //! and the commands that add them to an MCP client.
 //!
 //! A gateway URL is `<gateway>/mcp/<host[:port]><mcp_path>`. The client

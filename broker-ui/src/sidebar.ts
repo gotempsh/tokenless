@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Whether the desktop sidebar shows only icons. A per-browser display
@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-const KEY = "credential-broker.sidebar";
+const KEY = "tokenless.sidebar";
 
 function stored(): boolean {
   return window.localStorage.getItem(KEY) === "collapsed";

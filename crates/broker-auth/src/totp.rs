@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 credential-broker contributors
+// SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! RFC 6238 TOTP (SHA-1, 6 digits, 30 s) with replay protection: a code is
@@ -8,7 +8,7 @@ use totp_rs::{Algorithm, Secret, TOTP};
 
 use crate::error::AuthError;
 
-pub const ISSUER: &str = "credential-broker";
+pub const ISSUER: &str = "tokenless";
 const STEP_SECS: u64 = 30;
 const DIGITS: usize = 6;
 
@@ -146,7 +146,7 @@ mod tests {
     fn url_contains_issuer() {
         let url = otpauth_url(&generate_secret(), "admin").unwrap();
         assert!(url.starts_with("otpauth://totp/"));
-        assert!(url.contains("issuer=credential-broker"));
+        assert!(url.contains("issuer=tokenless"));
     }
 
     #[test]
