@@ -5,15 +5,18 @@ import { useState, type FormEvent } from "react";
 import {
   del,
   get,
+  patch,
   post,
   put,
   type ApiKey,
   type AuditEvent,
+  type Invite,
   type NodeInfo,
   type Page,
   type Role,
   type Settings as SettingsModel,
   type StoredTemplate,
+  type UserSummary,
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
@@ -515,6 +518,222 @@ export function Settings() {
             Save allowed ranges
           </button>
         </form>
+      </Section>
+    </>
+  );
+}
+
+const PERSON_ROLES: { role: Role; summary: string }[] = [
+  { role: "viewer", summary: "Read vaults, rules, sessions and the audit log" },
+  { role: "editor", summary: "Also manage rules and mint or revoke sessions" },
+  { role: "admin", summary: "Full control, including credentials and people" },
+];
+
+function inviteStatus(i: Invite): { label: string; tone: string } {
+  if (i.accepted_at) return { label: "accepted", tone: "ok" };
+  if (i.revoked_at) return { label: "revoked", tone: "bad" };
+  if (new Date(i.expires_at) <= new Date()) return { label: "expired", tone: "bad" };
+  return { label: "pending", tone: "" };
+}
+
+/** People: invite with a role, change roles, disable accounts. */
+export function People({ me }: { me: UserSummary }) {
+  const isAdmin = me.role === "admin";
+  const [userPage, setUserPage] = useState(1);
+  const [invitePage, setInvitePage] = useState(1);
+  const users = useLoad(
+    () => (isAdmin ? get<Page<UserSummary>>(`/users?page=${userPage}`) : Promise.resolve(undefined)),
+    [isAdmin, userPage],
+  );
+  const invites = useLoad(
+    () => (isAdmin ? get<Page<Invite>>(`/invites?page=${invitePage}`) : Promise.resolve(undefined)),
+    [isAdmin, invitePage],
+  );
+  const [form, setForm] = useState({ role: "editor" as Role, expires_in_hours: 72 });
+  const [link, setLink] = useState<string | null>(null);
+  const action = useAction();
+
+  if (!isAdmin) {
+    return (
+      <Section title="People">
+        <div className="banner info">
+          Only admins can invite people or change their roles. You are signed in as <strong>{me.username}</strong> with
+          the <strong>{me.role}</strong> role; ask an admin if you need more access.
+        </div>
+      </Section>
+    );
+  }
+
+  const invite = async (e: FormEvent) => {
+    e.preventDefault();
+    const result = await action.run(() => post<{ token: string; invite: Invite }>("/invites", form));
+    if (result) {
+      setLink(`${window.location.origin}${window.location.pathname}#/invite/${result.token}`);
+      invites.reload();
+    }
+  };
+
+  const update = async (u: UserSummary, change: { role?: Role; disabled?: boolean }, question: string) => {
+    if (!window.confirm(question)) return;
+    await action.run(() => patch<UserSummary>(`/users/${u.id}`, change));
+    users.reload();
+  };
+
+  const revoke = async (i: Invite) => {
+    if (!window.confirm(`Revoke the pending ${i.role} invite?`)) return;
+    await action.run(() => del(`/invites/${i.id}`));
+    invites.reload();
+  };
+
+  return (
+    <>
+      <Section title="Invite someone">
+        <p className="muted">
+          Send the link to the person you are inviting. They choose a username and password and enrol an authenticator.
+          The link works once.
+        </p>
+        {link && (
+          <OneTimeSecret
+            label="Invite link"
+            value={link}
+            hint="Shown once. Anyone holding it can create the account until it is accepted, revoked or expires."
+          />
+        )}
+        <form className="form" onSubmit={invite}>
+          <ErrorBanner error={action.error} />
+          <div className="choice-cards">
+            {PERSON_ROLES.map(({ role, summary }) => (
+              <label key={role} className={`choice ${form.role === role ? "selected" : ""}`}>
+                <input type="radio" name="invite-role" value={role} checked={form.role === role} onChange={() => setForm({ ...form, role })} />
+                <strong>{role}</strong>
+                <span className="muted small">{summary}</span>
+              </label>
+            ))}
+          </div>
+          <label>
+            Link expires in (hours, at most 168)
+            <input
+              type="number"
+              min={1}
+              max={168}
+              value={form.expires_in_hours}
+              onChange={(e) => setForm({ ...form, expires_in_hours: Number(e.target.value) })}
+            />
+          </label>
+          <button type="submit" disabled={action.busy}>
+            Create invite link
+          </button>
+        </form>
+      </Section>
+      <Section title="People">
+        <ErrorBanner error={users.error} />
+        {users.loading && !users.data ? (
+          <Loading />
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Since</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {users.data?.items.map((u) => (
+                <tr key={u.id}>
+                  <td>
+                    {u.username} {u.id === me.id && <span className="muted">(you)</span>}
+                  </td>
+                  <td>
+                    <select
+                      aria-label={`Role for ${u.username}`}
+                      value={u.role}
+                      disabled={action.busy}
+                      onChange={(e) => void update(u, { role: e.target.value as Role }, `Make ${u.username} ${e.target.value}?`)}
+                    >
+                      {PERSON_ROLES.map(({ role }) => (
+                        <option key={role} value={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <When at={u.created_at} />
+                  </td>
+                  <td>{u.disabled_at ? <span className="pill bad">disabled</span> : <span className="pill ok">active</span>}</td>
+                  <td className="row-actions">
+                    {u.disabled_at ? (
+                      <button type="button" className="secondary" onClick={() => void update(u, { disabled: false }, `Re-enable ${u.username}?`)}>
+                        Enable
+                      </button>
+                    ) : (
+                      u.id !== me.id && (
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void update(u, { disabled: true }, `Disable ${u.username}? They are signed out immediately.`)}
+                        >
+                          Disable
+                        </button>
+                      )
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <Pager page={users.data} onPage={setUserPage} />
+      </Section>
+      <Section title="Invites">
+        <ErrorBanner error={invites.error} />
+        {invites.loading && !invites.data ? (
+          <Loading />
+        ) : invites.data?.items.length === 0 ? (
+          <Empty>No invites yet. Create one above to add a person.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>Created by</th>
+                <th>Expires</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {invites.data?.items.map((i) => {
+                const status = inviteStatus(i);
+                return (
+                  <tr key={i.id}>
+                    <td>{i.role}</td>
+                    <td>
+                      <code>{i.created_by}</code>
+                    </td>
+                    <td>
+                      <When at={i.expires_at} />
+                    </td>
+                    <td>
+                      <span className={`pill ${status.tone}`}>{status.label}</span>
+                    </td>
+                    <td className="row-actions">
+                      {status.label === "pending" && (
+                        <button type="button" className="danger" onClick={() => void revoke(i)}>
+                          Revoke
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+        <Pager page={invites.data} onPage={setInvitePage} />
       </Section>
     </>
   );

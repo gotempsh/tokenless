@@ -34,6 +34,24 @@ export interface UserSummary {
   id: string;
   username: string;
   role: Role;
+  created_at: string;
+  disabled_at: string | null;
+}
+
+export interface Invite {
+  id: string;
+  role: Role;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  accepted_by: string | null;
+  revoked_at: string | null;
+}
+
+export interface InviteInfo {
+  role: Role;
+  expires_at: string;
 }
 
 export interface SessionInfo {

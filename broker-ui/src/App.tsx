@@ -5,16 +5,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, get, post, setCsrfToken, setStepUpHandler, type SessionInfo } from "./api";
 import { useHashRoute } from "./hooks";
 import { ErrorBanner, Loading } from "./components/ui";
-import { Login, Setup, StepUpDialog } from "./pages/Auth";
+import { AcceptInvite, Login, Setup, StepUpDialog } from "./pages/Auth";
 import { Vaults } from "./pages/Vaults";
 import { VaultDetail } from "./pages/VaultDetail";
-import { ApiKeys, Audit, Nodes, Settings, Templates } from "./pages/Admin";
+import { ApiKeys, Audit, Nodes, People, Settings, Templates } from "./pages/Admin";
 
 type Boot = { state: "loading" } | { state: "setup" } | { state: "login" } | { state: "ready"; session: SessionInfo } | { state: "error"; message: string };
 
 const NAV = [
   ["vaults", "Vaults"],
   ["templates", "Templates"],
+  ["people", "People"],
   ["api-keys", "API keys"],
   ["nodes", "Nodes"],
   ["audit", "Audit log"],
@@ -73,6 +74,18 @@ export function App() {
     }
   };
 
+  if (route[0] === "invite" && route[1])
+    return (
+      <main>
+        <AcceptInvite
+          token={route[1]}
+          onDone={() => {
+            window.location.hash = "";
+            setBoot({ state: "login" });
+          }}
+        />
+      </main>
+    );
   if (boot.state === "loading") return <main className="auth"><Loading /></main>;
   if (boot.state === "error") return <main className="auth"><ErrorBanner error={boot.message} /></main>;
   if (boot.state === "setup") return <main><Setup onDone={() => setBoot({ state: "login" })} /></main>;
@@ -118,6 +131,7 @@ export function App() {
           <VaultDetail vaultId={id} tab={tab === "rules" || tab === "sessions" ? tab : "credentials"} user={user} />
         )}
         {section === "templates" && <Templates isAdmin={isAdmin} />}
+        {section === "people" && <People me={user} />}
         {section === "api-keys" && <ApiKeys />}
         {section === "nodes" && <Nodes />}
         {section === "audit" && <Audit />}
