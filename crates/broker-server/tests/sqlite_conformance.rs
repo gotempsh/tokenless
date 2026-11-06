@@ -73,3 +73,42 @@ async fn a_failed_audit_insert_rolls_back_the_change() {
         .expect("list vaults");
     assert_eq!(vaults.total, 0);
 }
+
+/// Writers that read before they write must wait their turn, not fail with
+/// "database is locked" because another write landed in between.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_wait_instead_of_failing() {
+    use broker_control::model::Variable;
+    use broker_control::store::CredentialStore;
+    use broker_core::ids::VariableId;
+    use std::sync::Arc;
+
+    let (_dir, store) = store().await;
+    let store = Arc::new(store);
+    let now = chrono::Utc::now();
+    let mut ids = Vec::new();
+    for i in 0..32 {
+        let variable = Variable {
+            id: VariableId::new(),
+            key: format!("KEY_{i}"),
+            created_by: "user:test".into(),
+            created_at: now,
+            updated_by: "user:test".into(),
+            updated_at: now,
+        };
+        ids.push(variable.id);
+        store
+            .insert_variable(variable, b"v".to_vec(), &[])
+            .await
+            .expect("insert variable");
+    }
+    // Each delete reads the variable and its references, then deletes it.
+    let mut tasks = tokio::task::JoinSet::new();
+    for id in ids {
+        let store = Arc::clone(&store);
+        tasks.spawn(async move { store.delete_variable(&id, &[]).await });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.expect("task").expect("concurrent delete");
+    }
+}

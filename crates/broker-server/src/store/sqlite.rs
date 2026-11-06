@@ -146,12 +146,16 @@ impl SqliteStore {
         Ok(to_u64(get::<i64>(&row, "n")?))
     }
 
+    /// Starts a write transaction. IMMEDIATE takes the write lock up front, so
+    /// a writer that finds another one busy waits out `busy_timeout`; a
+    /// deferred transaction that reads first and writes later fails at once
+    /// with "database is locked" when another write lands in between.
     async fn begin(
         &self,
         operation: &'static str,
     ) -> Result<Transaction<'static, Sqlite>, StoreError> {
         self.pool
-            .begin()
+            .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|e| StoreError::backend(&format!("begin {operation}"), e))
     }
