@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: circleci
+version: 1
+name: "CircleCI"
+description: "Pipelines, workflows and jobs on CircleCI."
+category: developer_tools
+aliases: [ci]
+suggested_variable: CIRCLECI_TOKEN
+hosts:
+  - circleci.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Personal API token"
+injection:
+  method: header
+  name: "Circle-Token"
+  field: api_key
+validation:
+  method: GET
+  path: /api/v2/me
+  expect_status: [200]

@@ -901,3 +901,1228 @@ auth = "basic"
 override = { required = true, label = "API host (https://host[:port])" }
 icon = "none"
 
+# ---- added in catalogue v2 ------------------------------------------------
+
+[[service]]
+id = "azure-openai"
+name = "Azure OpenAI"
+description = "OpenAI models deployed in your Azure subscription."
+category = "llm_providers"
+hosts = ["*.openai.azure.com", "*.cognitiveservices.azure.com"]
+auth = "header"
+header = "api-key"
+variable = "AZURE_OPENAI_API_KEY"
+override = { required = false, label = "Custom endpoint (https://host[:port])" }
+aliases = ["azure", "openai"]
+docs = "https://learn.microsoft.com/azure/ai-services/openai/reference"
+icon = "lobe:azure"
+
+[[service]]
+id = "nvidia"
+name = "NVIDIA NIM"
+description = "Hosted NVIDIA NIM model endpoints."
+category = "llm_providers"
+hosts = ["integrate.api.nvidia.com", "ai.api.nvidia.com"]
+auth = "bearer"
+variable = "NVIDIA_API_KEY"
+validate = "GET /v1/models"
+docs = "https://docs.api.nvidia.com/nim/reference"
+
+[[service]]
+id = "moonshot"
+name = "Moonshot AI (Kimi)"
+description = "Kimi models from Moonshot AI."
+category = "llm_providers"
+hosts = ["api.moonshot.ai", "api.moonshot.cn"]
+auth = "bearer"
+variable = "MOONSHOT_API_KEY"
+validate = "GET /v1/models"
+aliases = ["kimi"]
+docs = "https://platform.moonshot.ai/docs"
+
+[[service]]
+id = "qwen"
+name = "Qwen (Alibaba Cloud)"
+description = "Qwen models through Alibaba Cloud Model Studio (DashScope)."
+category = "llm_providers"
+hosts = ["dashscope-intl.aliyuncs.com", "dashscope.aliyuncs.com"]
+auth = "bearer"
+variable = "DASHSCOPE_API_KEY"
+aliases = ["dashscope", "alibaba"]
+docs = "https://www.alibabacloud.com/help/en/model-studio"
+
+[[service]]
+id = "ai21"
+name = "AI21 Labs"
+description = "Jamba models from AI21 Labs."
+category = "llm_providers"
+hosts = ["api.ai21.com"]
+auth = "bearer"
+variable = "AI21_API_KEY"
+aliases = ["jamba"]
+docs = "https://docs.ai21.com/reference"
+
+[[service]]
+id = "sambanova"
+name = "SambaNova Cloud"
+description = "Fast open-model inference on SambaNova."
+category = "llm_providers"
+hosts = ["api.sambanova.ai"]
+auth = "bearer"
+variable = "SAMBANOVA_API_KEY"
+validate = "GET /v1/models"
+docs = "https://docs.sambanova.ai/cloud/api-reference"
+
+[[service]]
+id = "voyage"
+name = "Voyage AI"
+description = "Embedding and reranking models."
+category = "llm_providers"
+hosts = ["api.voyageai.com"]
+auth = "bearer"
+variable = "VOYAGE_API_KEY"
+aliases = ["embeddings"]
+docs = "https://docs.voyageai.com/reference"
+
+[[service]]
+id = "jina"
+name = "Jina AI"
+description = "Embeddings, reranking, reader and search APIs."
+category = "llm_providers"
+hosts = ["api.jina.ai", "r.jina.ai", "s.jina.ai"]
+auth = "bearer"
+variable = "JINA_API_KEY"
+aliases = ["embeddings", "reader"]
+docs = "https://jina.ai/api-dashboard"
+
+[[service]]
+id = "stability"
+name = "Stability AI"
+description = "Image generation and editing models."
+category = "llm_providers"
+hosts = ["api.stability.ai"]
+auth = "bearer"
+variable = "STABILITY_API_KEY"
+validate = "GET /v1/user/account"
+aliases = ["stable diffusion", "image"]
+docs = "https://platform.stability.ai/docs/api-reference"
+
+[[service]]
+id = "fal"
+name = "fal"
+description = "Generative media models on fal."
+category = "llm_providers"
+hosts = ["fal.run", "queue.fal.run"]
+auth = "header"
+header = "Authorization"
+prefix = "Key "
+variable = "FAL_KEY"
+aliases = ["image", "video"]
+docs = "https://docs.fal.ai/model-apis/authentication"
+
+[[service]]
+id = "bfl"
+name = "Black Forest Labs"
+description = "FLUX image models."
+category = "llm_providers"
+hosts = ["api.bfl.ai", "api.us1.bfl.ai", "api.eu1.bfl.ai"]
+auth = "header"
+header = "x-key"
+variable = "BFL_API_KEY"
+aliases = ["flux", "image"]
+docs = "https://docs.bfl.ai"
+
+[[service]]
+id = "luma"
+name = "Luma AI"
+description = "Dream Machine video and image generation."
+category = "llm_providers"
+hosts = ["api.lumalabs.ai"]
+auth = "bearer"
+variable = "LUMAAI_API_KEY"
+aliases = ["video"]
+docs = "https://docs.lumalabs.ai/docs/api"
+
+[[service]]
+id = "deepgram"
+name = "Deepgram"
+description = "Speech-to-text and text-to-speech."
+category = "llm_providers"
+hosts = ["api.deepgram.com"]
+auth = "header"
+header = "Authorization"
+prefix = "Token "
+variable = "DEEPGRAM_API_KEY"
+validate = "GET /v1/projects"
+aliases = ["speech", "transcription"]
+docs = "https://developers.deepgram.com/reference/authentication"
+
+[[service]]
+id = "assemblyai"
+name = "AssemblyAI"
+description = "Speech-to-text and audio intelligence."
+category = "llm_providers"
+hosts = ["api.assemblyai.com", "api.eu.assemblyai.com"]
+auth = "header"
+header = "Authorization"
+variable = "ASSEMBLYAI_API_KEY"
+aliases = ["speech", "transcription"]
+docs = "https://www.assemblyai.com/docs/api-reference/overview"
+
+[[service]]
+id = "langsmith"
+name = "LangSmith"
+description = "Tracing and evaluation for LLM applications."
+category = "monitoring"
+hosts = ["api.smith.langchain.com", "eu.api.smith.langchain.com"]
+auth = "header"
+header = "x-api-key"
+variable = "LANGSMITH_API_KEY"
+aliases = ["langchain", "tracing"]
+docs = "https://docs.smith.langchain.com/reference"
+icon_dark_fills = ["#1C3C3C"]
+
+[[service]]
+id = "github-npm"
+name = "GitHub Packages (npm)"
+description = "The npm registry on GitHub Packages."
+category = "developer_tools"
+hosts = ["npm.pkg.github.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "GITHUB_TOKEN"
+logo = "github"
+aliases = ["npm", "packages", "registry"]
+docs = "https://docs.github.com/packages/working-with-a-github-packages-registry/working-with-the-npm-registry"
+
+[[service]]
+id = "circleci"
+name = "CircleCI"
+description = "Pipelines, workflows and jobs on CircleCI."
+category = "developer_tools"
+hosts = ["circleci.com"]
+auth = "header"
+header = "Circle-Token"
+label = "Personal API token"
+variable = "CIRCLECI_TOKEN"
+validate = "GET /api/v2/me"
+aliases = ["ci"]
+docs = "https://circleci.com/docs/api/v2/"
+
+[[service]]
+id = "buildkite"
+name = "Buildkite"
+description = "Pipelines and builds on Buildkite."
+category = "developer_tools"
+hosts = ["api.buildkite.com"]
+auth = "bearer"
+label = "API access token"
+variable = "BUILDKITE_API_TOKEN"
+validate = "GET /v2/access-token"
+aliases = ["ci"]
+docs = "https://buildkite.com/docs/apis/rest-api"
+
+[[service]]
+id = "terraform-cloud"
+name = "HCP Terraform"
+description = "Workspaces and runs on HCP Terraform (Terraform Cloud)."
+category = "infrastructure"
+hosts = ["app.terraform.io"]
+auth = "bearer"
+label = "API token"
+variable = "TFE_TOKEN"
+validate = "GET /api/v2/account/details"
+aliases = ["terraform", "hashicorp", "tfc"]
+override = { required = false, label = "Terraform Enterprise URL (https://host[:port])" }
+docs = "https://developer.hashicorp.com/terraform/cloud-docs/api-docs"
+icon = "svgl:Terraform"
+
+[[service]]
+id = "doppler"
+name = "Doppler"
+description = "Secrets and config in Doppler."
+category = "developer_tools"
+hosts = ["api.doppler.com"]
+auth = "bearer"
+label = "Service or personal token"
+variable = "DOPPLER_TOKEN"
+validate = "GET /v3/me"
+docs = "https://docs.doppler.com/reference/api"
+icon = "none"
+
+[[service]]
+id = "postman"
+name = "Postman"
+description = "Collections, environments and monitors."
+category = "developer_tools"
+hosts = ["api.getpostman.com"]
+auth = "header"
+header = "X-Api-Key"
+variable = "POSTMAN_API_KEY"
+validate = "GET /me"
+docs = "https://learning.postman.com/docs/developer/postman-api/authentication/"
+
+[[service]]
+id = "snyk"
+name = "Snyk"
+description = "Vulnerability data and projects on Snyk."
+category = "developer_tools"
+hosts = ["api.snyk.io", "api.eu.snyk.io"]
+auth = "header"
+header = "Authorization"
+prefix = "token "
+label = "API token"
+variable = "SNYK_TOKEN"
+aliases = ["security"]
+docs = "https://docs.snyk.io/snyk-api/authentication-for-api"
+
+[[service]]
+id = "sonarcloud"
+name = "SonarQube Cloud"
+description = "Code quality and security analysis (SonarCloud)."
+category = "developer_tools"
+hosts = ["sonarcloud.io"]
+auth = "bearer"
+label = "User token"
+variable = "SONAR_TOKEN"
+validate = "GET /api/authentication/validate"
+aliases = ["sonar", "sonarqube"]
+docs = "https://docs.sonarsource.com/sonarqube-cloud/advanced-setup/web-api/"
+icon = "simple:sonarqubecloud"
+
+[[service]]
+id = "launchdarkly"
+name = "LaunchDarkly"
+description = "Feature flags and experiments."
+category = "developer_tools"
+hosts = ["app.launchdarkly.com"]
+auth = "header"
+header = "Authorization"
+label = "Access token"
+variable = "LAUNCHDARKLY_ACCESS_TOKEN"
+validate = "GET /api/v2/caller-identity"
+aliases = ["feature flags"]
+docs = "https://launchdarkly.com/docs/api"
+
+[[service]]
+id = "expo"
+name = "Expo"
+description = "Builds and updates for Expo apps (EAS)."
+category = "developer_tools"
+hosts = ["api.expo.dev"]
+auth = "bearer"
+label = "Access token"
+variable = "EXPO_TOKEN"
+aliases = ["eas", "react native"]
+docs = "https://docs.expo.dev/accounts/programmatic-access/"
+
+[[service]]
+id = "turso"
+name = "Turso"
+description = "Databases and groups on Turso."
+category = "developer_tools"
+hosts = ["api.turso.tech"]
+auth = "bearer"
+label = "Platform API token"
+variable = "TURSO_API_TOKEN"
+validate = "GET /v1/auth/validate"
+aliases = ["libsql", "sqlite"]
+docs = "https://docs.turso.tech/api-reference/authentication"
+
+[[service]]
+id = "sanity"
+name = "Sanity"
+description = "Content Lake APIs for a Sanity project."
+category = "developer_tools"
+hosts = ["api.sanity.io", "*.api.sanity.io", "*.apicdn.sanity.io"]
+auth = "bearer"
+label = "API token"
+variable = "SANITY_API_TOKEN"
+aliases = ["cms"]
+docs = "https://www.sanity.io/docs/http-auth"
+
+[[service]]
+id = "contentful"
+name = "Contentful"
+description = "Content management and delivery APIs."
+category = "developer_tools"
+hosts = ["api.contentful.com", "cdn.contentful.com", "preview.contentful.com"]
+auth = "bearer"
+label = "Access token"
+variable = "CONTENTFUL_ACCESS_TOKEN"
+aliases = ["cms"]
+docs = "https://www.contentful.com/developers/docs/references/authentication/"
+
+[[service]]
+id = "vultr"
+name = "Vultr"
+description = "Instances, Kubernetes and the Vultr API."
+category = "infrastructure"
+hosts = ["api.vultr.com"]
+auth = "bearer"
+variable = "VULTR_API_KEY"
+validate = "GET /v2/account"
+docs = "https://www.vultr.com/api/"
+
+[[service]]
+id = "linode"
+name = "Akamai Cloud (Linode)"
+description = "Linodes, volumes and the Linode API."
+category = "infrastructure"
+hosts = ["api.linode.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "LINODE_TOKEN"
+validate = "GET /v4/profile"
+aliases = ["akamai"]
+docs = "https://techdocs.akamai.com/linode-api/reference/api"
+icon = "gilbarbara:linode"
+
+[[service]]
+id = "scaleway"
+name = "Scaleway"
+description = "Instances, storage and the Scaleway API."
+category = "infrastructure"
+hosts = ["api.scaleway.com"]
+auth = "header"
+header = "X-Auth-Token"
+label = "Secret key"
+variable = "SCW_SECRET_KEY"
+docs = "https://www.scaleway.com/en/developers/api/"
+
+[[service]]
+id = "koyeb"
+name = "Koyeb"
+description = "Apps and services on Koyeb."
+category = "infrastructure"
+hosts = ["app.koyeb.com"]
+auth = "bearer"
+label = "API token"
+variable = "KOYEB_TOKEN"
+docs = "https://www.koyeb.com/docs/reference/api"
+
+[[service]]
+id = "heroku"
+name = "Heroku"
+description = "Apps, dynos and add-ons on Heroku."
+category = "infrastructure"
+hosts = ["api.heroku.com"]
+auth = "bearer"
+variable = "HEROKU_API_KEY"
+headers = { Accept = "application/vnd.heroku+json; version=3" }
+validate = "GET /account"
+docs = "https://devcenter.heroku.com/articles/platform-api-reference"
+
+[[service]]
+id = "tailscale"
+name = "Tailscale"
+description = "Devices, ACLs and keys in a tailnet."
+category = "infrastructure"
+hosts = ["api.tailscale.com"]
+auth = "bearer"
+variable = "TAILSCALE_API_KEY"
+aliases = ["vpn", "wireguard"]
+docs = "https://tailscale.com/api"
+
+[[service]]
+id = "ngrok"
+name = "ngrok"
+description = "Endpoints, domains and tunnels on ngrok."
+category = "infrastructure"
+hosts = ["api.ngrok.com"]
+auth = "bearer"
+variable = "NGROK_API_KEY"
+headers = { Ngrok-Version = "2" }
+docs = "https://ngrok.com/docs/api/"
+
+[[service]]
+id = "fastly"
+name = "Fastly"
+description = "Services, caching and purging on Fastly."
+category = "infrastructure"
+hosts = ["api.fastly.com"]
+auth = "header"
+header = "Fastly-Key"
+label = "API token"
+variable = "FASTLY_API_TOKEN"
+validate = "GET /current_user"
+aliases = ["cdn"]
+docs = "https://www.fastly.com/documentation/reference/api/auth-tokens/"
+
+[[service]]
+id = "clickhouse"
+name = "ClickHouse Cloud"
+description = "Services and organizations in ClickHouse Cloud."
+category = "infrastructure"
+hosts = ["api.clickhouse.cloud"]
+auth = "basic"
+username_label = "Key ID"
+password_label = "Key secret"
+variable = "CLICKHOUSE_KEY_SECRET"
+validate = "GET /v1/organizations"
+docs = "https://clickhouse.com/docs/cloud/manage/api/api-overview"
+
+[[service]]
+id = "brevo"
+name = "Brevo"
+description = "Email, SMS and contacts (formerly Sendinblue)."
+category = "communication"
+hosts = ["api.brevo.com"]
+auth = "header"
+header = "api-key"
+variable = "BREVO_API_KEY"
+validate = "GET /v3/account"
+aliases = ["sendinblue", "email"]
+docs = "https://developers.brevo.com/docs/getting-started"
+
+[[service]]
+id = "mailchimp"
+name = "Mailchimp"
+description = "Audiences and campaigns in Mailchimp Marketing."
+category = "communication"
+hosts = ["*.api.mailchimp.com"]
+auth = "basic"
+username_label = "Any username"
+username_description = "Mailchimp ignores it; any non-empty value works."
+password_label = "API key"
+variable = "MAILCHIMP_API_KEY"
+validate = "GET /3.0/ping"
+aliases = ["email", "marketing"]
+docs = "https://mailchimp.com/developer/marketing/docs/fundamentals/"
+
+[[service]]
+id = "mailjet"
+name = "Mailjet"
+description = "Transactional and marketing email."
+category = "communication"
+hosts = ["api.mailjet.com"]
+auth = "basic"
+username_label = "API key"
+password_label = "Secret key"
+variable = "MAILJET_SECRET_KEY"
+aliases = ["email"]
+docs = "https://dev.mailjet.com/email/guides/"
+
+[[service]]
+id = "vonage"
+name = "Vonage"
+description = "SMS, voice and messaging APIs."
+category = "communication"
+hosts = ["api.nexmo.com", "rest.nexmo.com"]
+auth = "basic"
+username_label = "API key"
+password_label = "API secret"
+variable = "VONAGE_API_SECRET"
+aliases = ["nexmo", "sms"]
+docs = "https://developer.vonage.com/en/getting-started/concepts/authentication"
+
+[[service]]
+id = "zendesk"
+name = "Zendesk"
+description = "Tickets, users and help center. Covers every *.zendesk.com account."
+category = "communication"
+hosts = ["*.zendesk.com"]
+auth = "basic"
+username_label = "Email address followed by /token"
+username_description = "For example agent@example.com/token"
+password_label = "API token"
+variable = "ZENDESK_API_TOKEN"
+validate = "GET /api/v2/users/me"
+aliases = ["support", "helpdesk"]
+docs = "https://developer.zendesk.com/api-reference/introduction/security-and-auth/"
+
+[[service]]
+id = "front"
+name = "Front"
+description = "Shared inboxes and conversations."
+category = "communication"
+hosts = ["api2.frontapp.com"]
+auth = "bearer"
+label = "API token"
+variable = "FRONT_API_TOKEN"
+validate = "GET /me"
+docs = "https://dev.frontapp.com/docs/create-and-revoke-api-tokens"
+
+[[service]]
+id = "loops"
+name = "Loops"
+description = "Email for SaaS: contacts, events and transactional mail."
+category = "communication"
+hosts = ["app.loops.so"]
+auth = "bearer"
+variable = "LOOPS_API_KEY"
+validate = "GET /api/v1/api-key"
+aliases = ["email"]
+docs = "https://loops.so/docs/api-reference"
+
+[[service]]
+id = "customerio"
+name = "Customer.io"
+description = "Messaging and campaigns through the App API."
+category = "communication"
+hosts = ["api.customer.io", "api-eu.customer.io"]
+auth = "bearer"
+label = "App API key"
+variable = "CUSTOMERIO_APP_API_KEY"
+aliases = ["email", "messaging"]
+docs = "https://docs.customer.io/api/app/"
+
+[[service]]
+id = "novu"
+name = "Novu"
+description = "Notification workflows across channels."
+category = "communication"
+hosts = ["api.novu.co", "eu.api.novu.co"]
+auth = "header"
+header = "Authorization"
+prefix = "ApiKey "
+variable = "NOVU_SECRET_KEY"
+aliases = ["notifications"]
+docs = "https://docs.novu.co/api-reference/overview"
+
+[[service]]
+id = "onesignal"
+name = "OneSignal"
+description = "Push, email and in-app notifications."
+category = "communication"
+hosts = ["api.onesignal.com"]
+auth = "header"
+header = "Authorization"
+prefix = "Key "
+label = "REST API key"
+variable = "ONESIGNAL_REST_API_KEY"
+aliases = ["push", "notifications"]
+docs = "https://documentation.onesignal.com/reference/rest-api-overview"
+
+[[service]]
+id = "mattermost"
+name = "Mattermost"
+description = "Channels and posts on a Mattermost server. The host is chosen per credential (admin only)."
+category = "communication"
+hosts = []
+auth = "bearer"
+label = "Personal access token"
+variable = "MATTERMOST_TOKEN"
+validate = "GET /api/v4/users/me"
+override = { required = true, label = "Mattermost URL (https://host[:port])" }
+aliases = ["chat"]
+docs = "https://developers.mattermost.com/api-documentation/"
+
+[[service]]
+id = "newrelic"
+name = "New Relic"
+description = "NerdGraph and REST APIs for New Relic."
+category = "monitoring"
+hosts = ["api.newrelic.com", "api.eu.newrelic.com"]
+auth = "header"
+header = "Api-Key"
+label = "User key"
+variable = "NEW_RELIC_API_KEY"
+aliases = ["apm", "observability"]
+docs = "https://docs.newrelic.com/docs/apis/intro-apis/new-relic-api-keys/"
+
+[[service]]
+id = "honeycomb"
+name = "Honeycomb"
+description = "Observability queries, boards and markers."
+category = "monitoring"
+hosts = ["api.honeycomb.io", "api.eu1.honeycomb.io"]
+auth = "header"
+header = "X-Honeycomb-Team"
+variable = "HONEYCOMB_API_KEY"
+validate = "GET /1/auth"
+aliases = ["observability", "tracing"]
+docs = "https://docs.honeycomb.io/api/"
+icon = "none"
+
+[[service]]
+id = "betterstack"
+name = "Better Stack"
+description = "Uptime monitors, incidents and logs."
+category = "monitoring"
+hosts = ["uptime.betterstack.com", "telemetry.betterstack.com"]
+auth = "bearer"
+label = "API token"
+variable = "BETTERSTACK_API_TOKEN"
+validate = "GET /api/v2/monitors"
+aliases = ["uptime", "logtail"]
+docs = "https://betterstack.com/docs/uptime/api/getting-started-with-uptime-api/"
+
+[[service]]
+id = "opsgenie"
+name = "Opsgenie"
+description = "Alerts, schedules and on-call."
+category = "monitoring"
+hosts = ["api.opsgenie.com", "api.eu.opsgenie.com"]
+auth = "header"
+header = "Authorization"
+prefix = "GenieKey "
+variable = "OPSGENIE_API_KEY"
+aliases = ["on-call", "alerts"]
+docs = "https://docs.opsgenie.com/docs/authentication"
+
+[[service]]
+id = "statuspage"
+name = "Atlassian Statuspage"
+description = "Pages, components and incidents."
+category = "monitoring"
+hosts = ["api.statuspage.io"]
+auth = "header"
+header = "Authorization"
+prefix = "OAuth "
+variable = "STATUSPAGE_API_KEY"
+validate = "GET /v1/pages"
+aliases = ["status"]
+docs = "https://developer.statuspage.io/"
+
+[[service]]
+id = "incident-io"
+name = "incident.io"
+description = "Incidents, alerts and status pages."
+category = "monitoring"
+hosts = ["api.incident.io"]
+auth = "bearer"
+variable = "INCIDENT_IO_API_KEY"
+aliases = ["incidents", "on-call"]
+docs = "https://api-docs.incident.io/"
+icon = "gilbarbara:incident"
+
+[[service]]
+id = "rollbar"
+name = "Rollbar"
+description = "Error tracking and deploys."
+category = "monitoring"
+hosts = ["api.rollbar.com"]
+auth = "header"
+header = "X-Rollbar-Access-Token"
+label = "Access token"
+variable = "ROLLBAR_ACCESS_TOKEN"
+aliases = ["errors"]
+docs = "https://docs.rollbar.com/reference/getting-started-1"
+
+[[service]]
+id = "bugsnag"
+name = "BugSnag"
+description = "Errors and stability data."
+category = "monitoring"
+hosts = ["api.bugsnag.com"]
+auth = "header"
+header = "Authorization"
+prefix = "token "
+label = "Personal auth token"
+variable = "BUGSNAG_TOKEN"
+validate = "GET /user"
+aliases = ["errors"]
+docs = "https://bugsnagapiv2.docs.apiary.io/"
+
+[[service]]
+id = "axiom"
+name = "Axiom"
+description = "Log and event datasets and queries."
+category = "monitoring"
+hosts = ["api.axiom.co"]
+auth = "bearer"
+label = "API token"
+variable = "AXIOM_TOKEN"
+aliases = ["logs"]
+docs = "https://axiom.co/docs/restapi/introduction"
+
+[[service]]
+id = "checkly"
+name = "Checkly"
+description = "API and browser checks."
+category = "monitoring"
+hosts = ["api.checklyhq.com"]
+auth = "bearer"
+variable = "CHECKLY_API_KEY"
+headers = { X-Checkly-Account = "{{CHECKLY_ACCOUNT_ID}}" }
+aliases = ["synthetics", "uptime"]
+docs = "https://developers.checklyhq.com/reference/authentication"
+icon = "none"
+
+[[service]]
+id = "mixpanel"
+name = "Mixpanel"
+description = "Product analytics queries and exports with a service account."
+category = "monitoring"
+hosts = ["mixpanel.com", "eu.mixpanel.com", "data.mixpanel.com", "data-eu.mixpanel.com", "api.mixpanel.com"]
+auth = "basic"
+username_label = "Service account username"
+password_label = "Service account secret"
+variable = "MIXPANEL_SERVICE_ACCOUNT_SECRET"
+aliases = ["analytics"]
+docs = "https://developer.mixpanel.com/reference/service-accounts"
+
+[[service]]
+id = "todoist"
+name = "Todoist"
+description = "Tasks and projects in Todoist."
+category = "productivity"
+hosts = ["api.todoist.com"]
+auth = "bearer"
+label = "API token"
+variable = "TODOIST_API_TOKEN"
+aliases = ["tasks"]
+docs = "https://developer.todoist.com/"
+
+[[service]]
+id = "monday"
+name = "monday.com"
+description = "Boards and items through the GraphQL API."
+category = "productivity"
+hosts = ["api.monday.com"]
+auth = "header"
+header = "Authorization"
+label = "API token"
+variable = "MONDAY_API_TOKEN"
+docs = "https://developer.monday.com/api-reference/docs/authentication"
+
+[[service]]
+id = "calendly"
+name = "Calendly"
+description = "Event types, scheduled events and invitees."
+category = "productivity"
+hosts = ["api.calendly.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "CALENDLY_TOKEN"
+validate = "GET /users/me"
+aliases = ["scheduling"]
+docs = "https://developer.calendly.com/"
+
+[[service]]
+id = "cal-com"
+name = "Cal.com"
+description = "Bookings and event types on Cal.com."
+category = "productivity"
+hosts = ["api.cal.com"]
+auth = "bearer"
+variable = "CAL_API_KEY"
+aliases = ["scheduling", "calcom"]
+docs = "https://cal.com/docs/api-reference/v2/introduction"
+icon = "simple:caldotcom"
+
+[[service]]
+id = "dropbox"
+name = "Dropbox"
+description = "Files and folders in Dropbox."
+category = "productivity"
+hosts = ["api.dropboxapi.com", "content.dropboxapi.com"]
+auth = "bearer"
+label = "Access token"
+variable = "DROPBOX_TOKEN"
+aliases = ["files", "storage"]
+docs = "https://www.dropbox.com/developers/documentation/http/documentation"
+
+[[service]]
+id = "box"
+name = "Box"
+description = "Files, folders and metadata in Box."
+category = "productivity"
+hosts = ["api.box.com", "upload.box.com"]
+auth = "bearer"
+label = "Developer or access token"
+variable = "BOX_TOKEN"
+validate = "GET /2.0/users/me"
+aliases = ["files", "storage"]
+docs = "https://developer.box.com/reference/"
+
+[[service]]
+id = "miro"
+name = "Miro"
+description = "Boards and items on Miro."
+category = "productivity"
+hosts = ["api.miro.com"]
+auth = "bearer"
+label = "Access token"
+variable = "MIRO_TOKEN"
+aliases = ["whiteboard"]
+docs = "https://developers.miro.com/reference/api-reference"
+
+[[service]]
+id = "coda"
+name = "Coda"
+description = "Docs, tables and rows in Coda."
+category = "productivity"
+hosts = ["coda.io"]
+auth = "bearer"
+label = "API token"
+variable = "CODA_API_TOKEN"
+validate = "GET /apis/v1/whoami"
+docs = "https://coda.io/developers/apis/v1"
+
+[[service]]
+id = "typeform"
+name = "Typeform"
+description = "Forms and responses."
+category = "productivity"
+hosts = ["api.typeform.com", "api.eu.typeform.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "TYPEFORM_TOKEN"
+validate = "GET /me"
+aliases = ["forms"]
+docs = "https://www.typeform.com/developers/get-started/"
+icon = "gilbarbara:typeform"
+
+[[service]]
+id = "pipedrive"
+name = "Pipedrive"
+description = "Deals, persons and pipelines. Covers every *.pipedrive.com company domain."
+category = "productivity"
+hosts = ["api.pipedrive.com", "*.pipedrive.com"]
+auth = "header"
+header = "x-api-token"
+label = "API token"
+variable = "PIPEDRIVE_API_TOKEN"
+aliases = ["crm"]
+docs = "https://pipedrive.readme.io/docs/core-api-concepts-authentication"
+icon_dark_fills = ["#231F1F", "#3B3B3C", "#525254"]
+
+[[service]]
+id = "attio"
+name = "Attio"
+description = "Records, lists and notes in the Attio CRM."
+category = "productivity"
+hosts = ["api.attio.com"]
+auth = "bearer"
+label = "Access token"
+variable = "ATTIO_API_KEY"
+validate = "GET /v2/self"
+aliases = ["crm"]
+docs = "https://docs.attio.com/rest-api/overview"
+icon = "none"
+
+[[service]]
+id = "webflow"
+name = "Webflow"
+description = "Sites, CMS collections and items."
+category = "productivity"
+hosts = ["api.webflow.com"]
+auth = "bearer"
+label = "Site or workspace token"
+variable = "WEBFLOW_TOKEN"
+validate = "GET /v2/token/introspect"
+aliases = ["cms"]
+docs = "https://developers.webflow.com/data/reference/rest-introduction"
+
+[[service]]
+id = "shortcut"
+name = "Shortcut"
+description = "Stories, epics and iterations."
+category = "productivity"
+hosts = ["api.app.shortcut.com"]
+auth = "header"
+header = "Shortcut-Token"
+label = "API token"
+variable = "SHORTCUT_API_TOKEN"
+validate = "GET /api/v3/member"
+aliases = ["clubhouse", "issues"]
+docs = "https://developer.shortcut.com/api/rest/v3"
+
+[[service]]
+id = "harvest"
+name = "Harvest"
+description = "Time entries, projects and invoices."
+category = "productivity"
+hosts = ["api.harvestapp.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "HARVEST_TOKEN"
+headers = { Harvest-Account-Id = "{{HARVEST_ACCOUNT_ID}}" }
+validate = "GET /v2/users/me"
+aliases = ["time tracking"]
+docs = "https://help.getharvest.com/api-v2/authentication-api/authentication/authentication/"
+icon = "none"
+
+[[service]]
+id = "square"
+name = "Square"
+description = "Payments, orders and catalog on Square."
+category = "payments"
+hosts = ["connect.squareup.com", "connect.squareupsandbox.com"]
+auth = "bearer"
+label = "Access token"
+variable = "SQUARE_ACCESS_TOKEN"
+docs = "https://developer.squareup.com/docs/build-basics/access-tokens"
+
+[[service]]
+id = "plaid"
+name = "Plaid"
+description = "Bank account data. Add the client ID as the PLAID-CLIENT-ID header."
+category = "payments"
+hosts = ["production.plaid.com", "sandbox.plaid.com"]
+auth = "header"
+header = "PLAID-SECRET"
+label = "Secret"
+variable = "PLAID_SECRET"
+headers = { PLAID-CLIENT-ID = "{{PLAID_CLIENT_ID}}" }
+aliases = ["banking"]
+docs = "https://plaid.com/docs/api/#api-access"
+icon = "none"
+
+[[service]]
+id = "mollie"
+name = "Mollie"
+description = "Payments, refunds and subscriptions."
+category = "payments"
+hosts = ["api.mollie.com"]
+auth = "bearer"
+variable = "MOLLIE_API_KEY"
+validate = "GET /v2/methods"
+docs = "https://docs.mollie.com/reference/authentication"
+icon = "none"
+
+[[service]]
+id = "razorpay"
+name = "Razorpay"
+description = "Payments, orders and payouts."
+category = "payments"
+hosts = ["api.razorpay.com"]
+auth = "basic"
+username_label = "Key ID"
+password_label = "Key secret"
+variable = "RAZORPAY_KEY_SECRET"
+docs = "https://razorpay.com/docs/api/authentication/"
+
+[[service]]
+id = "wise"
+name = "Wise"
+description = "Balances, quotes and transfers."
+category = "payments"
+hosts = ["api.wise.com", "api.transferwise.com"]
+auth = "bearer"
+label = "Personal API token"
+variable = "WISE_API_TOKEN"
+validate = "GET /v1/me"
+aliases = ["transferwise"]
+docs = "https://docs.wise.com/api-docs/features/authentication-access/personal-tokens"
+
+[[service]]
+id = "polar"
+name = "Polar"
+description = "Products, checkouts and subscriptions on Polar."
+category = "payments"
+hosts = ["api.polar.sh", "sandbox-api.polar.sh"]
+auth = "bearer"
+label = "Organization access token"
+variable = "POLAR_ACCESS_TOKEN"
+docs = "https://docs.polar.sh/api-reference/introduction"
+
+[[service]]
+id = "bigcommerce"
+name = "BigCommerce"
+description = "Store catalog, orders and customers."
+category = "commerce"
+hosts = ["api.bigcommerce.com"]
+auth = "header"
+header = "X-Auth-Token"
+label = "Store API token"
+variable = "BIGCOMMERCE_ACCESS_TOKEN"
+docs = "https://developer.bigcommerce.com/docs/start/authentication/api-accounts"
+
+[[service]]
+id = "woocommerce"
+name = "WooCommerce"
+description = "Products and orders on a WooCommerce store. The host is chosen per credential (admin only)."
+category = "commerce"
+hosts = []
+auth = "basic"
+username_label = "Consumer key"
+password_label = "Consumer secret"
+variable = "WOOCOMMERCE_CONSUMER_SECRET"
+override = { required = true, label = "Store URL (https://host[:port])" }
+aliases = ["wordpress"]
+docs = "https://woocommerce.github.io/woocommerce-rest-api-docs/#authentication"
+icon = "gilbarbara:woocommerce"
+
+[[service]]
+id = "gumroad"
+name = "Gumroad"
+description = "Products and sales on Gumroad."
+category = "commerce"
+hosts = ["api.gumroad.com"]
+auth = "bearer"
+label = "Access token"
+variable = "GUMROAD_ACCESS_TOKEN"
+validate = "GET /v2/user"
+docs = "https://app.gumroad.com/api"
+
+[[service]]
+id = "printful"
+name = "Printful"
+description = "Print-on-demand products and orders."
+category = "commerce"
+hosts = ["api.printful.com"]
+auth = "bearer"
+label = "Private token"
+variable = "PRINTFUL_TOKEN"
+docs = "https://developers.printful.com/docs/"
+icon = "none"
+
+[[service]]
+id = "algolia"
+name = "Algolia"
+description = "Search indices and records. Your application ID is sent as a header from a variable."
+category = "search"
+hosts = ["*.algolia.net", "*.algolianet.com"]
+auth = "header"
+header = "X-Algolia-API-Key"
+variable = "ALGOLIA_API_KEY"
+headers = { X-Algolia-Application-Id = "{{ALGOLIA_APPLICATION_ID}}" }
+docs = "https://www.algolia.com/doc/rest-api/search/"
+icon = "simple:algolia"
+
+[[service]]
+id = "typesense"
+name = "Typesense"
+description = "Collections and search on Typesense Cloud or a self-hosted server."
+category = "search"
+hosts = ["*.a1.typesense.net"]
+auth = "header"
+header = "X-TYPESENSE-API-KEY"
+variable = "TYPESENSE_API_KEY"
+override = { required = false, label = "Self-hosted Typesense URL (https://host[:port])" }
+docs = "https://typesense.org/docs/latest/api/authentication.html"
+
+[[service]]
+id = "meilisearch"
+name = "Meilisearch"
+description = "Indexes and search on Meilisearch Cloud or a self-hosted server."
+category = "search"
+hosts = ["*.meilisearch.io"]
+auth = "bearer"
+variable = "MEILISEARCH_API_KEY"
+override = { required = false, label = "Self-hosted Meilisearch URL (https://host[:port])" }
+docs = "https://www.meilisearch.com/docs/reference/api/overview#authorization"
+
+[[service]]
+id = "serper"
+name = "Serper"
+description = "Google search results as an API."
+category = "search"
+hosts = ["google.serper.dev"]
+auth = "header"
+header = "X-API-KEY"
+variable = "SERPER_API_KEY"
+aliases = ["google", "serp"]
+docs = "https://serper.dev"
+icon = "none"
+
+[[service]]
+id = "kagi"
+name = "Kagi"
+description = "Kagi search, summarizer and enrichment APIs."
+category = "search"
+hosts = ["kagi.com"]
+auth = "header"
+header = "Authorization"
+prefix = "Bot "
+variable = "KAGI_API_KEY"
+docs = "https://help.kagi.com/kagi/api/overview.html"
+
+[[service]]
+id = "linkup"
+name = "Linkup"
+description = "Web search built for AI agents."
+category = "search"
+hosts = ["api.linkup.so"]
+auth = "bearer"
+variable = "LINKUP_API_KEY"
+docs = "https://docs.linkup.so"
+icon = "none"
+
+[[service]]
+id = "apify"
+name = "Apify"
+description = "Actors, runs and datasets for web scraping."
+category = "search"
+hosts = ["api.apify.com"]
+auth = "bearer"
+label = "API token"
+variable = "APIFY_TOKEN"
+validate = "GET /v2/users/me"
+aliases = ["scraping", "crawler"]
+docs = "https://docs.apify.com/api/v2"
+
+[[service]]
+id = "browserbase"
+name = "Browserbase"
+description = "Headless browser sessions for agents."
+category = "search"
+hosts = ["api.browserbase.com"]
+auth = "header"
+header = "X-BB-API-Key"
+variable = "BROWSERBASE_API_KEY"
+aliases = ["browser", "scraping"]
+docs = "https://docs.browserbase.com/reference/introduction"
+
+[[service]]
+id = "stripe-mcp"
+name = "Stripe MCP"
+description = "Stripe payments, customers and docs as MCP tools."
+category = "payments"
+kind = "mcp"
+hosts = ["mcp.stripe.com"]
+auth = "bearer"
+label = "Restricted API key"
+variable = "STRIPE_SECRET_KEY"
+logo = "stripe"
+aliases = ["stripe", "mcp"]
+docs = "https://docs.stripe.com/mcp"
+
+[[service]]
+id = "supabase-mcp"
+name = "Supabase MCP"
+description = "Supabase projects, databases and logs as MCP tools."
+category = "developer_tools"
+kind = "mcp"
+hosts = ["mcp.supabase.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "SUPABASE_ACCESS_TOKEN"
+logo = "supabase"
+aliases = ["supabase", "mcp"]
+docs = "https://supabase.com/docs/guides/getting-started/mcp"
+
+[[service]]
+id = "neon-mcp"
+name = "Neon MCP"
+description = "Neon projects, branches and SQL as MCP tools."
+category = "developer_tools"
+kind = "mcp"
+hosts = ["mcp.neon.tech"]
+auth = "bearer"
+variable = "NEON_API_KEY"
+logo = "neon"
+aliases = ["neon", "postgres", "mcp"]
+docs = "https://neon.com/docs/ai/neon-mcp-server"
+
+[[service]]
+id = "huggingface-mcp"
+name = "Hugging Face MCP"
+description = "Models, datasets and Spaces as MCP tools."
+category = "llm_providers"
+kind = "mcp"
+hosts = ["huggingface.co"]
+paths = ["/mcp", "/mcp/*"]
+auth = "bearer"
+label = "Access token"
+variable = "HF_TOKEN"
+logo = "huggingface"
+aliases = ["huggingface", "hf", "mcp"]
+docs = "https://huggingface.co/settings/mcp"
+
+[[service]]
+id = "apify-mcp"
+name = "Apify MCP"
+description = "Apify Actors as MCP tools."
+category = "search"
+kind = "mcp"
+hosts = ["mcp.apify.com"]
+auth = "bearer"
+label = "API token"
+variable = "APIFY_TOKEN"
+logo = "apify"
+aliases = ["apify", "scraping", "mcp"]
+docs = "https://docs.apify.com/platform/integrations/mcp"

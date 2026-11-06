@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: loops
+version: 1
+name: "Loops"
+description: "Email for SaaS: contacts, events and transactional mail."
+category: communication
+aliases: [email]
+suggested_variable: LOOPS_API_KEY
+hosts:
+  - app.loops.so
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v1/api-key
+  expect_status: [200]

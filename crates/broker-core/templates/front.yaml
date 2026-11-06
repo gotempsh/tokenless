@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: front
+version: 1
+name: "Front"
+description: "Shared inboxes and conversations."
+category: communication
+suggested_variable: FRONT_API_TOKEN
+hosts:
+  - api2.frontapp.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /me
+  expect_status: [200]

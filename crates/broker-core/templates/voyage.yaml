@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: voyage
+version: 1
+name: "Voyage AI"
+description: "Embedding and reranking models."
+category: llm_providers
+aliases: [embeddings]
+suggested_variable: VOYAGE_API_KEY
+hosts:
+  - api.voyageai.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

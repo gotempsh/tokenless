@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: attio
+version: 1
+name: "Attio"
+description: "Records, lists and notes in the Attio CRM."
+category: productivity
+aliases: [crm]
+suggested_variable: ATTIO_API_KEY
+hosts:
+  - api.attio.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/self
+  expect_status: [200]

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: buildkite
+version: 1
+name: "Buildkite"
+description: "Pipelines and builds on Buildkite."
+category: developer_tools
+aliases: [ci]
+suggested_variable: BUILDKITE_API_TOKEN
+hosts:
+  - api.buildkite.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/access-token
+  expect_status: [200]

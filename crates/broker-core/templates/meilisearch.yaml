@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: meilisearch
+version: 1
+name: "Meilisearch"
+description: "Indexes and search on Meilisearch Cloud or a self-hosted server."
+category: search
+suggested_variable: MEILISEARCH_API_KEY
+hosts:
+  - "*.meilisearch.io"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+host_override:
+  allowed: true
+  required: false
+  label: "Self-hosted Meilisearch URL (https://host[:port])"

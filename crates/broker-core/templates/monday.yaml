@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: monday
+version: 1
+name: "monday.com"
+description: "Boards and items through the GraphQL API."
+category: productivity
+suggested_variable: MONDAY_API_TOKEN
+hosts:
+  - api.monday.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API token"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key

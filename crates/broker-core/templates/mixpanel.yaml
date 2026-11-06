@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mixpanel
+version: 1
+name: "Mixpanel"
+description: "Product analytics queries and exports with a service account."
+category: monitoring
+aliases: [analytics]
+suggested_variable: MIXPANEL_SERVICE_ACCOUNT_SECRET
+hosts:
+  - mixpanel.com
+  - eu.mixpanel.com
+  - data.mixpanel.com
+  - data-eu.mixpanel.com
+  - api.mixpanel.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Service account username"
+  - name: password
+    label: "Service account secret"
+injection:
+  method: basic
+  username_field: username
+  password_field: password

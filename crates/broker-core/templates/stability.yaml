@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: stability
+version: 1
+name: "Stability AI"
+description: "Image generation and editing models."
+category: llm_providers
+aliases: [stable diffusion, image]
+suggested_variable: STABILITY_API_KEY
+hosts:
+  - api.stability.ai
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/user/account
+  expect_status: [200]

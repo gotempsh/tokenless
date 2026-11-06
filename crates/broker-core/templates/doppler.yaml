@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: doppler
+version: 1
+name: "Doppler"
+description: "Secrets and config in Doppler."
+category: developer_tools
+suggested_variable: DOPPLER_TOKEN
+hosts:
+  - api.doppler.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Service or personal token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v3/me
+  expect_status: [200]

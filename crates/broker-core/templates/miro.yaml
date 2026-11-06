@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: miro
+version: 1
+name: "Miro"
+description: "Boards and items on Miro."
+category: productivity
+aliases: [whiteboard]
+suggested_variable: MIRO_TOKEN
+hosts:
+  - api.miro.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

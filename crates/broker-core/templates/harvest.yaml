@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: harvest
+version: 1
+name: "Harvest"
+description: "Time entries, projects and invoices."
+category: productivity
+aliases: [time tracking]
+suggested_variable: HARVEST_TOKEN
+hosts:
+  - api.harvestapp.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+default_headers:
+  - name: Harvest-Account-Id
+    value: "{{HARVEST_ACCOUNT_ID}}"
+validation:
+  method: GET
+  path: /v2/users/me
+  expect_status: [200]

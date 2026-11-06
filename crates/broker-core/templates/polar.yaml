@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: polar
+version: 1
+name: "Polar"
+description: "Products, checkouts and subscriptions on Polar."
+category: payments
+suggested_variable: POLAR_ACCESS_TOKEN
+hosts:
+  - api.polar.sh
+  - sandbox-api.polar.sh
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Organization access token"
+injection:
+  method: bearer
+  field: token

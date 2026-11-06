@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: algolia
+version: 1
+name: "Algolia"
+description: "Search indices and records. Your application ID is sent as a header from a variable."
+category: search
+suggested_variable: ALGOLIA_API_KEY
+hosts:
+  - "*.algolia.net"
+  - "*.algolianet.com"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-Algolia-API-Key"
+  field: api_key
+default_headers:
+  - name: X-Algolia-Application-Id
+    value: "{{ALGOLIA_APPLICATION_ID}}"

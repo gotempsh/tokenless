@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mailjet
+version: 1
+name: "Mailjet"
+description: "Transactional and marketing email."
+category: communication
+aliases: [email]
+suggested_variable: MAILJET_SECRET_KEY
+hosts:
+  - api.mailjet.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "API key"
+  - name: password
+    label: "Secret key"
+injection:
+  method: basic
+  username_field: username
+  password_field: password

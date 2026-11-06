@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: neon-mcp
+version: 1
+name: "Neon MCP"
+description: "Neon projects, branches and SQL as MCP tools."
+category: developer_tools
+kind: mcp
+logo: neon
+aliases: [neon, postgres, mcp]
+suggested_variable: NEON_API_KEY
+hosts:
+  - mcp.neon.tech
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

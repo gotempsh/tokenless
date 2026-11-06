@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: linkup
+version: 1
+name: "Linkup"
+description: "Web search built for AI agents."
+category: search
+suggested_variable: LINKUP_API_KEY
+hosts:
+  - api.linkup.so
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

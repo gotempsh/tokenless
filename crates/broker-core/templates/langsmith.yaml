@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: langsmith
+version: 1
+name: "LangSmith"
+description: "Tracing and evaluation for LLM applications."
+category: monitoring
+aliases: [langchain, tracing]
+suggested_variable: LANGSMITH_API_KEY
+hosts:
+  - api.smith.langchain.com
+  - eu.api.smith.langchain.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "x-api-key"
+  field: api_key

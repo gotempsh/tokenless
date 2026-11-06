@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: clickhouse
+version: 1
+name: "ClickHouse Cloud"
+description: "Services and organizations in ClickHouse Cloud."
+category: infrastructure
+suggested_variable: CLICKHOUSE_KEY_SECRET
+hosts:
+  - api.clickhouse.cloud
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Key ID"
+  - name: password
+    label: "Key secret"
+injection:
+  method: basic
+  username_field: username
+  password_field: password
+validation:
+  method: GET
+  path: /v1/organizations
+  expect_status: [200]

@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: novu
+version: 1
+name: "Novu"
+description: "Notification workflows across channels."
+category: communication
+aliases: [notifications]
+suggested_variable: NOVU_SECRET_KEY
+hosts:
+  - api.novu.co
+  - eu.api.novu.co
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "ApiKey "

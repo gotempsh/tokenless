@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mollie
+version: 1
+name: "Mollie"
+description: "Payments, refunds and subscriptions."
+category: payments
+suggested_variable: MOLLIE_API_KEY
+hosts:
+  - api.mollie.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/methods
+  expect_status: [200]

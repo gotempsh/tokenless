@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: fal
+version: 1
+name: "fal"
+description: "Generative media models on fal."
+category: llm_providers
+aliases: [image, video]
+suggested_variable: FAL_KEY
+hosts:
+  - fal.run
+  - queue.fal.run
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "Key "

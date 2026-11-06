@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: square
+version: 1
+name: "Square"
+description: "Payments, orders and catalog on Square."
+category: payments
+suggested_variable: SQUARE_ACCESS_TOKEN
+hosts:
+  - connect.squareup.com
+  - connect.squareupsandbox.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

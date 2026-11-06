@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: terraform-cloud
+version: 1
+name: "HCP Terraform"
+description: "Workspaces and runs on HCP Terraform (Terraform Cloud)."
+category: infrastructure
+aliases: [terraform, hashicorp, tfc]
+suggested_variable: TFE_TOKEN
+hosts:
+  - app.terraform.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v2/account/details
+  expect_status: [200]
+host_override:
+  allowed: true
+  required: false
+  label: "Terraform Enterprise URL (https://host[:port])"

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: apify-mcp
+version: 1
+name: "Apify MCP"
+description: "Apify Actors as MCP tools."
+category: search
+kind: mcp
+logo: apify
+aliases: [apify, scraping, mcp]
+suggested_variable: APIFY_TOKEN
+hosts:
+  - mcp.apify.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token

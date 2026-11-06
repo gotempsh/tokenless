@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: vultr
+version: 1
+name: "Vultr"
+description: "Instances, Kubernetes and the Vultr API."
+category: infrastructure
+suggested_variable: VULTR_API_KEY
+hosts:
+  - api.vultr.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/account
+  expect_status: [200]

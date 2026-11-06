@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: azure-openai
+version: 1
+name: "Azure OpenAI"
+description: "OpenAI models deployed in your Azure subscription."
+category: llm_providers
+aliases: [azure, openai]
+suggested_variable: AZURE_OPENAI_API_KEY
+hosts:
+  - "*.openai.azure.com"
+  - "*.cognitiveservices.azure.com"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "api-key"
+  field: api_key
+host_override:
+  allowed: true
+  required: false
+  label: "Custom endpoint (https://host[:port])"

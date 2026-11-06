@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: statuspage
+version: 1
+name: "Atlassian Statuspage"
+description: "Pages, components and incidents."
+category: monitoring
+aliases: [status]
+suggested_variable: STATUSPAGE_API_KEY
+hosts:
+  - api.statuspage.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "OAuth "
+validation:
+  method: GET
+  path: /v1/pages
+  expect_status: [200]

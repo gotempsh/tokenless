@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: kagi
+version: 1
+name: "Kagi"
+description: "Kagi search, summarizer and enrichment APIs."
+category: search
+suggested_variable: KAGI_API_KEY
+hosts:
+  - kagi.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "Bot "

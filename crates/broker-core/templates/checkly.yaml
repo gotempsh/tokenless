@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: checkly
+version: 1
+name: "Checkly"
+description: "API and browser checks."
+category: monitoring
+aliases: [synthetics, uptime]
+suggested_variable: CHECKLY_API_KEY
+hosts:
+  - api.checklyhq.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+default_headers:
+  - name: X-Checkly-Account
+    value: "{{CHECKLY_ACCOUNT_ID}}"

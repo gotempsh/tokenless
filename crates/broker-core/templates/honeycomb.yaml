@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: honeycomb
+version: 1
+name: "Honeycomb"
+description: "Observability queries, boards and markers."
+category: monitoring
+aliases: [observability, tracing]
+suggested_variable: HONEYCOMB_API_KEY
+hosts:
+  - api.honeycomb.io
+  - api.eu1.honeycomb.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-Honeycomb-Team"
+  field: api_key
+validation:
+  method: GET
+  path: /1/auth
+  expect_status: [200]

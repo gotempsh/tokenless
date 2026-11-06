@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: printful
+version: 1
+name: "Printful"
+description: "Print-on-demand products and orders."
+category: commerce
+suggested_variable: PRINTFUL_TOKEN
+hosts:
+  - api.printful.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Private token"
+injection:
+  method: bearer
+  field: token

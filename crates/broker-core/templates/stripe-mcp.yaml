@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: stripe-mcp
+version: 1
+name: "Stripe MCP"
+description: "Stripe payments, customers and docs as MCP tools."
+category: payments
+kind: mcp
+logo: stripe
+aliases: [stripe, mcp]
+suggested_variable: STRIPE_SECRET_KEY
+hosts:
+  - mcp.stripe.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Restricted API key"
+injection:
+  method: bearer
+  field: token

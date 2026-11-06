@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: linode
+version: 1
+name: "Akamai Cloud (Linode)"
+description: "Linodes, volumes and the Linode API."
+category: infrastructure
+aliases: [akamai]
+suggested_variable: LINODE_TOKEN
+hosts:
+  - api.linode.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v4/profile
+  expect_status: [200]

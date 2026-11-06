@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: deepgram
+version: 1
+name: "Deepgram"
+description: "Speech-to-text and text-to-speech."
+category: llm_providers
+aliases: [speech, transcription]
+suggested_variable: DEEPGRAM_API_KEY
+hosts:
+  - api.deepgram.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "Token "
+validation:
+  method: GET
+  path: /v1/projects
+  expect_status: [200]

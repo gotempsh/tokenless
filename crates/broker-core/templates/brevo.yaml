@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: brevo
+version: 1
+name: "Brevo"
+description: "Email, SMS and contacts (formerly Sendinblue)."
+category: communication
+aliases: [sendinblue, email]
+suggested_variable: BREVO_API_KEY
+hosts:
+  - api.brevo.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "api-key"
+  field: api_key
+validation:
+  method: GET
+  path: /v3/account
+  expect_status: [200]

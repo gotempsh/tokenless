@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: moonshot
+version: 1
+name: "Moonshot AI (Kimi)"
+description: "Kimi models from Moonshot AI."
+category: llm_providers
+aliases: [kimi]
+suggested_variable: MOONSHOT_API_KEY
+hosts:
+  - api.moonshot.ai
+  - api.moonshot.cn
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/models
+  expect_status: [200]

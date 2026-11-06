@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: typesense
+version: 1
+name: "Typesense"
+description: "Collections and search on Typesense Cloud or a self-hosted server."
+category: search
+suggested_variable: TYPESENSE_API_KEY
+hosts:
+  - "*.a1.typesense.net"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-TYPESENSE-API-KEY"
+  field: api_key
+host_override:
+  allowed: true
+  required: false
+  label: "Self-hosted Typesense URL (https://host[:port])"

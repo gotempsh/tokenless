@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: github-npm
+version: 1
+name: "GitHub Packages (npm)"
+description: "The npm registry on GitHub Packages."
+category: developer_tools
+logo: github
+aliases: [npm, packages, registry]
+suggested_variable: GITHUB_TOKEN
+hosts:
+  - npm.pkg.github.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token

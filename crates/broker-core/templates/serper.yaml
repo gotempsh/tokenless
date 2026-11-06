@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: serper
+version: 1
+name: "Serper"
+description: "Google search results as an API."
+category: search
+aliases: [google, serp]
+suggested_variable: SERPER_API_KEY
+hosts:
+  - google.serper.dev
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-API-KEY"
+  field: api_key

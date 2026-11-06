@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: browserbase
+version: 1
+name: "Browserbase"
+description: "Headless browser sessions for agents."
+category: search
+aliases: [browser, scraping]
+suggested_variable: BROWSERBASE_API_KEY
+hosts:
+  - api.browserbase.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "X-BB-API-Key"
+  field: api_key

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: sonarcloud
+version: 1
+name: "SonarQube Cloud"
+description: "Code quality and security analysis (SonarCloud)."
+category: developer_tools
+aliases: [sonar, sonarqube]
+suggested_variable: SONAR_TOKEN
+hosts:
+  - sonarcloud.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "User token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/authentication/validate
+  expect_status: [200]

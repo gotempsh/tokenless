@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: fastly
+version: 1
+name: "Fastly"
+description: "Services, caching and purging on Fastly."
+category: infrastructure
+aliases: [cdn]
+suggested_variable: FASTLY_API_TOKEN
+hosts:
+  - api.fastly.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API token"
+injection:
+  method: header
+  name: "Fastly-Key"
+  field: api_key
+validation:
+  method: GET
+  path: /current_user
+  expect_status: [200]

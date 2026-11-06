@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mailchimp
+version: 1
+name: "Mailchimp"
+description: "Audiences and campaigns in Mailchimp Marketing."
+category: communication
+aliases: [email, marketing]
+suggested_variable: MAILCHIMP_API_KEY
+hosts:
+  - "*.api.mailchimp.com"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Any username"
+    description: "Mailchimp ignores it; any non-empty value works."
+  - name: password
+    label: "API key"
+injection:
+  method: basic
+  username_field: username
+  password_field: password
+validation:
+  method: GET
+  path: /3.0/ping
+  expect_status: [200]

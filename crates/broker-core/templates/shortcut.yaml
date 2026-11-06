@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: shortcut
+version: 1
+name: "Shortcut"
+description: "Stories, epics and iterations."
+category: productivity
+aliases: [clubhouse, issues]
+suggested_variable: SHORTCUT_API_TOKEN
+hosts:
+  - api.app.shortcut.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API token"
+injection:
+  method: header
+  name: "Shortcut-Token"
+  field: api_key
+validation:
+  method: GET
+  path: /api/v3/member
+  expect_status: [200]

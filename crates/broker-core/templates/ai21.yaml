@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: ai21
+version: 1
+name: "AI21 Labs"
+description: "Jamba models from AI21 Labs."
+category: llm_providers
+aliases: [jamba]
+suggested_variable: AI21_API_KEY
+hosts:
+  - api.ai21.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

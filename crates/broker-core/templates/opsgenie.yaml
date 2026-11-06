@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: opsgenie
+version: 1
+name: "Opsgenie"
+description: "Alerts, schedules and on-call."
+category: monitoring
+aliases: [on-call, alerts]
+suggested_variable: OPSGENIE_API_KEY
+hosts:
+  - api.opsgenie.com
+  - api.eu.opsgenie.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "API key"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+  prefix: "GenieKey "

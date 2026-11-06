@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: supabase-mcp
+version: 1
+name: "Supabase MCP"
+description: "Supabase projects, databases and logs as MCP tools."
+category: developer_tools
+kind: mcp
+logo: supabase
+aliases: [supabase, mcp]
+suggested_variable: SUPABASE_ACCESS_TOKEN
+hosts:
+  - mcp.supabase.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token

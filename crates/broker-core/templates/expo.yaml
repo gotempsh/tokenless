@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: expo
+version: 1
+name: "Expo"
+description: "Builds and updates for Expo apps (EAS)."
+category: developer_tools
+aliases: [eas, react native]
+suggested_variable: EXPO_TOKEN
+hosts:
+  - api.expo.dev
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

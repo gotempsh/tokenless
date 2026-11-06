@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: huggingface-mcp
+version: 1
+name: "Hugging Face MCP"
+description: "Models, datasets and Spaces as MCP tools."
+category: llm_providers
+kind: mcp
+logo: huggingface
+aliases: [huggingface, hf, mcp]
+suggested_variable: HF_TOKEN
+hosts:
+  - huggingface.co
+allow:
+  paths: ["/mcp", "/mcp/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

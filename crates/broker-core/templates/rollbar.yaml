@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: rollbar
+version: 1
+name: "Rollbar"
+description: "Error tracking and deploys."
+category: monitoring
+aliases: [errors]
+suggested_variable: ROLLBAR_ACCESS_TOKEN
+hosts:
+  - api.rollbar.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Access token"
+injection:
+  method: header
+  name: "X-Rollbar-Access-Token"
+  field: api_key

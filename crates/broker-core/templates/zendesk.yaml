@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: zendesk
+version: 1
+name: "Zendesk"
+description: "Tickets, users and help center. Covers every *.zendesk.com account."
+category: communication
+aliases: [support, helpdesk]
+suggested_variable: ZENDESK_API_TOKEN
+hosts:
+  - "*.zendesk.com"
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Email address followed by /token"
+    description: "For example agent@example.com/token"
+  - name: password
+    label: "API token"
+injection:
+  method: basic
+  username_field: username
+  password_field: password
+validation:
+  method: GET
+  path: /api/v2/users/me
+  expect_status: [200]

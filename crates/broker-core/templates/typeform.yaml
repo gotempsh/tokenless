@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: typeform
+version: 1
+name: "Typeform"
+description: "Forms and responses."
+category: productivity
+aliases: [forms]
+suggested_variable: TYPEFORM_TOKEN
+hosts:
+  - api.typeform.com
+  - api.eu.typeform.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /me
+  expect_status: [200]

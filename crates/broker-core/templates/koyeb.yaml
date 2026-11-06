@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: koyeb
+version: 1
+name: "Koyeb"
+description: "Apps and services on Koyeb."
+category: infrastructure
+suggested_variable: KOYEB_TOKEN
+hosts:
+  - app.koyeb.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token

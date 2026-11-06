@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: box
+version: 1
+name: "Box"
+description: "Files, folders and metadata in Box."
+category: productivity
+aliases: [files, storage]
+suggested_variable: BOX_TOKEN
+hosts:
+  - api.box.com
+  - upload.box.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Developer or access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /2.0/users/me
+  expect_status: [200]

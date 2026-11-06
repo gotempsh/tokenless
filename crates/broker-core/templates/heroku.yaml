@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: heroku
+version: 1
+name: "Heroku"
+description: "Apps, dynos and add-ons on Heroku."
+category: infrastructure
+suggested_variable: HEROKU_API_KEY
+hosts:
+  - api.heroku.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+default_headers:
+  - name: Accept
+    value: "application/vnd.heroku+json; version=3"
+validation:
+  method: GET
+  path: /account
+  expect_status: [200]

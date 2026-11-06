@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: dropbox
+version: 1
+name: "Dropbox"
+description: "Files and folders in Dropbox."
+category: productivity
+aliases: [files, storage]
+suggested_variable: DROPBOX_TOKEN
+hosts:
+  - api.dropboxapi.com
+  - content.dropboxapi.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token

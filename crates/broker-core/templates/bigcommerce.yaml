@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: bigcommerce
+version: 1
+name: "BigCommerce"
+description: "Store catalog, orders and customers."
+category: commerce
+suggested_variable: BIGCOMMERCE_ACCESS_TOKEN
+hosts:
+  - api.bigcommerce.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Store API token"
+injection:
+  method: header
+  name: "X-Auth-Token"
+  field: api_key

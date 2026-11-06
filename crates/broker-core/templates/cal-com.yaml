@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: cal-com
+version: 1
+name: "Cal.com"
+description: "Bookings and event types on Cal.com."
+category: productivity
+aliases: [scheduling, calcom]
+suggested_variable: CAL_API_KEY
+hosts:
+  - api.cal.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token

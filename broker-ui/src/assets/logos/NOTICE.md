@@ -15,25 +15,25 @@ Services without a logo here are shown with a generic icon.
 
 - Source: https://github.com/lobehub/lobe-icons
 - Licence: MIT License — Copyright (c) 2023 LobeHub
-- Logos: elevenlabs, exa, fireworks, tavily
+- Logos: ai21, assemblyai, azure-openai, bfl, elevenlabs, exa, fal, fireworks, jina, kagi, langsmith, luma, moonshot, sambanova, tavily, voyage
 
 ## Simple Icons
 
 - Source: https://github.com/simple-icons/simple-icons
 - Licence: CC0 1.0 Universal (public domain dedication)
-- Logos: airtable, bitbucket, confluence, hetzner, hubspot, intercom, jira, mailgun, paddle, pagerduty
+- Logos: airtable, algolia, betterstack, bigcommerce, bitbucket, box, brevo, buildkite, cal-com, circleci, clickhouse, coda, confluence, contentful, deepgram, fastly, gumroad, hetzner, hubspot, intercom, jira, koyeb, loops, mailchimp, mailgun, meilisearch, miro, mixpanel, newrelic, novu, opsgenie, paddle, pagerduty, razorpay, rollbar, scaleway, shortcut, snyk, sonarcloud, square, statuspage, tailscale, vonage, vultr, wise, zendesk
 
 ## gilbarbara/logos
 
 - Source: https://github.com/gilbarbara/logos
 - Licence: CC0 1.0 Universal (public domain dedication)
-- Logos: sendgrid
+- Logos: apify, browserbase, bugsnag, customerio, incident-io, launchdarkly, linode, mailjet, monday, onesignal, pipedrive, sendgrid, typeform, woocommerce
 
 ## svgl
 
 - Source: https://github.com/pheralb/svgl
 - Licence: MIT License — Copyright (c) 2022 Pablo Hdez
-- Logos: anthropic, asana, brave, cerebras, clickup, cloudflare, cohere, datadog, deepseek, digitalocean, discord, figma, firecrawl, fly, gemini, github, gitlab, grafana, groq, huggingface, lemonsqueezy, linear, mistral, neon, netlify, notion, npm, openai, openrouter, perplexity, posthog, railway, render, replicate, resend, sentry, shopify, slack, stripe, supabase, together, twilio, upstash, vercel, xai
+- Logos: anthropic, asana, axiom, brave, calendly, cerebras, clickup, cloudflare, cohere, datadog, deepseek, digitalocean, discord, dropbox, expo, figma, firecrawl, fly, front, gemini, github, gitlab, grafana, groq, heroku, huggingface, lemonsqueezy, linear, mattermost, mistral, neon, netlify, ngrok, notion, npm, nvidia, openai, openrouter, perplexity, polar, posthog, postman, qwen, railway, render, replicate, resend, sanity, sentry, shopify, slack, stability, stripe, supabase, terraform-cloud, todoist, together, turso, twilio, typesense, upstash, vercel, webflow, xai
 
 ## MIT License (svgl, Lobe Icons)
 

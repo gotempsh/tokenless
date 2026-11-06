@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: webflow
+version: 1
+name: "Webflow"
+description: "Sites, CMS collections and items."
+category: productivity
+aliases: [cms]
+suggested_variable: WEBFLOW_TOKEN
+hosts:
+  - api.webflow.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Site or workspace token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/token/introspect
+  expect_status: [200]

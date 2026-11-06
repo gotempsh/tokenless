@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: wise
+version: 1
+name: "Wise"
+description: "Balances, quotes and transfers."
+category: payments
+aliases: [transferwise]
+suggested_variable: WISE_API_TOKEN
+hosts:
+  - api.wise.com
+  - api.transferwise.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/me
+  expect_status: [200]

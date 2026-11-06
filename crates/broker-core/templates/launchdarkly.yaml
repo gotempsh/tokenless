@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: launchdarkly
+version: 1
+name: "LaunchDarkly"
+description: "Feature flags and experiments."
+category: developer_tools
+aliases: [feature flags]
+suggested_variable: LAUNCHDARKLY_ACCESS_TOKEN
+hosts:
+  - app.launchdarkly.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Access token"
+injection:
+  method: header
+  name: "Authorization"
+  field: api_key
+validation:
+  method: GET
+  path: /api/v2/caller-identity
+  expect_status: [200]

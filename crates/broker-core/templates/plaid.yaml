@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: plaid
+version: 1
+name: "Plaid"
+description: "Bank account data. Add the client ID as the PLAID-CLIENT-ID header."
+category: payments
+aliases: [banking]
+suggested_variable: PLAID_SECRET
+hosts:
+  - production.plaid.com
+  - sandbox.plaid.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: api_key
+    label: "Secret"
+injection:
+  method: header
+  name: "PLAID-SECRET"
+  field: api_key
+default_headers:
+  - name: PLAID-CLIENT-ID
+    value: "{{PLAID_CLIENT_ID}}"

@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: mattermost
+version: 1
+name: "Mattermost"
+description: "Channels and posts on a Mattermost server. The host is chosen per credential (admin only)."
+category: communication
+aliases: [chat]
+suggested_variable: MATTERMOST_TOKEN
+hosts: []
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /api/v4/users/me
+  expect_status: [200]
+host_override:
+  allowed: true
+  required: true
+  label: "Mattermost URL (https://host[:port])"

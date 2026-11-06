@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: gumroad
+version: 1
+name: "Gumroad"
+description: "Products and sales on Gumroad."
+category: commerce
+suggested_variable: GUMROAD_ACCESS_TOKEN
+hosts:
+  - api.gumroad.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v2/user
+  expect_status: [200]

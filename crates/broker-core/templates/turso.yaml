@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: turso
+version: 1
+name: "Turso"
+description: "Databases and groups on Turso."
+category: developer_tools
+aliases: [libsql, sqlite]
+suggested_variable: TURSO_API_TOKEN
+hosts:
+  - api.turso.tech
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Platform API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /v1/auth/validate
+  expect_status: [200]

@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: coda
+version: 1
+name: "Coda"
+description: "Docs, tables and rows in Coda."
+category: productivity
+suggested_variable: CODA_API_TOKEN
+hosts:
+  - coda.io
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /apis/v1/whoami
+  expect_status: [200]

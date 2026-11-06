@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: razorpay
+version: 1
+name: "Razorpay"
+description: "Payments, orders and payouts."
+category: payments
+suggested_variable: RAZORPAY_KEY_SECRET
+hosts:
+  - api.razorpay.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "Key ID"
+  - name: password
+    label: "Key secret"
+injection:
+  method: basic
+  username_field: username
+  password_field: password

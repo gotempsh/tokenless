@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: ngrok
+version: 1
+name: "ngrok"
+description: "Endpoints, domains and tunnels on ngrok."
+category: infrastructure
+suggested_variable: NGROK_API_KEY
+hosts:
+  - api.ngrok.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API key"
+injection:
+  method: bearer
+  field: token
+default_headers:
+  - name: Ngrok-Version
+    value: "2"

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: axiom
+version: 1
+name: "Axiom"
+description: "Log and event datasets and queries."
+category: monitoring
+aliases: [logs]
+suggested_variable: AXIOM_TOKEN
+hosts:
+  - api.axiom.co
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token

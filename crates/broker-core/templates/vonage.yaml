@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: vonage
+version: 1
+name: "Vonage"
+description: "SMS, voice and messaging APIs."
+category: communication
+aliases: [nexmo, sms]
+suggested_variable: VONAGE_API_SECRET
+hosts:
+  - api.nexmo.com
+  - rest.nexmo.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: username
+    label: "API key"
+  - name: password
+    label: "API secret"
+injection:
+  method: basic
+  username_field: username
+  password_field: password

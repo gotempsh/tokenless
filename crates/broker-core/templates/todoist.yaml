@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: todoist
+version: 1
+name: "Todoist"
+description: "Tasks and projects in Todoist."
+category: productivity
+aliases: [tasks]
+suggested_variable: TODOIST_API_TOKEN
+hosts:
+  - api.todoist.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "API token"
+injection:
+  method: bearer
+  field: token

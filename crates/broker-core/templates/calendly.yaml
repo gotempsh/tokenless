@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: calendly
+version: 1
+name: "Calendly"
+description: "Event types, scheduled events and invitees."
+category: productivity
+aliases: [scheduling]
+suggested_variable: CALENDLY_TOKEN
+hosts:
+  - api.calendly.com
+allow:
+  paths: ["/*"]
+  methods: ["*"]
+credential_fields:
+  - name: token
+    label: "Personal access token"
+injection:
+  method: bearer
+  field: token
+validation:
+  method: GET
+  path: /users/me
+  expect_status: [200]
