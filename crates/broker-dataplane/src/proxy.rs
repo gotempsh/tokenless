@@ -268,6 +268,42 @@ async fn handle_proxy_request(
     } else {
         None
     };
+    // Passthrough destinations are chosen by the agent, so they are resolved
+    // here and checked against the egress policy before the tunnel opens.
+    // The tunnel then connects to the checked addresses, never re-resolving.
+    let passthrough_addrs = if tls_config.is_none() {
+        match resolve_passthrough(&host, port, &snapshot.egress, shared.connect_timeout).await {
+            Ok(addrs) => addrs,
+            Err(Refusal::Blocked { ip, reason }) => {
+                Metrics::inc(&shared.metrics.egress_blocked_total);
+                audit_best_effort(
+                    &shared,
+                    &claims,
+                    "proxy.egress_blocked",
+                    AuditOutcome::Denied,
+                    &host,
+                    port,
+                    None,
+                    &format!("{ip} is {reason}"),
+                );
+                return respond(
+                    StatusCode::FORBIDDEN,
+                    &format!(
+                        "{host} resolves to {ip}, which is {reason}; an admin can allow this range in Settings → Egress"
+                    ),
+                );
+            }
+            Err(Refusal::Unresolvable { reason }) => {
+                Metrics::inc(&shared.metrics.upstream_errors_total);
+                return respond(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("could not resolve {host}:{port}: {reason}"),
+                );
+            }
+        }
+    } else {
+        Vec::new()
+    };
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
@@ -287,20 +323,76 @@ async fn handle_proxy_request(
             }
             None => {
                 Metrics::inc(&shared.metrics.tunnels_passthrough_total);
-                passthrough(TokioIo::new(upgraded), &host, port, &shared).await;
+                passthrough(
+                    TokioIo::new(upgraded),
+                    &host,
+                    port,
+                    &passthrough_addrs,
+                    &shared,
+                )
+                .await;
             }
         }
     });
     Response::new(body(Bytes::new()))
 }
 
+enum Refusal {
+    Blocked {
+        ip: std::net::IpAddr,
+        reason: &'static str,
+    },
+    Unresolvable {
+        reason: String,
+    },
+}
+
+async fn resolve_passthrough(
+    host: &str,
+    port: u16,
+    egress: &broker_core::egress::EgressPolicy,
+    limit: std::time::Duration,
+) -> Result<Vec<std::net::SocketAddr>, Refusal> {
+    let resolved: Vec<std::net::SocketAddr> = timeout(limit, tokio::net::lookup_host((host, port)))
+        .await
+        .map_err(|_| Refusal::Unresolvable {
+            reason: "DNS lookup timed out".into(),
+        })?
+        .map_err(|e| Refusal::Unresolvable {
+            reason: e.to_string(),
+        })?
+        .collect();
+    let mut first_block = None;
+    let allowed: Vec<_> = resolved
+        .iter()
+        .copied()
+        .filter(|addr| match egress.check(addr.ip()) {
+            Ok(()) => true,
+            Err(reason) => {
+                first_block.get_or_insert((addr.ip(), reason));
+                false
+            }
+        })
+        .collect();
+    if !allowed.is_empty() {
+        return Ok(allowed);
+    }
+    Err(match first_block {
+        Some((ip, reason)) => Refusal::Blocked { ip, reason },
+        None => Refusal::Unresolvable {
+            reason: "no addresses".into(),
+        },
+    })
+}
+
 async fn passthrough(
     mut client: TokioIo<hyper::upgrade::Upgraded>,
     host: &str,
     port: u16,
+    addrs: &[std::net::SocketAddr],
     shared: &ProxyShared,
 ) {
-    let upstream = timeout(shared.connect_timeout, TcpStream::connect((host, port))).await;
+    let upstream = timeout(shared.connect_timeout, TcpStream::connect(addrs)).await;
     let mut upstream = match upstream {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
@@ -694,5 +786,31 @@ mod tests {
         assert!(h.get(PROXY_AUTHORIZATION).is_none());
         assert!(h.get("x-secret-hop").is_none());
         assert_eq!(h.get("accept").unwrap(), "*/*");
+    }
+
+    #[tokio::test]
+    async fn passthrough_resolution_applies_the_egress_policy() {
+        use broker_core::egress::EgressPolicy;
+        let limit = std::time::Duration::from_secs(5);
+        let blocked = resolve_passthrough("127.0.0.1", 443, &EgressPolicy::default(), limit).await;
+        assert!(matches!(
+            blocked,
+            Err(Refusal::Blocked {
+                reason: "loopback",
+                ..
+            })
+        ));
+        let allowing = EgressPolicy {
+            block_private: true,
+            allow: vec!["127.0.0.0/8".parse().unwrap()],
+        };
+        let addrs = resolve_passthrough("127.0.0.1", 443, &allowing, limit)
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(addrs, vec!["127.0.0.1:443".parse().unwrap()]);
+        // Names are resolved and checked too, so `localhost` cannot bypass it.
+        let named = resolve_passthrough("localhost", 443, &EgressPolicy::default(), limit).await;
+        assert!(matches!(named, Err(Refusal::Blocked { .. })));
     }
 }

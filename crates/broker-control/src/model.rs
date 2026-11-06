@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use broker_core::authz::Role;
+use broker_core::egress::EgressPolicy;
 use broker_core::host::HostPattern;
 use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
 use broker_core::rule::RuleScope;
@@ -159,12 +160,16 @@ pub struct ProxySession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub unmatched_host_policy: UnmatchedHostPolicy,
+    /// Which addresses passthrough tunnels and validation requests may reach.
+    #[serde(default)]
+    pub egress: EgressPolicy,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
+            egress: EgressPolicy::default(),
         }
     }
 }

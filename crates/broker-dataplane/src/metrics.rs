@@ -34,6 +34,7 @@ metrics! {
     tunnels_passthrough_total: "CONNECTs tunnelled without interception",
     tunnels_intercepted_total: "CONNECTs intercepted for credential injection",
     connect_denied_total: "CONNECTs denied by policy",
+    egress_blocked_total: "Passthrough CONNECTs refused because the destination is not a permitted address",
     requests_injected_total: "Requests forwarded with an injected credential",
     requests_denied_total: "Intercepted requests refused by policy",
     lease_refusals_total: "Requests refused because the snapshot lease had expired",

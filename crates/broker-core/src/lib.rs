@@ -10,6 +10,7 @@
 
 pub mod audit;
 pub mod authz;
+pub mod egress;
 pub mod error;
 pub mod host;
 pub mod ids;

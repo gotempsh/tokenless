@@ -14,6 +14,7 @@ use broker_core::injection::SecretFields;
 use broker_core::path::{HttpMethod, PathPattern};
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
+use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::template::{builtin_templates, ServiceTemplate};
 use chrono::Utc;
 use serde::Deserialize;
@@ -730,13 +731,37 @@ impl PolicyService {
         self.guard
             .check(caller, Action::SettingsWrite, None)
             .await?;
+        settings.egress.validate()?;
+        let previous = self.policy.get_settings().await?;
+        let widens = settings.egress.widens(&previous.egress)
+            || (previous.unmatched_host_policy == UnmatchedHostPolicy::Deny
+                && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough);
+        if widens {
+            // Opening egress is as sensitive as widening a rule.
+            self.guard.require_step_up(caller, Action::SettingsWrite)?;
+        }
         self.policy.put_settings(settings.clone()).await?;
         self.audit
             .record(
-                AuditEvent::new(caller.actor(), "settings.update", AuditOutcome::Success).detail(
-                    "unmatched_host_policy",
-                    format!("{:?}", settings.unmatched_host_policy).to_ascii_lowercase(),
-                ),
+                AuditEvent::new(caller.actor(), "settings.update", AuditOutcome::Success)
+                    .detail(
+                        "unmatched_host_policy",
+                        format!("{:?}", settings.unmatched_host_policy).to_ascii_lowercase(),
+                    )
+                    .detail(
+                        "egress_block_private",
+                        settings.egress.block_private.to_string(),
+                    )
+                    .detail(
+                        "egress_allow",
+                        settings
+                            .egress
+                            .allow
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(","),
+                    ),
             )
             .await;
         self.notifier.bump_content();

@@ -102,6 +102,9 @@ pub struct SnapshotBody {
     pub revoked_sessions: Vec<SessionId>,
     pub limited_sessions: Vec<SessionLimit>,
     pub unmatched_host_policy: UnmatchedHostPolicy,
+    /// Destinations passthrough tunnels may reach.
+    #[serde(default)]
+    pub egress: crate::egress::EgressPolicy,
     pub interception_ca: InterceptionCa,
     pub rules: Vec<SnapshotRule>,
 }
@@ -193,6 +196,7 @@ mod tests {
             revoked_sessions: vec![SessionId::new()],
             limited_sessions: vec![],
             unmatched_host_policy: UnmatchedHostPolicy::Passthrough,
+            egress: Default::default(),
             interception_ca: InterceptionCa {
                 cert_der: STANDARD.encode(b"cert"),
                 key: seal(&node_key, b"key", &ca_aad(&node_id)).unwrap(),

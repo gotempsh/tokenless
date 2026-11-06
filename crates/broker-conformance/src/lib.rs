@@ -20,6 +20,7 @@ use broker_control::store::{
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::{Action, Decision, Principal, PrincipalKind, Role};
+use broker_core::egress::{EgressPolicy, IpCidr};
 use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
@@ -589,8 +590,19 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         default == Settings::default(),
         "default settings must be passthrough, got {default:?}"
     );
+    let allow = "10.20.0.0/16"
+        .parse::<IpCidr>()
+        .map_err(|e| ConformanceFailure {
+            suite: S,
+            check: "settings_cidr",
+            detail: e.to_string(),
+        })?;
     let deny = Settings {
         unmatched_host_policy: UnmatchedHostPolicy::Deny,
+        egress: EgressPolicy {
+            block_private: false,
+            allow: vec![allow],
+        },
     };
     store
         .put_settings(deny.clone())

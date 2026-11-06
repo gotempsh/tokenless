@@ -392,6 +392,7 @@ impl NodeService {
                 .map(|(session_id, limit)| SessionLimit { session_id, limit })
                 .collect(),
             unmatched_host_policy: settings.unmatched_host_policy,
+            egress: settings.egress.clone(),
             interception_ca: content.ca.clone(),
             rules: content.rules.clone(),
         };

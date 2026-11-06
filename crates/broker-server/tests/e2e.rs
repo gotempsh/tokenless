@@ -507,6 +507,41 @@ async fn end_to_end() {
         407
     );
 
+    // --- egress policy: private passthrough destinations are blocked -------
+    let loopback_target = format!("127.0.0.1:{upstream_port}");
+    assert_eq!(
+        connect_status(proxy, &loopback_target, Some(&session_token)).await,
+        403,
+        "loopback passthrough must be refused by default"
+    );
+    api.call(
+        reqwest::Method::PUT,
+        "/settings",
+        Some(json!({
+            "unmatched_host_policy": "passthrough",
+            "egress": { "block_private": true, "allow": ["127.0.0.0/8"] }
+        })),
+    )
+    .await;
+    eventually(
+        "egress allowlist applied",
+        Duration::from_secs(5),
+        || async { connect_status(proxy, &loopback_target, Some(&session_token)).await == 200 },
+    )
+    .await;
+    // A malformed range is rejected with a 400.
+    let (status, _, _) = api
+        .call(
+            reqwest::Method::PUT,
+            "/settings",
+            Some(json!({
+                "unmatched_host_policy": "passthrough",
+                "egress": { "block_private": true, "allow": ["10.0.0.1/8"] }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     // --- unmatched host: tunnelled untouched ----------------------------------
     // 127.0.0.1 has no rule, so the client must see the upstream's own
     // certificate (it only trusts the upstream CA here) and its own header.
