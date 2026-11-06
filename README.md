@@ -42,8 +42,8 @@ cargo build --release
 
 Open <http://127.0.0.1:8080/> and complete these steps:
 
-1. Create the admin. Enter the setup token, choose a password, and enrol
-   the TOTP secret in an authenticator app.
+1. Create the admin. Enter the setup token and choose a password.
+   Enrolling an authenticator app (TOTP) is optional but recommended.
 2. **Vaults → Create vault**.
 3. **Credentials → Add a credential**. Pick a template (for example
    GitHub) and paste the token. The form is write-only.

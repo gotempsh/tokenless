@@ -860,7 +860,7 @@ fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
         id: get_id(row, "id")?,
         username: get(row, "username")?,
         password_hash: get(row, "password_hash")?,
-        totp_secret_enc: get(row, "totp_secret_enc")?,
+        totp_secret_enc: get::<Option<Vec<u8>>>(row, "totp_secret_enc")?,
         totp_last_step: get::<Option<i64>>(row, "totp_last_step")?.map(to_u64),
         role: role(row)?,
         created_at: get_ts(row, "created_at")?,

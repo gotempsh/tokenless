@@ -945,7 +945,7 @@ fn person(username: &str, role: Role, created_offset: i64) -> User {
         id: UserId::new(),
         username: username.into(),
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
-        totp_secret_enc: vec![1, 2, 3],
+        totp_secret_enc: Some(vec![1, 2, 3]),
         totp_last_step: None,
         role,
         created_at: at(created_offset),
@@ -971,7 +971,10 @@ fn invite(token_hash: &str, role: Role, created_offset: i64, expires_offset: i64
 pub async fn user_management_suite(store: &dyn IdentityStore) -> Result<(), ConformanceFailure> {
     const S: &str = "user_management";
     let alice = person("alice", Role::Admin, -20);
-    let bob = person("bob", Role::Editor, -10);
+    let bob = User {
+        totp_secret_enc: None,
+        ..person("bob", Role::Editor, -10)
+    };
     for u in [&alice, &bob] {
         store
             .insert_user(u.clone(), &[])
@@ -990,6 +993,16 @@ pub async fn user_management_suite(store: &dyn IdentityStore) -> Result<(), Conf
         listed.items.iter().map(|u| &u.username).collect::<Vec<_>>()
     );
 
+    let got = store
+        .get_user(&bob.id)
+        .await
+        .map_err(backend(S, "password_only"))?;
+    ensure!(
+        S,
+        "password_only",
+        got.as_ref() == Some(&bob),
+        "a user without a TOTP secret must round-trip, got {got:?}"
+    );
     store
         .update_user_access(&bob.id, Role::Viewer, None, &[])
         .await
@@ -1239,7 +1252,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         id: UserId::new(),
         username: "admin".into(),
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
-        totp_secret_enc: vec![1, 2, 3],
+        totp_secret_enc: Some(vec![1, 2, 3]),
         totp_last_step: Some(10),
         role: Role::Admin,
         created_at: at(0),

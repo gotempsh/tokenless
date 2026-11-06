@@ -316,8 +316,8 @@ mod tests {
             setup_token: tok.to_string(),
             username: "admin".into(),
             password: "correct horse battery".into(),
-            totp_secret: enrol.secret.clone(),
-            totp_code: code,
+            totp_secret: Some(enrol.secret.clone()),
+            totp_code: Some(code),
         };
         assert!(matches!(
             cp.auth.complete_setup(req("000000".into(), &token)).await,
@@ -343,7 +343,7 @@ mod tests {
         let login = |password: &str, code: String| LoginRequest {
             username: "admin".into(),
             password: password.into(),
-            totp_code: code,
+            totp_code: Some(code),
         };
         // The setup code's time step is spent: replaying it must fail.
         assert!(cp
@@ -385,8 +385,8 @@ mod tests {
                 setup_token: token,
                 username: "admin".into(),
                 password: "correct horse battery".into(),
-                totp_secret: enrol.secret.clone(),
-                totp_code: totp::code_at(&enrol.secret, now_secs()).unwrap(),
+                totp_secret: Some(enrol.secret.clone()),
+                totp_code: Some(totp::code_at(&enrol.secret, now_secs()).unwrap()),
             })
             .await
             .unwrap();
@@ -453,8 +453,8 @@ mod tests {
             invite_token: issued.token.clone(),
             username: "bob".into(),
             password: "a different long password".into(),
-            totp_secret: enrol.secret.clone(),
-            totp_code: code,
+            totp_secret: Some(enrol.secret.clone()),
+            totp_code: Some(code),
         };
         assert!(matches!(
             cp.users.accept_invite(accept("000000".into())).await,
@@ -480,7 +480,7 @@ mod tests {
         let login = |offset: u64| LoginRequest {
             username: "bob".into(),
             password: "a different long password".into(),
-            totp_code: totp::code_at(&enrol.secret, now_secs() + offset).unwrap(),
+            totp_code: Some(totp::code_at(&enrol.secret, now_secs() + offset).unwrap()),
         };
         let session = cp.auth.login(login(0)).await.unwrap();
         let bob_caller = cp
@@ -612,6 +612,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn password_only_accounts_sign_in_and_step_up_with_the_password() {
+        use super::auth::StepUpProof;
+
+        let cp = plane().await;
+        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
+        let setup = |secret: Option<String>, code: Option<String>| SetupRequest {
+            setup_token: token.clone(),
+            username: "admin".into(),
+            password: "correct horse battery".into(),
+            totp_secret: secret,
+            totp_code: code,
+        };
+        // Half an enrolment is refused rather than silently dropped.
+        assert!(matches!(
+            cp.auth
+                .complete_setup(setup(Some(totp::generate_secret()), None))
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        let admin = cp.auth.complete_setup(setup(None, None)).await.unwrap();
+        assert!(!admin.totp_enrolled);
+
+        let login = |password: &str| LoginRequest {
+            username: "admin".into(),
+            password: password.into(),
+            totp_code: None,
+        };
+        assert!(cp.auth.login(login("not the password")).await.is_err());
+        let outcome = cp.auth.login(login("correct horse battery")).await.unwrap();
+        assert!(!outcome.user.totp_enrolled);
+        let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
+
+        let proof = |code: Option<&str>, password: Option<&str>| StepUpProof {
+            code: code.map(str::to_string),
+            password: password.map(str::to_string),
+        };
+        assert!(cp
+            .auth
+            .step_up(&auth, &proof(None, Some("not the password")))
+            .await
+            .is_err());
+        assert!(cp
+            .auth
+            .step_up(&auth, &proof(Some("123456"), None))
+            .await
+            .is_err());
+        cp.auth
+            .step_up(&auth, &proof(None, Some("correct horse battery")))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn enrolled_accounts_cannot_skip_the_code() {
+        use super::auth::StepUpProof;
+
+        let cp = plane().await;
+        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
+        let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
+        let admin = cp
+            .auth
+            .complete_setup(SetupRequest {
+                setup_token: token,
+                username: "admin".into(),
+                password: "correct horse battery".into(),
+                totp_secret: Some(enrol.secret.clone()),
+                totp_code: Some(totp::code_at(&enrol.secret, now_secs()).unwrap()),
+            })
+            .await
+            .unwrap();
+        assert!(admin.totp_enrolled);
+        let without_code = LoginRequest {
+            username: "admin".into(),
+            password: "correct horse battery".into(),
+            totp_code: None,
+        };
+        assert!(cp.auth.login(without_code.clone()).await.is_err());
+        let outcome = cp
+            .auth
+            .login(LoginRequest {
+                totp_code: Some(totp::code_at(&enrol.secret, now_secs() + 30).unwrap()),
+                ..without_code
+            })
+            .await
+            .unwrap();
+        let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
+        // The password must not stand in for the second factor.
+        assert!(cp
+            .auth
+            .step_up(
+                &auth,
+                &StepUpProof {
+                    code: None,
+                    password: Some("correct horse battery".into()),
+                }
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn login_is_rate_limited() {
         let cp = plane().await;
         for _ in 0..5 {
@@ -620,7 +721,7 @@ mod tests {
                 .login(LoginRequest {
                     username: "nobody".into(),
                     password: "whatever-password".into(),
-                    totp_code: "123456".into(),
+                    totp_code: Some("123456".into()),
                 })
                 .await;
         }
@@ -629,7 +730,7 @@ mod tests {
             .login(LoginRequest {
                 username: "nobody".into(),
                 password: "whatever-password".into(),
-                totp_code: "123456".into(),
+                totp_code: Some("123456".into()),
             })
             .await;
         assert!(matches!(res, Err(ControlError::RateLimited { .. })));

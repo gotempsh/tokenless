@@ -36,6 +36,8 @@ pub struct UserSummary {
     pub role: Role,
     pub created_at: DateTime<Utc>,
     pub disabled_at: Option<DateTime<Utc>>,
+    /// Whether the person signs in with an authenticator code as well.
+    pub totp_enrolled: bool,
 }
 
 impl From<&User> for UserSummary {
@@ -46,6 +48,7 @@ impl From<&User> for UserSummary {
             role: u.role,
             created_at: u.created_at,
             disabled_at: u.disabled_at,
+            totp_enrolled: u.totp_secret_enc.is_some(),
         }
     }
 }
@@ -61,15 +64,30 @@ pub struct SetupRequest {
     pub setup_token: String,
     pub username: String,
     pub password: String,
-    pub totp_secret: String,
-    pub totp_code: String,
+    /// Omit both TOTP fields for a password-only account.
+    #[serde(default)]
+    pub totp_secret: Option<String>,
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    pub totp_code: String,
+    /// Required only for accounts with an authenticator enrolled.
+    #[serde(default)]
+    pub totp_code: Option<String>,
+}
+
+/// Proof for a step-up: the authenticator code, or the password for an
+/// account without an authenticator.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StepUpProof {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 pub struct LoginOutcome {
@@ -111,38 +129,67 @@ pub(super) fn validate_username(username: &str) -> Result<(), ControlError> {
     }
 }
 
-/// Checks a new account's username, password and first TOTP code;
-/// returns the TOTP step the code used.
-pub(super) fn check_new_account(
+fn non_empty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// An authenticator a new account enrols with, already verified.
+pub(super) struct VerifiedTotp<'a> {
+    secret: &'a str,
+    step: u64,
+}
+
+/// Checks a new account's username and password and, when given, its
+/// TOTP secret and first code. Both TOTP fields or neither.
+pub(super) fn check_new_account<'a>(
     username: &str,
     password_plain: &str,
-    totp_secret: &str,
-    totp_code: &str,
-) -> Result<u64, ControlError> {
+    totp_secret: &'a Option<String>,
+    totp_code: &Option<String>,
+) -> Result<Option<VerifiedTotp<'a>>, ControlError> {
     validate_username(username)?;
     password::check_password_policy(password_plain)?;
-    totp::verify_code(totp_secret, username, totp_code, unix_now(), None)?.ok_or_else(|| {
-        ControlError::validation(
-            "the TOTP code does not match the secret; check the authenticator clock",
-        )
-    })
+    match (non_empty(totp_secret), non_empty(totp_code)) {
+        (None, None) => Ok(None),
+        (Some(secret), Some(code)) => {
+            let step =
+                totp::verify_code(secret, username, code, unix_now(), None)?.ok_or_else(|| {
+                    ControlError::validation(
+                        "the TOTP code does not match the secret; check the authenticator clock",
+                    )
+                })?;
+            Ok(Some(VerifiedTotp { secret, step }))
+        }
+        (Some(_), None) => Err(ControlError::validation(
+            "enter the 6-digit code from the authenticator to finish enrolling it",
+        )),
+        (None, Some(_)) => Err(ControlError::validation(
+            "a TOTP code was sent without the secret it belongs to",
+        )),
+    }
 }
 
 pub(super) fn build_user(
     cipher: &dyn SecretCipher,
     username: &str,
     password_plain: &str,
-    totp_secret: &str,
-    totp_step: u64,
+    totp: Option<VerifiedTotp<'_>>,
     role: Role,
 ) -> Result<User, ControlError> {
     let id = UserId::new();
+    let (totp_secret_enc, totp_last_step) = match totp {
+        Some(t) => (
+            Some(cipher.encrypt(t.secret.as_bytes(), &totp_aad(&id))?),
+            Some(t.step),
+        ),
+        None => (None, None),
+    };
     Ok(User {
         id,
         username: username.to_string(),
         password_hash: password::hash_password(password_plain)?,
-        totp_secret_enc: cipher.encrypt(totp_secret.trim().as_bytes(), &totp_aad(&id))?,
-        totp_last_step: Some(totp_step),
+        totp_secret_enc,
+        totp_last_step,
         role,
         created_at: Utc::now(),
         disabled_at: None,
@@ -272,7 +319,7 @@ impl AuthService {
     }
 
     pub async fn complete_setup(&self, req: SetupRequest) -> Result<UserSummary, ControlError> {
-        let step = check_new_account(
+        let totp = check_new_account(
             &req.username,
             &req.password,
             &req.totp_secret,
@@ -296,8 +343,7 @@ impl AuthService {
             self.cipher.as_ref(),
             &req.username,
             &req.password,
-            &req.totp_secret,
-            step,
+            totp,
             Role::Admin,
         )?;
         let id = user.id;
@@ -310,9 +356,10 @@ impl AuthService {
     }
 
     async fn verify_totp(&self, user: &User, code: &str) -> Result<bool, ControlError> {
-        let secret = self
-            .cipher
-            .decrypt(&user.totp_secret_enc, &totp_aad(&user.id))?;
+        let Some(secret_enc) = &user.totp_secret_enc else {
+            return Ok(false);
+        };
+        let secret = self.cipher.decrypt(secret_enc, &totp_aad(&user.id))?;
         let secret = std::str::from_utf8(&secret)
             .map_err(|e| ControlError::crypto("totp.decode", format!("user {}: {e}", user.id)))?;
         match totp::verify_code(
@@ -324,6 +371,20 @@ impl AuthService {
         )? {
             Some(step) => Ok(self.identity.advance_totp_step(&user.id, step).await?),
             None => Ok(false),
+        }
+    }
+
+    /// Accounts with an authenticator must present a valid code; accounts
+    /// without one have no second factor to check.
+    async fn second_factor_ok(
+        &self,
+        user: &User,
+        code: &Option<String>,
+    ) -> Result<bool, ControlError> {
+        match (&user.totp_secret_enc, non_empty(code)) {
+            (None, _) => Ok(true),
+            (Some(_), Some(code)) => self.verify_totp(user, code).await,
+            (Some(_), None) => Ok(false),
         }
     }
 
@@ -340,7 +401,7 @@ impl AuthService {
         };
         let user = match (user, password_ok) {
             (Some(u), true)
-                if u.disabled_at.is_none() && self.verify_totp(&u, &req.totp_code).await? =>
+                if u.disabled_at.is_none() && self.second_factor_ok(&u, &req.totp_code).await? =>
             {
                 u
             }
@@ -443,17 +504,36 @@ impl AuthService {
         csrf::verify(&self.keys.csrf_key, token_hash, presented)
     }
 
+    /// Re-proves the person behind a session. With an authenticator
+    /// enrolled only its code counts, so a stolen password cannot stand in
+    /// for the second factor; without one the password is re-checked.
     pub async fn step_up(
         &self,
         auth: &SessionAuth,
-        code: &str,
+        proof: &StepUpProof,
     ) -> Result<DateTime<Utc>, ControlError> {
         let user = self
             .identity
             .get_user(&auth.user.id)
             .await?
             .ok_or_else(|| ControlError::not_found("user", auth.user.id))?;
-        if !self.verify_totp(&user, code).await? {
+        self.limiter.check(&user.username)?;
+        let (ok, reason) = match (&user.totp_secret_enc, non_empty(&proof.code)) {
+            (Some(_), Some(code)) => (
+                self.verify_totp(&user, code).await?,
+                "TOTP code is invalid or was already used",
+            ),
+            (Some(_), None) => (false, "enter the code from your authenticator app"),
+            (None, _) => (
+                match proof.password.as_deref() {
+                    Some(p) if !p.is_empty() => password::verify_password(&user.password_hash, p)?,
+                    _ => false,
+                },
+                "password is incorrect",
+            ),
+        };
+        if !ok {
+            self.limiter.fail(&user.username);
             self.audit
                 .record(AuditEvent::new(
                     auth.caller.actor(),
@@ -462,7 +542,7 @@ impl AuthService {
                 ))
                 .await;
             return Err(ControlError::Unauthenticated {
-                reason: "TOTP code is invalid or was already used".into(),
+                reason: reason.into(),
             });
         }
         let now = Utc::now();

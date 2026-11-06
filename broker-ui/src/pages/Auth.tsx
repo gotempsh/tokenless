@@ -11,31 +11,65 @@ interface TotpEnrollment {
   otpauth_url: string;
 }
 
+/** The TOTP fields to send: both when enrolling, neither for password only. */
+function totpFields(enrollment: TotpEnrollment | null, code: string) {
+  return enrollment ? { totp_secret: enrollment.secret, totp_code: code.trim() } : {};
+}
+
+function AuthenticatorChoice({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="check">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      Also require a code from an authenticator app at sign-in (recommended)
+    </label>
+  );
+}
+
+function EnrollmentBox({ enrollment }: { enrollment: TotpEnrollment }) {
+  return (
+    <div className="banner info">
+      <p>Add this account to your authenticator app, then enter the 6-digit code.</p>
+      <code className="secret">{enrollment.secret}</code>
+      <p className="muted small">
+        <a href={enrollment.otpauth_url}>Open in authenticator</a>
+      </p>
+    </div>
+  );
+}
+
 /** First-run: create the admin with the one-time setup token from the server log. */
 export function Setup({ onDone }: { onDone: () => void }) {
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");
   const [code, setCode] = useState("");
+  const [useTotp, setUseTotp] = useState(true);
+  const [stage, setStage] = useState<"name" | "details">("name");
   const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
   const action = useAction();
 
   const begin = async (e: FormEvent) => {
     e.preventDefault();
+    if (!useTotp) {
+      setEnrollment(null);
+      setStage("details");
+      return;
+    }
     const result = await action.run(() => post<TotpEnrollment>("/setup/totp", { username }));
-    if (result) setEnrollment(result);
+    if (result) {
+      setEnrollment(result);
+      setStage("details");
+    }
   };
 
   const finish = async (e: FormEvent) => {
     e.preventDefault();
-    if (!enrollment) return;
     const user = await action.run(() =>
       post<UserSummary>("/setup", {
         setup_token: setupToken.trim(),
         username,
         password,
-        totp_secret: enrollment.secret,
-        totp_code: code.trim(),
+        ...totpFields(enrollment, code),
       }),
     );
     if (user) onDone();
@@ -48,25 +82,20 @@ export function Setup({ onDone }: { onDone: () => void }) {
         The server printed a single-use setup token on its terminal when it started. It works once.
       </p>
       <ErrorBanner error={action.error} />
-      {!enrollment ? (
+      {stage === "name" ? (
         <form onSubmit={begin} className="form">
           <label>
             Username
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
           </label>
+          <AuthenticatorChoice checked={useTotp} onChange={setUseTotp} />
           <button type="submit" disabled={action.busy}>
-            Set up two-factor authentication
+            Continue
           </button>
         </form>
       ) : (
         <form onSubmit={finish} className="form">
-          <div className="banner info">
-            <p>Add this account to your authenticator app, then enter the 6-digit code.</p>
-            <code className="secret">{enrollment.secret}</code>
-            <p className="muted small">
-              <a href={enrollment.otpauth_url}>Open in authenticator</a>
-            </p>
-          </div>
+          {enrollment && <EnrollmentBox enrollment={enrollment} />}
           <label>
             Setup token
             <input value={setupToken} onChange={(e) => setSetupToken(e.target.value)} autoComplete="off" required />
@@ -82,13 +111,20 @@ export function Setup({ onDone }: { onDone: () => void }) {
               required
             />
           </label>
-          <label>
-            Authenticator code
-            <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-          </label>
-          <button type="submit" disabled={action.busy}>
-            Create admin
-          </button>
+          {enrollment && (
+            <label>
+              Authenticator code
+              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
+            </label>
+          )}
+          <div className="actions">
+            <button type="button" className="secondary" onClick={() => setStage("name")}>
+              Back
+            </button>
+            <button type="submit" disabled={action.busy}>
+              Create admin
+            </button>
+          </div>
         </form>
       )}
     </div>
@@ -101,26 +137,34 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [useTotp, setUseTotp] = useState(true);
+  const [stage, setStage] = useState<"name" | "details">("name");
   const [enrollment, setEnrollment] = useState<TotpEnrollment | null>(null);
   const [created, setCreated] = useState<UserSummary | null>(null);
   const action = useAction();
 
   const begin = async (e: FormEvent) => {
     e.preventDefault();
+    if (!useTotp) {
+      setEnrollment(null);
+      setStage("details");
+      return;
+    }
     const result = await action.run(() => post<TotpEnrollment>("/invites/totp", { invite_token: token, username }));
-    if (result) setEnrollment(result);
+    if (result) {
+      setEnrollment(result);
+      setStage("details");
+    }
   };
 
   const finish = async (e: FormEvent) => {
     e.preventDefault();
-    if (!enrollment) return;
     const user = await action.run(() =>
       post<UserSummary>("/invites/accept", {
         invite_token: token,
         username,
         password,
-        totp_secret: enrollment.secret,
-        totp_code: code.trim(),
+        ...totpFields(enrollment, code),
       }),
     );
     if (user) setCreated(user);
@@ -132,8 +176,8 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
       <div className="auth">
         <h1>Account created</h1>
         <p>
-          You can now sign in as <strong>{created.username}</strong> with the <strong>{created.role}</strong> role. Use the
-          next code from your authenticator.
+          You can now sign in as <strong>{created.username}</strong> with the <strong>{created.role}</strong> role
+          {created.totp_enrolled ? ", using the next code from your authenticator." : "."}
         </p>
         <button type="button" onClick={onDone}>
           Go to sign in
@@ -156,28 +200,23 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
     <div className="auth">
       <h1>Join as {info.data.role}</h1>
       <p className="muted">
-        This invite expires <When at={info.data.expires_at} />. Choose a username and password, then enrol an authenticator app.
+        This invite expires <When at={info.data.expires_at} />. Choose a username and password.
       </p>
       <ErrorBanner error={action.error} />
-      {!enrollment ? (
+      {stage === "name" ? (
         <form onSubmit={begin} className="form">
           <label>
             Username (a-z, 0-9, '_', '-', '.')
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
           </label>
+          <AuthenticatorChoice checked={useTotp} onChange={setUseTotp} />
           <button type="submit" disabled={action.busy}>
-            Set up two-factor authentication
+            Continue
           </button>
         </form>
       ) : (
         <form onSubmit={finish} className="form">
-          <div className="banner info">
-            <p>Add this account to your authenticator app, then enter the 6-digit code.</p>
-            <code className="secret">{enrollment.secret}</code>
-            <p className="muted small">
-              <a href={enrollment.otpauth_url}>Open in authenticator</a>
-            </p>
-          </div>
+          {enrollment && <EnrollmentBox enrollment={enrollment} />}
           <label>
             Password (12+ characters)
             <input
@@ -189,13 +228,20 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
               required
             />
           </label>
-          <label>
-            Authenticator code
-            <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-          </label>
-          <button type="submit" disabled={action.busy}>
-            Create account
-          </button>
+          {enrollment && (
+            <label>
+              Authenticator code
+              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
+            </label>
+          )}
+          <div className="actions">
+            <button type="button" className="secondary" onClick={() => setStage("name")}>
+              Back
+            </button>
+            <button type="submit" disabled={action.busy}>
+              Create account
+            </button>
+          </div>
         </form>
       )}
     </div>
@@ -210,8 +256,9 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    const trimmed = code.trim();
     const session = await action.run(() =>
-      post<SessionInfo>("/auth/login", { username, password, totp_code: code.trim() }),
+      post<SessionInfo>("/auth/login", { username, password, ...(trimmed ? { totp_code: trimmed } : {}) }),
     );
     if (session) onLogin(session);
   };
@@ -230,8 +277,8 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
         </label>
         <label>
-          Authenticator code
-          <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
+          Authenticator code <span className="muted small">(only if your account has one)</span>
+          <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" />
         </label>
         <button type="submit" disabled={action.busy}>
           Sign in
@@ -241,31 +288,48 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
   );
 }
 
-/** Asks for a fresh TOTP code before a sensitive action is retried. */
-export function StepUpDialog({ open, onResult }: { open: boolean; onResult: (ok: boolean) => void }) {
-  const [code, setCode] = useState("");
+/** Asks the person to prove themselves again before a sensitive action is retried. */
+export function StepUpDialog({
+  open,
+  totpEnrolled,
+  onResult,
+}: {
+  open: boolean;
+  totpEnrolled: boolean;
+  onResult: (ok: boolean) => void;
+}) {
+  const [value, setValue] = useState("");
   const action = useAction();
   if (!open) return null;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const ok = await action.run(() => post<{ step_up_at: string }>("/auth/step-up", { code: code.trim() }));
+    const proof = totpEnrolled ? { code: value.trim() } : { password: value };
+    const ok = await action.run(() => post<{ step_up_at: string }>("/auth/step-up", proof));
     if (ok) {
-      setCode("");
+      setValue("");
       onResult(true);
     }
   };
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="stepup-title">
       <form className="modal form" onSubmit={submit}>
-        <h2 id="stepup-title">Confirm with your second factor</h2>
+        <h2 id="stepup-title">{totpEnrolled ? "Confirm with your second factor" : "Confirm your password"}</h2>
         <p className="muted">
-          Adding credentials, widening rules, managing people, API keys, templates and nodes needs a code from the last 5 minutes.
+          Adding credentials, widening rules, managing people, API keys, templates and nodes needs a confirmation from the
+          last 5 minutes.
         </p>
         <ErrorBanner error={action.error} />
-        <label>
-          Authenticator code
-          <input autoFocus value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-        </label>
+        {totpEnrolled ? (
+          <label>
+            Authenticator code
+            <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
+          </label>
+        ) : (
+          <label>
+            Password
+            <input autoFocus type="password" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="current-password" required />
+          </label>
+        )}
         <div className="actions">
           <button type="button" className="secondary" onClick={() => onResult(false)}>
             Cancel

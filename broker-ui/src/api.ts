@@ -36,6 +36,7 @@ export interface UserSummary {
   role: Role;
   created_at: string;
   disabled_at: string | null;
+  totp_enrolled: boolean;
 }
 
 export interface Invite {

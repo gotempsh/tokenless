@@ -644,7 +644,8 @@ export function People({ me }: { me: UserSummary }) {
               {users.data?.items.map((u) => (
                 <tr key={u.id}>
                   <td>
-                    {u.username} {u.id === me.id && <span className="muted">(you)</span>}
+                    {u.username} {u.id === me.id && <span className="muted">(you)</span>}{" "}
+                    {!u.totp_enrolled && <span className="pill warn">password only</span>}
                   </td>
                   <td>
                     <select

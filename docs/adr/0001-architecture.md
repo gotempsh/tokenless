@@ -177,7 +177,11 @@ node protocol and the snapshot format are unchanged.
 **People (UI)**
 
 - Local accounts with argon2id passwords (19 MiB, t=2, p=1, minimum 12
-  characters) and TOTP.
+  characters) and, per account, an optional TOTP authenticator. An
+  account without one signs in with its password and re-enters the
+  password for step-up. An account with one must present a code for both:
+  its password is never accepted in place of the code. The People page
+  marks password-only accounts.
 - TOTP steps are recorded with a compare-and-set, so a code cannot be
   replayed.
 - The session token is random and stored only as a SHA-256 hash. It is

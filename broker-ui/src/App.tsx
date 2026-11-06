@@ -137,7 +137,7 @@ export function App() {
         {section === "audit" && <Audit />}
         {section === "settings" && <Settings />}
       </main>
-      <StepUpDialog open={stepUpOpen} onResult={finishStepUp} />
+      <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />
     </div>
   );
 }

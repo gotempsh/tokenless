@@ -16,7 +16,7 @@ use axum::Json;
 use broker_auth::cookie::clear_session_cookie;
 use broker_control::model::{Page, PageRequest, Settings};
 use broker_control::service::auth::{
-    AuthService, CreateApiKey, LoginRequest, SetupRequest, TotpEnrollment, UserSummary,
+    AuthService, CreateApiKey, LoginRequest, SetupRequest, StepUpProof, TotpEnrollment, UserSummary,
 };
 use broker_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
 use broker_control::service::sessions::MintSession;
@@ -151,11 +151,6 @@ pub async fn me(State(s): St, authed: Authed) -> ApiResult<Json<SessionInfo>> {
     }))
 }
 
-#[derive(Deserialize)]
-pub struct StepUpRequest {
-    code: String,
-}
-
 #[derive(Serialize)]
 pub struct StepUpResponse {
     step_up_at: DateTime<Utc>,
@@ -164,10 +159,10 @@ pub struct StepUpResponse {
 pub async fn step_up(
     State(s): St,
     authed: Authed,
-    ApiJson(req): ApiJson<StepUpRequest>,
+    ApiJson(req): ApiJson<StepUpProof>,
 ) -> ApiResult<Json<StepUpResponse>> {
     let session = require_session(&authed)?;
-    let at = s.control.auth.step_up(session, &req.code).await?;
+    let at = s.control.auth.step_up(session, &req).await?;
     Ok(Json(StepUpResponse { step_up_at: at }))
 }
 

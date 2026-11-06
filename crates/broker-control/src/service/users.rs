@@ -53,8 +53,11 @@ pub struct AcceptInviteRequest {
     pub invite_token: String,
     pub username: String,
     pub password: String,
-    pub totp_secret: String,
-    pub totp_code: String,
+    /// Omit both TOTP fields for a password-only account.
+    #[serde(default)]
+    pub totp_secret: Option<String>,
+    #[serde(default)]
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -274,7 +277,7 @@ impl UserService {
         &self,
         req: AcceptInviteRequest,
     ) -> Result<UserSummary, ControlError> {
-        let step = check_new_account(
+        let totp = check_new_account(
             &req.username,
             &req.password,
             &req.totp_secret,
@@ -285,8 +288,7 @@ impl UserService {
             self.cipher.as_ref(),
             &req.username,
             &req.password,
-            &req.totp_secret,
-            step,
+            totp,
             invite.role,
         )?;
         let event = AuditEvent::new(

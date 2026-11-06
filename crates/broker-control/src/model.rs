@@ -181,8 +181,9 @@ pub struct User {
     pub id: UserId,
     pub username: String,
     pub password_hash: String,
-    /// TOTP secret encrypted with the at-rest cipher.
-    pub totp_secret_enc: Vec<u8>,
+    /// TOTP secret encrypted with the at-rest cipher; `None` when the
+    /// person signs in with a password only.
+    pub totp_secret_enc: Option<Vec<u8>>,
     pub totp_last_step: Option<u64>,
     pub role: Role,
     pub created_at: DateTime<Utc>,
