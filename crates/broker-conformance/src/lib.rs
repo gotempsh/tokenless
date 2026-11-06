@@ -850,7 +850,23 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
         }
         events.push(e);
     }
+    let session = SessionId::new();
+    events[2] = events[2].clone().detail("session_id", session.to_string());
     sink.record(&events).await.map_err(backend(S, "record"))?;
+    let by_session = sink
+        .query(&AuditQuery {
+            session_id: Some(session),
+            ..Default::default()
+        })
+        .await
+        .map_err(backend(S, "query_session"))?;
+    ensure!(
+        S,
+        "query_session",
+        by_session.total == 1 && by_session.items[0].id == events[2].id,
+        "expected only the event tagged with the session, got {:?}",
+        by_session.items
+    );
     let all = sink
         .query(&AuditQuery::default())
         .await

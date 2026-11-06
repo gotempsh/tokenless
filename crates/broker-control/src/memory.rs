@@ -568,6 +568,11 @@ impl AuditSink for MemoryStore {
                     .as_deref()
                     .is_none_or(|p| e.action.starts_with(p))
             })
+            .filter(|e| {
+                query.session_id.is_none_or(|id| {
+                    e.detail.get("session_id").map(String::as_str) == Some(id.to_string().as_str())
+                })
+            })
             .cloned()
             .collect();
         Ok(query.page.apply(&newest_first(items, |e| e.at)))

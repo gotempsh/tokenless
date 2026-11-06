@@ -286,6 +286,8 @@ pub struct Node {
 pub struct AuditQuery {
     pub vault_id: Option<VaultId>,
     pub action_prefix: Option<String>,
+    /// Events whose `session_id` detail is this session (proxy traffic).
+    pub session_id: Option<SessionId>,
     pub page: PageRequest,
 }
 

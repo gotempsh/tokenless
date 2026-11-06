@@ -689,6 +689,7 @@ pub async fn accept_invite(
 pub struct AuditParams {
     vault_id: Option<String>,
     action_prefix: Option<String>,
+    session_id: Option<String>,
     page: Option<u64>,
     page_size: Option<u64>,
 }
@@ -705,13 +706,20 @@ pub async fn query_audit(
         .map(|v| parse_id::<VaultId>("vault", v))
         .transpose()?;
     let prefix = q.action_prefix.filter(|p| !p.is_empty());
+    let session_id = q
+        .session_id
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| parse_id::<SessionId>("session", v))
+        .transpose()?;
     Ok(Json(
         s.control
             .audit
-            .query(
+            .query_session(
                 &authed.caller,
                 vault_id,
                 prefix,
+                session_id,
                 PageRequest::new(q.page, q.page_size),
             )
             .await?,

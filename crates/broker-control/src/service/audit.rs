@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use broker_core::audit::AuditEvent;
 use broker_core::authz::Action;
-use broker_core::ids::VaultId;
+use broker_core::ids::{SessionId, VaultId};
 
 use super::{Caller, Guard};
 use crate::error::ControlError;
@@ -30,6 +30,19 @@ impl AuditService {
         action_prefix: Option<String>,
         page: PageRequest,
     ) -> Result<Page<AuditEvent>, ControlError> {
+        self.query_session(caller, vault_id, action_prefix, None, page)
+            .await
+    }
+
+    /// Like [`query`](Self::query), optionally narrowed to one proxy session.
+    pub async fn query_session(
+        &self,
+        caller: &Caller,
+        vault_id: Option<VaultId>,
+        action_prefix: Option<String>,
+        session_id: Option<SessionId>,
+        page: PageRequest,
+    ) -> Result<Page<AuditEvent>, ControlError> {
         let vault_id = match (&caller.principal.vault, vault_id) {
             (Some(bound), _) => Some(*bound),
             (None, requested) => requested,
@@ -49,6 +62,7 @@ impl AuditService {
             .query(&AuditQuery {
                 vault_id,
                 action_prefix,
+                session_id,
                 page,
             })
             .await?)

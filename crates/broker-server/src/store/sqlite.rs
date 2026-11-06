@@ -1048,6 +1048,9 @@ impl AuditSink for SqliteStore {
         if query.action_prefix.is_some() {
             filter.push_str(" AND substr(action, 1, ?) = ?");
         }
+        if query.session_id.is_some() {
+            filter.push_str(" AND json_extract(detail, '$.session_id') = ?");
+        }
         let count_sql = format!("SELECT COUNT(*) AS n FROM audit_events{filter}");
         let list_sql =
             format!("SELECT * FROM audit_events{filter} ORDER BY at DESC, id LIMIT ? OFFSET ?");
@@ -1061,6 +1064,10 @@ impl AuditSink for SqliteStore {
             let len = i64::try_from(prefix.chars().count()).unwrap_or(0);
             count = count.bind(len).bind(prefix.clone());
             list = list.bind(len).bind(prefix.clone());
+        }
+        if let Some(id) = &query.session_id {
+            count = count.bind(id.to_string());
+            list = list.bind(id.to_string());
         }
         let total = to_u64(get::<i64>(
             &count
