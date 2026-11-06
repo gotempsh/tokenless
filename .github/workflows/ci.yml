@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Every push to main and every pull request: the console, the Rust
+# workspace (with the console embedded, as releases build it), the
+# generated catalogue, the install script and the website.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+      - name: Install
+        working-directory: broker-ui
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        working-directory: broker-ui
+        run: bun run typecheck
+      - name: Test
+        working-directory: broker-ui
+        run: bun test
+      - name: Build
+        working-directory: broker-ui
+        run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console
+          path: broker-ui/dist
+          retention-days: 3
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    needs: console
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: console
+          path: broker-ui/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --locked
+
+  catalogue:
+    name: Service catalogue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated templates are up to date
+        run: python3 tools/catalog/generate.py --check
+
+  website:
+    name: Website and install script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the install script
+        run: shellcheck site/install.sh
+      - name: Build the website image
+        run: docker build --tag tokenless-site site

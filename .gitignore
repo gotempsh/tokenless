@@ -12,3 +12,5 @@ broker-ui/dist/
 # Local runtime state: node identity and master key
 node.json
 master.key
+# Release image staging (filled by the release workflow)
+/packaging/linux/
