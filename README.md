@@ -111,6 +111,31 @@ Through any of these, the request reaches GitHub with
 agent sent is replaced, requests outside the bundle's rules get `403`
 with the reason, and requests without a valid session get `407`.
 
+#### Placeholders
+
+Some APIs want the key in the query string, the URL path or the body, and
+some tools refuse to start without a key. Give the service a placeholder
+under **Services → Placeholders** (`PUT /api/v1/credentials/{id}/substitutions`):
+the agent sends `__GITHUB_TOKEN__` and the proxy swaps in the real value
+on its way to that service's hosts, and nowhere else. Each placeholder
+says where to look: headers the agent sends, the query, the path (values
+are percent-encoded, so they stay inside one segment) or the body (JSON
+is escaped, forms are encoded; compressed bodies, bodies over 4 MiB and
+bodies of unknown length are forwarded untouched, and the session log
+says so). A placeholder with an environment variable is exported by
+`run` and `session start`, e.g. `GITHUB_TOKEN=__GITHUB_TOKEN__`.
+
+An agent can ask what its session reaches:
+
+```sh
+credential-broker session info           # behind run/session start: asks the session port
+curl "$CREDENTIAL_BROKER_PROXY/services" # the same, as JSON
+```
+
+It lists the bundle, each service's hosts, allowed methods and paths,
+and its placeholders, never a secret. With only a token, `session info`
+uses `GET /api/v1/sessions/self` and `CREDENTIAL_BROKER_SESSION_TOKEN`.
+
 | Setting | Flag | Environment |
 |---|---|---|
 | Management API | `--server` | `CREDENTIAL_BROKER_URL` (default `http://127.0.0.1:8080`) |

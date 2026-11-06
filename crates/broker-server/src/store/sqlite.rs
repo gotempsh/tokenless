@@ -24,6 +24,7 @@ use broker_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use broker_core::substitution::Substitution;
 use broker_core::template::ServiceTemplate;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -218,13 +219,14 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         field_names: from_json("field_names", &get::<String>(row, "field_names")?)?,
         custom_headers: from_json("custom_headers", &get::<String>(row, "custom_headers")?)?,
         variable_refs: from_json("variable_refs", &get::<String>(row, "variable_refs")?)?,
+        substitutions: from_json("substitutions", &get::<String>(row, "substitutions")?)?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at";
 
 fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
     Ok(Variable {
@@ -254,7 +256,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -265,6 +267,7 @@ impl CredentialStore for SqliteStore {
         .bind(to_json("field_names", &meta.field_names)?)
         .bind(to_json("custom_headers", &meta.custom_headers)?)
         .bind(to_json("variable_refs", &meta.variable_refs)?)
+        .bind(to_json("substitutions", &meta.substitutions)?)
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -401,6 +404,28 @@ impl CredentialStore for SqliteStore {
             return Err(StoreError::not_found("credential", id));
         }
         finish(tx, audit, "update_custom_headers").await
+    }
+
+    async fn update_substitutions(
+        &self,
+        id: &CredentialId,
+        substitutions: Vec<Substitution>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_substitutions").await?;
+        let result =
+            sqlx::query("UPDATE credentials SET substitutions = ?, updated_at = ? WHERE id = ?")
+                .bind(to_json("substitutions", &substitutions)?)
+                .bind(ts(&updated_at))
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db("update credential substitutions", "credential"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("credential", id));
+        }
+        finish(tx, audit, "update_substitutions").await
     }
 
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {

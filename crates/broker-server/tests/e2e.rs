@@ -15,7 +15,7 @@ use broker_control::ControlConfig;
 use broker_dataplane::{enroll, DataPlane, DataPlaneConfig};
 use broker_server::{RunningServer, Server, ServerConfig};
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
@@ -42,6 +42,12 @@ struct Echo {
     authorization: Option<String>,
     proxy_authorization: Option<String>,
     x_api_key: Option<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    x_tool_key: Option<String>,
+    #[serde(default)]
+    body: String,
 }
 
 struct Upstream {
@@ -49,7 +55,7 @@ struct Upstream {
     ca_pem: String,
 }
 
-fn header(req: &Request<Incoming>, name: &str) -> Option<String> {
+fn header<B>(req: &Request<B>, name: &str) -> Option<String> {
     req.headers()
         .get(name)
         .and_then(|v| v.to_str().ok())
@@ -57,12 +63,22 @@ fn header(req: &Request<Incoming>, name: &str) -> Option<String> {
 }
 
 async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+    let (parts, incoming) = req.into_parts();
+    let req = Request::from_parts(parts, ());
+    let received = incoming
+        .collect()
+        .await
+        .map(|b| String::from_utf8_lossy(&b.to_bytes()).into_owned())
+        .unwrap_or_default();
     let body = Echo {
         path: req.uri().path().to_string(),
         host: header(&req, "host"),
         authorization: header(&req, "authorization"),
         proxy_authorization: header(&req, "proxy-authorization"),
         x_api_key: header(&req, "x-api-key"),
+        query: req.uri().query().map(str::to_string),
+        x_tool_key: header(&req, "x-tool-key"),
+        body: received,
     };
     let bytes = serde_json::to_vec(&body).unwrap();
     Ok(Response::builder()
@@ -331,6 +347,21 @@ where
     panic!("timed out waiting for {what}");
 }
 
+/// The token behind a live session's `Proxy-Authorization: Basic` value.
+fn current_token(live: &broker_server::launcher::session::LiveSession) -> String {
+    let auth = live.auth.load();
+    let encoded = auth.strip_prefix("Basic ").unwrap();
+    let decoded = String::from_utf8(
+        {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(encoded)
+        }
+        .unwrap(),
+    )
+    .unwrap();
+    decoded.trim_end_matches(':').to_string()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn end_to_end() {
     let data = tempfile::tempdir().unwrap();
@@ -374,10 +405,20 @@ async fn end_to_end() {
                 "template_id": "generic-bearer",
                 "host_override": [format!("https://localhost:{upstream_port}")],
                 "fields": { "token": SECRET },
+                "substitutions": [{
+                    "placeholder": "__UPSTREAM_TOKEN__",
+                    "field": "token",
+                    "env": "UPSTREAM_TOKEN",
+                    "locations": ["path", "query", "header", "body"],
+                }],
             }),
         )
         .await;
     let credential_id = credential["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        credential["substitutions"][0]["placeholder"],
+        "__UPSTREAM_TOKEN__"
+    );
     assert!(!credential.to_string().contains(SECRET));
     let rule = api
         .post(
@@ -495,6 +536,33 @@ async fn end_to_end() {
     );
     assert_eq!(echo.path, "/v1/things");
 
+    // --- substitutions: placeholders become the secret on the way out -------
+    let echo: Echo = client
+        .post(format!(
+            "https://localhost:{upstream_port}/v1/keys/__UPSTREAM_TOKEN__?key=__UPSTREAM_TOKEN__"
+        ))
+        .header("x-tool-key", "Token __UPSTREAM_TOKEN__")
+        .json(&json!({ "auth": "__UPSTREAM_TOKEN__" }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(echo.path, format!("/v1/keys/{SECRET}"));
+    assert_eq!(
+        echo.query.as_deref(),
+        Some(format!("key={SECRET}").as_str())
+    );
+    assert_eq!(
+        echo.x_tool_key.as_deref(),
+        Some(format!("Token {SECRET}").as_str())
+    );
+    let sent: Value = serde_json::from_str(&echo.body).unwrap();
+    assert_eq!(sent["auth"], SECRET);
+
     // --- no session: 407 -------------------------------------------------------
     assert_eq!(
         connect_status(proxy, &format!("localhost:{upstream_port}"), None).await,
@@ -524,6 +592,7 @@ async fn end_to_end() {
         use broker_server::launcher::client::{ApiClient, MintRequest};
         use broker_server::launcher::port::SessionPort;
         use broker_server::launcher::session::LiveSession;
+        use broker_server::launcher::trust::placeholder_env;
 
         let launcher = Arc::new(
             ApiClient::new(
@@ -568,10 +637,29 @@ async fn end_to_end() {
         let session = live.current.load_full();
         assert_eq!(session.bundle.as_ref().unwrap().name, "local-review");
         assert_eq!(session.rule_ids.len(), 1);
+
+        // The agent can ask what it may reach; nothing secret comes back.
+        let first_token = current_token(&live);
+        let discovery = launcher.discover(&first_token).await.unwrap();
+        assert_eq!(discovery.session.id, session.id);
+        assert_eq!(discovery.services.len(), 1);
+        let reached = &discovery.services[0];
+        assert_eq!(reached.credential, "local-upstream");
+        assert_eq!(reached.hosts, [format!("localhost:{upstream_port}")]);
+        assert_eq!(reached.placeholders[0].placeholder, "__UPSTREAM_TOKEN__");
+        assert!(!serde_json::to_string(&discovery).unwrap().contains(SECRET));
+        assert_eq!(
+            placeholder_env(&live.services),
+            [(
+                "UPSTREAM_TOKEN".to_string(),
+                "__UPSTREAM_TOKEN__".to_string()
+            )]
+        );
         let port = SessionPort::start(
             "127.0.0.1:0".parse().unwrap(),
             &proxy.to_string(),
             live.auth.clone(),
+            live.services_json(),
         )
         .await
         .unwrap();
@@ -633,6 +721,15 @@ async fn end_to_end() {
             .unwrap_err()
             .to_string();
         assert!(bad.contains("401"), "{bad}");
+        let ended = launcher
+            .discover(&first_token)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            ended.contains("401") && ended.contains("revoked"),
+            "{ended}"
+        );
     }
 
     // --- imported template with a validation request ---------------------

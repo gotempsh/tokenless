@@ -29,6 +29,7 @@ use broker_core::ids::{
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
+use broker_core::substitution::{Substitution, SubstitutionLocation};
 use broker_core::template::builtin_templates;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
@@ -89,6 +90,7 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         field_names: vec!["token".into()],
         custom_headers: vec![],
         variable_refs: vec![],
+        substitutions: vec![],
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -456,6 +458,39 @@ pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), Con
     ensure!(
         S,
         "update_headers_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+
+    // Substitutions are stored as configuration and read back as written.
+    let substitution = Substitution {
+        placeholder: "__GITHUB_TOKEN__".into(),
+        field: "token".into(),
+        env: Some("GITHUB_TOKEN".into()),
+        locations: vec![SubstitutionLocation::Query, SubstitutionLocation::Body],
+    };
+    store
+        .update_substitutions(&cred.id, vec![substitution.clone()], at(7), &[])
+        .await
+        .map_err(backend(S, "update_substitutions"))?;
+    let updated = store
+        .get_credential(&cred.id)
+        .await
+        .map_err(backend(S, "update_substitutions_get"))?;
+    ensure!(
+        S,
+        "update_substitutions",
+        updated
+            .as_ref()
+            .is_some_and(|m| m.substitutions == [substitution.clone()] && m.updated_at == at(7)),
+        "substitutions not stored: {updated:?}"
+    );
+    let missing = store
+        .update_substitutions(&CredentialId::new(), vec![], at(0), &[])
+        .await;
+    ensure!(
+        S,
+        "update_substitutions_missing",
         matches!(missing, Err(StoreError::NotFound { .. })),
         "expected NotFound, got {missing:?}"
     );

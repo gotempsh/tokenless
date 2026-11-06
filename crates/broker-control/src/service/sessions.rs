@@ -13,6 +13,7 @@ use broker_core::scope::Scope;
 use broker_core::session::{
     key_id, verify_session, SessionClaims, SessionError, DEFAULT_SESSION_TTL_SECS,
 };
+use broker_core::substitution::SubstitutionLocation;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +22,7 @@ use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle};
 use crate::notify::PolicyNotifier;
-use crate::store::PolicyStore;
+use crate::store::{CredentialStore, PolicyStore};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MintSession {
@@ -47,8 +48,42 @@ pub struct MintedSession {
     pub session: ProxySession,
 }
 
+/// A placeholder the agent can send, without its value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredPlaceholder {
+    pub placeholder: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    pub locations: Vec<SubstitutionLocation>,
+}
+
+/// One service a session can reach: where, how, and which placeholders it
+/// accepts. Never carries a secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredService {
+    pub rule_id: RuleId,
+    pub rule: String,
+    pub credential: String,
+    pub template_id: String,
+    pub service: String,
+    pub hosts: Vec<String>,
+    pub paths: Vec<String>,
+    pub methods: Vec<String>,
+    /// Disabled rules stay in the session but get no credential.
+    pub enabled: bool,
+    pub placeholders: Vec<DiscoveredPlaceholder>,
+}
+
+/// What an agent may learn about its own session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDiscovery {
+    pub session: ProxySession,
+    pub services: Vec<DiscoveredService>,
+}
+
 pub struct SessionService {
     policy: Arc<dyn PolicyStore>,
+    credentials: Arc<dyn CredentialStore>,
     keys: Arc<KeyRing>,
     guard: Guard,
     notifier: Arc<PolicyNotifier>,
@@ -57,12 +92,14 @@ pub struct SessionService {
 impl SessionService {
     pub fn new(
         policy: Arc<dyn PolicyStore>,
+        credentials: Arc<dyn CredentialStore>,
         keys: Arc<KeyRing>,
         guard: Guard,
         notifier: Arc<PolicyNotifier>,
     ) -> Self {
         Self {
             policy,
+            credentials,
             keys,
             guard,
             notifier,
@@ -241,6 +278,68 @@ impl SessionService {
     /// enough to end it, so a launcher can clean up after its agent with no
     /// more than what it handed the agent. An already expired session is
     /// left alone: there is nothing to end.
+    /// The services a live session can reach, for the agent holding its
+    /// token. Hosts, paths, methods and placeholder names only: no secret,
+    /// and nothing about rules outside the session.
+    pub async fn discover_self(&self, token: &str) -> Result<SessionDiscovery, ControlError> {
+        let verifying = self.keys.session_signer.verifying_key();
+        let keys = std::collections::HashMap::from([(key_id(&verifying), verifying)]);
+        let claims = verify_session(token.trim(), &keys, Utc::now()).map_err(|e| {
+            ControlError::Unauthenticated {
+                reason: format!("not a live proxy session token: {e}"),
+            }
+        })?;
+        let id = claims.jti;
+        let session = self
+            .policy
+            .get_session(&id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("session", id))?;
+        if session.revoked_at.is_some() {
+            return Err(ControlError::Unauthenticated {
+                reason: format!("proxy session {id} has been revoked"),
+            });
+        }
+        // Bounded by the session's rule count (at most a bundle's 100).
+        let mut services = Vec::with_capacity(session.rule_ids.len());
+        for rule_id in &session.rule_ids {
+            let Some(rule) = self.policy.get_rule(rule_id).await? else {
+                continue;
+            };
+            let Some(credential) = self.credentials.get_credential(&rule.credential_id).await?
+            else {
+                continue;
+            };
+            let service = self
+                .policy
+                .get_template(&credential.template_id, credential.template_version)
+                .await?
+                .map(|t| t.template.name)
+                .unwrap_or_else(|| credential.template_id.clone());
+            services.push(DiscoveredService {
+                rule_id: rule.id,
+                rule: rule.name,
+                credential: credential.name,
+                template_id: credential.template_id,
+                service,
+                hosts: rule.allow.hosts.iter().map(ToString::to_string).collect(),
+                paths: rule.allow.paths.iter().map(ToString::to_string).collect(),
+                methods: rule.allow.methods.iter().map(ToString::to_string).collect(),
+                enabled: rule.enabled,
+                placeholders: credential
+                    .substitutions
+                    .into_iter()
+                    .map(|s| DiscoveredPlaceholder {
+                        placeholder: s.placeholder,
+                        env: s.env,
+                        locations: s.locations,
+                    })
+                    .collect(),
+            });
+        }
+        Ok(SessionDiscovery { session, services })
+    }
+
     pub async fn revoke_self(&self, token: &str) -> Result<ProxySession, ControlError> {
         let verifying = self.keys.session_signer.verifying_key();
         let keys = std::collections::HashMap::from([(key_id(&verifying), verifying)]);

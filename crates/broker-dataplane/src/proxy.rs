@@ -25,6 +25,10 @@ use broker_core::host::parse_authority;
 use broker_core::path::check_request_path;
 use broker_core::session::{verify_session, SessionClaims};
 use broker_core::snapshot::UnmatchedHostPolicy;
+use broker_core::substitution::{
+    apply_to_body, apply_to_header, apply_to_target, wants_body, Applied, BodyKind,
+    RenderedSubstitution,
+};
 use bytes::Bytes;
 use chrono::Utc;
 use http::header::{CONNECTION, CONTENT_TYPE, HOST, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION};
@@ -528,6 +532,115 @@ pub fn rewrite_headers(headers: &mut HeaderMap, rule: &ActiveRule) {
     }
 }
 
+/// Largest body the proxy buffers to look for placeholders. Bigger bodies,
+/// and bodies of unknown length, are streamed through unchanged.
+pub const MAX_SUBSTITUTION_BODY: u64 = 4 * 1024 * 1024;
+const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Swaps placeholders in the request target and in the headers the agent
+/// sent. Runs before [`rewrite_headers`], so the broker's own injected
+/// values are never scanned and a substituted credential header the rule
+/// owns is still replaced by the injected one.
+pub fn substitute_head<B>(
+    req: &mut Request<B>,
+    subs: &[RenderedSubstitution],
+    applied: &mut Applied,
+) -> Result<(), String> {
+    if let Some(target) = req.uri().path_and_query().map(|pq| pq.as_str().to_string()) {
+        if let Some(rewritten) = apply_to_target(&target, subs, applied) {
+            let mut parts = req.uri().clone().into_parts();
+            parts.path_and_query = Some(
+                rewritten
+                    .parse()
+                    .map_err(|e| format!("request target after substitution is invalid: {e}"))?,
+            );
+            *req.uri_mut() = http::Uri::from_parts(parts)
+                .map_err(|e| format!("request URI after substitution is invalid: {e}"))?;
+        }
+    }
+    for (name, value) in req.headers_mut().iter_mut() {
+        if name == HOST || name == PROXY_AUTHORIZATION {
+            continue;
+        }
+        if let Some(rewritten) = apply_to_header(value.as_bytes(), subs, applied) {
+            let mut new = HeaderValue::from_str(&rewritten)
+                .map_err(|_| format!("header '{name}' is not a valid value after substitution"))?;
+            new.set_sensitive(true);
+            *value = new;
+        }
+    }
+    Ok(())
+}
+
+/// Why a body was forwarded without looking for placeholders.
+fn body_skip_reason(headers: &HeaderMap) -> Option<&'static str> {
+    let encoded = headers
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().eq_ignore_ascii_case("identity"));
+    if encoded {
+        return Some("body is compressed");
+    }
+    match headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        None => Some("body length is unknown (streamed)"),
+        Some(0) => Some("body is empty"),
+        Some(n) if n > MAX_SUBSTITUTION_BODY => Some("body is larger than 4 MiB"),
+        Some(_) => None,
+    }
+}
+
+/// Buffers a body of known, bounded length and swaps placeholders in it.
+/// Anything else is streamed unchanged, with the reason in `skipped`.
+async fn substitute_body(
+    req: Request<Incoming>,
+    subs: &[RenderedSubstitution],
+    applied: &mut Applied,
+    skipped: &mut Option<&'static str>,
+) -> Result<Request<ProxyBody>, (StatusCode, String)> {
+    if !wants_body(subs) {
+        return Ok(req.map(|b| b.boxed()));
+    }
+    if let Some(reason) = body_skip_reason(req.headers()) {
+        *skipped = Some(reason);
+        return Ok(req.map(|b| b.boxed()));
+    }
+    let (mut parts, incoming) = req.into_parts();
+    let limited = http_body_util::Limited::new(incoming, MAX_SUBSTITUTION_BODY as usize);
+    let collected = match timeout(BODY_READ_TIMEOUT, limited.collect()).await {
+        Ok(Ok(collected)) => collected.to_bytes(),
+        Ok(Err(e)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("could not read the request body: {e}"),
+            ))
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::REQUEST_TIMEOUT,
+                "the request body did not arrive within 30s".to_string(),
+            ))
+        }
+    };
+    let kind = BodyKind::from_content_type(
+        parts
+            .headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let bytes = match apply_to_body(&collected, kind, subs, applied) {
+        Some(rewritten) => Bytes::from(rewritten),
+        None => collected,
+    };
+    parts
+        .headers
+        .insert(http::header::CONTENT_LENGTH, HeaderValue::from(bytes.len()));
+    Ok(Request::from_parts(parts, body(bytes)))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn audit_best_effort(
     shared: &ProxyShared,
@@ -645,7 +758,22 @@ async fn handle_intercepted(
             );
         }
     }
-    let event = proxy_event(
+    let mut applied = Applied::default();
+    let mut body_skipped = None;
+    let req = if rule.substitutions.is_empty() {
+        req.map(|b| b.boxed())
+    } else {
+        if let Err(reason) = substitute_head(&mut req, &rule.substitutions, &mut applied) {
+            Metrics::inc(&shared.metrics.requests_denied_total);
+            return respond(StatusCode::BAD_REQUEST, &reason);
+        }
+        match substitute_body(req, &rule.substitutions, &mut applied, &mut body_skipped).await {
+            Ok(req) => req,
+            Err((status, reason)) => return respond(status, &reason),
+        }
+    };
+    let mut req = req;
+    let mut event = proxy_event(
         shared,
         claims,
         "proxy.inject",
@@ -656,6 +784,12 @@ async fn handle_intercepted(
     )
     .target(format!("rule:{}", rule.id))
     .detail("credential_id", rule.credential_id.to_string());
+    if !applied.is_empty() {
+        event = event.detail("substituted", applied.placeholders.join(", "));
+    }
+    if let Some(reason) = body_skipped {
+        event = event.detail("body_not_substituted", reason);
+    }
     if shared.audit.try_record(event).is_err() {
         return respond(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -767,6 +901,7 @@ mod tests {
                 HeaderName::from_static("authorization"),
                 HeaderValue::from_static("Bearer broker"),
             )],
+            substitutions: vec![],
         };
         let mut h = HeaderMap::new();
         h.insert(
@@ -786,6 +921,67 @@ mod tests {
         assert!(h.get(PROXY_AUTHORIZATION).is_none());
         assert!(h.get("x-secret-hop").is_none());
         assert_eq!(h.get("accept").unwrap(), "*/*");
+    }
+
+    #[test]
+    fn head_substitution_rewrites_target_and_agent_headers_only() {
+        use broker_core::substitution::SubstitutionLocation::*;
+        let subs = vec![RenderedSubstitution {
+            placeholder: "__API_KEY__".into(),
+            value: "sk/live 1".into(),
+            locations: vec![Path, Query, Header],
+        }];
+        let mut req = Request::builder()
+            .uri("/v1/__API_KEY__/items?key=__API_KEY__")
+            .header(HOST, "__API_KEY__.example.com")
+            .header("x-api-key", "__API_KEY__")
+            .header("x-trace", "plain")
+            .body(())
+            .unwrap();
+        let mut applied = Applied::default();
+        substitute_head(&mut req, &subs, &mut applied).unwrap();
+        assert_eq!(req.uri(), "/v1/sk%2Flive%201/items?key=sk%2Flive%201");
+        assert_eq!(req.headers()["x-api-key"], "sk/live 1");
+        assert!(req.headers()["x-api-key"].is_sensitive());
+        assert_eq!(
+            req.headers()[HOST],
+            "__API_KEY__.example.com",
+            "Host is never rewritten"
+        );
+        assert_eq!(req.headers()["x-trace"], "plain");
+        assert_eq!(applied.placeholders, ["__API_KEY__"]);
+    }
+
+    #[test]
+    fn only_bounded_uncompressed_bodies_are_buffered() {
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(*k, HeaderValue::from_static(v));
+            }
+            h
+        };
+        assert_eq!(
+            body_skip_reason(&headers(&[("content-length", "12")])),
+            None
+        );
+        assert_eq!(
+            body_skip_reason(&headers(&[
+                ("content-length", "12"),
+                ("content-encoding", "identity")
+            ])),
+            None
+        );
+        assert!(body_skip_reason(&headers(&[
+            ("content-length", "12"),
+            ("content-encoding", "gzip")
+        ]))
+        .unwrap()
+        .contains("compressed"));
+        assert!(body_skip_reason(&headers(&[])).unwrap().contains("unknown"));
+        assert!(body_skip_reason(&headers(&[("content-length", "4194305")]))
+            .unwrap()
+            .contains("4 MiB"));
     }
 
     #[tokio::test]

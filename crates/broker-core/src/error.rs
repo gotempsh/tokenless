@@ -54,6 +54,9 @@ pub enum CoreError {
     #[error("invalid custom header '{name}': {reason}")]
     InvalidCustomHeader { name: String, reason: String },
 
+    #[error("invalid substitution '{placeholder}': {reason}")]
+    InvalidSubstitution { placeholder: String, reason: String },
+
     #[error("invalid session label '{key}': {reason}")]
     InvalidLabel { key: String, reason: String },
 

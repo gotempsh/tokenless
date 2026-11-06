@@ -205,6 +205,7 @@ impl InjectionSpec {
         };
         Ok(InjectedHeaders {
             headers: vec![header],
+            substitutions: vec![],
         })
     }
 }
@@ -313,6 +314,9 @@ impl Drop for InjectedHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectedHeaders {
     pub headers: Vec<InjectedHeader>,
+    /// Placeholders the proxy swaps for real values; see [`crate::substitution`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub substitutions: Vec<crate::substitution::RenderedSubstitution>,
 }
 
 #[cfg(test)]

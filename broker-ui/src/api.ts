@@ -131,6 +131,16 @@ export interface StoredTemplate {
   created_at: string;
 }
 
+export type SubstitutionLocation = "path" | "query" | "header" | "body";
+
+/** A placeholder the agent sends that the proxy swaps for a secret field. */
+export interface Substitution {
+  placeholder: string;
+  field: string;
+  env?: string;
+  locations: SubstitutionLocation[];
+}
+
 export interface CredentialMeta {
   id: string;
   vault_id: string;
@@ -141,6 +151,7 @@ export interface CredentialMeta {
   field_names: string[];
   custom_headers: CustomHeader[];
   variable_refs: string[];
+  substitutions: Substitution[];
   created_by: string;
   created_at: string;
   updated_at: string;

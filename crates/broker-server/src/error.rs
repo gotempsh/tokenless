@@ -135,7 +135,8 @@ fn map_core(e: &CoreError) -> Mapped {
         | CoreError::InvalidVariableKey { .. }
         | CoreError::InvalidVariableReference { .. }
         | CoreError::UnknownVariable { .. }
-        | CoreError::InvalidCustomHeader { .. } => invalid(),
+        | CoreError::InvalidCustomHeader { .. }
+        | CoreError::InvalidSubstitution { .. } => invalid(),
         CoreError::Widening { .. } => mapped(
             StatusCode::FORBIDDEN,
             "Scope Widening Not Allowed",

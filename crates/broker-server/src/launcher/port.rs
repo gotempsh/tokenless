@@ -77,6 +77,29 @@ pub fn rewrite_head(head: &[u8], authorization: &str) -> Result<Vec<u8>, &'stati
     Ok(out)
 }
 
+/// The path agents fetch from the session port itself to learn what the
+/// session reaches: `curl $CREDENTIAL_BROKER_PROXY/services`.
+pub const SERVICES_PATH: &str = "/services";
+
+/// Is this head an origin-form `GET /services`, meant for the port itself?
+pub fn asks_for_services(head: &[u8]) -> bool {
+    let line = head.split(|b| *b == b'\n').next().unwrap_or_default();
+    let mut parts = line.split(|b| *b == b' ').filter(|p| !p.is_empty());
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let path = target.split(|b| *b == b'?').next().unwrap_or_default();
+    method == b"GET" && path == SERVICES_PATH.as_bytes()
+}
+
+async fn reply_json(client: &mut TcpStream, json: &str) {
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+        json.len()
+    );
+    let _ = client.write_all(response.as_bytes()).await;
+}
+
 async fn reply(client: &mut TcpStream, status: &str, message: &str) {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}",
@@ -105,7 +128,12 @@ async fn read_head(client: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), &'stati
     }
 }
 
-async fn handle(mut client: TcpStream, upstream: Arc<str>, auth: Arc<ArcSwap<String>>) {
+async fn handle(
+    mut client: TcpStream,
+    upstream: Arc<str>,
+    auth: Arc<ArcSwap<String>>,
+    services: Arc<str>,
+) {
     let (head, rest) = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut client)).await {
         Ok(Ok(parts)) => parts,
         Ok(Err(reason)) => {
@@ -120,6 +148,10 @@ async fn handle(mut client: TcpStream, upstream: Arc<str>, auth: Arc<ArcSwap<Str
         }
         Err(_) => return,
     };
+    if asks_for_services(&head) {
+        reply_json(&mut client, &services).await;
+        return;
+    }
     let rewritten = match rewrite_head(&head, auth.load().as_str()) {
         Ok(h) => h,
         Err(reason) => {
@@ -194,11 +226,13 @@ pub struct SessionPort {
 impl SessionPort {
     /// Binds `listen` (loopback only) and relays to the proxy at
     /// `upstream` (`host:port`), adding whatever `auth` holds at the time
-    /// each connection arrives.
+    /// each connection arrives. `services` is the JSON served at
+    /// [`SERVICES_PATH`]: what the session reaches, never a secret.
     pub async fn start(
         listen: SocketAddr,
         upstream: &str,
         auth: Arc<ArcSwap<String>>,
+        services: String,
     ) -> Result<Self, LauncherError> {
         check_listen(listen)?;
         let listener = TcpListener::bind(listen)
@@ -210,6 +244,7 @@ impl SessionPort {
             .local_addr()
             .map_err(LauncherError::io("reading the session port address"))?;
         let upstream: Arc<str> = Arc::from(upstream);
+        let services: Arc<str> = Arc::from(services);
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let task = tokio::spawn(async move {
             loop {
@@ -221,8 +256,9 @@ impl SessionPort {
                         let _ = client.set_nodelay(true);
                         let upstream = upstream.clone();
                         let auth = auth.clone();
+                        let services = services.clone();
                         tokio::spawn(async move {
-                            handle(client, upstream, auth).await;
+                            handle(client, upstream, auth, services).await;
                             drop(permit);
                         });
                     }
@@ -252,6 +288,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_an_origin_form_get_of_services_is_answered_locally() {
+        assert!(asks_for_services(
+            b"GET /services HTTP/1.1\r\nHost: x\r\n\r\n"
+        ));
+        assert!(asks_for_services(b"GET /services?pretty HTTP/1.1\r\n\r\n"));
+        assert!(!asks_for_services(
+            b"GET http://api.example.com/services HTTP/1.1\r\n\r\n"
+        ));
+        assert!(!asks_for_services(
+            b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n"
+        ));
+        assert!(!asks_for_services(b"POST /services HTTP/1.1\r\n\r\n"));
+        assert!(!asks_for_services(b"GET /servicesx HTTP/1.1\r\n\r\n"));
+    }
+
+    #[test]
     fn authorization_matches_the_proxy_url_form() {
         let value = proxy_authorization("v4.public.abc");
         let decoded = STANDARD
@@ -279,11 +331,16 @@ mod tests {
     #[tokio::test]
     async fn refuses_non_loopback_listeners() {
         let auth = Arc::new(ArcSwap::from_pointee(String::new()));
-        let err = SessionPort::start("0.0.0.0:0".parse().unwrap(), "127.0.0.1:1", auth)
-            .await
-            .err()
-            .unwrap()
-            .to_string();
+        let err = SessionPort::start(
+            "0.0.0.0:0".parse().unwrap(),
+            "127.0.0.1:1",
+            auth,
+            String::new(),
+        )
+        .await
+        .err()
+        .unwrap()
+        .to_string();
         assert!(err.contains("loopback"), "{err}");
     }
 
@@ -306,9 +363,14 @@ mod tests {
             heads
         });
         let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization("v4.public.one")));
-        let port = SessionPort::start("127.0.0.1:0".parse().unwrap(), &upstream_addr, auth.clone())
-            .await
-            .unwrap();
+        let port = SessionPort::start(
+            "127.0.0.1:0".parse().unwrap(),
+            &upstream_addr,
+            auth.clone(),
+            String::new(),
+        )
+        .await
+        .unwrap();
         for token in ["v4.public.one", "v4.public.two"] {
             auth.store(Arc::new(proxy_authorization(token)));
             let mut client = TcpStream::connect(port.addr).await.unwrap();
@@ -336,9 +398,14 @@ mod tests {
             .local_addr()
             .unwrap();
         let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization("t")));
-        let port = SessionPort::start("127.0.0.1:0".parse().unwrap(), &free.to_string(), auth)
-            .await
-            .unwrap();
+        let port = SessionPort::start(
+            "127.0.0.1:0".parse().unwrap(),
+            &free.to_string(),
+            auth,
+            String::new(),
+        )
+        .await
+        .unwrap();
         let mut client = TcpStream::connect(port.addr).await.unwrap();
         client
             .write_all(b"CONNECT api.example.com:443 HTTP/1.1\r\n\r\n")

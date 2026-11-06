@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use broker_core::injection::{InjectedHeaders, SecretFields};
+use broker_core::substitution::render_substitutions;
 use broker_core::template::ServiceTemplate;
 use broker_core::variables::render_custom_headers;
 use zeroize::Zeroizing;
@@ -67,6 +68,7 @@ pub(crate) async fn render_credential(
     let resolved = fields.resolve(lookup)?;
     drop(fields);
     let mut headers = template.injection.render(&template.id, &resolved)?;
+    headers.substitutions = render_substitutions(&template.id, &meta.substitutions, &resolved)?;
     drop(resolved);
     render_custom_headers(&meta.custom_headers, &mut headers, lookup)?;
     let mut strip = template.injection.strip_set();

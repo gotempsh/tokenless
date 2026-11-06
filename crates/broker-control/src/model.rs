@@ -15,6 +15,7 @@ use broker_core::ids::{
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
+use broker_core::substitution::Substitution;
 use broker_core::template::ServiceTemplate;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
@@ -112,6 +113,10 @@ pub struct CredentialMeta {
     /// Variable keys referenced by the secret fields and custom headers.
     #[serde(default)]
     pub variable_refs: Vec<String>,
+    /// Placeholders the agent sends that the proxy replaces with one of the
+    /// secret fields. Configuration only; the values stay sealed.
+    #[serde(default)]
+    pub substitutions: Vec<Substitution>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

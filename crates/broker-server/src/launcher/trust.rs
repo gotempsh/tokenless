@@ -17,6 +17,9 @@ use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 
+use broker_control::service::sessions::DiscoveredService;
+use tracing::warn;
+
 use super::LauncherError;
 
 /// System trust files, in the order they are looked for.
@@ -156,6 +159,29 @@ pub fn agent_env(port: SocketAddr, trust: &TrustFiles) -> Vec<(String, String)> 
     env
 }
 
+/// `ENV=placeholder` for every enabled service's placeholders that name an
+/// environment variable, so tools that insist on a key start with one the
+/// proxy will swap. When two services claim the same variable the first
+/// wins and the clash is reported.
+pub fn placeholder_env(services: &[DiscoveredService]) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = Vec::new();
+    for service in services.iter().filter(|s| s.enabled) {
+        for p in &service.placeholders {
+            let Some(name) = &p.env else { continue };
+            match env.iter().find(|(n, _)| n == name) {
+                Some((_, kept)) if kept != &p.placeholder => warn!(
+                    variable = %name,
+                    service = %service.service,
+                    "two services set the same placeholder variable; keeping the first"
+                ),
+                Some(_) => {}
+                None => env.push((name.clone(), p.placeholder.clone())),
+            }
+        }
+    }
+    env
+}
+
 /// Quotes a value for a POSIX shell `export` line.
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
@@ -221,6 +247,44 @@ mod tests {
         assert!(
             env.values().all(|v| !v.contains("v4.public.")),
             "no token in the env"
+        );
+    }
+
+    #[test]
+    fn placeholders_of_enabled_services_become_env() {
+        use broker_control::service::sessions::DiscoveredPlaceholder;
+        use broker_core::ids::RuleId;
+        let service = |name: &str, enabled: bool, env: &str, placeholder: &str| DiscoveredService {
+            rule_id: RuleId::new(),
+            rule: name.into(),
+            credential: name.into(),
+            template_id: name.into(),
+            service: name.into(),
+            hosts: vec![],
+            paths: vec![],
+            methods: vec![],
+            enabled,
+            placeholders: vec![
+                DiscoveredPlaceholder {
+                    placeholder: placeholder.into(),
+                    env: Some(env.into()),
+                    locations: vec![],
+                },
+                DiscoveredPlaceholder {
+                    placeholder: "__NO_ENV_HERE__".into(),
+                    env: None,
+                    locations: vec![],
+                },
+            ],
+        };
+        let env = placeholder_env(&[
+            service("github", true, "GITHUB_TOKEN", "__GITHUB_TOKEN__"),
+            service("stripe", false, "STRIPE_KEY", "__STRIPE_KEY__"),
+            service("other", true, "GITHUB_TOKEN", "__OTHER__"),
+        ]);
+        assert_eq!(
+            env,
+            vec![("GITHUB_TOKEN".to_string(), "__GITHUB_TOKEN__".to_string())]
         );
     }
 

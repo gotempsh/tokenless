@@ -16,6 +16,7 @@ use broker_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use broker_core::substitution::Substitution;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
@@ -61,6 +62,14 @@ pub trait CredentialStore: Send + Sync {
         id: &CredentialId,
         custom_headers: Vec<CustomHeader>,
         variable_refs: Vec<String>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Replaces the substitutions; `NotFound` if the credential does not exist.
+    async fn update_substitutions(
+        &self,
+        id: &CredentialId,
+        substitutions: Vec<Substitution>,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;

@@ -5,7 +5,7 @@
 // secret fields (a value or a variable reference) and custom headers.
 
 import { useMemo, useState, type FormEvent } from "react";
-import { Braces, FlaskConical, KeyRound, ListPlus, Lock, Plus, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
+import { Braces, FlaskConical, KeyRound, ListPlus, Lock, Plus, RefreshCw, Replace, ShieldAlert, Trash2 } from "lucide-react";
 import {
   ApiError,
   del,
@@ -19,6 +19,7 @@ import {
   type Page,
   type ServiceTemplate,
   type StoredTemplate,
+  type Substitution,
   type UserSummary,
   type Variable,
 } from "../api";
@@ -46,6 +47,7 @@ import {
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
 import { TemplatePicker } from "../components/TemplatePicker";
+import { SubstitutionsEditor, substitutionProblem } from "../components/SubstitutionsEditor";
 import { CustomHeadersEditor, referencedKeys } from "../components/VariableInput";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
@@ -87,6 +89,7 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
   const [creating, setCreating] = useState<ServiceTemplate | null>(null);
   const [rotating, setRotating] = useState<CredentialMeta | null>(null);
   const [editingHeaders, setEditingHeaders] = useState<CredentialMeta | null>(null);
+  const [editingPlaceholders, setEditingPlaceholders] = useState<CredentialMeta | null>(null);
   const [results, setResults] = useState<Record<string, CredentialValidation>>({});
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
@@ -230,6 +233,19 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
                           variant="outline"
                           size="sm"
                           disabled={!isAdmin}
+                          title="Placeholders the agent sends that the proxy replaces with this secret"
+                          onClick={() => setEditingPlaceholders(c)}
+                        >
+                          <Replace />
+                          <span className="hidden sm:inline">
+                            Placeholders{c.substitutions.length > 0 ? ` (${c.substitutions.length})` : ""}
+                          </span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!isAdmin}
                           onClick={() => setRotating(c)}
                         >
                           <RefreshCw />
@@ -330,6 +346,26 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
             onCancel={() => setEditingHeaders(null)}
             onDone={() => {
               setEditingHeaders(null);
+              creds.reload();
+            }}
+          />
+        )}
+      </FormDialog>
+      <FormDialog
+        open={editingPlaceholders !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditingPlaceholders(null);
+        }}
+        wide
+        title={editingPlaceholders ? `Placeholders for "${editingPlaceholders.name}"` : "Placeholders"}
+        description="For APIs that take the key somewhere other than the injected header, or tools that refuse to start without one. The agent sends the placeholder; the proxy swaps in the secret on its way to this service's hosts, and nowhere else."
+      >
+        {editingPlaceholders && (
+          <PlaceholdersForm
+            credential={editingPlaceholders}
+            onCancel={() => setEditingPlaceholders(null)}
+            onDone={() => {
+              setEditingPlaceholders(null);
               creds.reload();
             }}
           />
@@ -723,6 +759,60 @@ function HeadersForm({
         </Button>
         <Button type="submit" disabled={action.busy || unknown.length > 0}>
           Save headers
+        </Button>
+      </DialogActions>
+    </form>
+  );
+}
+
+function PlaceholdersForm({
+  credential,
+  onCancel,
+  onDone,
+}: {
+  credential: CredentialMeta;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [substitutions, setSubstitutions] = useState<Substitution[]>(credential.substitutions);
+  const action = useAction();
+  const invalid = substitutions.some((s) => substitutionProblem(s, substitutions) !== null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const ok = await action.run(() =>
+      put<CredentialMeta>(`/credentials/${credential.id}/substitutions`, { substitutions }),
+    );
+    if (ok) onDone();
+  };
+  const example = substitutions[0];
+  return (
+    <form className="space-y-4" onSubmit={submit} autoComplete="off">
+      <ErrorBanner error={action.error} />
+      <SubstitutionsEditor
+        substitutions={substitutions}
+        onChange={setSubstitutions}
+        fields={credential.field_names}
+        templateId={credential.template_id}
+      />
+      {example && (
+        <p className="text-xs text-muted-foreground">
+          For example, the agent requests <Mono>{`?api_key=${example.placeholder}`}</Mono> and the API receives the real
+          value.
+          {example.env && (
+            <>
+              {" "}
+              <Mono>credential-broker run</Mono> also sets <Mono>{`${example.env}=${example.placeholder}`}</Mono> for
+              the agent.
+            </>
+          )}
+        </p>
+      )}
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={action.busy || invalid}>
+          Save placeholders
         </Button>
       </DialogActions>
     </form>

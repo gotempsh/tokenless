@@ -15,6 +15,7 @@ use broker_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use broker_core::substitution::Substitution;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
@@ -158,6 +159,24 @@ impl CredentialStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("credential", id))?;
         meta.custom_headers = custom_headers;
         meta.variable_refs = variable_refs;
+        meta.updated_at = updated_at;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn update_substitutions(
+        &self,
+        id: &CredentialId,
+        substitutions: Vec<Substitution>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let (meta, _) = inner
+            .credentials
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        meta.substitutions = substitutions;
         meta.updated_at = updated_at;
         inner.audit.extend_from_slice(audit);
         Ok(())

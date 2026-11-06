@@ -165,7 +165,10 @@ mod tests {
             port: 443,
             method: "GET".into(),
             path: "/".into(),
-            headers: InjectedHeaders { headers: vec![] },
+            headers: InjectedHeaders {
+                headers: vec![],
+                substitutions: vec![],
+            },
         }
     }
 

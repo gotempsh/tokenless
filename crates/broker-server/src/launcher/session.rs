@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use broker_control::model::ProxySession;
+use broker_control::service::sessions::DiscoveredService;
 use broker_core::ids::VaultId;
 use chrono::{DateTime, Utc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
-use super::client::{ApiClient, MintRequest};
+use super::client::{ApiClient, MintRequest, PortServices};
 use super::port::proxy_authorization;
 use super::LauncherError;
 
@@ -46,6 +47,9 @@ pub struct LiveSession {
     pub auth: Arc<ArcSwap<String>>,
     /// The current session record.
     pub current: Arc<ArcSwap<ProxySession>>,
+    /// The services the session reaches, as seen when it started. Empty if
+    /// the broker could not be asked (the agent then gets no placeholders).
+    pub services: Vec<DiscoveredService>,
     minted: Minted,
     renewer: JoinHandle<()>,
 }
@@ -60,6 +64,13 @@ impl LiveSession {
         let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization(&first.token)));
         let minted: Minted = Arc::new(Mutex::new(Vec::new()));
         remember(&minted, first.session.expires_at, &first.token);
+        let services = match client.discover(&first.token).await {
+            Ok(discovery) => discovery.services,
+            Err(e) => {
+                warn!(error = %e, "could not list the session's services; placeholders are not exported");
+                Vec::new()
+            }
+        };
         let current = Arc::new(ArcSwap::from_pointee(first.session));
         let renewer = tokio::spawn(renew_loop(
             client.clone(),
@@ -73,9 +84,21 @@ impl LiveSession {
             client,
             auth,
             current,
+            services,
             minted,
             renewer,
         })
+    }
+
+    /// What the session port serves at `/services`: the bundle and the
+    /// services it reaches, with no token and no secret.
+    pub fn services_json(&self) -> String {
+        let current = self.current.load();
+        serde_json::to_string(&PortServices {
+            bundle: current.bundle.as_ref().map(|b| b.name.clone()),
+            services: self.services.clone(),
+        })
+        .unwrap_or_else(|_| r#"{"bundle":null,"services":[]}"#.to_string())
     }
 
     /// Stops renewing and ends every unexpired session it minted. Returns

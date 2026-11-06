@@ -282,7 +282,10 @@ mod tests {
 
     #[test]
     fn rendered_custom_headers_are_checked_after_substitution() {
-        let mut out = InjectedHeaders { headers: vec![] };
+        let mut out = InjectedHeaders {
+            headers: vec![],
+            substitutions: vec![],
+        };
         render_custom_headers(
             &[CustomHeader {
                 name: "X-Org".into(),
@@ -296,7 +299,10 @@ mod tests {
         assert_eq!(out.headers[0].value, "org-42");
 
         let bad = |_: &str| Some("line\nbreak");
-        let mut out = InjectedHeaders { headers: vec![] };
+        let mut out = InjectedHeaders {
+            headers: vec![],
+            substitutions: vec![],
+        };
         assert!(render_custom_headers(
             &[CustomHeader {
                 name: "X-Org".into(),

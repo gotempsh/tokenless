@@ -20,12 +20,13 @@ use tokio_rustls::TlsConnector;
 use tracing::debug;
 
 use crate::error::DataPlaneError;
+use crate::proxy::ProxyBody;
 
 type Reply = oneshot::Sender<Result<Response<Incoming>, DataPlaneError>>;
 
 #[derive(Clone)]
 pub struct UpstreamHandle {
-    tx: mpsc::Sender<(Request<Incoming>, Reply)>,
+    tx: mpsc::Sender<(Request<ProxyBody>, Reply)>,
     host: String,
     port: u16,
 }
@@ -42,7 +43,10 @@ impl UpstreamHandle {
         Self { tx, host, port }
     }
 
-    pub async fn send(&self, req: Request<Incoming>) -> Result<Response<Incoming>, DataPlaneError> {
+    pub async fn send(
+        &self,
+        req: Request<ProxyBody>,
+    ) -> Result<Response<Incoming>, DataPlaneError> {
         let closed = || DataPlaneError::Upstream {
             host: self.host.clone(),
             port: self.port,
@@ -59,7 +63,7 @@ async fn connect(
     port: u16,
     tls: Arc<ClientConfig>,
     connect_timeout: Duration,
-) -> Result<SendRequest<Incoming>, DataPlaneError> {
+) -> Result<SendRequest<ProxyBody>, DataPlaneError> {
     let err = |reason: String| DataPlaneError::Upstream {
         host: host.to_string(),
         port,
@@ -94,13 +98,13 @@ async fn connect(
 }
 
 async fn run(
-    mut rx: mpsc::Receiver<(Request<Incoming>, Reply)>,
+    mut rx: mpsc::Receiver<(Request<ProxyBody>, Reply)>,
     host: String,
     port: u16,
     tls: Arc<ClientConfig>,
     connect_timeout: Duration,
 ) {
-    let mut sender: Option<SendRequest<Incoming>> = None;
+    let mut sender: Option<SendRequest<ProxyBody>> = None;
     while let Some((req, reply)) = rx.recv().await {
         let mut current = match sender.take() {
             Some(s) if !s.is_closed() => s,

@@ -29,6 +29,7 @@ use broker_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use broker_core::substitution::Substitution;
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -346,6 +347,27 @@ pub async fn update_custom_headers(
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubstitutionsRequest {
+    substitutions: Vec<Substitution>,
+}
+
+pub async fn update_substitutions(
+    State(s): St,
+    authed: Authed,
+    Path(credential_id): Path<String>,
+    ApiJson(req): ApiJson<SubstitutionsRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let id: CredentialId = parse_id("credential", &credential_id)?;
+    Ok(Json(
+        s.control
+            .policy
+            .update_substitutions(&authed.caller, &id, req.substitutions)
+            .await?,
+    ))
+}
+
 pub async fn list_variables(
     State(s): St,
     authed: Authed,
@@ -489,13 +511,8 @@ pub async fn delete_rule(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /sessions/revoke-self` with `Authorization: Bearer <session token>`.
-/// Holding the token is the only credential needed to end that session.
-pub async fn revoke_own_session(
-    State(s): St,
-    headers: axum::http::HeaderMap,
-) -> ApiResult<impl IntoResponse> {
-    let token = headers
+fn session_bearer(headers: &axum::http::HeaderMap) -> Result<&str, ApiError> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -505,8 +522,27 @@ pub async fn revoke_own_session(
                 reason: "send the proxy session token as 'Authorization: Bearer v4.public...'"
                     .into(),
             })
-        })?;
+        })
+}
+
+/// `POST /sessions/revoke-self` with `Authorization: Bearer <session token>`.
+/// Holding the token is the only credential needed to end that session.
+pub async fn revoke_own_session(
+    State(s): St,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let token = session_bearer(&headers)?;
     Ok(Json(s.control.sessions.revoke_self(token).await?))
+}
+
+/// `GET /sessions/self` with `Authorization: Bearer <session token>`: the
+/// services this session can reach and the placeholders they accept.
+pub async fn discover_own_session(
+    State(s): St,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let token = session_bearer(&headers)?;
+    Ok(Json(s.control.sessions.discover_self(token).await?))
 }
 
 // ----- access bundles ----------------------------------------------------

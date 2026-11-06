@@ -23,6 +23,7 @@ pub mod scope;
 pub mod seal;
 pub mod session;
 pub mod snapshot;
+pub mod substitution;
 pub mod template;
 pub mod variables;
 

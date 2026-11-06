@@ -21,6 +21,7 @@ use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::seal::{open, SealSecretKey};
 use broker_core::snapshot::{ca_aad, rule_aad, SignedSnapshot, UnmatchedHostPolicy};
+use broker_core::substitution::RenderedSubstitution;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::VerifyingKey;
 use http::{HeaderName, HeaderValue};
@@ -54,6 +55,8 @@ pub struct ActiveRule {
     pub allow: RuleScope,
     pub strip: Vec<HeaderName>,
     pub inject: Vec<(HeaderName, HeaderValue)>,
+    /// Placeholders swapped for secret values; empty for most rules.
+    pub substitutions: Vec<RenderedSubstitution>,
 }
 
 /// Interception certificates, one server config per rule host.
@@ -268,6 +271,7 @@ pub fn build_active(
             allow: rule.allow.clone(),
             strip,
             inject,
+            substitutions: headers.substitutions.clone(),
         });
     }
 
@@ -373,6 +377,7 @@ pub(crate) mod tests {
                                 name: "authorization".into(),
                                 value: format!("Bearer {token}"),
                             }],
+                            substitutions: vec![],
                         };
                         SnapshotRule {
                             rule_id,

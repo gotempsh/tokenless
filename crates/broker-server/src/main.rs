@@ -13,11 +13,12 @@ use std::sync::Arc;
 
 use broker_dataplane::node::{enroll, NodeIdentity};
 use broker_dataplane::{DataPlane, DataPlaneConfig};
-use broker_server::launcher::client::{ApiClient, MintRequest};
+use broker_server::launcher::client::{ApiClient, MintRequest, PortServices};
 use broker_server::launcher::port::{check_listen, SessionPort};
 use broker_server::launcher::session::LiveSession;
 use broker_server::launcher::trust::{
-    agent_env, fingerprint, fingerprints_match, shell_quote, write_trust_files, TrustFiles,
+    agent_env, fingerprint, fingerprints_match, placeholder_env, shell_quote, write_trust_files,
+    TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
 use broker_server::{Server, ServerConfig};
@@ -148,6 +149,17 @@ enum SessionCommand {
         broker: BrokerArgs,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Show what a session can reach and which placeholders it accepts.
+    /// Inside `run` or behind `session start` it asks the session port
+    /// (CREDENTIAL_BROKER_PROXY); otherwise it uses the token in
+    /// CREDENTIAL_BROKER_SESSION_TOKEN.
+    Info {
+        #[command(flatten)]
+        broker: BrokerArgs,
+        /// Print JSON instead.
+        #[arg(long)]
+        json: bool,
     },
     /// Open a session port: a loopback proxy address that adds a session
     /// from the bundle to every request. Runs until Ctrl-C, renewing the
@@ -496,20 +508,38 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        SessionCommand::Info { broker, json } => {
+            let client = ApiClient::new(&broker.server, None)?;
+            let port = std::env::var("CREDENTIAL_BROKER_PROXY")
+                .ok()
+                .filter(|p| !p.trim().is_empty());
+            let found = match port {
+                Some(port) => client.port_services(&port).await?,
+                None => {
+                    let token = session_token_from_env()?;
+                    let discovery = client.discover(&token).await?;
+                    PortServices {
+                        bundle: discovery.session.bundle.map(|b| b.name),
+                        services: discovery.services,
+                    }
+                }
+            };
+            if json {
+                let out = serde_json::to_string_pretty(&found).map_err(|e| {
+                    LauncherError::config(format!("encoding the services as JSON: {e}"))
+                })?;
+                println!("{out}");
+            } else {
+                print!("{}", describe_services(&found));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         SessionCommand::Revoke { broker, id } => {
             let client = client(&broker)?;
             let session = match id {
                 Some(id) => client.revoke_by_id(&id).await?,
                 None => {
-                    let token = std::env::var("CREDENTIAL_BROKER_SESSION_TOKEN")
-                        .ok()
-                        .map(Zeroizing::new)
-                        .filter(|t| !t.trim().is_empty())
-                        .ok_or_else(|| {
-                            LauncherError::config(
-                                "set CREDENTIAL_BROKER_SESSION_TOKEN to the session's token, or pass --id",
-                            )
-                        })?;
+                    let token = session_token_from_env()?;
                     client.revoke_self(&token).await?
                 }
             };
@@ -528,16 +558,23 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
             let live = LiveSession::start(client.clone(), vault, mint_request(&mint, &[])?).await?;
-            let session_port =
-                match SessionPort::start(listen, &port.proxy, live.auth.clone()).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        live.end().await;
-                        return Err(e.into());
-                    }
-                };
+            let session_port = match SessionPort::start(
+                listen,
+                &port.proxy,
+                live.auth.clone(),
+                live.services_json(),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    live.end().await;
+                    return Err(e.into());
+                }
+            };
             let exports: String = agent_env(session_port.addr, &trust)
                 .into_iter()
+                .chain(placeholder_env(&live.services))
                 .map(|(k, v)| format!("export {k}={}\n", shell_quote(&v)))
                 .collect();
             if let Some(path) = &env_file {
@@ -568,6 +605,66 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn session_token_from_env() -> Result<Zeroizing<String>, CliError> {
+    std::env::var("CREDENTIAL_BROKER_SESSION_TOKEN")
+        .ok()
+        .map(Zeroizing::new)
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| {
+            LauncherError::config(
+                "set CREDENTIAL_BROKER_SESSION_TOKEN to the session's token (or run this behind a session port, which sets CREDENTIAL_BROKER_PROXY)",
+            )
+            .into()
+        })
+}
+
+/// A readable summary of what a session reaches.
+fn describe_services(found: &PortServices) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    match &found.bundle {
+        Some(bundle) => {
+            let _ = writeln!(out, "Access bundle: {bundle}");
+        }
+        None => {
+            let _ = writeln!(out, "Session minted from individual rules");
+        }
+    }
+    if found.services.is_empty() {
+        let _ = writeln!(out, "This session reaches no services.");
+    }
+    for s in &found.services {
+        let state = if s.enabled {
+            ""
+        } else {
+            " (disabled: no credential is added)"
+        };
+        let _ = writeln!(out, "\n{} — {}{state}", s.service, s.credential);
+        let _ = writeln!(out, "  hosts:   {}", s.hosts.join(", "));
+        let _ = writeln!(
+            out,
+            "  allowed: {} {}",
+            s.methods.join(","),
+            s.paths.join(" ")
+        );
+        for p in &s.placeholders {
+            let places: Vec<&str> = p.locations.iter().map(|l| l.as_str()).collect();
+            let env = p
+                .env
+                .as_ref()
+                .map(|e| format!(" (exported as {e})"))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "  send {} in the {} and the proxy puts the real value there{env}",
+                p.placeholder,
+                places.join(", ")
+            );
+        }
+    }
+    out
 }
 
 fn write_private(path: &std::path::Path, contents: &str) -> Result<(), CliError> {
@@ -627,14 +724,20 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
     let (trust, _) = prepare_trust(&client, &args.port, dir.path()).await?;
     let request = mint_request(&args.mint, &[("command", name.clone())])?;
     let live = LiveSession::start(client.clone(), vault, request).await?;
-    let session_port =
-        match SessionPort::start(args.listen, &args.port.proxy, live.auth.clone()).await {
-            Ok(p) => p,
-            Err(e) => {
-                live.end().await;
-                return Err(e.into());
-            }
-        };
+    let session_port = match SessionPort::start(
+        args.listen,
+        &args.port.proxy,
+        live.auth.clone(),
+        live.services_json(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            live.end().await;
+            return Err(e.into());
+        }
+    };
     {
         let current = live.current.load();
         eprintln!(
@@ -644,6 +747,7 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
     }
     let spawned = tokio::process::Command::new(&program)
         .args(&args.command[1..])
+        .envs(placeholder_env(&live.services))
         .envs(agent_env(session_port.addr, &trust))
         .spawn();
     let mut child = match spawned {

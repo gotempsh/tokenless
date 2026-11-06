@@ -219,6 +219,7 @@ impl ControlPlane {
         let bundles = bundles::BundleService::new(stores.policy.clone(), guard.clone());
         let sessions = sessions::SessionService::new(
             stores.policy.clone(),
+            stores.credentials.clone(),
             keys.clone(),
             guard.clone(),
             notifier.clone(),
@@ -328,6 +329,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             custom_headers: vec![],
+            substitutions: vec![],
         }
     }
 
@@ -1424,7 +1426,76 @@ mod tests {
             host_override: vec![],
             fields: [("api_key".to_string(), key.to_string())].into(),
             custom_headers: vec![],
+            substitutions: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn substitutions_name_existing_fields_and_are_audited_by_placeholder() {
+        use broker_core::substitution::{Substitution, SubstitutionLocation};
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let sub = |field: &str| Substitution {
+            placeholder: "__OPENAI_KEY__".into(),
+            field: field.into(),
+            env: Some("OPENAI_API_KEY".into()),
+            locations: vec![SubstitutionLocation::Header],
+        };
+        let mut req = openai("sk-substituted");
+        req.substitutions = vec![sub("password")];
+        let err = cp
+            .policy
+            .create_credential(&a, &vault.id, req.clone())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("field 'password'"), "{err}");
+
+        req.substitutions = vec![sub("api_key")];
+        let meta = cp
+            .policy
+            .create_credential(&a, &vault.id, req)
+            .await
+            .unwrap();
+        assert_eq!(meta.substitutions, vec![sub("api_key")]);
+        assert!(!serde_json::to_string(&meta)
+            .unwrap()
+            .contains("sk-substituted"));
+
+        let cleared = cp
+            .policy
+            .update_substitutions(&a, &meta.id, vec![])
+            .await
+            .unwrap();
+        assert!(cleared.substitutions.is_empty());
+        let missing = cp
+            .policy
+            .update_substitutions(&a, &broker_core::ids::CredentialId::new(), vec![])
+            .await;
+        assert!(matches!(missing, Err(ControlError::NotFound { .. })));
+
+        let events = cp
+            .audit
+            .query(&a, Some(vault.id), None, PageRequest::default())
+            .await
+            .unwrap()
+            .items;
+        let update = events
+            .iter()
+            .find(|e| e.action == "credential.update_substitutions")
+            .unwrap();
+        assert_eq!(
+            update.detail.get("substitutions").map(String::as_str),
+            Some("none")
+        );
+        let create = events
+            .iter()
+            .find(|e| e.action == "credential.create")
+            .unwrap();
+        assert_eq!(
+            create.detail.get("substitutions").map(String::as_str),
+            Some("__OPENAI_KEY__")
+        );
     }
 
     #[tokio::test]

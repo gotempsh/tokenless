@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use broker_control::model::{Page, ProxySession, Vault};
+use broker_control::service::sessions::{DiscoveredService, SessionDiscovery};
 use broker_core::ids::VaultId;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,13 @@ impl std::fmt::Debug for Minted {
             .field("session", &self.session)
             .finish()
     }
+}
+
+/// What a session port serves at `/services`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortServices {
+    pub bundle: Option<String>,
+    pub services: Vec<DiscoveredService>,
 }
 
 #[derive(Deserialize, Default)]
@@ -197,6 +205,27 @@ impl ApiClient {
         let url = self.url("/sessions/revoke-self");
         let builder = self.http.post(&url).bearer_auth(token);
         let response = self.send(builder, OP, &url).await?;
+        Self::json(response, OP, &url).await
+    }
+
+    /// The services the session `token` belongs to can reach.
+    pub async fn discover(&self, token: &str) -> Result<SessionDiscovery, LauncherError> {
+        const OP: &str = "looking up the session's services";
+        let url = self.url("/sessions/self");
+        let builder = self.http.get(&url).bearer_auth(token);
+        let response = self.send(builder, OP, &url).await?;
+        Self::json(response, OP, &url).await
+    }
+
+    /// Asks a session port (`http://127.0.0.1:<port>`) what it reaches.
+    pub async fn port_services(&self, port_url: &str) -> Result<PortServices, LauncherError> {
+        const OP: &str = "asking the session port for its services";
+        let url = format!(
+            "{}{}",
+            port_url.trim_end_matches('/'),
+            super::port::SERVICES_PATH
+        );
+        let response = self.send(self.http.get(&url), OP, &url).await?;
         Self::json(response, OP, &url).await
     }
 

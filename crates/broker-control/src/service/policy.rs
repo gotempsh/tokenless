@@ -15,6 +15,7 @@ use broker_core::path::{HttpMethod, PathPattern};
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
+use broker_core::substitution::{validate_substitutions, Substitution};
 use broker_core::template::{builtin_templates, ServiceTemplate};
 use broker_core::variables::{validate_custom_headers, CustomHeader};
 use chrono::Utc;
@@ -47,6 +48,9 @@ pub struct CreateCredential {
     /// `{{VARIABLE}}` references.
     #[serde(default)]
     pub custom_headers: Vec<CustomHeader>,
+    /// Placeholders the proxy replaces with one of `fields`.
+    #[serde(default)]
+    pub substitutions: Vec<Substitution>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,6 +137,28 @@ fn header_names(headers: &[CustomHeader]) -> String {
         .map(|h| h.name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Placeholders only, for audit details.
+fn placeholder_names(substitutions: &[Substitution]) -> String {
+    if substitutions.is_empty() {
+        return "none".into();
+    }
+    substitutions
+        .iter()
+        .map(|s| s.placeholder.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Substitutions may only name fields the credential actually has, so a
+/// snapshot never has to render one from a missing value.
+fn check_substitutions(
+    substitutions: &[Substitution],
+    field_names: &[String],
+) -> Result<(), ControlError> {
+    let names: Vec<&str> = field_names.iter().map(String::as_str).collect();
+    validate_substitutions(substitutions, &names).map_err(ControlError::from)
 }
 
 fn hosts_string(hosts: &[HostPattern]) -> String {
@@ -583,6 +609,7 @@ impl PolicyService {
         let variable_refs = self
             .variable_refs(template, &fields, &req.custom_headers)
             .await?;
+        check_substitutions(&req.substitutions, &fields.names())?;
         let id = CredentialId::new();
         let now = Utc::now();
         let meta = CredentialMeta {
@@ -595,6 +622,7 @@ impl PolicyService {
             field_names: fields.names(),
             custom_headers: req.custom_headers,
             variable_refs,
+            substitutions: req.substitutions,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -619,6 +647,9 @@ impl PolicyService {
         if !meta.custom_headers.is_empty() {
             event = event.detail("custom_headers", header_names(&meta.custom_headers));
         }
+        if !meta.substitutions.is_empty() {
+            event = event.detail("substitutions", placeholder_names(&meta.substitutions));
+        }
         self.credentials
             .insert_credential(meta.clone(), ciphertext, &[event])
             .await?;
@@ -641,6 +672,11 @@ impl PolicyService {
             .await?;
         let fields = SecretFields::new(fields);
         stored.template.validate_fields(&fields)?;
+        check_substitutions(&meta.substitutions, &fields.names()).map_err(|e| {
+            ControlError::validation(format!(
+                "{e}; remove or change the substitution before dropping the field"
+            ))
+        })?;
         let variable_refs = self
             .variable_refs(&stored.template, &fields, &meta.custom_headers)
             .await?;
@@ -707,6 +743,33 @@ impl PolicyService {
         .detail("custom_headers", header_names(&custom_headers));
         self.credentials
             .update_custom_headers(id, custom_headers, variable_refs, Utc::now(), &[event])
+            .await?;
+        self.notifier.bump_content();
+        self.credential_meta(id).await
+    }
+
+    /// Replaces a credential's substitutions. The secret is unchanged.
+    pub async fn update_substitutions(
+        &self,
+        caller: &Caller,
+        id: &CredentialId,
+        substitutions: Vec<Substitution>,
+    ) -> Result<CredentialMeta, ControlError> {
+        let meta = self.credential_meta(id).await?;
+        self.guard
+            .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
+            .await?;
+        check_substitutions(&substitutions, &meta.field_names)?;
+        let event = AuditEvent::new(
+            caller.actor(),
+            "credential.update_substitutions",
+            AuditOutcome::Success,
+        )
+        .vault(meta.vault_id)
+        .target(format!("credential:{id}"))
+        .detail("substitutions", placeholder_names(&substitutions));
+        self.credentials
+            .update_substitutions(id, substitutions, Utc::now(), &[event])
             .await?;
         self.notifier.bump_content();
         self.credential_meta(id).await
