@@ -14,8 +14,10 @@ use std::sync::Arc;
 use broker_dataplane::node::{enroll, NodeIdentity};
 use broker_dataplane::{DataPlane, DataPlaneConfig};
 use broker_server::launcher::client::{ApiClient, MintRequest, PortServices};
+use broker_server::launcher::inject::{self, Assignment};
 use broker_server::launcher::port::{check_listen, SessionPort};
 use broker_server::launcher::session::LiveSession;
+use broker_server::launcher::skill;
 use broker_server::launcher::trust::{
     agent_env, fingerprint, fingerprints_match, placeholder_env, shell_quote, write_trust_files,
     TrustFiles,
@@ -57,8 +59,31 @@ enum Command {
     /// bundle, points the command at the proxy with the broker CA trusted,
     /// renews the session while it runs and ends it when it exits.
     ///
-    /// Example: credential-broker run --bundle code-review -- claude
+    /// Variables can be filled by reference, as `NAME=cb://<service>/<field>`
+    /// arguments or lines of an `--env-file`: each becomes the placeholder
+    /// the proxy swaps for that secret, never the secret itself. Other
+    /// values are passed through as written.
+    ///
+    /// Examples:
+    ///   credential-broker run --bundle code-review -- claude
+    ///   credential-broker exec --bundle deploy GITHUB_TOKEN=cb://github/token -- ./release.sh
+    #[command(visible_alias = "exec", verbatim_doc_comment)]
     Run(RunArgs),
+    /// Print the agent skill, or install it where Claude Code finds skills.
+    /// It tells an agent behind the broker how to see what it can reach,
+    /// use placeholders and read the proxy's errors.
+    Skill {
+        /// Write it to <dir>/credential-broker/SKILL.md.
+        #[arg(long)]
+        install: bool,
+        /// Skills directory (default: ~/.claude/skills; use .claude/skills
+        /// for one project).
+        #[arg(long, requires = "install")]
+        dir: Option<PathBuf>,
+        /// Replace an installed copy that differs from this version.
+        #[arg(long, requires = "install")]
+        force: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -126,6 +151,14 @@ struct RunArgs {
     /// Session port address; loopback only. Default: a free port.
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: SocketAddr,
+    /// Dotenv-style file of `NAME=cb://<service>/<field>` or `NAME=value`
+    /// lines (repeatable). It holds references, not secrets, so it can be
+    /// committed. Later files and NAME=... arguments override earlier ones.
+    #[arg(long = "env-file", value_name = "PATH")]
+    env_files: Vec<PathBuf>,
+    /// Variables to set, as `NAME=cb://<service>/<field>` or `NAME=value`.
+    #[arg(value_name = "NAME=VALUE")]
+    assignments: Vec<String>,
     /// The command to run, after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -644,6 +677,7 @@ fn describe_services(found: &PortServices) -> String {
             s.paths.join(" ")
         );
         for p in &s.placeholders {
+            let _ = writeln!(out, "  {}", inject::reference(s, p));
             let places: Vec<&str> = p.locations.iter().map(|l| l.as_str()).collect();
             let env = p
                 .env
@@ -652,7 +686,7 @@ fn describe_services(found: &PortServices) -> String {
                 .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "  send {} in the {} and the proxy puts the real value there{env}",
+                "    send {} in the {} and the proxy puts the real value there{env}",
                 p.placeholder,
                 places.join(", ")
             );
@@ -705,7 +739,25 @@ fn terminate(pid: u32) {
         .status();
 }
 
+/// The env files, then the `NAME=...` arguments, in override order. Read
+/// before anything is minted so a typo costs no session.
+fn read_assignments(args: &RunArgs) -> Result<Vec<Assignment>, CliError> {
+    let mut all = Vec::new();
+    for path in &args.env_files {
+        let contents = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+            context: format!("reading the env file {}", path.display()),
+            source: e,
+        })?;
+        all.extend(inject::parse_env_file(&contents, path)?);
+    }
+    for raw in &args.assignments {
+        all.push(inject::parse_assignment(raw)?);
+    }
+    Ok(all)
+}
+
 async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
+    let assignments = read_assignments(&args)?;
     let program = args.command[0].clone();
     let name = std::path::Path::new(&program)
         .file_name()
@@ -732,6 +784,23 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
             return Err(e.into());
         }
     };
+    let trust_env = agent_env(session_port.addr, &trust);
+    let reserved: Vec<String> = trust_env.iter().map(|(k, _)| k.clone()).collect();
+    let requested = match inject::resolve(&assignments, &live.services, &reserved) {
+        Ok(env) => env,
+        Err(e) => {
+            session_port.stop();
+            live.end().await;
+            return Err(e.into());
+        }
+    };
+    // Placeholders a service exports by itself, then what was asked for,
+    // then the proxy and trust variables, which nothing may override.
+    let env: Vec<(String, String)> = placeholder_env(&live.services)
+        .into_iter()
+        .chain(requested)
+        .chain(trust_env)
+        .collect();
     {
         let current = live.current.load();
         eprintln!(
@@ -739,11 +808,7 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
             args.mint.bundle, current.id, session_port.addr, args.port.proxy
         );
     }
-    let spawned = tokio::process::Command::new(&program)
-        .args(&args.command[1..])
-        .envs(placeholder_env(&live.services))
-        .envs(agent_env(session_port.addr, &trust))
-        .spawn();
+    let spawned = inject::agent_command(&program, &args.command[1..], &env).spawn();
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => {
@@ -783,16 +848,43 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
     Ok(exit_code(status))
 }
 
+fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<ExitCode, CliError> {
+    if !install {
+        print!("{}", skill::SKILL_MD);
+        return Ok(ExitCode::SUCCESS);
+    }
+    let dir = match dir {
+        Some(dir) => dir,
+        None => skill::default_dir()?,
+    };
+    let (path, outcome) = skill::install(&dir, force)?;
+    let what = match outcome {
+        skill::Installed::Created => "installed",
+        skill::Installed::Unchanged => "already up to date",
+        skill::Installed::Replaced => "replaced",
+    };
+    eprintln!("credential-broker: skill {what} at {}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let agent_side = matches!(cli.command, Command::Session { .. } | Command::Run(_));
+    let agent_side = matches!(
+        cli.command,
+        Command::Session { .. } | Command::Run(_) | Command::Skill { .. }
+    );
     init_logging(agent_side);
     let result = match cli.command {
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
         Command::Node { command } => node(command).await.map(|()| ExitCode::SUCCESS),
         Command::Session { command } => session(command).await,
         Command::Run(args) => run(args).await,
+        Command::Skill {
+            install,
+            dir,
+            force,
+        } => skill_command(install, dir, force),
     };
     match result {
         Ok(code) => code,

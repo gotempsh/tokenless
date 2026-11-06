@@ -52,6 +52,9 @@ pub struct MintedSession {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPlaceholder {
     pub placeholder: String,
+    /// The secret field it stands for: a name, never the value.
+    #[serde(default)]
+    pub field: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
     pub locations: Vec<SubstitutionLocation>,
@@ -371,6 +374,7 @@ impl SessionService {
                     .into_iter()
                     .map(|s| DiscoveredPlaceholder {
                         placeholder: s.placeholder,
+                        field: s.field,
                         env: s.env,
                         locations: s.locations,
                     })

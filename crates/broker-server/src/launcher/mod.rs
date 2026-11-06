@@ -13,8 +13,10 @@
 //! expires, and every session it minted is ended when it stops.
 
 pub mod client;
+pub mod inject;
 pub mod port;
 pub mod session;
+pub mod skill;
 pub mod trust;
 
 use thiserror::Error;

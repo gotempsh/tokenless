@@ -155,6 +155,8 @@ pub fn agent_env(port: SocketAddr, trust: &TrustFiles) -> Vec<(String, String)> 
         "NODE_EXTRA_CA_CERTS".to_string(),
         trust.broker_ca.display().to_string(),
     ));
+    // Node 24+ only sends its built-in fetch through HTTPS_PROXY with this.
+    env.push(("NODE_USE_ENV_PROXY".to_string(), "1".to_string()));
     env.push(("CREDENTIAL_BROKER_PROXY".to_string(), proxy));
     env
 }
@@ -243,6 +245,7 @@ mod tests {
         assert_eq!(env["https_proxy"], "http://127.0.0.1:41000");
         assert_eq!(env["SSL_CERT_FILE"], "/t/trust-bundle.pem");
         assert_eq!(env["NODE_EXTRA_CA_CERTS"], "/t/broker-ca.pem");
+        assert_eq!(env["NODE_USE_ENV_PROXY"], "1");
         assert!(env["NO_PROXY"].starts_with("localhost,127.0.0.1,::1"));
         assert!(
             env.values().all(|v| !v.contains("v4.public.")),
@@ -267,11 +270,13 @@ mod tests {
             placeholders: vec![
                 DiscoveredPlaceholder {
                     placeholder: placeholder.into(),
+                    field: "token".into(),
                     env: Some(env.into()),
                     locations: vec![],
                 },
                 DiscoveredPlaceholder {
                     placeholder: "__NO_ENV_HERE__".into(),
+                    field: "user".into(),
                     env: None,
                     locations: vec![],
                 },

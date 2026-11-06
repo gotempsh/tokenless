@@ -88,6 +88,46 @@ token anywhere in its environment. Sessions are capped at an hour unless
 an admin raises it (**Settings → Session lifetime**, up to 7 days), so the
 port renews the session before it expires. When the agent exits, every
 session the run minted is ended and `run` exits with the agent's code.
+The agent never inherits `CREDENTIAL_BROKER_API_KEY` or
+`CREDENTIAL_BROKER_SESSION_TOKEN` from your shell.
+
+#### Filling environment variables
+
+`exec` is `run` with variables filled by reference, for scripts that read
+a key from the environment:
+
+```sh
+credential-broker exec --bundle deploy \
+  GITHUB_TOKEN=cb://github/token REGION=eu-west-1 -- ./release.sh
+credential-broker exec --bundle deploy --env-file .env.broker -- ./release.sh
+```
+
+`cb://<service>/<field>` is replaced by that field's
+[placeholder](#placeholders), which the proxy swaps for the secret on the
+service's hosts. The command never holds the secret, because nothing can
+read a stored secret back. `<service>` is the service, rule or template
+name, and `/<field>` can be left out when the service has a single
+placeholder. Other values are passed through as written. An env file holds
+the same `NAME=value` lines, so it can be committed. Later files and
+arguments override earlier ones, and nothing may override the proxy or
+trust variables. A reference that resolves to nothing stops the run before
+the command starts, with the references the session does resolve.
+`session info` prints each placeholder's reference.
+
+#### The agent skill
+
+```sh
+credential-broker skill --install                        # ~/.claude/skills/credential-broker/SKILL.md
+credential-broker skill --install --dir .claude/skills   # for one project
+credential-broker skill                                  # print it
+```
+
+The skill ([`skills/credential-broker/SKILL.md`](skills/credential-broker/SKILL.md))
+tells an agent behind the broker how to see what it can reach, hand tools
+a placeholder instead of a key, and read the proxy's `403`/`407`/`429`
+answers without trying to work around them. It is built into the binary, so
+it always matches the CLI. A copy with local edits is only replaced with
+`--force`.
 
 To keep a session port open for agents you start yourself:
 
