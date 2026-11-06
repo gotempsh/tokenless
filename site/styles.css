@@ -222,12 +222,21 @@ pre {
 }
 
 .wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
   font-weight: 800;
   font-size: 1.35rem;
   letter-spacing: -0.03em;
   color: var(--ink);
   text-decoration: none;
 }
+
+/* The mark: ink tile and paper key, swapped in dark mode with the vars. */
+.wordmark .mark { width: 1.6em; height: 1.6em; flex: none; }
+.mark-tile { fill: var(--ink); }
+.mark-key { fill: none; stroke: var(--paper); stroke-width: 3; stroke-linecap: round; }
+.mark-teeth { fill: var(--lining-b); fill-opacity: .6; }
 
 .masthead ul {
   display: flex;

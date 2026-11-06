@@ -1,0 +1,21 @@
+<!--
+SPDX-FileCopyrightText: 2026 tokenless contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .tile { fill: #1b2436; }
+    .key { fill: none; stroke: #fcfcfd; stroke-width: 3; stroke-linecap: round; }
+    .teeth { fill: #93a8d8; fill-opacity: .38; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #e6eaf2; }
+      .key { stroke: #1b2436; }
+      .teeth { fill: #2c4fa3; fill-opacity: .38; }
+    }
+  </style>
+  <title>tokenless</title>
+  <rect class="tile" x="1" y="1" width="30" height="30" rx="7"/>
+  <circle class="key" cx="10" cy="14" r="4.3"/>
+  <path class="key" d="M14.3 14H26.5"/>
+  <path class="teeth" d="M18.6 17.2h3v3.6h-3zM23.4 17.2h3v5.4h-3z"/>
+</svg>
