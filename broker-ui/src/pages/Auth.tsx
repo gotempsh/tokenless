@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { ChevronLeft, Smartphone } from "lucide-react";
 import { post, type InviteInfo, type SessionInfo, type UserSummary } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { ErrorBanner, Loading, When } from "../components/ui";
+import { CheckField, CopyButton, DialogActions, ErrorBanner, Field, When } from "../components/common";
+import { BrandMark } from "../components/Brand";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
+import { Button } from "../components/ui/button-components";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Skeleton } from "../components/ui/skeleton";
 
 interface TotpEnrollment {
   secret: string;
@@ -16,24 +23,88 @@ function totpFields(enrollment: TotpEnrollment | null, code: string) {
   return enrollment ? { totp_secret: enrollment.secret, totp_code: code.trim() } : {};
 }
 
+/** Centred card used by every signed-out screen. */
+export function AuthLayout({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex min-h-svh flex-col items-center justify-center bg-muted/40 px-4 py-10">
+      <div className="mb-6 flex items-center gap-2">
+        <BrandMark />
+        <span className="text-sm font-semibold">Credential Broker</span>
+      </div>
+      <div className="w-full max-w-md rounded-lg border bg-card p-6 text-card-foreground sm:p-8">
+        <div className="mb-6 space-y-1.5">
+          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          {description && <div className="text-sm text-muted-foreground">{description}</div>}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function AuthenticatorChoice({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="check">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      Also require a code from an authenticator app at sign-in (recommended)
-    </label>
+    <CheckField
+      id="use-totp"
+      checked={checked}
+      onChange={onChange}
+      hint="Recommended. You can sign in with just the password if you leave this off."
+    >
+      Also require a code from an authenticator app at sign-in
+    </CheckField>
   );
 }
 
 function EnrollmentBox({ enrollment }: { enrollment: TotpEnrollment }) {
   return (
-    <div className="banner info">
-      <p>Add this account to your authenticator app, then enter the 6-digit code.</p>
-      <code className="secret">{enrollment.secret}</code>
-      <p className="muted small">
-        <a href={enrollment.otpauth_url}>Open in authenticator</a>
-      </p>
-    </div>
+    <Alert>
+      <Smartphone className="size-4" />
+      <AlertTitle>Add this account to your authenticator app</AlertTitle>
+      <AlertDescription className="space-y-3">
+        <p>Enter the key below, or open the link on a phone, then type the 6-digit code it shows.</p>
+        <div className="flex items-center gap-2">
+          <code className="min-w-0 flex-1 break-all rounded-md border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+            {enrollment.secret}
+          </code>
+          <CopyButton value={enrollment.secret} />
+        </div>
+        <a href={enrollment.otpauth_url} className="text-sm font-medium underline underline-offset-4">
+          Open in authenticator
+        </a>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function PasswordField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label="Password" htmlFor="new-password" hint="At least 12 characters.">
+      <Input
+        id="new-password"
+        type="password"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="new-password"
+        minLength={12}
+        required
+      />
+    </Field>
+  );
+}
+
+function CodeField({ value, onChange, required, autoFocus }: { value: string; onChange: (v: string) => void; required?: boolean; autoFocus?: boolean }) {
+  return (
+    <Input
+      id="totp-code"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      inputMode="numeric"
+      autoComplete="one-time-code"
+      placeholder="123456"
+      className="font-mono tracking-widest"
+      required={required}
+      autoFocus={autoFocus}
+    />
   );
 }
 
@@ -76,58 +147,53 @@ export function Setup({ onDone }: { onDone: () => void }) {
   };
 
   return (
-    <div className="auth">
-      <h1>Create the first admin</h1>
-      <p className="muted">
-        The server printed a single-use setup token on its terminal when it started. It works once.
-      </p>
-      <ErrorBanner error={action.error} />
+    <AuthLayout
+      title="Create the first admin"
+      description="The server printed a single-use setup token on its terminal when it started. It works once."
+    >
       {stage === "name" ? (
-        <form onSubmit={begin} className="form">
-          <label>
-            Username
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-          </label>
+        <form onSubmit={begin} className="space-y-5">
+          <ErrorBanner error={action.error} />
+          <Field label="Username" htmlFor="username">
+            <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
+          </Field>
           <AuthenticatorChoice checked={useTotp} onChange={setUseTotp} />
-          <button type="submit" disabled={action.busy}>
+          <Button type="submit" className="w-full" disabled={action.busy}>
             Continue
-          </button>
+          </Button>
         </form>
       ) : (
-        <form onSubmit={finish} className="form">
+        <form onSubmit={finish} className="space-y-5">
+          <ErrorBanner error={action.error} />
           {enrollment && <EnrollmentBox enrollment={enrollment} />}
-          <label>
-            Setup token
-            <input value={setupToken} onChange={(e) => setSetupToken(e.target.value)} autoComplete="off" required />
-          </label>
-          <label>
-            Password (12+ characters)
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-              minLength={12}
+          <Field label="Setup token" htmlFor="setup-token">
+            <Input
+              id="setup-token"
+              className="font-mono"
+              value={setupToken}
+              onChange={(e) => setSetupToken(e.target.value)}
+              autoComplete="off"
               required
             />
-          </label>
+          </Field>
+          <PasswordField value={password} onChange={setPassword} />
           {enrollment && (
-            <label>
-              Authenticator code
-              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-            </label>
+            <Field label="Authenticator code" htmlFor="totp-code">
+              <CodeField value={code} onChange={setCode} required />
+            </Field>
           )}
-          <div className="actions">
-            <button type="button" className="secondary" onClick={() => setStage("name")}>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => setStage("name")}>
+              <ChevronLeft />
               Back
-            </button>
-            <button type="submit" disabled={action.busy}>
+            </Button>
+            <Button type="submit" className="flex-1" disabled={action.busy}>
               Create admin
-            </button>
+            </Button>
           </div>
         </form>
       )}
-    </div>
+    </AuthLayout>
   );
 }
 
@@ -170,81 +236,86 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
     if (user) setCreated(user);
   };
 
-  if (info.loading) return <div className="auth"><Loading /></div>;
+  if (info.loading)
+    return (
+      <AuthLayout title="Checking your invite…">
+        <div className="space-y-3">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+      </AuthLayout>
+    );
   if (created)
     return (
-      <div className="auth">
-        <h1>Account created</h1>
-        <p>
-          You can now sign in as <strong>{created.username}</strong> with the <strong>{created.role}</strong> role
-          {created.totp_enrolled ? ", using the next code from your authenticator." : "."}
-        </p>
-        <button type="button" onClick={onDone}>
-          Go to sign in
-        </button>
-      </div>
+      <AuthLayout title="Account created">
+        <div className="space-y-5">
+          <p className="text-sm">
+            You can now sign in as <strong>{created.username}</strong> with the <strong>{created.role}</strong> role
+            {created.totp_enrolled ? ", using the next code from your authenticator." : "."}
+          </p>
+          <Button type="button" className="w-full" onClick={onDone}>
+            Go to sign in
+          </Button>
+        </div>
+      </AuthLayout>
     );
   if (info.error || !info.data)
     return (
-      <div className="auth">
-        <h1>This invite cannot be used</h1>
-        <ErrorBanner error={info.error ?? "The invite could not be read."} />
-        <p className="muted">Invites work once and expire. Ask the admin who invited you for a new link.</p>
-        <button type="button" className="secondary" onClick={onDone}>
-          Go to sign in
-        </button>
-      </div>
+      <AuthLayout
+        title="This invite cannot be used"
+        description="Invites work once and expire. Ask the admin who invited you for a new link."
+      >
+        <div className="space-y-5">
+          <ErrorBanner error={info.error ?? "The invite could not be read."} />
+          <Button type="button" variant="outline" className="w-full" onClick={onDone}>
+            Go to sign in
+          </Button>
+        </div>
+      </AuthLayout>
     );
 
   return (
-    <div className="auth">
-      <h1>Join as {info.data.role}</h1>
-      <p className="muted">
-        This invite expires <When at={info.data.expires_at} />. Choose a username and password.
-      </p>
-      <ErrorBanner error={action.error} />
+    <AuthLayout
+      title={`Join as ${info.data.role}`}
+      description={
+        <>
+          This invite expires <When at={info.data.expires_at} />. Choose a username and password.
+        </>
+      }
+    >
       {stage === "name" ? (
-        <form onSubmit={begin} className="form">
-          <label>
-            Username (a-z, 0-9, '_', '-', '.')
-            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-          </label>
+        <form onSubmit={begin} className="space-y-5">
+          <ErrorBanner error={action.error} />
+          <Field label="Username" htmlFor="username" hint="Lowercase letters, digits, '_', '-' and '.'.">
+            <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
+          </Field>
           <AuthenticatorChoice checked={useTotp} onChange={setUseTotp} />
-          <button type="submit" disabled={action.busy}>
+          <Button type="submit" className="w-full" disabled={action.busy}>
             Continue
-          </button>
+          </Button>
         </form>
       ) : (
-        <form onSubmit={finish} className="form">
+        <form onSubmit={finish} className="space-y-5">
+          <ErrorBanner error={action.error} />
           {enrollment && <EnrollmentBox enrollment={enrollment} />}
-          <label>
-            Password (12+ characters)
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-              minLength={12}
-              required
-            />
-          </label>
+          <PasswordField value={password} onChange={setPassword} />
           {enrollment && (
-            <label>
-              Authenticator code
-              <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-            </label>
+            <Field label="Authenticator code" htmlFor="totp-code">
+              <CodeField value={code} onChange={setCode} required />
+            </Field>
           )}
-          <div className="actions">
-            <button type="button" className="secondary" onClick={() => setStage("name")}>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => setStage("name")}>
+              <ChevronLeft />
               Back
-            </button>
-            <button type="submit" disabled={action.busy}>
+            </Button>
+            <Button type="submit" className="flex-1" disabled={action.busy}>
               Create account
-            </button>
+            </Button>
           </div>
         </form>
       )}
-    </div>
+    </AuthLayout>
   );
 }
 
@@ -264,31 +335,44 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
   };
 
   return (
-    <div className="auth">
-      <h1>Sign in</h1>
-      <ErrorBanner error={action.error} />
-      <form onSubmit={submit} className="form">
-        <label>
-          Username
-          <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required />
-        </label>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
-        </label>
-        <label>
-          Authenticator code <span className="muted small">(only if your account has one)</span>
-          <input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" />
-        </label>
-        <button type="submit" disabled={action.busy}>
+    <AuthLayout title="Sign in" description="Manage the credentials your agents use without ever handing them over.">
+      <form onSubmit={submit} className="space-y-5">
+        <ErrorBanner error={action.error} title="Sign-in failed" />
+        <Field label="Username" htmlFor="username">
+          <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
+        </Field>
+        <Field label="Password" htmlFor="password">
+          <Input
+            id="password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </Field>
+        <Field
+          label={
+            <>
+              Authenticator code <span className="font-normal text-muted-foreground">(only if your account has one)</span>
+            </>
+          }
+          htmlFor="totp-code"
+        >
+          <CodeField value={code} onChange={setCode} />
+        </Field>
+        <Button type="submit" className="w-full" disabled={action.busy}>
           Sign in
-        </button>
+        </Button>
       </form>
-    </div>
+    </AuthLayout>
   );
 }
 
-/** Asks the person to prove themselves again before a sensitive action is retried. */
+/**
+ * Asks someone with an authenticator for a fresh code before a sensitive
+ * action is retried. Password-only accounts are never asked.
+ */
 export function StepUpDialog({
   open,
   totpEnrolled,
@@ -300,7 +384,6 @@ export function StepUpDialog({
 }) {
   const [value, setValue] = useState("");
   const action = useAction();
-  if (!open) return null;
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const proof = totpEnrolled ? { code: value.trim() } : { password: value };
@@ -311,34 +394,53 @@ export function StepUpDialog({
     }
   };
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="stepup-title">
-      <form className="modal form" onSubmit={submit}>
-        <h2 id="stepup-title">{totpEnrolled ? "Confirm with your second factor" : "Confirm your password"}</h2>
-        <p className="muted">
-          Adding credentials, widening rules, managing people, API keys, templates and nodes needs a confirmation from the
-          last 5 minutes.
-        </p>
-        <ErrorBanner error={action.error} />
-        {totpEnrolled ? (
-          <label>
-            Authenticator code
-            <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} inputMode="numeric" autoComplete="one-time-code" required />
-          </label>
-        ) : (
-          <label>
-            Password
-            <input autoFocus type="password" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="current-password" required />
-          </label>
-        )}
-        <div className="actions">
-          <button type="button" className="secondary" onClick={() => onResult(false)}>
-            Cancel
-          </button>
-          <button type="submit" disabled={action.busy}>
-            Confirm
-          </button>
-        </div>
-      </form>
-    </div>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          setValue("");
+          action.clearError();
+          onResult(false);
+        }
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{totpEnrolled ? "Confirm with your authenticator" : "Confirm your password"}</DialogTitle>
+          <DialogDescription>
+            Adding credentials, widening rules, and managing people, API keys, templates and nodes needs a confirmation
+            from the last 5 minutes.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <ErrorBanner error={action.error} />
+          {totpEnrolled ? (
+            <Field label="Authenticator code" htmlFor="totp-code">
+              <CodeField value={value} onChange={setValue} required autoFocus />
+            </Field>
+          ) : (
+            <Field label="Password" htmlFor="step-up-password">
+              <Input
+                id="step-up-password"
+                autoFocus
+                type="password"
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </Field>
+          )}
+          <DialogActions>
+            <Button type="button" variant="outline" onClick={() => onResult(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={action.busy}>
+              Confirm
+            </Button>
+          </DialogActions>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
