@@ -10,6 +10,7 @@
 
 pub mod audit;
 pub mod authz;
+mod builtin_catalog;
 pub mod egress;
 pub mod error;
 pub mod host;

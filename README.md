@@ -135,6 +135,27 @@ cargo test                      # unit tests, conformance suites, end-to-end tes
 | `crates/broker-dataplane` | The forward proxy and node client |
 | `crates/broker-server` | HTTP APIs, SQLite store and the `credential-broker` binary |
 | `broker-ui` | Management console |
+| `tools/catalog` | Source of the built-in service catalogue and its logos |
+
+### Adding a built-in service
+
+The built-in templates and their logos are generated from
+`tools/catalog/services.toml`; never edit `crates/broker-core/templates/`,
+`builtin_catalog.rs` or `broker-ui/src/assets/logos/` by hand.
+
+```sh
+tools/catalog/fetch-sources.sh       # once: pinned logo sets into tools/catalog/.cache
+# add a [[service]] entry to tools/catalog/services.toml (keys documented at its top)
+python3 tools/catalog/generate.py    # templates, builtin_catalog.rs, logos and NOTICE.md
+python3 tools/catalog/generate.py --check   # what CI should run: fails if anything is stale
+```
+
+A logo is found automatically by name in svgl, Lobe Icons, Simple Icons and
+gilbarbara/logos, in that order; pin one with `icon = "simple:slug"` or opt
+out with `icon = "none"`. Each logo's source and licence is recorded in the
+generated `broker-ui/src/assets/logos/NOTICE.md`. Templates are seeded once per
+id and version, so bump `version` whenever you change what an existing
+service injects or allows.
 
 ## License
 

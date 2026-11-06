@@ -1,0 +1,903 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# The built-in service catalogue. tools/catalog/generate.py turns each
+# [[service]] into crates/broker-core/templates/<id>.yaml and finds its logo.
+#
+# Keys (only id, name, description, category and auth are required):
+#   id, version         slug; bump version whenever hosts, auth or headers change
+#   name, description   shown in the catalogue
+#   category            llm_providers developer_tools infrastructure communication
+#                       monitoring productivity payments commerce search custom
+#   kind                "mcp" for an MCP server (default: HTTP API)
+#   hosts               exact hosts or "*.example.com" (one label); port defaults to 443
+#   paths, methods      default ["/*"] and ["*"]
+#   auth                "bearer" | "header" (needs header, optional prefix) | "basic"
+#   field, label        secret field name and label (default token / api_key, "API key")
+#   username_label, password_label (+ _description)   for basic auth
+#   headers             default custom headers, e.g. { "Notion-Version" = "2022-06-28" }
+#   variable            suggested variable key, e.g. "GITHUB_TOKEN"
+#   validate, expect    test request, e.g. "GET /v1/models" (expect defaults to [200])
+#   override            { required = bool, label = "..." }: admins may set the host
+#   popular, aliases    catalogue placement and extra search words
+#   logo                logo key when shared with another service (e.g. "github")
+#   icon                "svgl:<title>" | "lobe:<key>" | "simple:<slug>" | "gilbarbara:<file>" | "none";
+#                       omitted: first match in svgl, then Lobe, Simple Icons and gilbarbara/logos
+#   icon_dark_fills     fills to turn white in the dark-mode variant (an all-dark mark
+#                       gets a white variant automatically)
+#   docs                where the auth scheme was checked (not shipped)
+
+
+# ---- LLM providers -----------------------------------------------
+[[service]]
+id = "openai"
+version = 2
+name = "OpenAI"
+description = "Chat, embeddings and other models from OpenAI."
+category = "llm_providers"
+hosts = ["api.openai.com"]
+auth = "bearer"
+field = "api_key"
+variable = "OPENAI_API_KEY"
+validate = "GET /v1/models"
+popular = true
+aliases = ["gpt", "chatgpt"]
+icon = "svgl:OpenAI"
+
+[[service]]
+id = "anthropic"
+version = 1
+name = "Anthropic"
+description = "Claude models from Anthropic."
+category = "llm_providers"
+hosts = ["api.anthropic.com"]
+auth = "header"
+header = "x-api-key"
+variable = "ANTHROPIC_API_KEY"
+headers = { anthropic-version = "2023-06-01" }
+validate = "GET /v1/models"
+popular = true
+aliases = ["claude"]
+icon = "svgl:Anthropic"
+
+[[service]]
+id = "gemini"
+version = 1
+name = "Google Gemini"
+description = "Google's Gemini models."
+category = "llm_providers"
+hosts = ["generativelanguage.googleapis.com"]
+auth = "header"
+header = "x-goog-api-key"
+variable = "GEMINI_API_KEY"
+validate = "GET /v1beta/models"
+aliases = ["google", "bard"]
+icon = "svgl:Gemini"
+
+[[service]]
+id = "mistral"
+version = 1
+name = "Mistral AI"
+description = "Chat and embedding models from Mistral."
+category = "llm_providers"
+hosts = ["api.mistral.ai"]
+auth = "bearer"
+variable = "MISTRAL_API_KEY"
+validate = "GET /v1/models"
+icon = "svgl:Mistral AI"
+
+[[service]]
+id = "cohere"
+version = 1
+name = "Cohere"
+description = "Cohere's language and embedding models."
+category = "llm_providers"
+hosts = ["api.cohere.com", "api.cohere.ai"]
+auth = "bearer"
+variable = "COHERE_API_KEY"
+validate = "GET /v1/models"
+icon = "svgl:Cohere"
+
+[[service]]
+id = "groq"
+version = 1
+name = "Groq"
+description = "Fast model inference from Groq."
+category = "llm_providers"
+hosts = ["api.groq.com"]
+auth = "bearer"
+variable = "GROQ_API_KEY"
+validate = "GET /openai/v1/models"
+icon = "svgl:Groq"
+
+[[service]]
+id = "perplexity"
+version = 1
+name = "Perplexity"
+description = "Perplexity's answer engine."
+category = "llm_providers"
+hosts = ["api.perplexity.ai"]
+auth = "bearer"
+variable = "PERPLEXITY_API_KEY"
+icon = "svgl:Perplexity AI"
+
+[[service]]
+id = "openrouter"
+version = 1
+name = "OpenRouter"
+description = "One key for many AI models."
+category = "llm_providers"
+hosts = ["openrouter.ai"]
+auth = "bearer"
+variable = "OPENROUTER_API_KEY"
+validate = "GET /api/v1/key"
+icon = "svgl:OpenRouter"
+
+[[service]]
+id = "together"
+version = 1
+name = "Together AI"
+description = "Open models on Together AI."
+category = "llm_providers"
+hosts = ["api.together.xyz", "api.together.ai"]
+auth = "bearer"
+variable = "TOGETHER_API_KEY"
+validate = "GET /v1/models"
+icon = "svgl:Together AI"
+
+[[service]]
+id = "deepseek"
+version = 1
+name = "DeepSeek"
+description = "DeepSeek's chat and reasoning models."
+category = "llm_providers"
+hosts = ["api.deepseek.com"]
+auth = "bearer"
+variable = "DEEPSEEK_API_KEY"
+validate = "GET /models"
+icon = "svgl:DeepSeek"
+
+[[service]]
+id = "xai"
+version = 1
+name = "xAI (Grok)"
+description = "Grok models from xAI."
+category = "llm_providers"
+hosts = ["api.x.ai"]
+auth = "bearer"
+variable = "XAI_API_KEY"
+validate = "GET /v1/models"
+aliases = ["grok"]
+icon = "svgl:xAI"
+
+[[service]]
+id = "fireworks"
+version = 1
+name = "Fireworks AI"
+description = "Fast open-model inference."
+category = "llm_providers"
+hosts = ["api.fireworks.ai"]
+auth = "bearer"
+variable = "FIREWORKS_API_KEY"
+icon = "lobe:fireworks"
+
+[[service]]
+id = "cerebras"
+version = 1
+name = "Cerebras"
+description = "Fast inference on Cerebras hardware."
+category = "llm_providers"
+hosts = ["api.cerebras.ai"]
+auth = "bearer"
+variable = "CEREBRAS_API_KEY"
+validate = "GET /v1/models"
+icon = "svgl:Cerebras"
+
+[[service]]
+id = "huggingface"
+version = 1
+name = "Hugging Face"
+description = "Inference providers and the Hub API."
+category = "llm_providers"
+hosts = ["huggingface.co", "router.huggingface.co"]
+auth = "bearer"
+label = "Access token"
+variable = "HF_TOKEN"
+validate = "GET /api/whoami-v2"
+aliases = ["hf"]
+icon = "svgl:Hugging Face"
+
+[[service]]
+id = "replicate"
+version = 1
+name = "Replicate"
+description = "Run open models with an API."
+category = "llm_providers"
+hosts = ["api.replicate.com"]
+auth = "bearer"
+label = "API token"
+variable = "REPLICATE_API_TOKEN"
+validate = "GET /v1/account"
+icon = "svgl:Replicate"
+
+[[service]]
+id = "elevenlabs"
+version = 1
+name = "ElevenLabs"
+description = "Voice and speech models."
+category = "llm_providers"
+hosts = ["api.elevenlabs.io"]
+auth = "header"
+header = "xi-api-key"
+variable = "ELEVENLABS_API_KEY"
+validate = "GET /v1/user"
+aliases = ["tts", "voice"]
+icon = "lobe:elevenlabs"
+
+
+# ---- Developer tools ---------------------------------------------
+[[service]]
+id = "github"
+version = 2
+name = "GitHub"
+description = "Repos, issues and pull requests on GitHub."
+category = "developer_tools"
+hosts = ["api.github.com", "uploads.github.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "GITHUB_TOKEN"
+validate = "GET /user"
+popular = true
+icon = "svgl:GitHub"
+
+[[service]]
+id = "gitlab"
+version = 2
+name = "GitLab"
+description = "Repos and pipelines on GitLab."
+category = "developer_tools"
+hosts = ["gitlab.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "GITLAB_TOKEN"
+validate = "GET /api/v4/user"
+override = { required = false, label = "Self-managed GitLab URL (https://host[:port])" }
+icon = "svgl:GitLab"
+
+[[service]]
+id = "bitbucket"
+version = 1
+name = "Bitbucket"
+description = "Repos and pipelines on Bitbucket Cloud."
+category = "developer_tools"
+hosts = ["api.bitbucket.org"]
+auth = "bearer"
+label = "Access token"
+variable = "BITBUCKET_TOKEN"
+icon = "simple:bitbucket"
+
+[[service]]
+id = "vercel"
+version = 1
+name = "Vercel"
+description = "Deployments and the Vercel API."
+category = "developer_tools"
+hosts = ["api.vercel.com"]
+auth = "bearer"
+label = "Access token"
+variable = "VERCEL_TOKEN"
+validate = "GET /v2/user"
+icon = "svgl:Vercel"
+
+[[service]]
+id = "netlify"
+version = 1
+name = "Netlify"
+description = "Sites and deploys on Netlify."
+category = "developer_tools"
+hosts = ["api.netlify.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "NETLIFY_AUTH_TOKEN"
+validate = "GET /api/v1/user"
+icon = "svgl:Netlify"
+
+[[service]]
+id = "npm"
+version = 1
+name = "npm"
+description = "The npm package registry."
+category = "developer_tools"
+hosts = ["registry.npmjs.org"]
+auth = "bearer"
+label = "Access token"
+variable = "NPM_TOKEN"
+validate = "GET /-/whoami"
+icon = "svgl:NPM"
+
+[[service]]
+id = "supabase"
+version = 1
+name = "Supabase"
+description = "Postgres, auth and storage. Covers every project host."
+category = "developer_tools"
+hosts = ["*.supabase.co"]
+auth = "header"
+header = "apikey"
+variable = "SUPABASE_KEY"
+icon = "svgl:Supabase"
+
+[[service]]
+id = "neon"
+version = 1
+name = "Neon"
+description = "Serverless Postgres projects and branches."
+category = "developer_tools"
+hosts = ["console.neon.tech"]
+auth = "bearer"
+variable = "NEON_API_KEY"
+validate = "GET /api/v2/users/me"
+icon = "svgl:Neon"
+
+[[service]]
+id = "upstash"
+version = 1
+name = "Upstash"
+description = "Serverless Redis and Kafka management API."
+category = "developer_tools"
+hosts = ["api.upstash.com"]
+auth = "basic"
+username_label = "Email"
+password_label = "API key"
+variable = "UPSTASH_API_KEY"
+icon = "svgl:Upstash"
+
+
+# ---- Infrastructure ----------------------------------------------
+[[service]]
+id = "cloudflare"
+version = 1
+name = "Cloudflare"
+description = "DNS, CDN, Workers and the Cloudflare API."
+category = "infrastructure"
+hosts = ["api.cloudflare.com"]
+auth = "bearer"
+label = "API token"
+variable = "CLOUDFLARE_API_TOKEN"
+validate = "GET /client/v4/user/tokens/verify"
+icon = "svgl:Cloudflare"
+
+[[service]]
+id = "digitalocean"
+version = 1
+name = "DigitalOcean"
+description = "Droplets, apps and the DigitalOcean API."
+category = "infrastructure"
+hosts = ["api.digitalocean.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "DIGITALOCEAN_TOKEN"
+validate = "GET /v2/account"
+icon = "svgl:Digital Ocean"
+
+[[service]]
+id = "hetzner"
+version = 1
+name = "Hetzner Cloud"
+description = "Servers, volumes and networks on Hetzner Cloud."
+category = "infrastructure"
+hosts = ["api.hetzner.cloud"]
+auth = "bearer"
+label = "API token"
+variable = "HCLOUD_TOKEN"
+validate = "GET /v1/locations"
+icon = "simple:hetzner"
+
+[[service]]
+id = "fly"
+version = 1
+name = "Fly.io"
+description = "Machines on Fly.io."
+category = "infrastructure"
+hosts = ["api.machines.dev"]
+auth = "bearer"
+label = "Access token"
+variable = "FLY_API_TOKEN"
+icon = "svgl:Fly"
+
+[[service]]
+id = "render"
+version = 1
+name = "Render"
+description = "Services and deploys on Render."
+category = "infrastructure"
+hosts = ["api.render.com"]
+auth = "bearer"
+variable = "RENDER_API_KEY"
+validate = "GET /v1/services"
+icon = "svgl:Render"
+
+[[service]]
+id = "railway"
+version = 1
+name = "Railway"
+description = "Projects and deploys on Railway (GraphQL)."
+category = "infrastructure"
+hosts = ["backboard.railway.com"]
+auth = "bearer"
+label = "API token"
+variable = "RAILWAY_TOKEN"
+icon = "svgl:Railway"
+
+
+# ---- Communication -----------------------------------------------
+[[service]]
+id = "slack"
+version = 1
+name = "Slack"
+description = "Post messages and build Slack apps."
+category = "communication"
+hosts = ["slack.com"]
+auth = "bearer"
+label = "Bot or user token"
+variable = "SLACK_TOKEN"
+popular = true
+icon = "svgl:Slack"
+
+[[service]]
+id = "discord"
+version = 1
+name = "Discord"
+description = "Build and run Discord bots."
+category = "communication"
+hosts = ["discord.com"]
+auth = "header"
+header = "Authorization"
+prefix = "Bot "
+label = "Bot token"
+variable = "DISCORD_BOT_TOKEN"
+icon = "svgl:Discord"
+
+[[service]]
+id = "twilio"
+version = 1
+name = "Twilio"
+description = "SMS, voice and messaging."
+category = "communication"
+hosts = ["api.twilio.com"]
+auth = "basic"
+username_label = "Account SID"
+password_label = "Auth token"
+variable = "TWILIO_AUTH_TOKEN"
+icon = "svgl:Twilio"
+
+[[service]]
+id = "sendgrid"
+version = 1
+name = "SendGrid"
+description = "Transactional email delivery."
+category = "communication"
+hosts = ["api.sendgrid.com"]
+auth = "bearer"
+variable = "SENDGRID_API_KEY"
+validate = "GET /v3/scopes"
+
+[[service]]
+id = "resend"
+version = 1
+name = "Resend"
+description = "Email built for developers."
+category = "communication"
+hosts = ["api.resend.com"]
+auth = "bearer"
+variable = "RESEND_API_KEY"
+validate = "GET /domains"
+icon = "svgl:Resend"
+
+[[service]]
+id = "postmark"
+version = 1
+name = "Postmark"
+description = "Transactional email."
+category = "communication"
+hosts = ["api.postmarkapp.com"]
+auth = "header"
+header = "X-Postmark-Server-Token"
+label = "Server token"
+variable = "POSTMARK_SERVER_TOKEN"
+validate = "GET /server"
+icon = "none"
+
+[[service]]
+id = "mailgun"
+version = 1
+name = "Mailgun"
+description = "Email sending and validation."
+category = "communication"
+hosts = ["api.mailgun.net", "api.eu.mailgun.net"]
+auth = "basic"
+username_description = "Always 'api'."
+password_label = "API key"
+variable = "MAILGUN_API_KEY"
+validate = "GET /v3/domains"
+icon = "simple:mailgun"
+
+[[service]]
+id = "intercom"
+version = 1
+name = "Intercom"
+description = "Customer conversations and contacts."
+category = "communication"
+hosts = ["api.intercom.io"]
+auth = "bearer"
+label = "Access token"
+variable = "INTERCOM_TOKEN"
+validate = "GET /me"
+icon = "simple:intercom"
+
+
+# ---- Monitoring --------------------------------------------------
+[[service]]
+id = "datadog"
+version = 1
+name = "Datadog"
+description = "Metrics, logs and monitors. Add DD-APPLICATION-KEY as a custom header for most read APIs."
+category = "monitoring"
+hosts = ["api.datadoghq.com", "api.datadoghq.eu", "api.us3.datadoghq.com", "api.us5.datadoghq.com"]
+auth = "header"
+header = "DD-API-KEY"
+variable = "DATADOG_API_KEY"
+validate = "GET /api/v1/validate"
+icon = "svgl:Datadog"
+
+[[service]]
+id = "sentry"
+version = 1
+name = "Sentry"
+description = "Errors and performance monitoring."
+category = "monitoring"
+hosts = ["sentry.io", "us.sentry.io", "de.sentry.io"]
+auth = "bearer"
+label = "Auth token"
+variable = "SENTRY_AUTH_TOKEN"
+override = { required = false, label = "Self-hosted Sentry URL (https://host[:port])" }
+icon = "svgl:Sentry"
+icon_dark_fills = ["#362D59"]
+
+[[service]]
+id = "pagerduty"
+version = 1
+name = "PagerDuty"
+description = "On-call and incident management."
+category = "monitoring"
+hosts = ["api.pagerduty.com"]
+auth = "header"
+header = "Authorization"
+prefix = "Token token="
+variable = "PAGERDUTY_TOKEN"
+validate = "GET /abilities"
+icon = "simple:pagerduty"
+
+[[service]]
+id = "grafana"
+version = 1
+name = "Grafana Cloud"
+description = "Dashboards, alerts and the Grafana HTTP API."
+category = "monitoring"
+hosts = ["*.grafana.net"]
+auth = "bearer"
+label = "Service account token"
+variable = "GRAFANA_TOKEN"
+override = { required = false, label = "Self-hosted Grafana URL (https://host[:port])" }
+icon = "svgl:Grafana"
+
+[[service]]
+id = "posthog"
+version = 1
+name = "PostHog"
+description = "Product analytics and feature flags."
+category = "monitoring"
+hosts = ["us.posthog.com", "eu.posthog.com"]
+auth = "bearer"
+label = "Personal API key"
+variable = "POSTHOG_API_KEY"
+override = { required = false, label = "Self-hosted PostHog URL (https://host[:port])" }
+icon = "svgl:PostHog"
+icon_dark_fills = ["#000"]
+
+
+# ---- Productivity ------------------------------------------------
+[[service]]
+id = "notion"
+version = 1
+name = "Notion"
+description = "Pages, databases and the Notion workspace."
+category = "productivity"
+hosts = ["api.notion.com"]
+auth = "bearer"
+label = "Integration secret"
+variable = "NOTION_TOKEN"
+headers = { Notion-Version = "2022-06-28" }
+validate = "GET /v1/users/me"
+popular = true
+icon = "svgl:Notion"
+
+[[service]]
+id = "linear"
+version = 1
+name = "Linear"
+description = "Issue tracking and project management (GraphQL)."
+category = "productivity"
+hosts = ["api.linear.app"]
+auth = "header"
+header = "Authorization"
+variable = "LINEAR_API_KEY"
+icon = "svgl:Linear"
+
+[[service]]
+id = "jira"
+version = 1
+name = "Jira"
+description = "Atlassian Jira issue tracking. Covers every *.atlassian.net site."
+category = "productivity"
+hosts = ["*.atlassian.net"]
+auth = "basic"
+username_label = "Email"
+password_label = "API token"
+variable = "JIRA_API_TOKEN"
+aliases = ["atlassian"]
+logo = "jira"
+icon = "simple:jira"
+
+[[service]]
+id = "confluence"
+version = 1
+name = "Confluence"
+description = "Atlassian Confluence pages and spaces."
+category = "productivity"
+hosts = ["*.atlassian.net"]
+auth = "basic"
+username_label = "Email"
+password_label = "API token"
+variable = "CONFLUENCE_API_TOKEN"
+aliases = ["atlassian", "wiki"]
+icon = "simple:confluence"
+
+[[service]]
+id = "asana"
+version = 1
+name = "Asana"
+description = "Tasks and projects on Asana."
+category = "productivity"
+hosts = ["app.asana.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "ASANA_TOKEN"
+validate = "GET /api/1.0/users/me"
+icon = "svgl:Asana"
+
+[[service]]
+id = "clickup"
+version = 1
+name = "ClickUp"
+description = "Tasks, docs and goals on ClickUp."
+category = "productivity"
+hosts = ["api.clickup.com"]
+auth = "header"
+header = "Authorization"
+label = "Personal token"
+variable = "CLICKUP_TOKEN"
+validate = "GET /api/v2/user"
+icon = "svgl:ClickUp"
+
+[[service]]
+id = "airtable"
+version = 1
+name = "Airtable"
+description = "Bases, tables and records."
+category = "productivity"
+hosts = ["api.airtable.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "AIRTABLE_TOKEN"
+validate = "GET /v0/meta/whoami"
+icon = "simple:airtable"
+
+[[service]]
+id = "figma"
+version = 1
+name = "Figma"
+description = "Files, comments and design data."
+category = "productivity"
+hosts = ["api.figma.com"]
+auth = "header"
+header = "X-Figma-Token"
+label = "Personal access token"
+variable = "FIGMA_TOKEN"
+validate = "GET /v1/me"
+icon = "svgl:Figma"
+
+[[service]]
+id = "hubspot"
+version = 1
+name = "HubSpot"
+description = "CRM contacts, companies and deals."
+category = "productivity"
+hosts = ["api.hubapi.com"]
+auth = "bearer"
+label = "Private app token"
+variable = "HUBSPOT_TOKEN"
+aliases = ["crm"]
+icon = "simple:hubspot"
+
+
+# ---- Payments ----------------------------------------------------
+[[service]]
+id = "stripe"
+version = 2
+name = "Stripe"
+description = "Payments, billing and the Stripe API."
+category = "payments"
+hosts = ["api.stripe.com"]
+auth = "bearer"
+field = "secret_key"
+label = "Secret key"
+variable = "STRIPE_SECRET_KEY"
+validate = "GET /v1/balance"
+popular = true
+icon = "svgl:Stripe"
+
+[[service]]
+id = "lemonsqueezy"
+version = 1
+name = "Lemon Squeezy"
+description = "Payments and subscriptions for software."
+category = "payments"
+hosts = ["api.lemonsqueezy.com"]
+auth = "bearer"
+variable = "LEMONSQUEEZY_API_KEY"
+validate = "GET /v1/users/me"
+icon = "svgl:Lemon Squeezy"
+
+[[service]]
+id = "paddle"
+version = 1
+name = "Paddle"
+description = "Billing and subscriptions."
+category = "payments"
+hosts = ["api.paddle.com"]
+auth = "bearer"
+variable = "PADDLE_API_KEY"
+icon = "simple:paddle"
+
+
+# ---- Commerce ----------------------------------------------------
+[[service]]
+id = "shopify"
+version = 1
+name = "Shopify"
+description = "Shopify Admin API. Covers every *.myshopify.com store."
+category = "commerce"
+hosts = ["*.myshopify.com"]
+auth = "header"
+header = "X-Shopify-Access-Token"
+label = "Admin API access token"
+variable = "SHOPIFY_ACCESS_TOKEN"
+icon = "svgl:Shopify"
+
+
+# ---- Search ------------------------------------------------------
+[[service]]
+id = "tavily"
+version = 1
+name = "Tavily"
+description = "Web search built for agents."
+category = "search"
+hosts = ["api.tavily.com"]
+auth = "bearer"
+variable = "TAVILY_API_KEY"
+icon = "lobe:tavily"
+
+[[service]]
+id = "exa"
+version = 1
+name = "Exa"
+description = "Neural web search and contents."
+category = "search"
+hosts = ["api.exa.ai"]
+auth = "header"
+header = "x-api-key"
+variable = "EXA_API_KEY"
+icon = "lobe:exa"
+
+[[service]]
+id = "firecrawl"
+version = 1
+name = "Firecrawl"
+description = "Crawl and scrape sites into clean data."
+category = "search"
+hosts = ["api.firecrawl.dev"]
+auth = "bearer"
+variable = "FIRECRAWL_API_KEY"
+icon = "svgl:Firecrawl"
+
+[[service]]
+id = "brave-search"
+version = 1
+name = "Brave Search"
+description = "Web search API from Brave."
+category = "search"
+hosts = ["api.search.brave.com"]
+auth = "header"
+header = "X-Subscription-Token"
+variable = "BRAVE_API_KEY"
+logo = "brave"
+icon = "svgl:Brave Browser"
+
+
+# ---- Developer tools ---------------------------------------------
+[[service]]
+id = "github-mcp"
+version = 1
+name = "GitHub MCP"
+description = "Repos, issues and pull requests as MCP tools."
+category = "developer_tools"
+kind = "mcp"
+hosts = ["api.githubcopilot.com"]
+auth = "bearer"
+label = "Personal access token"
+variable = "GITHUB_TOKEN"
+aliases = ["github", "mcp"]
+logo = "github"
+icon = "svgl:GitHub"
+
+
+# ---- Custom ------------------------------------------------------
+[[service]]
+id = "generic-mcp"
+version = 1
+name = "Custom MCP server"
+description = "Any remote MCP server that takes a bearer token. The host is chosen per credential (admin only)."
+category = "custom"
+kind = "mcp"
+hosts = []
+auth = "bearer"
+label = "Token"
+override = { required = true, label = "MCP server URL (https://host[:port])" }
+icon = "none"
+
+[[service]]
+id = "generic-bearer"
+version = 2
+name = "Custom HTTP API (bearer)"
+description = "Any HTTPS API that accepts \"Authorization: Bearer\". The host is chosen per credential (admin only)."
+category = "custom"
+hosts = []
+auth = "bearer"
+label = "Token"
+override = { required = true, label = "API host (https://host[:port])" }
+icon = "none"
+
+[[service]]
+id = "generic-api-key"
+version = 2
+name = "Custom HTTP API (API key header)"
+description = "Any HTTPS API that reads a key from the X-API-Key header. The host is chosen per credential (admin only)."
+category = "custom"
+hosts = []
+auth = "header"
+header = "X-API-Key"
+override = { required = true, label = "API host (https://host[:port])" }
+icon = "none"
+
+[[service]]
+id = "generic-basic"
+version = 1
+name = "Custom HTTP API (basic auth)"
+description = "Any HTTPS API behind HTTP basic authentication. The host is chosen per credential (admin only)."
+category = "custom"
+hosts = []
+auth = "basic"
+override = { required = true, label = "API host (https://host[:port])" }
+icon = "none"
+

@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::builtin_catalog::BUILTIN_YAML;
 use crate::error::CoreError;
 use crate::host::HostPattern;
 use crate::injection::{InjectionSpec, SecretFields};
@@ -315,93 +316,6 @@ impl ServiceTemplate {
     }
 }
 
-const BUILTIN_YAML: &[(&str, &str)] = &[
-    ("openai", include_str!("../templates/openai.yaml")),
-    ("anthropic", include_str!("../templates/anthropic.yaml")),
-    ("gemini", include_str!("../templates/gemini.yaml")),
-    ("mistral", include_str!("../templates/mistral.yaml")),
-    ("cohere", include_str!("../templates/cohere.yaml")),
-    ("groq", include_str!("../templates/groq.yaml")),
-    ("perplexity", include_str!("../templates/perplexity.yaml")),
-    ("openrouter", include_str!("../templates/openrouter.yaml")),
-    ("together", include_str!("../templates/together.yaml")),
-    ("deepseek", include_str!("../templates/deepseek.yaml")),
-    ("xai", include_str!("../templates/xai.yaml")),
-    ("fireworks", include_str!("../templates/fireworks.yaml")),
-    ("cerebras", include_str!("../templates/cerebras.yaml")),
-    ("huggingface", include_str!("../templates/huggingface.yaml")),
-    ("replicate", include_str!("../templates/replicate.yaml")),
-    ("elevenlabs", include_str!("../templates/elevenlabs.yaml")),
-    ("github", include_str!("../templates/github.yaml")),
-    ("gitlab", include_str!("../templates/gitlab.yaml")),
-    ("bitbucket", include_str!("../templates/bitbucket.yaml")),
-    ("vercel", include_str!("../templates/vercel.yaml")),
-    ("netlify", include_str!("../templates/netlify.yaml")),
-    ("npm", include_str!("../templates/npm.yaml")),
-    ("supabase", include_str!("../templates/supabase.yaml")),
-    ("neon", include_str!("../templates/neon.yaml")),
-    ("upstash", include_str!("../templates/upstash.yaml")),
-    ("cloudflare", include_str!("../templates/cloudflare.yaml")),
-    (
-        "digitalocean",
-        include_str!("../templates/digitalocean.yaml"),
-    ),
-    ("hetzner", include_str!("../templates/hetzner.yaml")),
-    ("fly", include_str!("../templates/fly.yaml")),
-    ("render", include_str!("../templates/render.yaml")),
-    ("railway", include_str!("../templates/railway.yaml")),
-    ("slack", include_str!("../templates/slack.yaml")),
-    ("discord", include_str!("../templates/discord.yaml")),
-    ("twilio", include_str!("../templates/twilio.yaml")),
-    ("sendgrid", include_str!("../templates/sendgrid.yaml")),
-    ("resend", include_str!("../templates/resend.yaml")),
-    ("postmark", include_str!("../templates/postmark.yaml")),
-    ("mailgun", include_str!("../templates/mailgun.yaml")),
-    ("intercom", include_str!("../templates/intercom.yaml")),
-    ("datadog", include_str!("../templates/datadog.yaml")),
-    ("sentry", include_str!("../templates/sentry.yaml")),
-    ("pagerduty", include_str!("../templates/pagerduty.yaml")),
-    ("grafana", include_str!("../templates/grafana.yaml")),
-    ("posthog", include_str!("../templates/posthog.yaml")),
-    ("notion", include_str!("../templates/notion.yaml")),
-    ("linear", include_str!("../templates/linear.yaml")),
-    ("jira", include_str!("../templates/jira.yaml")),
-    ("confluence", include_str!("../templates/confluence.yaml")),
-    ("asana", include_str!("../templates/asana.yaml")),
-    ("clickup", include_str!("../templates/clickup.yaml")),
-    ("airtable", include_str!("../templates/airtable.yaml")),
-    ("figma", include_str!("../templates/figma.yaml")),
-    ("hubspot", include_str!("../templates/hubspot.yaml")),
-    ("stripe", include_str!("../templates/stripe.yaml")),
-    (
-        "lemonsqueezy",
-        include_str!("../templates/lemonsqueezy.yaml"),
-    ),
-    ("paddle", include_str!("../templates/paddle.yaml")),
-    ("shopify", include_str!("../templates/shopify.yaml")),
-    ("tavily", include_str!("../templates/tavily.yaml")),
-    ("exa", include_str!("../templates/exa.yaml")),
-    ("firecrawl", include_str!("../templates/firecrawl.yaml")),
-    (
-        "brave-search",
-        include_str!("../templates/brave-search.yaml"),
-    ),
-    ("github-mcp", include_str!("../templates/github-mcp.yaml")),
-    ("generic-mcp", include_str!("../templates/generic-mcp.yaml")),
-    (
-        "generic-bearer",
-        include_str!("../templates/generic-bearer.yaml"),
-    ),
-    (
-        "generic-api-key",
-        include_str!("../templates/generic-api-key.yaml"),
-    ),
-    (
-        "generic-basic",
-        include_str!("../templates/generic-basic.yaml"),
-    ),
-];
-
 /// The templates shipped with the broker, together with their YAML source.
 pub fn builtin_templates() -> Result<Vec<(ServiceTemplate, &'static str)>, CoreError> {
     BUILTIN_YAML
@@ -424,6 +338,30 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    /// A YAML file dropped into `templates/` by hand would never ship:
+    /// the catalogue is generated from `tools/catalog/services.toml`.
+    #[test]
+    fn every_template_file_is_in_the_generated_catalogue() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".yaml").map(str::to_owned)
+            })
+            .collect();
+        on_disk.sort();
+        let mut listed: Vec<String> = BUILTIN_YAML
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        listed.sort();
+        assert_eq!(
+            on_disk, listed,
+            "templates/ and BUILTIN_YAML differ; run tools/catalog/generate.py"
+        );
+    }
 
     #[test]
     fn all_builtins_parse_and_validate() {
