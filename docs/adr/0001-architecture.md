@@ -178,10 +178,11 @@ node protocol and the snapshot format are unchanged.
 
 - Local accounts with argon2id passwords (19 MiB, t=2, p=1, minimum 12
   characters) and, per account, an optional TOTP authenticator. An
-  account without one signs in with its password and re-enters the
-  password for step-up. An account with one must present a code for both:
-  its password is never accepted in place of the code. The People page
-  marks password-only accounts.
+  account without one signs in with its password and is not asked to
+  step up, since that would only ask for the same password again. An
+  account with one must present a code at sign-in and for step-up: its
+  password is never accepted in place of the code. The People page marks
+  password-only accounts.
 - TOTP steps are recorded with a compare-and-set, so a code cannot be
   replayed.
 - The session token is random and stored only as a SHA-256 hash. It is
@@ -190,7 +191,10 @@ node protocol and the snapshot format are unchanged.
   `HMAC-SHA256(csrf_key, session_hash)`.
 - Step-up: creating or widening credentials, creating rules, widening or
   re-enabling rules, and managing people, API keys, templates and nodes all
-  need a TOTP verification within the last 300 s. Login counts as one.
+  need a TOTP verification within the last 300 s for accounts with an
+  authenticator. Login counts as one. Password-only accounts are not
+  gated, so enrolling an authenticator is what makes these actions need a
+  fresh second factor.
   `POST /auth/step-up` refreshes it, and the UI prompts for the code and
   retries the blocked request.
 - The first admin is created with a single-use setup token. It is printed

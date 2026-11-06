@@ -489,6 +489,7 @@ impl AuthService {
                     vault: None,
                 },
                 step_up_at: session.step_up_at,
+                second_factor: user.totp_secret_enc.is_some(),
             },
             token_hash,
             user: UserSummary::from(&user),
@@ -602,6 +603,7 @@ impl AuthService {
                 vault: Some(key.vault_id),
             },
             step_up_at: None,
+            second_factor: false,
         })
     }
 

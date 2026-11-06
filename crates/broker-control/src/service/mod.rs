@@ -51,6 +51,10 @@ pub struct Caller {
     pub principal: Principal,
     /// When the caller last proved a second factor (people only).
     pub step_up_at: Option<DateTime<Utc>>,
+    /// Whether the caller has a second factor to step up with. Only people
+    /// with an authenticator enrolled are asked to step up: for a
+    /// password-only account it would just ask for the same password again.
+    pub second_factor: bool,
 }
 
 impl Caller {
@@ -110,6 +114,9 @@ impl Guard {
                     caller.actor()
                 ),
             });
+        }
+        if !caller.second_factor {
+            return Ok(());
         }
         let window =
             chrono::Duration::seconds(i64::try_from(self.step_up_window_secs).unwrap_or(300));
@@ -286,6 +293,7 @@ mod tests {
                 vault: None,
             },
             step_up_at: Some(Utc::now() - chrono::Duration::seconds(step_up_age_secs)),
+            second_factor: true,
         }
     }
 
@@ -398,6 +406,7 @@ mod tests {
                 vault: None,
             },
             step_up_at: Some(Utc::now()),
+            second_factor: true,
         }
     }
 
@@ -662,6 +671,24 @@ mod tests {
             .step_up(&auth, &proof(None, Some("correct horse battery")))
             .await
             .unwrap();
+
+        // Sensitive actions are not gated on a step-up the account cannot
+        // give with anything but the password it signed in with.
+        assert!(!auth.caller.second_factor);
+        let long_ago = Caller {
+            step_up_at: Some(Utc::now() - chrono::Duration::seconds(3600)),
+            ..auth.caller.clone()
+        };
+        cp.users
+            .create_invite(
+                &long_ago,
+                super::users::CreateInvite {
+                    role: Role::Editor,
+                    expires_in_hours: None,
+                },
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -698,6 +725,23 @@ mod tests {
             .await
             .unwrap();
         let auth = cp.auth.authenticate_session(&outcome.token).await.unwrap();
+        assert!(auth.caller.second_factor);
+        let long_ago = Caller {
+            step_up_at: Some(Utc::now() - chrono::Duration::seconds(3600)),
+            ..auth.caller.clone()
+        };
+        assert!(matches!(
+            cp.users
+                .create_invite(
+                    &long_ago,
+                    super::users::CreateInvite {
+                        role: Role::Editor,
+                        expires_in_hours: None,
+                    },
+                )
+                .await,
+            Err(ControlError::StepUpRequired { .. })
+        ));
         // The password must not stand in for the second factor.
         assert!(cp
             .auth
