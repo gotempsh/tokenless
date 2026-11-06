@@ -9,6 +9,7 @@
 //! failed check with a description of what was expected.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use broker_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest,
@@ -63,10 +64,14 @@ fn backend(suite: &'static str, check: &'static str) -> impl Fn(StoreError) -> C
     }
 }
 
+/// The instant every `at` offset counts from, read once so that a check
+/// which writes `at(7)` and later compares against `at(7)` gets the same
+/// value even when a second boundary passes in between.
+static EPOCH: LazyLock<i64> = LazyLock::new(|| Utc::now().timestamp());
+
 fn at(offset_secs: i64) -> DateTime<Utc> {
     // Whole seconds keep timestamp round-trips exact for every backend.
-    let now = Utc::now().timestamp();
-    DateTime::from_timestamp(now + offset_secs, 0).unwrap_or_else(Utc::now)
+    DateTime::from_timestamp(*EPOCH + offset_secs, 0).unwrap_or_else(Utc::now)
 }
 
 fn vault(name: &str, created_offset: i64) -> Vault {
