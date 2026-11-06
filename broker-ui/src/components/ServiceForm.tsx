@@ -4,8 +4,8 @@
 // The form that stores a service's credential: its name, secret fields
 // (a value or a variable reference), custom headers and host override.
 
-import { useState, type FormEvent } from "react";
-import { Plus } from "lucide-react";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import { ApiError, get, type CredentialField, type CustomHeader, type Page, type ServiceTemplate, type Variable } from "../api";
 import type { CredentialBody } from "../addService";
 import { useAction, useLoad } from "../hooks";
@@ -85,15 +85,28 @@ export function SecretFieldInput({
   labelPrefix?: string;
 }) {
   const id = `secret-${field.name}`;
+  const other = input.mode === "value" ? "variable" : "value";
   return (
     <Field
       htmlFor={id}
       label={
-        <>
-          {labelPrefix}
-          {field.label}
-          {!field.required && <span className="font-normal text-muted-foreground"> (optional)</span>}
-        </>
+        <span className="flex w-full items-baseline justify-between gap-3">
+          <span>
+            {labelPrefix}
+            {field.label}
+            {!field.required && <span className="font-normal text-muted-foreground"> (optional)</span>}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              onChange({ ...input, mode: other });
+            }}
+            className="text-xs font-normal text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            {other === "variable" ? "Use a variable instead" : "Enter a value instead"}
+          </button>
+        </span>
       }
       hint={
         input.mode === "variable" && variables.length === 0 ? (
@@ -109,24 +122,8 @@ export function SecretFieldInput({
         )
       }
     >
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="flex shrink-0 rounded-md border p-0.5" role="radiogroup" aria-label={`${field.label} source`}>
-          {(["value", "variable"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              role="radio"
-              aria-checked={input.mode === m}
-              onClick={() => onChange({ ...input, mode: m })}
-              className={`h-8 rounded-sm px-2.5 text-xs transition-colors ${
-                input.mode === m ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {m === "value" ? "Secret value" : "Variable"}
-            </button>
-          ))}
-        </div>
-        <div className="min-w-0 flex-1">
+      <div>
+        <div className="min-w-0">
           {input.mode === "value" ? (
             <Input
               id={id}
@@ -137,6 +134,7 @@ export function SecretFieldInput({
               value={input.value}
               onChange={(e) => onChange({ ...input, value: e.target.value })}
               required={field.required}
+              placeholder="Paste it here. It can't be read back once saved."
             />
           ) : (
             <SelectField
@@ -164,6 +162,7 @@ export function ServiceForm({
   backLabel = "Back",
   showTemplate = true,
   blocked = null,
+  children,
 }: {
   template: ServiceTemplate;
   variables: string[];
@@ -178,6 +177,8 @@ export function ServiceForm({
   blocked?: string | null;
   /** The template summary at the top; off when the step before showed it. */
   showTemplate?: boolean;
+  /** More of the form, shown after the credential and before the buttons. */
+  children?: ReactNode;
 }) {
   const [name, setName] = useState(template.name);
   const [hostOverride, setHostOverride] = useState("");
@@ -185,10 +186,40 @@ export function ServiceForm({
     initialSecrets(template.credential_fields, variables, template.suggested_variable),
   );
   const [headers, setHeaders] = useState<CustomHeader[]>(() => template.default_headers ?? []);
-  // Most services need none; templates that ship some show them.
-  const [showHeaders, setShowHeaders] = useState(headers.length > 0);
+  // Most services need neither; templates that ship headers open it.
+  const [advanced, setAdvanced] = useState(headers.length > 0);
+  const hostRequired = template.host_override.allowed && template.host_override.required;
+  const hostOptional = template.host_override.allowed && !template.host_override.required;
   const action = useAction();
   const missingVariable = Object.values(secrets).some((s) => s.mode === "variable" && !s.variable);
+
+  const hostField = (required: boolean) => (
+    <Field
+      label={
+        <>
+          {template.host_override.label ?? "Base URL"}
+          {!required && <span className="font-normal text-muted-foreground"> (optional)</span>}
+        </>
+      }
+      htmlFor="svc-host"
+      hint={
+        isAdmin
+          ? required
+            ? "Where the service runs. Admin only, and audited."
+            : "Replaces the template's hosts, for a self-hosted or regional endpoint. Admin only, and audited."
+          : "Only admins can set the host."
+      }
+    >
+      <Input
+        id="svc-host"
+        placeholder="https://api.internal.example:8443"
+        value={hostOverride}
+        onChange={(e) => setHostOverride(e.target.value)}
+        disabled={!isAdmin}
+        required={required && isAdmin}
+      />
+    </Field>
+  );
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -227,38 +258,10 @@ export function ServiceForm({
         </Button>
       </div>
       )}
-      <div className={cn("grid grid-cols-1 gap-4", template.host_override.allowed && "md:grid-cols-2")}>
-        <Field label="Name" htmlFor="svc-name">
-          <Input id="svc-name" value={name} onChange={(e) => setName(e.target.value)} required />
-        </Field>
-        {template.host_override.allowed && (
-          <Field
-            label={
-              <>
-                {template.host_override.label ?? "Base URL"}
-                {!template.host_override.required && (
-                  <span className="font-normal text-muted-foreground"> (optional)</span>
-                )}
-              </>
-            }
-            htmlFor="svc-host"
-            hint={
-              isAdmin
-                ? "Replaces the template's hosts. Admin only, and audited."
-                : "Only admins can set the host."
-            }
-          >
-            <Input
-              id="svc-host"
-              placeholder="https://api.internal.example:8443"
-              value={hostOverride}
-              onChange={(e) => setHostOverride(e.target.value)}
-              disabled={!isAdmin}
-              required={template.host_override.required && isAdmin}
-            />
-          </Field>
-        )}
-      </div>
+      <Field label="Name" htmlFor="svc-name" hint="How it shows in the vault and in session info.">
+        <Input id="svc-name" value={name} onChange={(e) => setName(e.target.value)} required />
+      </Field>
+      {hostRequired && hostField(true)}
       {template.credential_fields.map((f) => (
         <SecretFieldInput
           key={f.name}
@@ -269,27 +272,40 @@ export function ServiceForm({
           suggested={template.suggested_variable}
         />
       ))}
-      {showHeaders ? (
-        <div className="space-y-2">
-          <div>
-            <div className="text-sm font-medium">Custom headers</div>
-            <p className="text-xs text-muted-foreground">
-              Sent with every request. Type <Mono>{"{{"}</Mono> to use a variable.
-            </p>
+      <div>
+        <button
+          type="button"
+          aria-expanded={advanced}
+          onClick={() => setAdvanced(!advanced)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ChevronRight className={cn("size-4 transition-transform", advanced && "rotate-90")} />
+          Advanced
+          <span className="text-xs">
+            {hostOptional ? "custom endpoint, headers" : "headers"}
+          </span>
+        </button>
+        {advanced && (
+          <div className="mt-4 space-y-4 border-l pl-4">
+            {hostOptional && hostField(false)}
+            <div className="space-y-2">
+              <div>
+                <div className="text-sm font-medium">Custom headers</div>
+                <p className="text-xs text-muted-foreground">
+                  Sent with every request. Type <Mono>{"{{"}</Mono> to use a variable.
+                </p>
+              </div>
+              <CustomHeadersEditor
+                headers={headers}
+                onChange={setHeaders}
+                variables={variables}
+                reserved={injectedHeaders(template)}
+              />
+            </div>
           </div>
-          <CustomHeadersEditor
-            headers={headers}
-            onChange={setHeaders}
-            variables={variables}
-            reserved={injectedHeaders(template)}
-          />
-        </div>
-      ) : (
-        <Button type="button" variant="ghost" size="sm" className="-ml-2 text-muted-foreground" onClick={() => setShowHeaders(true)}>
-          <Plus />
-          Custom headers
-        </Button>
-      )}
+        )}
+      </div>
+      {children}
       <DialogActions>
         {blocked && <p className="mr-auto self-center text-sm text-muted-foreground">{blocked}</p>}
         <Button type="button" variant="outline" onClick={onBack}>

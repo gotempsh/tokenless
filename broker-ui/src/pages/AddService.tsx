@@ -279,11 +279,23 @@ function ServicePage({
   const bundleItems = useMemo(() => bundles.data?.items ?? [], [bundles.data]);
   const set = (patch: Partial<Where>) => setWhere((w) => ({ ...w, ...patch }));
 
-  // A new vault, or one without bundles, has nothing to join: offer a new one.
-  const nothingToJoin = (where.vaultId === NEW_VAULT || bundles.data !== undefined) && bundleItems.length === 0;
+  // Pick what there is only one of, so the form asks only real questions.
+  const vaultItems = vaults.data?.items;
   useEffect(() => {
-    if (nothingToJoin) setWhere((w) => (w.bundleMode === "existing" ? { ...w, bundleMode: "new" } : w));
-  }, [nothingToJoin]);
+    if (vaultItems?.length === 1 && vaultItems[0]) {
+      const only = vaultItems[0].id;
+      setWhere((w) => (w.vaultId === "" ? { ...w, vaultId: only } : w));
+    }
+  }, [vaultItems]);
+  // A new vault, or one without bundles, has nothing to join: add the
+  // service on its own, and the bundle can come later. One bundle is the
+  // obvious choice; several are a real decision.
+  const nothingToJoin = (where.vaultId === NEW_VAULT || bundles.data !== undefined) && bundleItems.length === 0;
+  const onlyBundle = bundleItems.length === 1 ? bundleItems[0]?.id : undefined;
+  useEffect(() => {
+    if (nothingToJoin) setWhere((w) => (w.bundleMode === "existing" ? { ...w, bundleMode: "none" } : w));
+    else if (onlyBundle) setWhere((w) => (w.bundleMode === "existing" && w.bundleId === "" ? { ...w, bundleId: onlyBundle } : w));
+  }, [nothingToJoin, onlyBundle]);
 
   const vaultName =
     where.vaultId === NEW_VAULT
@@ -333,106 +345,20 @@ function ServicePage({
       <PageHeader
         title={<TemplateTitle template={template} prefix="Add " suffix="" />}
         description={template.description}
-        actions={
-          <Button type="button" variant="outline" asChild>
-            <a href={addServiceHref({ ...ctx, template: undefined })}>Choose another service</a>
-          </Button>
-        }
       />
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,42rem)_18rem]">
         <div className="min-w-0 space-y-6">
           <ErrorBanner error={vaults.error ?? bundles.error ?? variables.error} />
-          <Panel className="space-y-5 p-5">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="space-y-3">
-                {ctx.vault ? (
-                  <Field label="Vault">
-                    {vaultName ? (
-                      <p className="flex h-10 items-center text-sm font-medium">{vaultName}</p>
-                    ) : vaults.data ? (
-                      <p className="text-sm text-destructive">
-                        Vault {ctx.vault} does not exist or you cannot see it.{" "}
-                        <a href={addServiceHref({ ...ctx, vault: undefined })} className="underline underline-offset-4">
-                          Choose another
-                        </a>
-                      </p>
-                    ) : (
-                      <Skeleton className="h-10 w-full" />
-                    )}
-                  </Field>
-                ) : vaults.loading && !vaults.data ? (
-                  <Skeleton className="h-16 w-full" />
-                ) : (
-                  <Field
-                    label="Vault"
-                    htmlFor="add-vault"
-                    hint={vaults.data?.items.length === 0 && !isAdmin ? "No vaults yet. Ask an admin to create one." : undefined}
-                  >
-                    <SelectField
-                      id="add-vault"
-                      value={where.vaultId}
-                      onChange={(vaultId) => set({ vaultId, bundleId: "", bundleMode: "existing" })}
-                      placeholder={vaults.data?.items.length === 0 ? "No vaults yet" : "Choose a vault…"}
-                      options={[
-                        ...(vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name })),
-                        ...(isAdmin ? [{ value: NEW_VAULT, label: "New vault…" }] : []),
-                      ]}
-                    />
-                  </Field>
-                )}
-                {where.vaultId === NEW_VAULT && (
-                  <Input
-                    id="add-vault-name"
-                    aria-label="New vault name"
-                    value={where.newVaultName}
-                    onChange={(e) => set({ newVaultName: e.target.value })}
-                    placeholder="New vault name, e.g. agents"
-                    autoFocus
-                  />
-                )}
-              </div>
-              <div className="space-y-3">
-                <Field label="Access bundle" htmlFor="add-bundle" hint={bundleHint(where)}>
-                  <SelectField
-                    id="add-bundle"
-                    value={bundleSelectValue(where)}
-                    onChange={(v) => set(fromBundleSelect(v))}
-                    placeholder="Choose a bundle…"
-                    options={[
-                      ...bundleItems.map((b) => ({
-                        value: b.id,
-                        label: `${b.name} (${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"})`,
-                      })),
-                      { value: NEW_BUNDLE, label: "New bundle…" },
-                      { value: NO_BUNDLE, label: "No bundle" },
-                    ]}
-                  />
-                </Field>
-                {where.bundleMode === "new" && (
-                  <Input
-                    id="add-bundle-name"
-                    aria-label="New bundle name"
-                    aria-invalid={where.newBundleName !== "" && !BUNDLE_NAME.test(where.newBundleName.trim())}
-                    className="font-mono"
-                    value={where.newBundleName}
-                    onChange={(e) => set({ newBundleName: e.target.value })}
-                    placeholder="code-review"
-                  />
-                )}
-              </div>
-            </div>
-            <Field label="Agents may" htmlFor="add-access-full" hint={accessChoices.find((c) => c.value === where.access)?.description}>
-              <Segmented<AccessPreset> name="add-access" value={where.access} onChange={(access) => set({ access })} choices={accessChoices} />
-            </Field>
-          </Panel>
-          <Panel className="space-y-4 p-5">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h2 className="text-base font-semibold">Credential</h2>
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Lock className="size-3.5" />
-                Write-only once saved
-              </p>
-            </div>
+          <Panel className="space-y-5 p-6">
+            <FormSection
+              title="Credential"
+              aside={
+                <span className="flex items-center gap-1.5">
+                  <Lock className="size-3.5" />
+                  Write-only once saved
+                </span>
+              }
+            />
             {variables.loading && !variables.data ? (
               <Skeleton className="h-40 w-full" />
             ) : (
@@ -458,7 +384,90 @@ function ServicePage({
                   }
                 }}
                 onSaved={() => setResult(progress.current)}
-              />
+              >
+                <div className="space-y-5 border-t pt-6">
+                  <FormSection title="Who can use it" />
+                  <div className="space-y-3">
+                    {ctx.vault ? (
+                      <Field label="Vault">
+                        {vaultName ? (
+                          <p className="flex h-10 items-center text-sm font-medium">{vaultName}</p>
+                        ) : vaults.data ? (
+                          <p className="text-sm text-destructive">
+                            Vault {ctx.vault} does not exist or you cannot see it.{" "}
+                            <a href={addServiceHref({ ...ctx, vault: undefined })} className="underline underline-offset-4">
+                              Choose another
+                            </a>
+                          </p>
+                        ) : (
+                          <Skeleton className="h-10 w-full" />
+                        )}
+                      </Field>
+                    ) : vaults.loading && !vaults.data ? (
+                      <Skeleton className="h-16 w-full" />
+                    ) : (
+                      <Field
+                        label="Vault"
+                        htmlFor="add-vault"
+                        hint={vaults.data?.items.length === 0 && !isAdmin ? "No vaults yet. Ask an admin to create one." : undefined}
+                      >
+                        <SelectField
+                          id="add-vault"
+                          value={where.vaultId}
+                          onChange={(vaultId) => set({ vaultId, bundleId: "", bundleMode: "existing" })}
+                          placeholder={vaults.data?.items.length === 0 ? "No vaults yet" : "Choose a vault…"}
+                          options={[
+                            ...(vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name })),
+                            ...(isAdmin ? [{ value: NEW_VAULT, label: "New vault…" }] : []),
+                          ]}
+                        />
+                      </Field>
+                    )}
+                    {where.vaultId === NEW_VAULT && (
+                      <Input
+                        id="add-vault-name"
+                        aria-label="New vault name"
+                        value={where.newVaultName}
+                        onChange={(e) => set({ newVaultName: e.target.value })}
+                        placeholder="New vault name, e.g. agents"
+                        autoFocus
+                      />
+                    )}
+                  </div>
+                  <div className="space-y-3">
+                    <Field label="Access bundle" htmlFor="add-bundle" hint={bundleHint(where)}>
+                      <SelectField
+                        id="add-bundle"
+                        value={bundleSelectValue(where)}
+                        onChange={(v) => set(fromBundleSelect(v))}
+                        placeholder="Choose a bundle…"
+                        options={[
+                          ...bundleItems.map((b) => ({
+                            value: b.id,
+                            label: `${b.name} (${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"})`,
+                          })),
+                          { value: NEW_BUNDLE, label: "New bundle…" },
+                          { value: NO_BUNDLE, label: "No bundle" },
+                        ]}
+                      />
+                    </Field>
+                    {where.bundleMode === "new" && (
+                      <Input
+                        id="add-bundle-name"
+                        aria-label="New bundle name"
+                        aria-invalid={where.newBundleName !== "" && !BUNDLE_NAME.test(where.newBundleName.trim())}
+                        className="font-mono"
+                        value={where.newBundleName}
+                        onChange={(e) => set({ newBundleName: e.target.value })}
+                        placeholder="code-review"
+                      />
+                    )}
+                  </div>
+                  <Field label="Agents may" htmlFor="add-access-full" hint={accessChoices.find((c) => c.value === where.access)?.description}>
+                    <Segmented<AccessPreset> name="add-access" value={where.access} onChange={(access) => set({ access })} choices={accessChoices} />
+                  </Field>
+                </div>
+              </ServiceForm>
             )}
           </Panel>
         </div>
@@ -474,6 +483,16 @@ function ServicePage({
         </aside>
       </div>
     </>
+  );
+}
+
+/** A form section's heading, with an optional note on the right. */
+function FormSection({ title, aside }: { title: string; aside?: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <h2 className="text-base font-semibold">{title}</h2>
+      {aside && <span className="text-xs text-muted-foreground">{aside}</span>}
+    </div>
   );
 }
 
