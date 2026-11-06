@@ -16,7 +16,6 @@ import {
   FormDialog,
   Loading,
   Mono,
-  OneTimeSecret,
   Pager,
   Panel,
   Exact,
@@ -28,6 +27,7 @@ import {
   type Tone,
 } from "../components/common";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
+import { CommandSnippet } from "./Bundles";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -97,10 +97,10 @@ export function Nodes() {
     nodes.reload();
   };
 
-  const createButton = (variant: "default" | "outline" = "default") => (
-    <Button type="button" variant={variant} onClick={() => void createToken()} disabled={tokenAction.busy}>
+  const createButton = () => (
+    <Button type="button" onClick={() => void createToken()} disabled={tokenAction.busy}>
       <Plus />
-      Create join token
+      Add a proxy
     </Button>
   );
 
@@ -109,16 +109,11 @@ export function Nodes() {
       <PageHeader
         title="Proxies"
         description="The proxies agents connect to. They add the credentials to agents' requests."
-        actions={all.length > 0 ? createButton() : undefined}
+        actions={rows.length === 0 ? undefined : createButton()}
       />
       <ErrorBanner error={nodes.error ?? ca.error ?? action.error ?? tokenAction.error} />
-      {attention && attention.level !== "ok" && (
-        <AttentionBanner
-          attention={attention}
-          now={now}
-          createButton={createButton(attention.level === "critical" ? "default" : "outline")}
-          onRevoke={(n) => confirm.ask(n)}
-        />
+      {attention && attention.level !== "ok" && attention.kind !== "none_enrolled" && (
+        <AttentionBanner attention={attention} now={now} onRevoke={(n) => confirm.ask(n)} />
       )}
       <Panel className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
         <span className="flex size-10 shrink-0 items-center justify-center rounded-lg border bg-muted/40">
@@ -153,13 +148,9 @@ export function Nodes() {
         ) : rows.length === 0 ? (
           <Empty
             icon={Server}
-            title={all.length === 0 ? "No proxies yet" : "No active proxies"}
-            description={
-              <>
-                Create a join token, then run <Mono>credential-broker node join</Mono> on the proxy's host.
-              </>
-            }
-            action={attention?.level === "critical" ? undefined : createButton()}
+            title="Add your first proxy"
+            description="Agents reach services through a proxy, so none can until one runs. Any machine your agents can reach will do, this one included."
+            action={createButton()}
           />
         ) : (
           <Table>
@@ -231,23 +222,26 @@ export function Nodes() {
           if (!o) setJoinToken(null);
         }}
         wide
-        title="Join token created"
-        description="Use it once, within the hour, to enrol a proxy."
+        title="Add a proxy"
+        description="Run these on the machine that will be the proxy. The command carries a one-time token that lets that machine enrol: it works once, expires in an hour and is not shown again."
       >
         {joinToken && (
           <div className="space-y-4">
-            <OneTimeSecret
-              label="Join token (single use)"
-              value={joinToken}
-              hint={
-                <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs">
-                  credential-broker node join --control-url https://&lt;this-host&gt;:8443 --token {joinToken.slice(0, 12)}…
-                </code>
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Then start it with <Mono>credential-broker node run</Mono>. It shows as connected here within seconds.
-            </p>
+            <ol className="list-decimal space-y-4 pl-5 text-sm">
+              <li className="space-y-2">
+                <p>Enrol the machine:</p>
+                <CommandSnippet command={joinCommand(joinToken)} />
+                <p className="text-xs text-muted-foreground">
+                  If the console's node API is not on port 8443 of this host, change <Mono>--control-url</Mono> to
+                  match <Mono>--node-listen</Mono>.
+                </p>
+              </li>
+              <li className="space-y-2">
+                <p>Start the proxy:</p>
+                <CommandSnippet command="credential-broker node run" />
+                <p className="text-xs text-muted-foreground">It shows as connected on this page within seconds.</p>
+              </li>
+            </ol>
             <DialogActions>
               <Button
                 type="button"
@@ -266,7 +260,7 @@ export function Nodes() {
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}
         title={`Revoke proxy "${confirm.target?.name ?? ""}"?`}
-        description="It stops receiving policy and fails closed when its lease lapses. To use that host again, enrol it with a new join token."
+        description="It stops receiving policy and fails closed when its lease lapses. To use that machine again, add it as a proxy again."
         confirmLabel="Revoke proxy"
         busy={action.busy}
         onConfirm={() => {
@@ -275,6 +269,11 @@ export function Nodes() {
       />
     </PageContainer>
   );
+}
+
+/** The enrol command for `token`, pointed at this console's node API. */
+function joinCommand(token: string): string {
+  return `credential-broker node join --control-url https://${window.location.hostname}:8443 --token ${token}`;
 }
 
 /** What is wrong with a proxy, and what to do about it. */
@@ -297,8 +296,8 @@ function problemText(n: NodeInfo, now: Date): ReactNode {
     case "certificate_expired":
       return (
         <>
-          Its certificate expired <Relative at={n.cert_not_after} /> without being renewed. Revoke it and enrol the host
-          again with a new join token.
+          Its certificate expired <Relative at={n.cert_not_after} /> without being renewed. Revoke it, then add the machine
+          again with Add a proxy.
         </>
       );
     case "healthy":
@@ -310,25 +309,19 @@ function problemText(n: NodeInfo, now: Date): ReactNode {
 function AttentionBanner({
   attention,
   now,
-  createButton,
   onRevoke,
 }: {
-  attention: Exclude<Attention, { level: "ok" }>;
+  attention: Exclude<Attention, { level: "ok" } | { kind: "none_enrolled" }>;
   now: Date;
-  createButton: ReactNode;
   onRevoke: (n: NodeInfo) => void;
 }) {
   const critical = attention.level === "critical";
   const title =
-    attention.kind === "none_enrolled"
-      ? "No proxy is running"
-      : attention.kind === "none_connected"
+    attention.kind === "none_connected"
         ? "No proxy is connected"
         : `${attention.problems.length} of your proxies ${attention.problems.length === 1 ? "is" : "are"} not serving agents`;
   const description =
-    attention.kind === "none_enrolled"
-      ? "Agents can't reach any service through the broker until a proxy is enrolled and running."
-      : attention.kind === "none_connected"
+    attention.kind === "none_connected"
         ? "Every agent request fails until a proxy checks in."
         : "Agents routed to them fail; the others keep working.";
   return (
@@ -337,8 +330,7 @@ function AttentionBanner({
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription className="space-y-3">
         <p>{description}</p>
-        {attention.kind !== "none_enrolled" && (
-          <ul className="space-y-2 text-foreground">
+        <ul className="space-y-2 text-foreground">
             {attention.problems.map((n) => (
               <li key={n.id} className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <span className="text-sm">
@@ -349,9 +341,7 @@ function AttentionBanner({
                 </Button>
               </li>
             ))}
-          </ul>
-        )}
-        {attention.kind === "none_enrolled" && <div>{createButton}</div>}
+        </ul>
       </AlertDescription>
     </Alert>
   );

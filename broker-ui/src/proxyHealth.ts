@@ -20,8 +20,8 @@ export function proxyState(n: NodeInfo, now: Date): ProxyState {
 }
 
 export type Attention =
-  /** Nothing enrolled: agents reach nothing through the broker. */
-  | { level: "critical"; kind: "none_enrolled" }
+  /** Nothing enrolled yet: a setup step, not an outage. */
+  | { level: "warning"; kind: "none_enrolled" }
   /** Enrolled, but none is serving: every agent request fails. */
   | { level: "critical"; kind: "none_connected"; problems: NodeInfo[] }
   /** Some serve, some don't. */
@@ -30,7 +30,7 @@ export type Attention =
 
 export function proxyAttention(nodes: NodeInfo[], now: Date): Attention {
   const active = nodes.filter((n) => !n.revoked_at);
-  if (active.length === 0) return { level: "critical", kind: "none_enrolled" };
+  if (active.length === 0) return { level: "warning", kind: "none_enrolled" };
   const problems = active.filter((n) => proxyState(n, now) !== "healthy");
   if (problems.length === active.length) return { level: "critical", kind: "none_connected", problems };
   if (problems.length > 0) return { level: "warning", kind: "some_down", problems };

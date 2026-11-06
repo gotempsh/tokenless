@@ -32,8 +32,8 @@ describe("proxy health", () => {
   });
 
   test("what needs attention", () => {
-    expect(proxyAttention([], now)).toEqual({ level: "critical", kind: "none_enrolled" });
-    expect(proxyAttention([node("a", { revoked_at: iso(-60) })], now).level).toBe("critical");
+    expect(proxyAttention([], now)).toEqual({ level: "warning", kind: "none_enrolled" });
+    expect(proxyAttention([node("a", { revoked_at: iso(-60) })], now)).toEqual({ level: "warning", kind: "none_enrolled" });
     const down = node("b", { last_seen_at: iso(-600) });
     expect(proxyAttention([down], now)).toEqual({ level: "critical", kind: "none_connected", problems: [down] });
     expect(proxyAttention([node("a"), down], now)).toEqual({ level: "warning", kind: "some_down", problems: [down] });
