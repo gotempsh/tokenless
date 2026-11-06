@@ -17,7 +17,7 @@ import {
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { Empty, ErrorBanner, Loading, OneTimeSecret, Pager, Section, Tags, When } from "../components/ui";
+import { Empty, ErrorBanner, lines, Loading, OneTimeSecret, Pager, Section, Tags, When } from "../components/ui";
 
 function injectionSummary(t: StoredTemplate["template"]): string {
   switch (t.injection.method) {
@@ -440,25 +440,82 @@ export function Audit() {
 export function Settings() {
   const settings = useLoad(() => get<SettingsModel>("/settings"), []);
   const action = useAction();
-  const set = async (policy: SettingsModel["unmatched_host_policy"]) => {
-    await action.run(() => put<SettingsModel>("/settings", { unmatched_host_policy: policy }));
-    settings.reload();
+  const [allowText, setAllowText] = useState<string | null>(null);
+  const current = settings.data;
+  const save = async (next: SettingsModel) => {
+    const saved = await action.run(() => put<SettingsModel>("/settings", next));
+    if (saved) {
+      setAllowText(null);
+      settings.reload();
+    }
   };
-  const current = settings.data?.unmatched_host_policy;
+  if (!current) {
+    return (
+      <Section title="Settings">
+        <ErrorBanner error={settings.error} />
+        <Loading />
+      </Section>
+    );
+  }
+  const allowValue = allowText ?? current.egress.allow.join("\n");
   return (
-    <Section title="Settings">
-      <ErrorBanner error={settings.error ?? action.error} />
-      <h3>Hosts without a rule</h3>
-      <div className="choice-cards">
-        <button type="button" className={`choice ${current === "passthrough" ? "selected" : ""}`} onClick={() => void set("passthrough")}>
-          <strong>Tunnel untouched</strong>
-          <span className="muted small">Agents can reach other HTTPS hosts; nothing is injected or decrypted.</span>
-        </button>
-        <button type="button" className={`choice ${current === "deny" ? "selected" : ""}`} onClick={() => void set("deny")}>
-          <strong>Deny</strong>
-          <span className="muted small">Only hosts covered by one of the session's rules are reachable.</span>
-        </button>
-      </div>
-    </Section>
+    <>
+      <Section title="Hosts without a rule">
+        <ErrorBanner error={settings.error ?? action.error} />
+        <div className="choice-cards">
+          <button
+            type="button"
+            className={`choice ${current.unmatched_host_policy === "passthrough" ? "selected" : ""}`}
+            onClick={() => void save({ ...current, unmatched_host_policy: "passthrough" })}
+          >
+            <strong>Tunnel untouched</strong>
+            <span className="muted small">Agents can reach other HTTPS hosts; nothing is injected or decrypted.</span>
+          </button>
+          <button
+            type="button"
+            className={`choice ${current.unmatched_host_policy === "deny" ? "selected" : ""}`}
+            onClick={() => void save({ ...current, unmatched_host_policy: "deny" })}
+          >
+            <strong>Deny</strong>
+            <span className="muted small">Only hosts covered by one of the session's rules are reachable.</span>
+          </button>
+        </div>
+      </Section>
+      <Section title="Egress to private addresses">
+        <p className="muted">
+          Applies to tunnels opened for hosts without a rule and to credential tests. Hosts covered by a rule are
+          always reachable, because an admin chose them.
+        </p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={current.egress.block_private}
+            onChange={(e) => void save({ ...current, egress: { ...current.egress, block_private: e.target.checked } })}
+          />
+          Block loopback, private (RFC 1918), link-local / cloud metadata and other non-public addresses
+        </label>
+        <form
+          className="form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save({ ...current, egress: { ...current.egress, allow: lines(allowValue) } });
+          }}
+        >
+          <label>
+            Allowed ranges (CIDR, one per line)
+            <textarea
+              rows={4}
+              className="mono"
+              value={allowValue}
+              onChange={(e) => setAllowText(e.target.value)}
+              placeholder={"10.20.0.0/16\nfd00:1234::/32"}
+            />
+          </label>
+          <button type="submit" disabled={action.busy}>
+            Save allowed ranges
+          </button>
+        </form>
+      </Section>
+    </>
   );
 }

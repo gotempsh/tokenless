@@ -158,8 +158,25 @@ export interface AuditEvent {
   detail: Record<string, string>;
 }
 
+export interface EgressPolicy {
+  block_private: boolean;
+  allow: string[];
+}
+
 export interface Settings {
   unmatched_host_policy: "passthrough" | "deny";
+  egress: EgressPolicy;
+}
+
+export interface CredentialValidation {
+  credential_id: string;
+  ok: boolean;
+  host: string;
+  method: string;
+  path: string;
+  status: number | null;
+  expected_status: number[];
+  detail: string;
 }
 
 let csrfToken: string | null = null;

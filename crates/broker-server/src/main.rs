@@ -58,6 +58,10 @@ struct ServeArgs {
     /// Built UI directory to serve at `/`.
     #[arg(long)]
     ui_dir: Option<PathBuf>,
+    /// Extra PEM file of CAs trusted for credential validation requests,
+    /// e.g. a self-hosted service's private CA (repeatable).
+    #[arg(long = "validation-ca")]
+    validation_ca: Vec<PathBuf>,
     /// Snapshot lease in seconds; nodes fail closed when it lapses.
     #[arg(long, default_value_t = 60)]
     lease_secs: u32,
@@ -120,6 +124,23 @@ enum CliError {
     },
 }
 
+fn read_cas(
+    paths: &[PathBuf],
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>, CliError> {
+    let mut out = Vec::new();
+    for path in paths {
+        let pem = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+            context: format!("reading CA file {}", path.display()),
+            source: e,
+        })?;
+        out.extend(broker_dataplane::tls::certs_from_pem(
+            &path.display().to_string(),
+            &pem,
+        )?);
+    }
+    Ok(out)
+}
+
 async fn wait_for_shutdown() -> Result<(), CliError> {
     tokio::signal::ctrl_c().await.map_err(|e| CliError::Io {
         context: "waiting for Ctrl-C".into(),
@@ -135,6 +156,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.node_api_names = args.node_api_names;
     config.ui_dir = args.ui_dir;
     config.control.lease_secs = args.lease_secs.max(3);
+    config.validation_extra_roots = read_cas(&args.validation_ca)?;
     let running = Server::start(config).await?;
     if let Some(token) = &running.setup_token {
         // Deliberately printed to the terminal, not the structured log, so
@@ -175,17 +197,7 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
             no_public_roots,
         } => {
             let identity = NodeIdentity::load(&state)?;
-            let mut extra = Vec::new();
-            for path in upstream_ca {
-                let pem = std::fs::read_to_string(&path).map_err(|e| CliError::Io {
-                    context: format!("reading upstream CA {}", path.display()),
-                    source: e,
-                })?;
-                extra.extend(broker_dataplane::tls::certs_from_pem(
-                    &path.display().to_string(),
-                    &pem,
-                )?);
-            }
+            let extra = read_cas(&upstream_ca)?;
             let config = DataPlaneConfig {
                 listen,
                 metrics_listen,

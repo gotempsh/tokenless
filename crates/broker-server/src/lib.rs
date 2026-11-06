@@ -7,6 +7,7 @@
 pub mod api;
 pub mod error;
 pub mod node_api;
+pub mod probe;
 pub mod store;
 
 use std::io::Write;
@@ -39,6 +40,10 @@ pub struct ServerConfig {
     pub node_api_names: Vec<String>,
     /// Built UI bundle (`broker-ui/dist`) to serve at `/`.
     pub ui_dir: Option<PathBuf>,
+    /// Trust the public web PKI for credential validation requests.
+    pub validation_public_roots: bool,
+    /// Extra CAs trusted for validation requests (self-hosted services).
+    pub validation_extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
     pub control: ControlConfig,
 }
 
@@ -51,6 +56,8 @@ impl ServerConfig {
             node_listen: SocketAddr::from(([127, 0, 0, 1], 8443)),
             node_api_names: vec!["localhost".into(), "127.0.0.1".into()],
             ui_dir: None,
+            validation_public_roots: true,
+            validation_extra_roots: Vec::new(),
             control: ControlConfig::default(),
         }
     }
@@ -173,6 +180,10 @@ impl Server {
                 stores,
                 Arc::new(RbacAuthorizer),
                 cipher,
+                Arc::new(probe::HttpProber::new(
+                    config.validation_public_roots,
+                    &config.validation_extra_roots,
+                )?),
                 config.control.clone(),
             )
             .await?,

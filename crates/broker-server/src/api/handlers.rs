@@ -321,6 +321,22 @@ pub async fn rotate_credential(
     ))
 }
 
+/// Runs the template's validation request with the stored credential.
+/// Returns the outcome (status only), never the response body.
+pub async fn validate_credential(
+    State(s): St,
+    authed: Authed,
+    Path(credential_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: CredentialId = parse_id("credential", &credential_id)?;
+    Ok(Json(
+        s.control
+            .policy
+            .validate_credential(&authed.caller, &id)
+            .await?,
+    ))
+}
+
 pub async fn delete_credential(
     State(s): St,
     authed: Authed,

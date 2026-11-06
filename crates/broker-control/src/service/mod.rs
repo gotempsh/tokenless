@@ -19,6 +19,7 @@ use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::notify::PolicyNotifier;
+use crate::probe::CredentialProber;
 use crate::store::{AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
 #[derive(Debug, Clone)]
@@ -166,6 +167,7 @@ impl ControlPlane {
         stores: Stores,
         authorizer: Arc<dyn Authorizer>,
         cipher: Arc<dyn SecretCipher>,
+        prober: Arc<dyn CredentialProber>,
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
@@ -187,6 +189,7 @@ impl ControlPlane {
             guard.clone(),
             recorder.clone(),
             notifier.clone(),
+            prober,
         );
         policy.seed_builtin_templates().await?;
         let sessions = sessions::SessionService::new(
@@ -245,6 +248,10 @@ mod tests {
     use crate::store::RbacAuthorizer;
 
     async fn plane() -> ControlPlane {
+        plane_with(Arc::new(crate::probe::DisabledProber)).await
+    }
+
+    async fn plane_with(prober: Arc<dyn CredentialProber>) -> ControlPlane {
         let store = Arc::new(MemoryStore::new());
         let stores = Stores {
             credentials: store.clone(),
@@ -258,6 +265,7 @@ mod tests {
             stores,
             Arc::new(RbacAuthorizer),
             cipher,
+            prober,
             ControlConfig::default(),
         )
         .await
@@ -750,5 +758,161 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.items[0].actor, format!("node:{}", node.id));
+    }
+
+    /// host, port, method, path, injected headers
+    type SeenProbe = (String, u16, String, String, Vec<(String, String)>);
+
+    /// Records what it was asked to send and answers with a fixed status.
+    struct RecordingProber {
+        status: u16,
+        seen: std::sync::Mutex<Vec<SeenProbe>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialProber for RecordingProber {
+        async fn probe(
+            &self,
+            request: crate::probe::ProbeRequest,
+            egress: &broker_core::egress::EgressPolicy,
+        ) -> Result<u16, crate::probe::ProbeError> {
+            assert!(
+                egress.block_private,
+                "default egress policy must be passed through"
+            );
+            self.seen.lock().unwrap().push((
+                request.host,
+                request.port,
+                request.method,
+                request.path,
+                request
+                    .headers
+                    .headers
+                    .iter()
+                    .map(|h| (h.name.clone(), h.value.clone()))
+                    .collect(),
+            ));
+            Ok(self.status)
+        }
+    }
+
+    fn openai(key: &str) -> CreateCredential {
+        CreateCredential {
+            name: "models".into(),
+            template_id: "openai".into(),
+            template_version: None,
+            host_override: vec![],
+            fields: [("api_key".to_string(), key.to_string())].into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn validation_sends_the_declared_request_to_the_credential_host_only() {
+        let prober = Arc::new(RecordingProber {
+            status: 200,
+            seen: Default::default(),
+        });
+        let cp = plane_with(prober.clone()).await;
+        let vault = cp.policy.create_vault(&admin(0), "main").await.unwrap();
+        let meta = cp
+            .policy
+            .create_credential(&admin(0), &vault.id, openai("sk-validate-me"))
+            .await
+            .unwrap();
+        let result = cp
+            .policy
+            .validate_credential(&admin(0), &meta.id)
+            .await
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.status, Some(200));
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("sk-validate-me"));
+        let seen = prober.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let (host, port, method, path, headers) = &seen[0];
+        assert_eq!((host.as_str(), *port), ("api.openai.com", 443));
+        assert_eq!((method.as_str(), path.as_str()), ("GET", "/v1/models"));
+        assert_eq!(
+            headers,
+            &vec![(
+                "authorization".to_string(),
+                "Bearer sk-validate-me".to_string()
+            )]
+        );
+        let audit = cp
+            .audit
+            .query(
+                &admin(0),
+                None,
+                Some("credential.validate".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.items.len(), 1);
+        assert!(!serde_json::to_string(&audit)
+            .unwrap()
+            .contains("sk-validate-me"));
+
+        // Validation exposes the secret to its own host, so it needs step-up.
+        let stale = cp.policy.validate_credential(&admin(3600), &meta.id).await;
+        assert!(matches!(stale, Err(ControlError::StepUpRequired { .. })));
+    }
+
+    #[tokio::test]
+    async fn validation_reports_unexpected_status_and_missing_declarations() {
+        let cp = plane_with(Arc::new(RecordingProber {
+            status: 401,
+            seen: Default::default(),
+        }))
+        .await;
+        let vault = cp.policy.create_vault(&admin(0), "main").await.unwrap();
+        let meta = cp
+            .policy
+            .create_credential(&admin(0), &vault.id, openai("sk-revoked"))
+            .await
+            .unwrap();
+        let result = cp
+            .policy
+            .validate_credential(&admin(0), &meta.id)
+            .await
+            .unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.status, Some(401));
+
+        let generic = cp
+            .policy
+            .create_credential(
+                &admin(0),
+                &vault.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let res = cp.policy.validate_credential(&admin(0), &generic.id).await;
+        assert!(
+            matches!(res, Err(ControlError::Validation { .. })),
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_without_a_prober_explains_itself() {
+        let cp = plane().await;
+        let vault = cp.policy.create_vault(&admin(0), "main").await.unwrap();
+        let meta = cp
+            .policy
+            .create_credential(&admin(0), &vault.id, openai("sk-x"))
+            .await
+            .unwrap();
+        let result = cp
+            .policy
+            .validate_credential(&admin(0), &meta.id)
+            .await
+            .unwrap();
+        assert!(!result.ok);
+        assert!(result.detail.contains("not available"), "{}", result.detail);
     }
 }

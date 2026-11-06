@@ -14,6 +14,7 @@ pub mod memory;
 pub mod model;
 pub mod notify;
 pub mod pki;
+pub mod probe;
 pub mod service;
 pub mod store;
 

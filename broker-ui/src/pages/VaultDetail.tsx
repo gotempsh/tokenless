@@ -9,6 +9,7 @@ import {
   post,
   put,
   type CredentialMeta,
+  type CredentialValidation,
   type Page,
   type ProxySession,
   type Rule,
@@ -55,7 +56,15 @@ function Credentials({ vaultId, user }: { vaultId: string; user: UserSummary }) 
     [templates.data],
   );
   const [rotating, setRotating] = useState<CredentialMeta | null>(null);
+  const [results, setResults] = useState<Record<string, CredentialValidation>>({});
   const action = useAction();
+  const hasValidation = (c: CredentialMeta) =>
+    approved.some((t) => t.template.id === c.template_id && t.template.version === c.template_version && t.template.validation);
+
+  const test = async (c: CredentialMeta) => {
+    const r = await action.run(() => post<CredentialValidation>(`/credentials/${c.id}/validate`));
+    if (r) setResults({ ...results, [c.id]: r });
+  };
 
   const remove = async (c: CredentialMeta) => {
     if (!window.confirm(`Delete credential "${c.name}"? Rules using it must be deleted first.`)) return;
@@ -91,6 +100,19 @@ function Credentials({ vaultId, user }: { vaultId: string; user: UserSummary }) 
       )}
       <Section title="Credentials">
         <ErrorBanner error={creds.error ?? action.error} />
+        {Object.values(results)
+          .filter((r) => !r.ok)
+          .map((r) => (
+            <div key={r.credential_id} className="banner warn">
+              Test of {r.method} {r.path} on <code>{r.host}</code>: {r.detail}
+              {r.detail.includes("Settings") && (
+                <>
+                  {" "}
+                  <a href="#/settings">Open Settings</a>
+                </>
+              )}
+            </div>
+          ))}
         {creds.loading && !creds.data ? (
           <Loading />
         ) : creds.data?.items.length === 0 ? (
@@ -124,6 +146,20 @@ function Credentials({ vaultId, user }: { vaultId: string; user: UserSummary }) 
                     <When at={c.updated_at} />
                   </td>
                   <td className="row-actions">
+                    {results[c.id] && (
+                      <span className={`pill ${results[c.id]?.ok ? "ok" : "bad"}`} title={results[c.id]?.detail}>
+                        {results[c.id]?.ok ? "works" : results[c.id]?.status ?? "failed"}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={!hasValidation(c) || action.busy}
+                      title={hasValidation(c) ? "Send the template's validation request with this credential" : "This template declares no validation request"}
+                      onClick={() => void test(c)}
+                    >
+                      Test
+                    </button>
                     <button type="button" className="secondary" onClick={() => setRotating(c)}>
                       Replace secret
                     </button>

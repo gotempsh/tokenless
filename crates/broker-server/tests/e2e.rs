@@ -345,6 +345,9 @@ async fn end_to_end() {
         lease_secs: 3,
         ..ControlConfig::default()
     };
+    config.validation_public_roots = false;
+    config.validation_extra_roots =
+        broker_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
     let server = Server::start(config).await.unwrap();
     let (mut api, _totp_secret) = bootstrap_admin(&server).await;
 
@@ -507,6 +510,50 @@ async fn end_to_end() {
         407
     );
 
+    // --- imported template with a validation request ---------------------
+    let yaml = format!(
+        "id: local-echo\nversion: 1\nname: Local echo\nhosts: [\"localhost:{upstream_port}\"]\n\
+         allow:\n  paths: [\"/*\"]\n  methods: [GET]\n\
+         credential_fields:\n  - name: token\n    label: Token\n\
+         injection:\n  method: header\n  name: X-Service-Token\n  field: token\n\
+         validation:\n  method: GET\n  path: /health\n  expect_status: [200]\n"
+    );
+    let imported = api.post("/templates/import", json!({ "yaml": yaml })).await;
+    assert_eq!(imported["status"], "pending_approval");
+    assert_eq!(
+        imported["template"]["hosts"][0],
+        format!("localhost:{upstream_port}")
+    );
+    let echo_credential = json!({
+        "name": "echo",
+        "template_id": "local-echo",
+        "fields": { "token": SECRET },
+    });
+    let (status, _, _) = api
+        .call(
+            reqwest::Method::POST,
+            &format!("/vaults/{vault_id}/credentials"),
+            Some(echo_credential.clone()),
+        )
+        .await;
+    assert!(
+        status.is_client_error(),
+        "a pending template must not back credentials"
+    );
+    api.post("/templates/local-echo/1/approve", json!({})).await;
+    let echo = api
+        .post(&format!("/vaults/{vault_id}/credentials"), echo_credential)
+        .await;
+    let echo_id = echo["id"].as_str().unwrap().to_string();
+    let blocked = api
+        .post(&format!("/credentials/{echo_id}/validate"), json!({}))
+        .await;
+    assert_eq!(blocked["ok"], false, "{blocked}");
+    assert!(
+        blocked["detail"].as_str().unwrap().contains("loopback"),
+        "{blocked}"
+    );
+
     // --- egress policy: private passthrough destinations are blocked -------
     let loopback_target = format!("127.0.0.1:{upstream_port}");
     assert_eq!(
@@ -541,6 +588,14 @@ async fn end_to_end() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // With loopback allowed, the validation request reaches the upstream.
+    let validated = api
+        .post(&format!("/credentials/{echo_id}/validate"), json!({}))
+        .await;
+    assert_eq!(validated["ok"], true, "{validated}");
+    assert_eq!(validated["status"], 200);
+    assert!(!validated.to_string().contains(SECRET));
 
     // --- unmatched host: tunnelled untouched ----------------------------------
     // 127.0.0.1 has no rule, so the client must see the upstream's own

@@ -17,7 +17,7 @@ use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
 use broker_core::template::{builtin_templates, ServiceTemplate};
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::{AuditRecorder, Caller, Guard};
@@ -28,6 +28,7 @@ use crate::model::{
     TemplateStatus, Vault,
 };
 use crate::notify::PolicyNotifier;
+use crate::probe::{CredentialProber, ProbeRequest};
 use crate::store::{CredentialStore, PolicyStore};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -131,6 +132,21 @@ pub struct PolicyService {
     guard: Guard,
     audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
+    prober: Arc<dyn CredentialProber>,
+}
+
+/// Result of running a template's validation request. Only the status is
+/// reported: the response body could echo the credential.
+#[derive(Debug, Clone, Serialize)]
+pub struct CredentialValidation {
+    pub credential_id: CredentialId,
+    pub ok: bool,
+    pub host: String,
+    pub method: String,
+    pub path: String,
+    pub status: Option<u16>,
+    pub expected_status: Vec<u16>,
+    pub detail: String,
 }
 
 impl PolicyService {
@@ -141,6 +157,7 @@ impl PolicyService {
         guard: Guard,
         audit: AuditRecorder,
         notifier: Arc<PolicyNotifier>,
+        prober: Arc<dyn CredentialProber>,
     ) -> Self {
         Self {
             policy,
@@ -149,7 +166,130 @@ impl PolicyService {
             guard,
             audit,
             notifier,
+            prober,
         }
+    }
+
+    /// Runs the template's declared validation request against one of the
+    /// credential's own hosts, with its injected headers, under the
+    /// instance egress policy. Sends the secret only where a rule could.
+    pub async fn validate_credential(
+        &self,
+        caller: &Caller,
+        id: &CredentialId,
+    ) -> Result<CredentialValidation, ControlError> {
+        let meta = self.credential_meta(id).await?;
+        self.guard
+            .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
+            .await?;
+        let (template, max) = self.max_scope_for(&meta).await?;
+        let validation = template.validation.clone().ok_or_else(|| {
+            ControlError::validation(format!(
+                "template '{}@{}' declares no validation request",
+                template.id, template.version
+            ))
+        })?;
+        let host = max
+            .hosts
+            .iter()
+            .find(|h| !h.is_wildcard())
+            .ok_or_else(|| {
+                ControlError::validation(format!(
+                    "credential {id} only has wildcard hosts; there is no concrete host to validate against"
+                ))
+            })?
+            .clone();
+        let method = validation.method.as_str().to_string();
+        let path = validation.path.as_str().to_string();
+        if validation.method.is_any() || path.ends_with('*') {
+            return Err(ControlError::validation(format!(
+                "template '{}' validation request must name one method and an exact path",
+                template.id
+            )));
+        }
+        if !max.allows(host.host(), host.port(), &method, &path) {
+            return Err(ControlError::validation(format!(
+                "template '{}' validation request {method} {path} is outside the template's own scope",
+                template.id
+            )));
+        }
+        let ciphertext = self
+            .credentials
+            .load_secret_ciphertext(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("credential", id))?;
+        let plaintext = self
+            .cipher
+            .decrypt(&ciphertext, &credential_aad_for(&meta))?;
+        let fields: SecretFields = serde_json::from_slice(&plaintext)
+            .map_err(|e| ControlError::crypto("credential.decode", format!("{id}: {e}")))?;
+        let headers = template.injection.render(&template.id, &fields)?;
+        drop(fields);
+        let egress = self.policy.get_settings().await?.egress;
+        let expected = validation.expect_status.clone();
+        let result = self
+            .prober
+            .probe(
+                ProbeRequest {
+                    host: host.host().to_string(),
+                    port: host.port(),
+                    method: method.clone(),
+                    path: path.clone(),
+                    headers,
+                },
+                &egress,
+            )
+            .await;
+        let (ok, status, detail) = match result {
+            Ok(status) => {
+                let ok = if expected.is_empty() {
+                    (200..300).contains(&status)
+                } else {
+                    expected.contains(&status)
+                };
+                let detail = if ok {
+                    format!("{host} answered {status}")
+                } else {
+                    format!("{host} answered {status}; the credential may be invalid or lack permissions")
+                };
+                (ok, Some(status), detail)
+            }
+            Err(e) => (false, None, e.to_string()),
+        };
+        self.audit
+            .record(
+                AuditEvent::new(
+                    caller.actor(),
+                    "credential.validate",
+                    if ok {
+                        AuditOutcome::Success
+                    } else {
+                        AuditOutcome::Failure
+                    },
+                )
+                .vault(meta.vault_id)
+                .target(format!("credential:{id}"))
+                .detail("host", host.to_string())
+                .detail("request", format!("{method} {path}"))
+                .detail(
+                    "status",
+                    status
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "none".into()),
+                )
+                .detail("detail", detail.clone()),
+            )
+            .await;
+        Ok(CredentialValidation {
+            credential_id: *id,
+            ok,
+            host: host.to_string(),
+            method,
+            path,
+            status,
+            expected_status: expected,
+            detail,
+        })
     }
 
     /// Inserts built-in templates that are not yet stored. Existing versions

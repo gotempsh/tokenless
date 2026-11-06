@@ -62,6 +62,10 @@ fn api_routes() -> Router<Arc<AppState>> {
             put(rotate_credential),
         )
         .route(
+            "/credentials/{credential_id}/validate",
+            post(validate_credential),
+        )
+        .route(
             "/rules/{rule_id}",
             get(get_rule).patch(update_rule).delete(delete_rule),
         )
