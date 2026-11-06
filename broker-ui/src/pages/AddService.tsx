@@ -40,6 +40,7 @@ import { backCrumbs, useBreadcrumbs } from "../breadcrumbs";
 import { cn } from "../lib/utils";
 import { CommandSnippet, runCommand } from "./Bundles";
 import {
+  CopyButton,
   DialogActions,
   ErrorBanner,
   Field,
@@ -283,6 +284,23 @@ function ServicePage({
     [chosenVault],
   );
   const bundleItems = useMemo(() => bundles.data?.items ?? [], [bundles.data]);
+  // Names already used in the vault, so the form can suggest a free one
+  // instead of failing on save. A service this page already saved (before
+  // a later step failed) is the user's own, not a clash.
+  const existing = useLoad(
+    () =>
+      chosenVault
+        ? get<Page<CredentialMeta>>(`/vaults/${chosenVault}/credentials?page_size=100`)
+        : Promise.resolve(undefined),
+    [chosenVault],
+  );
+  const takenNames = useMemo(
+    () =>
+      where.vaultId === NEW_VAULT
+        ? []
+        : existing.data?.items.map((c) => c.name).filter((n) => n !== progress.current.credential?.name),
+    [existing.data, where.vaultId],
+  );
   const set = (patch: Partial<Where>) => setWhere((w) => ({ ...w, ...patch }));
 
   // Pick what there is only one of, so the form asks only real questions.
@@ -352,7 +370,7 @@ function ServicePage({
         title={<TemplateTitle template={template} prefix="Add " suffix="" />}
         description={template.description}
       />
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,42rem)_18rem]">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,42rem)_20rem]">
         <div className="min-w-0 space-y-6">
           <ErrorBanner error={vaults.error ?? bundles.error ?? variables.error} />
           <Panel className="space-y-5 p-6">
@@ -374,6 +392,8 @@ function ServicePage({
                 isAdmin={isAdmin}
                 showTemplate={false}
                 blocked={problem}
+                takenNames={takenNames}
+                vaultName={vaultName}
                 submitLabel={bundleName ? `Add to ${bundleName}` : "Add service"}
                 backLabel="Cancel"
                 onBack={() => {
@@ -392,23 +412,22 @@ function ServicePage({
                 onSaved={() => setResult(progress.current)}
               >
                 <div className="space-y-5 border-t pt-6">
-                  <FormSection title="Who can use it" />
+                  <FormSection
+                    title="Who can use it"
+                    aside={ctx.vault && vaultName ? <>In vault <span className="font-medium text-foreground">{vaultName}</span></> : undefined}
+                  />
                   <div className="space-y-3">
                     {ctx.vault ? (
-                      <Field label="Vault">
-                        {vaultName ? (
-                          <p className="flex h-10 items-center text-sm font-medium">{vaultName}</p>
-                        ) : vaults.data ? (
-                          <p className="text-sm text-destructive">
-                            Vault {ctx.vault} does not exist or you cannot see it.{" "}
-                            <a href={addServiceHref({ ...ctx, vault: undefined })} className="underline underline-offset-4">
-                              Choose another
-                            </a>
-                          </p>
-                        ) : (
-                          <Skeleton className="h-10 w-full" />
-                        )}
-                      </Field>
+                      vaultName ? null : vaults.data ? (
+                        <p className="text-sm text-destructive">
+                          Vault {ctx.vault} does not exist or you cannot see it.{" "}
+                          <a href={addServiceHref({ ...ctx, vault: undefined })} className="underline underline-offset-4">
+                            Choose another
+                          </a>
+                        </p>
+                      ) : (
+                        <Skeleton className="h-5 w-40" />
+                      )
                     ) : vaults.loading && !vaults.data ? (
                       <Skeleton className="h-16 w-full" />
                     ) : (
@@ -470,7 +489,9 @@ function ServicePage({
                     )}
                   </div>
                   <Field label="Agents may" htmlFor="add-access-full" hint={accessChoices.find((c) => c.value === where.access)?.description}>
-                    <Segmented<AccessPreset> name="add-access" value={where.access} onChange={(access) => set({ access })} choices={accessChoices} />
+                    <div>
+                      <Segmented<AccessPreset> name="add-access" value={where.access} onChange={(access) => set({ access })} choices={accessChoices} />
+                    </div>
                   </Field>
                 </div>
               </ServiceForm>
@@ -578,8 +599,13 @@ function Summary({
       </dl>
       {bundleName && (
         <div className="space-y-2 border-t pt-4">
-          <p className="text-xs text-muted-foreground">Agents then start with</p>
-          <CommandSnippet command={runCommand(bundleName)} />
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">Agents then start with</p>
+            <CopyButton value={runCommand(bundleName)} label="Copy" />
+          </div>
+          <code className="block rounded-md border bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]">
+            {runCommand(bundleName)}
+          </code>
         </div>
       )}
     </Panel>

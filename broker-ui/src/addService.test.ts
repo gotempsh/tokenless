@@ -5,6 +5,8 @@ import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
 import {
   addService,
+  freeName,
+  nameTaken,
   AddServiceError,
   addServiceHref,
   parseAddServiceContext,
@@ -215,5 +217,19 @@ describe("add-service links", () => {
   test("a return path that is not an in-app route is dropped", () => {
     const ctx = parseAddServiceContext(undefined, new URLSearchParams("back=https://example.com/x"));
     expect(ctx.back).toBeUndefined();
+  });
+});
+
+describe("service names", () => {
+  test("a name is taken only by an exact match, ignoring surrounding space", () => {
+    expect(nameTaken(" GitHub ", ["GitHub"])).toBe(true);
+    expect(nameTaken("github", ["GitHub"])).toBe(false);
+    expect(nameTaken("  ", ["GitHub"])).toBe(false);
+  });
+
+  test("the suggestion is the template name, or the first free numbered one", () => {
+    expect(freeName("GitHub", [])).toBe("GitHub");
+    expect(freeName("GitHub", ["GitHub"])).toBe("GitHub 2");
+    expect(freeName("GitHub", ["GitHub", "GitHub 2", "GitHub1"])).toBe("GitHub 3");
   });
 });

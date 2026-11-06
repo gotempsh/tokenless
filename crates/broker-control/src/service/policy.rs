@@ -25,7 +25,7 @@ use tracing::info;
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, Guard};
 use crate::cipher::SecretCipher;
-use crate::error::ControlError;
+use crate::error::{ControlError, StoreError};
 use crate::model::{
     CredentialMeta, Page, PageRequest, Rule, Settings, StoredTemplate, TemplateSource,
     TemplateStatus, Vault, VaultDeletion,
@@ -665,7 +665,7 @@ impl PolicyService {
                 .check(caller, Action::CredentialWiden, Some(vault_id))
                 .await?;
         }
-        self.get_vault(caller, vault_id).await?;
+        let vault = self.get_vault(caller, vault_id).await?;
         let name = validate_name("credential", &req.name)?;
         let stored = self
             .approved_template(&req.template_id, req.template_version)
@@ -720,7 +720,17 @@ impl PolicyService {
         }
         self.credentials
             .insert_credential(meta.clone(), ciphertext, &[event])
-            .await?;
+            .await
+            .map_err(|e| match e {
+                // Names are unique per vault; say so in words the form can show.
+                StoreError::Conflict { .. } => ControlError::Conflict {
+                    message: format!(
+                        "a service named '{}' already exists in vault '{}'; choose another name",
+                        meta.name, vault.name
+                    ),
+                },
+                other => other.into(),
+            })?;
         Ok(meta)
     }
 

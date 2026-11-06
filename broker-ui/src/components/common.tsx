@@ -237,12 +237,15 @@ export function Field({
   label,
   htmlFor,
   hint,
+  error,
   className,
   children,
 }: {
   label: ReactNode;
   htmlFor?: string;
   hint?: ReactNode;
+  /** What is wrong with the value, shown instead of the hint. */
+  error?: ReactNode;
   className?: string;
   children: ReactNode;
 }) {
@@ -250,7 +253,13 @@ export function Field({
     <div className={cn("space-y-2", className)}>
       <Label htmlFor={htmlFor}>{label}</Label>
       {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="text-xs text-muted-foreground">{hint}</p>
+      )}
     </div>
   );
 }

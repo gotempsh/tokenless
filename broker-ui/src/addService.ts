@@ -194,3 +194,19 @@ export function parseAddServiceContext(template: string | undefined, query: URLS
     back: back && /^[A-Za-z0-9/_-]+$/.test(back) ? back : undefined,
   };
 }
+
+/** Whether `name` is already a service in the vault (names are unique per vault). */
+export function nameTaken(name: string, taken: readonly string[]): boolean {
+  const wanted = name.trim();
+  return wanted !== "" && taken.includes(wanted);
+}
+
+/** `base`, or the first of "base 2", "base 3", … the vault does not have yet. */
+export function freeName(base: string, taken: readonly string[]): string {
+  const trimmed = base.trim();
+  if (!nameTaken(trimmed, taken)) return trimmed;
+  for (let n = 2; ; n++) {
+    const candidate = `${trimmed} ${n}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+}

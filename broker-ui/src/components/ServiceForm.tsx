@@ -4,10 +4,10 @@
 // The form that stores a service's credential: its name, secret fields
 // (a value or a variable reference), custom headers and host override.
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { ApiError, get, type CredentialField, type CustomHeader, type Page, type ServiceTemplate, type Variable } from "../api";
-import type { CredentialBody } from "../addService";
+import { freeName, nameTaken, type CredentialBody } from "../addService";
 import { useAction, useLoad } from "../hooks";
 import { cn } from "../lib/utils";
 import { DialogActions, ErrorBanner, Field, lines, Mono, SelectField, Tags } from "./common";
@@ -162,6 +162,8 @@ export function ServiceForm({
   backLabel = "Back",
   showTemplate = true,
   blocked = null,
+  takenNames,
+  vaultName,
   children,
 }: {
   template: ServiceTemplate;
@@ -177,10 +179,21 @@ export function ServiceForm({
   blocked?: string | null;
   /** The template summary at the top; off when the step before showed it. */
   showTemplate?: boolean;
+  /** Service names the target vault already has; they cannot be reused. */
+  takenNames?: readonly string[];
+  /** The target vault's name, for saying where a name is taken. */
+  vaultName?: string;
   /** More of the form, shown after the credential and before the buttons. */
   children?: ReactNode;
 }) {
   const [name, setName] = useState(template.name);
+  const [nameEdited, setNameEdited] = useState(false);
+  // Until the user types a name, keep the suggestion free in the vault:
+  // a second GitHub becomes "GitHub 2" rather than a failed save.
+  useEffect(() => {
+    if (!nameEdited && takenNames) setName(freeName(template.name, takenNames));
+  }, [nameEdited, takenNames, template.name]);
+  const duplicate = takenNames !== undefined && nameTaken(name, takenNames);
   const [hostOverride, setHostOverride] = useState("");
   const [secrets, setSecrets] = useState(() =>
     initialSecrets(template.credential_fields, variables, template.suggested_variable),
@@ -242,7 +255,6 @@ export function ServiceForm({
 
   return (
     <form className="space-y-5" onSubmit={submit} autoComplete="off">
-      <ErrorBanner error={action.error} />
       {showTemplate && (
       <div className="flex items-start gap-3 rounded-md border bg-muted/40 p-3">
         <ServiceLogo template={template} />
@@ -258,8 +270,25 @@ export function ServiceForm({
         </Button>
       </div>
       )}
-      <Field label="Name" htmlFor="svc-name" hint="How it shows in the vault and in session info.">
-        <Input id="svc-name" value={name} onChange={(e) => setName(e.target.value)} required />
+      <Field
+        label="Name"
+        htmlFor="svc-name"
+        hint="How it shows in the vault and in session info."
+        error={
+          duplicate &&
+          `${vaultName ? `${vaultName} already has` : "This vault already has"} a service named "${name.trim()}". Try "${freeName(name, takenNames ?? [])}".`
+        }
+      >
+        <Input
+          id="svc-name"
+          value={name}
+          aria-invalid={duplicate}
+          onChange={(e) => {
+            setNameEdited(true);
+            setName(e.target.value);
+          }}
+          required
+        />
       </Field>
       {hostRequired && hostField(true)}
       {template.credential_fields.map((f) => (
@@ -280,17 +309,14 @@ export function ServiceForm({
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ChevronRight className={cn("size-4 transition-transform", advanced && "rotate-90")} />
-          Advanced
-          <span className="text-xs">
-            {hostOptional ? "custom endpoint, headers" : "headers"}
-          </span>
+          {hostOptional ? "Custom endpoint and headers" : "Custom headers"}
         </button>
         {advanced && (
           <div className="mt-4 space-y-4 border-l pl-4">
             {hostOptional && hostField(false)}
             <div className="space-y-2">
               <div>
-                <div className="text-sm font-medium">Custom headers</div>
+                {hostOptional && <div className="text-sm font-medium">Custom headers</div>}
                 <p className="text-xs text-muted-foreground">
                   Sent with every request. Type <Mono>{"{{"}</Mono> to use a variable.
                 </p>
@@ -306,12 +332,13 @@ export function ServiceForm({
         )}
       </div>
       {children}
+      <ErrorBanner error={action.error} title="The service was not saved" />
       <DialogActions>
         {blocked && <p className="mr-auto self-center text-sm text-muted-foreground">{blocked}</p>}
         <Button type="button" variant="outline" onClick={onBack}>
           {backLabel}
         </Button>
-        <Button type="submit" disabled={action.busy || missingVariable || !isAdmin || blocked !== null}>
+        <Button type="submit" disabled={action.busy || missingVariable || duplicate || !isAdmin || blocked !== null}>
           {submitLabel}
         </Button>
       </DialogActions>

@@ -848,6 +848,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_service_name_is_a_readable_conflict() {
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let req = bearer(&[("token", "t")], &["api.example.com"]);
+        cp.policy
+            .create_credential(&a, &vault.id, req.clone())
+            .await
+            .unwrap();
+        match cp.policy.create_credential(&a, &vault.id, req).await {
+            Err(ControlError::Conflict { message }) => assert_eq!(
+                message,
+                "a service named 'api' already exists in vault 'main'; choose another name"
+            ),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn templates_cap_scope() {
         let cp = plane().await;
         let a = admin(0);
