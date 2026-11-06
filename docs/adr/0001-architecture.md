@@ -309,7 +309,7 @@ checks every read endpoint and the raw database files for the plaintext.
 | 13 | Interception CA | One interception CA per control plane, delivered sealed to every node | A compromised node can mint certificates that clients trusting that CA accept. Clients should trust it only inside agent sandboxes. Per-node, name-constrained intermediates are out of scope (see below). |
 | 14 | Setup token output | Printed to the terminal (stderr), not to the JSON log | Logs are often shipped elsewhere; the token is a one-shot admin credential. |
 | 15 | Login rate limiter | In memory, per process | Sufficient for a single-node standalone server. HA would need a shared limiter. |
-| 16 | PASETO | v4.public implemented in `broker-core` (PAE, Ed25519, footer, implicit assertion), with round-trip, tamper, expiry and key-id tests | Keeps the dependency set small and the claims typed. **Not yet checked against the official PASETO test vectors**; do that before a non-MVP release. |
+| 16 | PASETO | v4.public implemented in `broker-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
 
 ## Out of scope, with seams left for them
 

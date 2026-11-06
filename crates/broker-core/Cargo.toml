@@ -25,5 +25,8 @@ uuid.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+hex.workspace = true
+
 [lints]
 workspace = true

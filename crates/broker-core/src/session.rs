@@ -174,6 +174,84 @@ struct Footer {
     kid: String,
 }
 
+/// Signs `message` as a PASETO `v4.public` token. An empty footer is
+/// omitted from the token, as the specification requires.
+pub fn sign_v4_public(key: &SigningKey, message: &[u8], footer: &[u8], implicit: &[u8]) -> String {
+    let signature = key.sign(&pae(&[HEADER.as_bytes(), message, footer, implicit]));
+    let mut payload = Vec::with_capacity(message.len() + SIGNATURE_LEN);
+    payload.extend_from_slice(message);
+    payload.extend_from_slice(&signature.to_bytes());
+    let mut token = format!("{HEADER}{}", URL_SAFE_NO_PAD.encode(payload));
+    if !footer.is_empty() {
+        token.push('.');
+        token.push_str(&URL_SAFE_NO_PAD.encode(footer));
+    }
+    token
+}
+
+/// A decoded, not yet verified `v4.public` token.
+pub struct UnverifiedV4Public {
+    message: Vec<u8>,
+    signature: Signature,
+    /// Empty when the token carries no footer.
+    pub footer: Vec<u8>,
+}
+
+impl UnverifiedV4Public {
+    pub fn parse(token: &str) -> Result<Self, SessionError> {
+        if token.len() > MAX_TOKEN_LEN {
+            return Err(malformed(format!(
+                "token is longer than {MAX_TOKEN_LEN} bytes"
+            )));
+        }
+        let body = token
+            .strip_prefix(HEADER)
+            .ok_or_else(|| malformed("token is not a v4.public PASETO"))?;
+        let (payload_b64, footer_b64) = match body.split_once('.') {
+            Some((p, f)) => (p, Some(f)),
+            None => (body, None),
+        };
+        let footer = match footer_b64 {
+            Some(f) => URL_SAFE_NO_PAD
+                .decode(f)
+                .map_err(|e| malformed(format!("footer is not base64url: {e}")))?,
+            None => Vec::new(),
+        };
+        let payload = URL_SAFE_NO_PAD
+            .decode(payload_b64)
+            .map_err(|e| malformed(format!("payload is not base64url: {e}")))?;
+        if payload.len() < SIGNATURE_LEN {
+            return Err(malformed("payload is shorter than a signature"));
+        }
+        let (message, sig_bytes) = payload.split_at(payload.len() - SIGNATURE_LEN);
+        let signature = Signature::from_slice(sig_bytes)
+            .map_err(|e| malformed(format!("signature has the wrong length: {e}")))?;
+        Ok(Self {
+            message: message.to_vec(),
+            signature,
+            footer,
+        })
+    }
+
+    /// Verifies the signature (with the implicit assertion) and returns the
+    /// message. `kid` only labels the error.
+    pub fn verify(
+        self,
+        key: &VerifyingKey,
+        implicit: &[u8],
+        kid: &str,
+    ) -> Result<Vec<u8>, SessionError> {
+        key.verify_strict(
+            &pae(&[HEADER.as_bytes(), &self.message, &self.footer, implicit]),
+            &self.signature,
+        )
+        .map_err(|_| SessionError::BadSignature {
+            kid: kid.to_string(),
+        })?;
+        Ok(self.message)
+    }
+}
+
 pub struct SessionSigner {
     kid: String,
     key: SigningKey,
@@ -202,18 +280,11 @@ impl SessionSigner {
             kid: self.kid.clone(),
         })
         .map_err(|e| CoreError::encoding("session footer", e))?;
-        let signature = self.key.sign(&pae(&[
-            HEADER.as_bytes(),
+        Ok(sign_v4_public(
+            &self.key,
             &message,
             &footer,
             IMPLICIT_ASSERTION,
-        ]));
-        let mut payload = message;
-        payload.extend_from_slice(&signature.to_bytes());
-        Ok(format!(
-            "{HEADER}{}.{}",
-            URL_SAFE_NO_PAD.encode(payload),
-            URL_SAFE_NO_PAD.encode(footer)
         ))
     }
 }
@@ -225,41 +296,18 @@ pub fn verify_session(
     keys: &HashMap<String, VerifyingKey>,
     now: DateTime<Utc>,
 ) -> Result<SessionClaims, SessionError> {
-    if token.len() > MAX_TOKEN_LEN {
-        return Err(malformed(format!(
-            "token is longer than {MAX_TOKEN_LEN} bytes"
-        )));
+    let parsed = UnverifiedV4Public::parse(token)?;
+    if parsed.footer.is_empty() {
+        return Err(malformed("token has no footer"));
     }
-    let body = token
-        .strip_prefix(HEADER)
-        .ok_or_else(|| malformed("token is not a v4.public PASETO"))?;
-    let (payload_b64, footer_b64) = body
-        .split_once('.')
-        .ok_or_else(|| malformed("token has no footer"))?;
-    let footer = URL_SAFE_NO_PAD
-        .decode(footer_b64)
-        .map_err(|e| malformed(format!("footer is not base64url: {e}")))?;
-    let kid = serde_json::from_slice::<Footer>(&footer)
+    let kid = serde_json::from_slice::<Footer>(&parsed.footer)
         .map_err(|e| malformed(format!("footer is not valid JSON: {e}")))?
         .kid;
     let key = keys
         .get(&kid)
         .ok_or_else(|| SessionError::UnknownKey { kid: kid.clone() })?;
-    let payload = URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .map_err(|e| malformed(format!("payload is not base64url: {e}")))?;
-    if payload.len() <= SIGNATURE_LEN {
-        return Err(malformed("payload is shorter than a signature"));
-    }
-    let (message, sig_bytes) = payload.split_at(payload.len() - SIGNATURE_LEN);
-    let signature = Signature::from_slice(sig_bytes)
-        .map_err(|e| malformed(format!("signature has the wrong length: {e}")))?;
-    key.verify_strict(
-        &pae(&[HEADER.as_bytes(), message, &footer, IMPLICIT_ASSERTION]),
-        &signature,
-    )
-    .map_err(|_| SessionError::BadSignature { kid: kid.clone() })?;
-    let claims: SessionClaims = serde_json::from_slice(message)
+    let message = parsed.verify(key, IMPLICIT_ASSERTION, &kid)?;
+    let claims: SessionClaims = serde_json::from_slice(&message)
         .map_err(|e| malformed(format!("claims are not valid: {e}")))?;
     if claims.iss != ISSUER {
         return Err(SessionError::WrongIssuer { issuer: claims.iss });
@@ -387,6 +435,108 @@ mod tests {
                 verify_session(bad, &keys, Utc::now()),
                 Err(SessionError::Malformed { .. })
             ));
+        }
+    }
+
+    // Official PASETO v4 test vectors, from
+    // https://github.com/paseto-standard/test-vectors (v4.json).
+    // Copyright (c) 2021 Paragon Initiative Enterprises, ISC License:
+    // Permission to use, copy, modify, and/or distribute this software for
+    // any purpose with or without fee is hereby granted, provided that the
+    // above copyright notice and this permission notice appear in all copies.
+    mod paseto_vectors {
+        use super::super::*;
+
+        const SEED: &str = "b4cbfb43df4ce210727d953e4a713307fa19bb7d9f85041438d9e11b942a3774";
+        const PUBLIC: &str = "1eb9dbbbbc047c03fd70604e0071f0987e16b28b757225c11f00415d0e20b1a2";
+        const PAYLOAD: &str =
+            r#"{"data":"this is a signed message","exp":"2022-01-01T00:00:00+00:00"}"#;
+        const KID_FOOTER: &str = r#"{"kid":"zVhMiPBP9fRf2snEcT7gFTioeA9COcNy9DfgL1W60haN"}"#;
+
+        struct Vector {
+            name: &'static str,
+            token: &'static str,
+            footer: &'static str,
+            implicit: &'static str,
+        }
+
+        const VALID: [Vector; 3] = [
+            Vector {
+                name: "4-S-1",
+                token: "v4.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAyMi0wMS0wMVQwMDowMDowMCswMDowMCJ9bg_XBBzds8lTZShVlwwKSgeKpLT3yukTw6JUz3W4h_ExsQV-P0V54zemZDcAxFaSeef1QlXEFtkqxT1ciiQEDA",
+                footer: "",
+                implicit: "",
+            },
+            Vector {
+                name: "4-S-2",
+                token: "v4.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAyMi0wMS0wMVQwMDowMDowMCswMDowMCJ9v3Jt8mx_TdM2ceTGoqwrh4yDFn0XsHvvV_D0DtwQxVrJEBMl0F2caAdgnpKlt4p7xBnx1HcO-SPo8FPp214HDw.eyJraWQiOiJ6VmhNaVBCUDlmUmYyc25FY1Q3Z0ZUaW9lQTlDT2NOeTlEZmdMMVc2MGhhTiJ9",
+                footer: KID_FOOTER,
+                implicit: "",
+            },
+            Vector {
+                name: "4-S-3",
+                token: "v4.public.eyJkYXRhIjoidGhpcyBpcyBhIHNpZ25lZCBtZXNzYWdlIiwiZXhwIjoiMjAyMi0wMS0wMVQwMDowMDowMCswMDowMCJ9NPWciuD3d0o5eXJXG5pJy-DiVEoyPYWs1YSTwWHNJq6DZD3je5gf-0M4JR9ipdUSJbIovzmBECeaWmaqcaP0DQ.eyJraWQiOiJ6VmhNaVBCUDlmUmYyc25FY1Q3Z0ZUaW9lQTlDT2NOeTlEZmdMMVc2MGhhTiJ9",
+                footer: KID_FOOTER,
+                implicit: r#"{"test-vector":"4-S-3"}"#,
+            },
+        ];
+
+        fn keys() -> (SigningKey, VerifyingKey) {
+            let seed: [u8; 32] = hex::decode(SEED).unwrap().try_into().unwrap();
+            let signing = SigningKey::from_bytes(&seed);
+            let public: [u8; 32] = hex::decode(PUBLIC).unwrap().try_into().unwrap();
+            let verifying = VerifyingKey::from_bytes(&public).unwrap();
+            assert_eq!(signing.verifying_key(), verifying);
+            (signing, verifying)
+        }
+
+        #[test]
+        fn signing_reproduces_the_official_tokens() {
+            let (signing, _) = keys();
+            for v in &VALID {
+                let token = sign_v4_public(
+                    &signing,
+                    PAYLOAD.as_bytes(),
+                    v.footer.as_bytes(),
+                    v.implicit.as_bytes(),
+                );
+                assert_eq!(token, v.token, "vector {}", v.name);
+            }
+        }
+
+        #[test]
+        fn verifying_accepts_the_official_tokens() {
+            let (_, verifying) = keys();
+            for v in &VALID {
+                let parsed = UnverifiedV4Public::parse(v.token).unwrap();
+                assert_eq!(parsed.footer, v.footer.as_bytes(), "vector {}", v.name);
+                let message = parsed
+                    .verify(&verifying, v.implicit.as_bytes(), "test")
+                    .unwrap();
+                assert_eq!(message, PAYLOAD.as_bytes(), "vector {}", v.name);
+            }
+        }
+
+        #[test]
+        fn wrong_implicit_assertion_is_rejected() {
+            let (_, verifying) = keys();
+            let v = &VALID[2];
+            let parsed = UnverifiedV4Public::parse(v.token).unwrap();
+            assert!(parsed.verify(&verifying, b"", "test").is_err());
+        }
+
+        #[test]
+        fn official_failure_vectors_are_rejected() {
+            let (_, verifying) = keys();
+            // 4-F-2: a v4.public token that must not verify.
+            let bad = "v4.public.eyJpbnZhbGlkIjoidGhpcyBzaG91bGQgbmV2ZXIgZGVjb2RlIn22Sp4gjCaUw0c7EH84ZSm_jN_Qr41MrgLNu5LIBCzUr1pn3Z-Wukg9h3ceplWigpoHaTLcwxj0NsI1vjTh67YB.eyJraWQiOiJ6VmhNaVBCUDlmUmYyc25FY1Q3Z0ZUaW9lQTlDT2NOeTlEZmdMMVc2MGhhTiJ9";
+            let rejected = UnverifiedV4Public::parse(bad)
+                .and_then(|p| p.verify(&verifying, br#"{"test-vector":"4-F-2"}"#, "test"));
+            assert!(rejected.is_err());
+            // 4-F-1, 4-F-3..5: other versions/purposes must not even parse.
+            for other in ["v4.local.AAAA", "v3.local.AAAA", "v3.public.AAAA"] {
+                assert!(UnverifiedV4Public::parse(other).is_err(), "{other}");
+            }
         }
     }
 }
