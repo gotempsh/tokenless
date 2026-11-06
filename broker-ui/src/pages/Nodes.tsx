@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Ban, Download, Info, Plus, Server, ShieldCheck } from "lucide-react";
 import { get, post, type NodeInfo, type Page } from "../api";
 import { useAction, useLoad } from "../hooks";
@@ -62,15 +62,9 @@ async function caFingerprint(): Promise<{ pem: string; sha256: string }> {
   return { pem, sha256 };
 }
 
-/** A colon-separated fingerprint that wraps between bytes, never inside one. */
-function Fingerprint({ value }: { value: string }) {
-  const bytes = value.split(":");
-  return bytes.map((byte, i) => (
-    <Fragment key={i}>
-      {i < bytes.length - 1 ? `${byte}:` : byte}
-      <wbr />
-    </Fragment>
-  ));
+/** The first bytes of a fingerprint, enough to recognise it; copy gets all of it. */
+function shortFingerprint(value: string): string {
+  return `${value.split(":").slice(0, 4).join(":")}…`;
 }
 
 export function Nodes() {
@@ -135,7 +129,11 @@ export function Nodes() {
           <div className="text-sm font-medium">Interception CA</div>
           <div className="flex min-w-0 items-center gap-1">
             <span className="shrink-0 text-xs text-muted-foreground">SHA-256</span>
-            <Mono className="min-w-0 bg-transparent text-muted-foreground">{ca.data ? <Fingerprint value={ca.data.sha256} /> : "…"}</Mono>
+            {ca.data && (
+              <span title={ca.data.sha256}>
+                <Mono className="bg-transparent text-muted-foreground">{shortFingerprint(ca.data.sha256)}</Mono>
+              </span>
+            )}
             {ca.data && <CopyButton value={ca.data.sha256} label="Copy fingerprint" iconOnly />}
           </div>
         </div>
