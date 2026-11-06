@@ -1,0 +1,65 @@
+<!--
+SPDX-FileCopyrightText: 2026 tokenless contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
+# Concepts
+
+## Vault
+
+A vault groups services, the rules that use them, and the sessions minted
+from those rules. Use one per team or environment, for example `work`
+and `staging`. API keys, editors and viewers are bound to one vault.
+
+## Service
+
+A service is one stored credential plus how to send it: a GitHub token, an
+OpenAI key, an MCP server's token. It is created from a **template**,
+which knows the service's hosts, paths and methods and where the
+credential goes (a header, usually). tokenless ships with templates for
+over 150 APIs and MCP servers; you can import your own under
+**Templates**.
+
+The secret is write-only. You can replace it, never read it. A service can
+also have custom headers and [placeholders](placeholders.md).
+
+## Rule
+
+A rule lets a service's credential be used. It says for which hosts,
+paths and methods, and, for an MCP server, which tools. It can only
+narrow what the template allows. A service with no rule is never used.
+
+## Access bundle
+
+A bundle is a named list of rules for one kind of job, for example
+`code-review` with GitHub read access and Slack. Agents start with a
+bundle by name. A bundle grants nothing on its own: each session keeps
+the rules it was minted with.
+
+## Session
+
+A session is what an agent actually holds, usually without seeing it: a
+signed token bound to one vault, a set of rules, a lifetime and optional
+labels and request limit. `tokenless run` mints one per run and ends it
+when the agent exits. Revoke a session to cut an agent off.
+
+## Proxy
+
+A proxy (a *node*) is the data plane: `tokenless node run`. Agents send
+their HTTPS traffic through it. For hosts a session's rules cover, it
+decrypts the request, adds the credential and forwards it; anything else
+is passed through untouched or refused, depending on
+[Settings](settings.md). Proxies enrol once with a join token and then
+pull a signed policy snapshot from the control plane.
+
+## People and API keys
+
+| Role | Can |
+|---|---|
+| Admin | Everything. Only people can be admins. |
+| Editor | Manage rules, bundles and sessions in one vault. |
+| Viewer | Read one vault. |
+| Session issuer | Mint sessions in one vault, nothing else. API keys only. |
+
+Invite people under **People**. Create API keys for automation under
+**API keys**; give agents' launchers a session issuer key.

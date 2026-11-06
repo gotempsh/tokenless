@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[book]
+title = "tokenless documentation"
+description = "Give AI agents access to APIs without giving them the keys."
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "/docs/"
+git-repository-url = "https://github.com/gotempsh/tokenless"
+edit-url-template = "https://github.com/gotempsh/tokenless/edit/main/site/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+no-section-label = true
+additional-css = ["tokenless.css"]
+
+[output.html.search]
+limit-results = 20

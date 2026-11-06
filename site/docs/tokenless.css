@@ -1,0 +1,70 @@
+/*
+ * SPDX-FileCopyrightText: 2026 tokenless contributors
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ *
+ * The landing page's typeface and colours on mdBook's light and navy themes.
+ * The fonts are the landing page's own, served from /fonts.
+ */
+
+@font-face {
+  font-family: "Public Sans";
+  src: url("/fonts/PublicSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Public Sans";
+  src: url("/fonts/PublicSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Public Sans";
+  src: url("/fonts/PublicSans-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-display: swap;
+}
+
+:root {
+  --mono-font: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+}
+
+html,
+body,
+.sidebar,
+.menu-title {
+  font-family: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+.content h1,
+.content h2 {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.light {
+  --bg: #fcfcfd;
+  --fg: #1b2436;
+  --sidebar-bg: #f1f3f7;
+  --sidebar-fg: #4a5468;
+  --sidebar-active: #2c4fa3;
+  --links: #2c4fa3;
+  --inline-code-color: #1b2436;
+  --quote-bg: #eef1f7;
+  --quote-border: #d3d9e4;
+  --table-border-color: #d3d9e4;
+  --table-header-bg: #eef1f7;
+  --table-alternate-bg: #f6f7fa;
+}
+
+.navy {
+  --bg: #0d1320;
+  --fg: #e6eaf2;
+  --sidebar-bg: #0a0f1a;
+  --sidebar-fg: #a9b3c7;
+  --sidebar-active: #a5b9ec;
+  --links: #a5b9ec;
+  --table-border-color: #2b3550;
+  --table-header-bg: #18223a;
+  --table-alternate-bg: #111a2b;
+}

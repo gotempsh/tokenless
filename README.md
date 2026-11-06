@@ -31,17 +31,36 @@ denied, depending on policy).
 The design, the threat model and the trade-offs are in
 [docs/adr/0001-architecture.md](docs/adr/0001-architecture.md).
 
-## Quickstart
-
-Requirements: Rust 1.85+ and [bun](https://bun.sh) for the UI.
+## Install
 
 ```sh
-# Build the binary and the console
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+```
+
+The script installs the latest release for Linux (x86_64, arm64) or macOS
+after checking it against the release's `SHA256SUMS` (and its Sigstore
+signature when `cosign` is installed). Releases also ship a signed
+container image, `ghcr.io/gotempsh/tokenless`. To give your agents the
+[agent skill](#the-agent-skill):
+
+```sh
+npx skills add gotempsh/tokenless
+```
+
+The documentation, including production deployment, is in
+[`site/docs`](site/docs/src/SUMMARY.md) and published with the website.
+
+## Quickstart
+
+To build from source instead, you need Rust 1.89+ and [bun](https://bun.sh).
+Build the console first: it is embedded in the binary.
+
+```sh
 (cd broker-ui && bun install && bun run build)
+cargo build --release
 
 # 1. Start the control plane. On first start it prints a single-use setup token.
-./target/release/tokenless serve --data-dir ./data --ui-dir broker-ui/dist
+./target/release/tokenless serve --data-dir ./data
 ```
 
 Open <http://127.0.0.1:8080/> and complete these steps:
@@ -117,6 +136,7 @@ the command starts, with the references the session does resolve.
 #### The agent skill
 
 ```sh
+npx skills add gotempsh/tokenless                # with the skills CLI, for any agent
 tokenless skill --install                        # ~/.claude/skills/tokenless/SKILL.md
 tokenless skill --install --dir .claude/skills   # for one project
 tokenless skill                                  # print it
@@ -251,7 +271,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   `Secure`:
 
   ```sh
-  ./target/release/tokenless serve --data-dir ./data --ui-dir broker-ui/dist \
+  ./target/release/tokenless serve --data-dir ./data \
     --api-listen 0.0.0.0:443 --api-tls-cert /etc/broker/fullchain.pem --api-tls-key /etc/broker/privkey.pem
   ```
 
@@ -281,6 +301,23 @@ cargo test                      # unit tests, conformance suites, end-to-end tes
 (cd broker-ui && bun run dev)   # UI dev server, proxies /api to 127.0.0.1:8080
 ```
 
+`cargo build` embeds `broker-ui/dist` when it exists; `serve --ui-dir
+broker-ui/dist` serves a directory instead, which is handy while working
+on the console.
+
+### Releasing
+
+1. Set `version` in the root `Cargo.toml` (and `broker-ui/package.json`),
+   commit, and tag it: `git tag -s v0.2.0 && git push origin v0.2.0`.
+2. The **Release** workflow checks the tag matches `Cargo.toml`, builds the
+   console and the four platform archives, signs them with Sigstore,
+   attests their provenance, publishes the GitHub release, and pushes the
+   signed multi-arch image to `ghcr.io`. A tag with a suffix
+   (`v0.2.0-rc.1`) is a prerelease and doesn't move `latest`.
+
+The website (`site/`) is deployed separately; see
+[`site/README.md`](site/README.md).
+
 | Path | Contents |
 |---|---|
 | `crates/broker-core` | Rules, scopes, templates, injection, sessions, snapshots (no I/O) |
@@ -291,6 +328,9 @@ cargo test                      # unit tests, conformance suites, end-to-end tes
 | `crates/broker-server` | HTTP APIs, SQLite store and the `tokenless` binary |
 | `broker-ui` | Management console |
 | `tools/catalog` | Source of the built-in service catalogue and its logos |
+| `site` | Website: landing page, documentation (`site/docs`) and `install.sh` |
+| `packaging` | The release container image |
+| `skills/tokenless` | The agent skill (`npx skills add`, `tokenless skill`) |
 
 ### Adding a built-in service
 

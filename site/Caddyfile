@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Plain HTTP on 8080; the platform in front of it terminates TLS.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	root * /srv
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		-Server
+	}
+	header /fonts/* Cache-Control "public, max-age=604800"
+	header /logos/* Cache-Control "public, max-age=604800"
+	# Shown as text when opened in a browser; `curl | sh` doesn't care.
+	header /install.sh Content-Type "text/plain; charset=utf-8"
+
+	redir /docs /docs/ 308
+	file_server
+}

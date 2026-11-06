@@ -1,0 +1,95 @@
+<!--
+SPDX-FileCopyrightText: 2026 tokenless contributors
+SPDX-License-Identifier: MIT OR Apache-2.0
+-->
+
+# Quickstart
+
+This runs everything on one machine: the control plane, a proxy and an
+agent. It takes about five minutes. You need a token for a service you
+use, for example a GitHub personal access token.
+
+## 1. Start the control plane
+
+```sh
+tokenless serve --data-dir ./tokenless-data
+```
+
+On first start it prints a **single-use setup token**. Open
+<http://127.0.0.1:8080/>, enter the token and create the admin account.
+Enrolling an authenticator app is optional but recommended.
+
+## 2. Add a service
+
+1. Open **Vaults** and create a vault, for example `work`.
+2. Click **Add service**, pick **GitHub** and click it.
+3. Choose the vault, what agents may do (**Full access** or
+   **Read only**), and an access bundle. Create a new bundle called
+   `code-review`.
+4. Paste the token and save.
+
+This stores the credential, adds a rule that lets agents use it, and puts
+that rule in the `code-review` bundle. The token is write-only from now
+on: nobody can read it back.
+
+Use **Test** on the service's page to check the token works.
+
+## 3. Start a proxy
+
+1. Open **Proxies** and click **Add a proxy**.
+2. Run the two commands it shows, in another terminal:
+
+   ```sh
+   tokenless node join --control-url https://127.0.0.1:8443 --token 'cbj1....'
+   tokenless node run
+   ```
+
+The proxy shows as **Connected** within a few seconds. It listens on
+`127.0.0.1:3128`.
+
+## 4. Create an API key
+
+Open **API keys**, create a key for the `work` vault with the
+**Session issuer** role, and copy it. That key can start sessions in that
+vault and do nothing else.
+
+```sh
+export TOKENLESS_API_KEY=cbk_...
+```
+
+## 5. Run something behind it
+
+```sh
+tokenless run --bundle code-review -- curl -s https://api.github.com/user
+```
+
+The request reaches GitHub with your token, and `curl` never had it.
+Try a host outside the bundle and the proxy passes it through untouched
+(or refuses it, depending on [Settings](settings.md)).
+
+Now start a real agent the same way:
+
+```sh
+tokenless run --bundle code-review -- claude
+```
+
+The session appears under **Sessions**, and every request it makes under
+**Audit log**. When the agent exits, its session ends.
+
+## Give your agent the skill
+
+```sh
+npx skills add gotempsh/tokenless
+```
+
+It teaches the agent to check what it can reach and to read the proxy's
+refusals instead of looking for a key. See
+[Run an agent](agents.md#the-agent-skill) for other ways to install it.
+
+## Next
+
+- [Concepts](concepts.md) explains vaults, rules, bundles and sessions.
+- [Run an agent](agents.md) covers the options of `run`, `session start`
+  and the agent skill.
+- [Deploy to production](deploy.md) covers TLS, proxies on other
+  machines and backups.

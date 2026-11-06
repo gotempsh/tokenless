@@ -30,7 +30,8 @@ focus check doesn't read. avoid-ai-design-ignore-file: K7
       <li><a href="#session">Terminal</a></li>
       <li><a href="#mcp">MCP clients</a></li>
       <li><a href="#security">Security model</a></li>
-      <li><a href="#self-host">Self-hosting</a></li>
+      <li><a href="#self-host">Install</a></li>
+      <li><a href="docs/">Docs</a></li>
     </ul>
   </nav>
 </header>
@@ -42,8 +43,8 @@ focus check doesn't read. avoid-ai-design-ignore-file: K7
     <h1>Let an agent use your GitHub token without ever holding it</h1>
     <p class="lede">tokenless is a credential broker for AI agents. Their HTTPS traffic goes through a proxy you run, and for hosts that have a rule, the proxy adds the real credential on the way out. The agent gets a proxy address and a placeholder. The proxy is authenticated: a connection without a valid session token gets <code>407</code> and nothing else.</p>
     <div class="hero-actions">
-      <a class="button" href="#session">See a session in the terminal</a>
-      <a href="#security">Read the security model</a>
+      <a class="button" href="docs/quickstart.html">Get started</a>
+      <a href="#session">See a session in the terminal</a>
     </div>
   </div>
 
@@ -405,30 +406,47 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
   <div class="wrap">
     <div class="section-head">
       <h2 id="self-host-title">One binary, on your machines</h2>
-      <p>tokenless is a single Rust binary, plus the console's static files. <code>serve</code> runs the control plane with SQLite and the web console, and <code>node run</code> runs a proxy next to your agents. Everything sensitive in <code>data/broker.db</code> is encrypted with <code>data/master.key</code>; back them up separately. Building it needs Rust 1.85 or later, and bun for the console.</p>
+      <p>tokenless is a single binary with the console built in, for Linux and macOS. <code>serve</code> runs the control plane with SQLite and the web console, and <code>node run</code> runs a proxy next to your agents. Everything sensitive in <code>broker.db</code> is encrypted with <code>master.key</code>; back them up separately. The <a href="docs/">documentation</a> covers <a href="docs/deploy.html">production deployments</a>, the container image and building from source.</p>
     </div>
 
     <div class="exhibit">
       <figure class="term">
-        <figcaption id="t9">The control plane</figcaption>
-<pre tabindex="0" aria-labelledby="t9"><code><span class="ps">$ </span>cargo build --release
-<span class="ps">$ </span>(cd broker-ui &amp;&amp; bun install &amp;&amp; bun run build)
-<span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> serve \
-    --data-dir ./data --ui-dir broker-ui/dist</code></pre>
+        <figcaption id="t9">Install, then start the control plane</figcaption>
+<pre tabindex="0" aria-labelledby="t9"><code><span class="ps">$ </span>curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+<span class="ps">$ </span><span class="bin">tokenless</span> serve --data-dir ./tokenless-data</code></pre>
       </figure>
       <div class="notes">
-        <p>On first start, <strong>serve</strong> prints a single-use setup token to the terminal. Open <code>http://127.0.0.1:8080/</code>, enter it and create the admin. More people join by invitation as viewer, editor or admin.</p>
+        <p>The script checks the download against the release's checksums, and its signature when <strong>cosign</strong> is installed. On first start, <strong>serve</strong> prints a single-use setup token. Open <code>http://127.0.0.1:8080/</code>, enter it and create the admin. More people join by invitation as viewer, editor or admin.</p>
       </div>
     </div>
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t10">A proxy node, next to the agent</figcaption>
-<pre tabindex="0" aria-labelledby="t10"><code><span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> node join \
-    --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
-<span class="ps">$ </span>./target/release/<span class="bin">tokenless</span> node run --state ./node.json</code></pre>
+<pre tabindex="0" aria-labelledby="t10"><code><span class="ps">$ </span><span class="bin">tokenless</span> node join \
+    --control-url https://127.0.0.1:8443 --token 'cbj1....'
+<span class="ps">$ </span><span class="bin">tokenless</span> node run</code></pre>
       </figure>
       <div class="notes">
         <p>Create the join token on the console's <strong>Proxies</strong> page. The node listens on <code>127.0.0.1:3128</code> for agents and <code>127.0.0.1:3129</code> for MCP clients.</p>
+      </div>
+    </div>
+    <div class="exhibit">
+      <figure class="term">
+        <figcaption id="t12">Give your agents the skill</figcaption>
+<pre tabindex="0" aria-labelledby="t12"><code><span class="ps">$ </span>npx skills add gotempsh/tokenless</code></pre>
+      </figure>
+      <div class="notes">
+        <p>It tells an agent behind the proxy how to see what it can reach, hand a tool a placeholder instead of a key, and read a <code>403</code> without trying to get around it. Works with Claude Code, Cursor, Codex and the other agents the <a href="https://skills.sh">skills CLI</a> supports; <code>tokenless skill --install</code> does the same without Node.</p>
+      </div>
+    </div>
+    <div class="exhibit">
+      <figure class="term">
+        <figcaption id="t11">Or run the control plane in a container</figcaption>
+<pre tabindex="0" aria-labelledby="t11"><code><span class="ps">$ </span>docker run -d -v tokenless-data:/data \
+    -p 127.0.0.1:8080:8080 -p 8443:8443 ghcr.io/gotempsh/tokenless</code></pre>
+      </figure>
+      <div class="notes">
+        <p>Images for amd64 and arm64, signed with cosign, built from the same static binaries as the release archives.</p>
       </div>
     </div>
   </div>
@@ -439,7 +457,8 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
 <footer class="colophon">
   <div class="wrap">
     <span class="wordmark">tokenless</span>
-    <p>Licensed under the MIT license or the Apache License 2.0, at your option. The design, threat model and trade-offs are written up in the repository's <code>docs/adr</code> folder.</p>
+    <p><a href="docs/">Documentation</a> · <a href="https://github.com/gotempsh/tokenless">Source on GitHub</a> · <a href="https://github.com/gotempsh/tokenless/releases">Releases</a></p>
+    <p>Licensed under the MIT license or the Apache License 2.0, at your option. The design, threat model and trade-offs are written up in the repository's <a href="https://github.com/gotempsh/tokenless/tree/main/docs/adr"><code>docs/adr</code></a> folder.</p>
     <p>Service logos are trademarks of their owners and identify the services the built-in templates work with. They don't imply endorsement. Their sources and licences are listed in <a href="logos/NOTICE.md">logos/NOTICE.md</a>. Text is set in Public Sans, under the <a href="fonts/LICENSE.md">SIL Open Font License</a>.</p>
   </div>
 </footer>
