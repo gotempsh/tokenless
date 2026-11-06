@@ -48,6 +48,9 @@ pub struct ApiKeyParts {
     pub full: String,
 }
 
+const LOOKUP_LEN: usize = 12;
+const SECRET_LEN: usize = 43;
+
 pub fn new_api_key() -> ApiKeyParts {
     let lookup = random_part(9);
     let prefix = format!("{API_KEY_PREFIX}_{lookup}");
@@ -63,8 +66,18 @@ pub fn parse_api_key(value: &str) -> Result<ApiKeyParts, AuthError> {
         .strip_prefix(API_KEY_PREFIX)
         .and_then(|r| r.strip_prefix('_'))
         .ok_or_else(malformed)?;
-    let (lookup, secret) = rest.split_once('_').ok_or_else(malformed)?;
-    if lookup.len() != 12 || secret.len() != 43 {
+    // Both parts are base64url, which itself may contain '_', so split by
+    // position rather than by separator.
+    let is_b64url = |s: &str| {
+        s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    if rest.len() != LOOKUP_LEN + 1 + SECRET_LEN || !rest.is_char_boundary(LOOKUP_LEN) {
+        return Err(malformed());
+    }
+    let (lookup, tail) = rest.split_at(LOOKUP_LEN);
+    let secret = tail.strip_prefix('_').ok_or_else(malformed)?;
+    if !is_b64url(lookup) || !is_b64url(secret) {
         return Err(malformed());
     }
     Ok(ApiKeyParts {
@@ -95,12 +108,27 @@ mod tests {
     }
 
     #[test]
+    fn api_keys_with_underscores_in_the_lookup_round_trip() {
+        // base64url output contains '_' often enough that a separator-based
+        // parser rejects roughly one key in six.
+        let mut saw_underscore = false;
+        for _ in 0..2000 {
+            let key = new_api_key();
+            saw_underscore |= key.prefix[4..].contains('_');
+            assert_eq!(parse_api_key(&key.full).unwrap(), key, "{}", key.full);
+        }
+        assert!(saw_underscore);
+    }
+
+    #[test]
     fn api_keys_round_trip() {
         let key = new_api_key();
         let parsed = parse_api_key(&key.full).unwrap();
         assert_eq!(parsed, key);
         assert!(key.full.starts_with(&key.prefix));
         assert!(parse_api_key("cbk_short_x").is_err());
+        assert!(parse_api_key(&format!("{}!", &key.full[..key.full.len() - 1])).is_err());
+        assert!(parse_api_key(&key.full.replacen('_', "-", 2)).is_err());
         assert!(parse_api_key("other_abcdefghijkl_x").is_err());
     }
 }
