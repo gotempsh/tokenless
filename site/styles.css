@@ -1,0 +1,696 @@
+/*
+ * SPDX-FileCopyrightText: 2026 credential-broker contributors
+ * SPDX-License-Identifier: MIT OR Apache-2.0
+ */
+
+/*
+ * One idea: a security envelope. Its printed lining stands wherever a
+ * secret would be, because the page, like the broker, never shows one.
+ * Everything else is plain paper and ink.
+ */
+
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/PublicSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/PublicSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Public Sans";
+  src: url("fonts/PublicSans-ExtraBold.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: light dark;
+
+  /* Paper and ink */
+  --paper: #fcfcfd;
+  --paper-2: #eef1f6;
+  --ink: #1b2436;
+  --ink-soft: #4a5468;
+  --line: #d3d9e4;
+
+  /* Envelope lining: links, the sealed pattern */
+  --cobalt: #2c4fa3;
+  --lining-a: #2c4fa3;
+  --lining-b: #93a8d8;
+  --lining-ground: #e3e9f5;
+
+  /* Refusals only: 403, 407 */
+  --refuse: #a8261c;
+
+  /* Terminal */
+  --term: #1b2436;
+  --term-ink: #e8ecf3;
+  --term-soft: #a9b3c8;
+  --term-prompt: #93a8d8;
+  --term-refuse: #ffa197;
+
+  --font-text: "Public Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-code: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  --step--1: 0.875rem;
+  --step-0: 1.0625rem;
+  --step-1: 1.3rem;
+  --step-2: clamp(1.6rem, 1.2rem + 1.6vw, 2.3rem);
+  --step-3: clamp(2.3rem, 1.4rem + 3.8vw, 4.1rem);
+
+  --wide: 76rem;
+  --text: 40rem;
+  --gutter: clamp(1.1rem, 4vw, 2.5rem);
+  --radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0d1320;
+    --paper-2: #161e30;
+    --ink: #e6eaf2;
+    --ink-soft: #a9b3c7;
+    --line: #2b3550;
+    --cobalt: #a5b9ec;
+    --lining-a: #7d95d2;
+    --lining-b: #3a4f86;
+    --lining-ground: #18223a;
+    --refuse: #ff9d92;
+    --term: #070b14;
+    --term-ink: #e6eaf2;
+    --term-soft: #a3adc2;
+    --term-prompt: #8ea3d9;
+    --term-refuse: #ff9d92;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: var(--step-0);
+  line-height: 1.6;
+}
+
+/* The lining shows along the top edge, as it does inside an envelope flap. */
+body::before {
+  content: "";
+  display: block;
+  height: 10px;
+  background:
+    repeating-linear-gradient(45deg, var(--lining-a) 0 1.5px, transparent 1.5px 6px),
+    repeating-linear-gradient(-45deg, var(--lining-b) 0 1.5px, transparent 1.5px 6px),
+    var(--lining-ground);
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--step-3);
+  letter-spacing: -0.035em;
+  max-width: 16ch;
+}
+
+h2 {
+  font-size: var(--step-2);
+  max-width: 24ch;
+}
+
+h3 {
+  font-size: var(--step-1);
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0 0 1em;
+  max-width: var(--text);
+}
+
+a {
+  color: var(--cobalt);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+a:focus-visible,
+pre:focus-visible,
+.skip:focus-visible {
+  outline: 3px solid var(--cobalt);
+  outline-offset: 3px;
+  border-radius: var(--radius);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a {
+    transition: text-decoration-thickness 120ms ease-out;
+  }
+}
+
+code,
+pre {
+  font-family: var(--font-code);
+  font-size: 0.875em;
+}
+
+:not(pre) > code {
+  background: var(--paper-2);
+  padding: 0.08em 0.3em;
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.skip {
+  position: absolute;
+  left: var(--gutter);
+  top: -4rem;
+  background: var(--paper);
+  padding: 0.5rem 0.8rem;
+  z-index: 1;
+}
+
+.skip:focus {
+  top: 1rem;
+}
+
+.wrap {
+  max-width: var(--wide);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* Masthead */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 2rem;
+  padding-block: 1.25rem;
+}
+
+.wordmark {
+  font-weight: 800;
+  font-size: 1.35rem;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.masthead ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--step--1);
+}
+
+.masthead a:not(.wordmark) {
+  color: var(--ink-soft);
+}
+
+.masthead a:not(.wordmark):hover {
+  color: var(--ink);
+}
+
+/* Hero: the headline on the left, the rewritten request taking the room. */
+
+.hero {
+  display: grid;
+  gap: 2.5rem 3.5rem;
+  padding-block: clamp(2rem, 6vw, 4.5rem) clamp(3rem, 8vw, 6rem);
+}
+
+@media (min-width: 62rem) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: center;
+  }
+}
+
+.lede {
+  font-size: var(--step-1);
+  line-height: 1.45;
+  margin-top: 1.5rem;
+  max-width: 34rem;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.75rem;
+  margin-top: 2rem;
+  font-weight: 600;
+}
+
+.button {
+  display: inline-block;
+  padding: 0.7rem 1.1rem;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--radius);
+  text-decoration: none;
+}
+
+.button:hover {
+  background: var(--cobalt);
+  color: var(--paper);
+}
+
+.button:active {
+  transform: translateY(1px);
+}
+
+.hero-actions a:not(.button) {
+  padding-block: 0.7rem;
+}
+
+.aside-note {
+  margin-top: 1.75rem;
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+}
+
+/* The request, before and after the proxy */
+
+.rewrite {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.leg {
+  padding: 1.2rem 1.4rem 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* The outgoing half sits on the envelope's lining colour. */
+.leg-out {
+  background: var(--lining-ground);
+  border-color: var(--lining-b);
+}
+
+.leg-title {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 0.7rem;
+}
+
+.leg pre {
+  margin: 0;
+  line-height: 1.8;
+  overflow-x: auto;
+}
+
+.leg .changed {
+  font-weight: 600;
+}
+
+.via {
+  margin: 0;
+  padding: 0.85rem 0 0.85rem 1.4rem;
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+  border-left: 2px solid var(--ink);
+  margin-left: 2.2rem;
+}
+
+.rewrite figcaption {
+  margin-top: 1rem;
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+  max-width: 38rem;
+}
+
+/* A secret, as the page shows it: the lining, and nothing else. */
+.sealed {
+  display: inline-block;
+  width: 18ch;
+  max-width: 45%;
+  height: 1.25em;
+  vertical-align: -0.25em;
+  border-radius: 1px;
+  background:
+    repeating-linear-gradient(45deg, var(--lining-a) 0 1.5px, transparent 1.5px 5px),
+    repeating-linear-gradient(-45deg, var(--lining-b) 0 1.5px, transparent 1.5px 5px),
+    var(--lining-ground);
+}
+
+/* Sections */
+
+section {
+  padding-block: clamp(3rem, 7vw, 5.5rem);
+  border-top: 1px solid var(--line);
+}
+
+.section-head {
+  margin-bottom: 2.25rem;
+}
+
+.section-head h2 {
+  margin-bottom: 1rem;
+}
+
+/* The route a request takes */
+
+.route {
+  list-style: none;
+  margin: 0 0 2.5rem;
+  padding: 0;
+  display: grid;
+  gap: 0;
+  counter-reset: stop;
+}
+
+@media (min-width: 56rem) {
+  .route {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.route li {
+  position: relative;
+  padding: 0 0 1.75rem 1.75rem;
+  border-left: 2px solid var(--ink);
+}
+
+.route li::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 0.35rem;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+}
+
+.route li:last-child {
+  border-left-color: transparent;
+}
+
+.route li.holds::before {
+  background: var(--ink);
+}
+
+@media (min-width: 56rem) {
+  .route li {
+    padding: 1.75rem 1.5rem 0 0;
+    border-left: 0;
+    border-top: 2px solid var(--ink);
+  }
+
+  .route li::before {
+    left: 0;
+    top: -7px;
+  }
+
+  .route li:last-child {
+    border-top-color: var(--ink);
+  }
+}
+
+.route h3 {
+  font-size: var(--step-1);
+}
+
+.route .addr {
+  display: block;
+  margin: 0.2rem 0 0.7rem;
+  color: var(--ink-soft);
+  font-family: var(--font-code);
+  font-size: var(--step--1);
+}
+
+.route p {
+  font-size: 0.97rem;
+}
+
+.control-plane {
+  display: grid;
+  gap: 1rem 3rem;
+  padding: 1.4rem 1.5rem;
+  background: var(--paper-2);
+  border-radius: var(--radius);
+}
+
+@media (min-width: 56rem) {
+  .control-plane {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+}
+
+.control-plane p:last-child {
+  margin-bottom: 0;
+}
+
+/* Terminal exhibits: the transcript, with notes alongside */
+
+.exhibit {
+  display: grid;
+  gap: 1rem 2.5rem;
+  margin-bottom: 2.75rem;
+}
+
+@media (min-width: 62rem) {
+  .exhibit {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+    align-items: start;
+  }
+}
+
+.exhibit:last-child {
+  margin-bottom: 0;
+}
+
+.term {
+  margin: 0;
+  min-width: 0;
+}
+
+.term figcaption {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 0.45rem;
+}
+
+.term pre {
+  margin: 0;
+  padding: 1.1rem 1.25rem;
+  background: var(--term);
+  color: var(--term-ink);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.term .ps {
+  color: var(--term-prompt);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.term .out {
+  color: var(--term-soft);
+}
+
+.term .no {
+  color: var(--term-refuse);
+}
+
+.notes {
+  font-size: 0.97rem;
+  color: var(--ink-soft);
+}
+
+.notes p {
+  margin-bottom: 0.8em;
+}
+
+.notes strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Security model: claim on the left, the evidence on the right */
+
+.claim {
+  display: grid;
+  gap: 0.75rem 3rem;
+  padding-block: 2rem;
+}
+
+.claim + .claim {
+  border-top: 1px solid var(--line);
+}
+
+@media (min-width: 56rem) {
+  .claim {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+}
+
+.claim h3 {
+  font-size: var(--step-2);
+  max-width: 12ch;
+}
+
+.claim .term {
+  margin-top: 1.25rem;
+}
+
+.events {
+  display: grid;
+  gap: 0.4rem 1.25rem;
+  margin: 1rem 0 1.25rem;
+}
+
+@media (min-width: 40rem) {
+  .events {
+    grid-template-columns: max-content 1fr;
+  }
+}
+
+.events dt {
+  white-space: nowrap;
+}
+
+.events dd {
+  margin: 0 0 0.4rem;
+  color: var(--ink-soft);
+}
+
+@media (min-width: 40rem) {
+  .events dd {
+    margin-bottom: 0;
+  }
+}
+
+/* Tables: the proxy's answers, the service catalogue */
+
+.table-scroll {
+  overflow-x: auto;
+  margin-top: 1.25rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.97rem;
+}
+
+caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 0.6rem;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.6rem 1.25rem 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+thead th {
+  font-size: var(--step--1);
+  font-weight: 600;
+  color: var(--ink-soft);
+  border-bottom: 2px solid var(--ink);
+}
+
+.status {
+  font-family: var(--font-code);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status.no {
+  color: var(--refuse);
+}
+
+.answers {
+  margin-top: 3rem;
+}
+
+.services th[scope="row"] {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.services img {
+  width: 20px;
+  height: 20px;
+  vertical-align: -4px;
+  margin-right: 0.6rem;
+}
+
+.services td code {
+  white-space: nowrap;
+}
+
+/* Footer */
+
+.colophon {
+  border-top: 2px solid var(--ink);
+  padding-block: 2rem 3rem;
+  font-size: var(--step--1);
+  color: var(--ink-soft);
+}
+
+.colophon p {
+  max-width: 52rem;
+}
+
+.colophon .wordmark {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 30rem) {
+  .term pre {
+    padding: 0.9rem 1rem;
+    font-size: 0.8em;
+  }
+}

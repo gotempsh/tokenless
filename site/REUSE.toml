@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 credential-broker contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Licence metadata for the third-party files in site/, which cannot carry
+# an SPDX comment of their own (binary fonts) or are copied unchanged.
+
+version = 1
+
+[[annotations]]
+path = ["fonts/*.woff2", "fonts/LICENSE.md"]
+SPDX-FileCopyrightText = "2015 The Public Sans Project Authors (https://github.com/uswds/public-sans)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = "logos/*.svg"
+SPDX-FileCopyrightText = "2022 Pablo Hdez (svgl); each logo is a trademark of its owner"
+SPDX-License-Identifier = "MIT"
