@@ -137,6 +137,7 @@ the command starts, with the references the session does resolve.
 
 ```sh
 npx skills add gotempsh/tokenless                # with the skills CLI, for any agent
+npx skills add git@github.com:gotempsh/tokenless.git  # or any git URL, with your git credentials
 tokenless skill --install                        # ~/.claude/skills/tokenless/SKILL.md
 tokenless skill --install --dir .claude/skills   # for one project
 tokenless skill                                  # print it

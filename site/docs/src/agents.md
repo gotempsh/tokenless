@@ -84,6 +84,15 @@ npx skills add gotempsh/tokenless                    # this project, for the age
 npx skills add gotempsh/tokenless -g -a claude-code  # every project, Claude Code only
 ```
 
+The CLI clones the repository with git, so any git URL works too, using
+your own git credentials: a fork, a mirror, or a copy you can only reach
+over SSH.
+
+```sh
+npx skills add git@github.com:gotempsh/tokenless.git
+npx skills add https://git.example.com/you/tokenless.git
+```
+
 Or from the binary, which installs the copy built into it, so it always
 matches the CLI you have:
 
