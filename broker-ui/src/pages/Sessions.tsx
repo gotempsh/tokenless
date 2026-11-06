@@ -24,6 +24,7 @@ import {
   Relative,
   RowActions,
   RowMenu,
+  rowOpener,
   Status,
   useConfirm,
 } from "../components/common";
@@ -122,30 +123,13 @@ export function Sessions() {
             </TableHeader>
             <TableBody>
               {sessions.data?.items.map((s) => (
-                <TableRow key={s.id}>
+                <TableRow key={s.id} title="Open this session's logs" {...rowOpener(() => setViewing(s))}>
+                  <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
                   <TableCell>
-                    <button
-                      type="button"
-                      className="text-left font-medium underline-offset-4 hover:underline"
-                      title="Open this session's logs"
-                      onClick={() => setViewing(s)}
-                    >
-                      {sessionLabel(s)}
-                    </button>
-                  </TableCell>
-                  <TableCell>
-                    <a href={`#/vaults/${s.vault_id}/sessions`} className="hover:underline">
-                      {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
-                    </a>
+                    {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
                   </TableCell>
                   <TableCell className="hidden md:table-cell">
-                    {s.bundle ? (
-                      <a href={`#/bundles/${s.bundle.id}/sessions`} className="hover:underline">
-                        {s.bundle.name}
-                      </a>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
+                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
                   </TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
                   <TableCell className="text-muted-foreground">

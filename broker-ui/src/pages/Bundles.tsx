@@ -37,6 +37,7 @@ import {
   Panel,
   RowActions,
   RowMenu,
+  rowLink,
   Section,
   SelectField,
   Status,
@@ -213,18 +214,14 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
             </TableHeader>
             <TableBody>
               {bundles.data?.items.map((b) => (
-                <TableRow key={b.id}>
+                <TableRow key={b.id} {...rowLink(`#/bundles/${b.id}`)}>
                   <TableCell>
-                    <a href={`#/bundles/${b.id}`} className="font-mono font-medium underline-offset-4 hover:underline">
-                      {b.name}
-                    </a>
+                    <span className="font-mono font-medium">{b.name}</span>
                     {b.description && <p className="text-xs text-muted-foreground">{b.description}</p>}
                   </TableCell>
                   {!scoped && (
                     <TableCell>
-                      <a href={`#/vaults/${b.vault_id}/bundles`} className="hover:underline">
-                        {vaultName(b.vault_id)}
-                      </a>
+                      {vaultName(b.vault_id)}
                     </TableCell>
                   )}
                   <TableCell>
@@ -234,7 +231,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                         {canAdd && (
                           <button
                             type="button"
-                            className="text-xs font-medium underline-offset-4 hover:underline"
+                            className="text-xs font-medium text-primary hover:text-primary/80"
                             onClick={() => goAdd(b.vault_id, b.id)}
                           >
                             Add a service

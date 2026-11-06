@@ -5,7 +5,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Ban, Download, Info, Plus, Server, ShieldCheck } from "lucide-react";
 import { get, post, type NodeInfo, type Page } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { cn } from "../lib/utils";
 import { proxyAttention, proxyState, type Attention, type ProxyState } from "../proxyHealth";
 import {
   ConfirmDialog,
@@ -22,6 +21,7 @@ import {
   Relative,
   RowActions,
   RowMenu,
+  rowOpener,
   Status,
   useConfirm,
   type Tone,
@@ -164,16 +164,8 @@ export function Nodes() {
             </TableHeader>
             <TableBody>
               {rows.map((n) => (
-                <TableRow key={n.id} className={cn(n.revoked_at && "text-muted-foreground")}>
-                  <TableCell>
-                    <button
-                      type="button"
-                      className="text-left font-medium underline-offset-4 hover:underline"
-                      onClick={() => setViewing(n)}
-                    >
-                      {n.name}
-                    </button>
-                  </TableCell>
+                <TableRow key={n.id} {...rowOpener(() => setViewing(n), n.revoked_at && "text-muted-foreground")}>
+                  <TableCell className="font-medium">{n.name}</TableCell>
                   <TableCell>
                     <ProxyStatus node={n} now={now} />
                   </TableCell>

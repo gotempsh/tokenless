@@ -102,7 +102,7 @@ export function SecretFieldInput({
               e.preventDefault();
               onChange({ ...input, mode: other });
             }}
-            className="text-xs font-normal text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            className="text-xs font-normal text-muted-foreground hover:text-foreground"
           >
             {other === "variable" ? "Use a variable instead" : "Enter a value instead"}
           </button>

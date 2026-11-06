@@ -4,7 +4,7 @@
 // Broker-specific building blocks composed from the ported Temps primitives
 // in ./ui. Pages use these so every list, form and status reads the same.
 
-import { useState, type ReactNode } from "react";
+import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
 import type { Page } from "../api";
 import { compactTime, exactTime, relativeTime } from "../time";
@@ -469,6 +469,54 @@ export function FormDialog({
 
 export function DialogActions({ children }: { children: ReactNode }) {
   return <DialogFooter className="gap-2 pt-2">{children}</DialogFooter>;
+}
+
+/** Elements inside a row that keep their own click: links, buttons, menus. */
+const ROW_INTERACTIVE = "a,button,input,select,textarea,label,[role=menuitem],[role=checkbox],[data-row-ignore]";
+
+/**
+ * Whether a click on `target` inside `row` should open the row's record:
+ * not when it lands on a control of its own, and not from a portal (a menu
+ * or dialog the row opened), whose events bubble through React to the row.
+ */
+export function opensRow(row: Element, target: Element): boolean {
+  if (!row.contains(target)) return false;
+  const hit = target.closest(ROW_INTERACTIVE);
+  return !hit || hit === row || !row.contains(hit);
+}
+
+/**
+ * Props that make a whole table row open its record, by click, Enter or
+ * Space, so the name needs no link. `open` gets whether the user asked for
+ * a new tab (Cmd/Ctrl-click or middle click). Selecting text never opens it.
+ */
+export function rowOpener(open: (newTab: boolean) => void, className?: string | false | null) {
+  const click = (e: MouseEvent<HTMLTableRowElement>, newTab: boolean) => {
+    if (!opensRow(e.currentTarget, e.target as Element)) return;
+    if (window.getSelection()?.toString()) return;
+    open(newTab);
+  };
+  return {
+    tabIndex: 0,
+    className: cn("cursor-pointer focus-visible:bg-muted/50 focus-visible:outline-none", className),
+    onClick: (e: MouseEvent<HTMLTableRowElement>) => click(e, e.metaKey || e.ctrlKey),
+    onAuxClick: (e: MouseEvent<HTMLTableRowElement>) => {
+      if (e.button === 1) click(e, true);
+    },
+    onKeyDown: (e: KeyboardEvent<HTMLTableRowElement>) => {
+      if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      open(e.metaKey || e.ctrlKey);
+    },
+  };
+}
+
+/** {@link rowOpener} for a row whose record has its own page. */
+export function rowLink(href: string) {
+  return rowOpener((newTab) => {
+    if (newTab) window.open(href, "_blank", "noopener");
+    else window.location.hash = href;
+  });
 }
 
 export function RowActions({ children }: { children: ReactNode }) {

@@ -57,6 +57,7 @@ import {
   Relative,
   RowActions,
   RowMenu,
+  rowOpener,
   Section,
   Status,
   Tags,
@@ -217,7 +218,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
       {b && (
         <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 md:grid-cols-4">
           <Fact label="Vault">
-            <a href={`#/vaults/${b.vault_id}/bundles`} className="hover:underline">
+            <a href={`#/vaults/${b.vault_id}/bundles`} className="text-primary hover:text-primary/80">
               {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
             </a>
           </Fact>
@@ -705,17 +706,8 @@ function BundleSessions({
             </TableHeader>
             <TableBody>
               {sessions.data?.items.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell>
-                    <button
-                      type="button"
-                      className="text-left font-medium underline-offset-4 hover:underline"
-                      title="Open this session's logs"
-                      onClick={() => setViewing(s)}
-                    >
-                      {sessionLabel(s)}
-                    </button>
-                  </TableCell>
+                <TableRow key={s.id} title="Open this session's logs" {...rowOpener(() => setViewing(s))}>
+                  <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{s.created_by}</TableCell>
                   <TableCell className="text-muted-foreground">
                     <Relative at={s.created_at} />

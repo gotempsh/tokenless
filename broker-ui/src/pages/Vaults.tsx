@@ -5,7 +5,7 @@ import { useState, type FormEvent } from "react";
 import { FolderLock as VaultIcon, Plus } from "lucide-react";
 import { get, post, type Page, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Loading, Mono, Pager, Panel, When } from "../components/common";
+import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Loading, Pager, Panel, rowLink, When } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -67,27 +67,13 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Scope</TableHead>
                 <TableHead>Created</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {vaults.data?.items.map((v) => (
-                <TableRow
-                  key={v.id}
-                  className="cursor-pointer"
-                  onClick={() => {
-                    window.location.hash = `#/vaults/${v.id}/credentials`;
-                  }}
-                >
-                  <TableCell className="font-medium">
-                    <a href={`#/vaults/${v.id}/credentials`} className="hover:underline">
-                      {v.name}
-                    </a>
-                  </TableCell>
-                  <TableCell>
-                    <Mono>{v.scope}</Mono>
-                  </TableCell>
+                <TableRow key={v.id} {...rowLink(`#/vaults/${v.id}/credentials`)}>
+                  <TableCell className="font-medium">{v.name}</TableCell>
                   <TableCell className="text-muted-foreground">
                     <When at={v.created_at} />
                   </TableCell>
