@@ -39,10 +39,12 @@ pub fn install(skills_dir: &Path, force: bool) -> Result<(PathBuf, Installed), L
     let path = dir.join("SKILL.md");
     let outcome = match std::fs::read_to_string(&path) {
         Ok(existing) if existing == SKILL_MD => return Ok((path, Installed::Unchanged)),
-        Ok(_) if !force => return Err(LauncherError::config(format!(
+        Ok(_) if !force => {
+            return Err(LauncherError::config(format!(
             "{} already exists and differs from this version's skill; pass --force to replace it",
             path.display()
-        ))),
+        )))
+        }
         Ok(_) => Installed::Replaced,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Installed::Created,
         Err(e) => {
