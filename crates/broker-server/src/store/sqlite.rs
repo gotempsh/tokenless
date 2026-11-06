@@ -12,16 +12,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use broker_control::model::{
-    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
-    ProxySession, Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User,
-    Variable, Vault,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
+    PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
+    TemplateStatus, UiSession, User, Variable, Vault,
 };
 use broker_control::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Role;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::template::ServiceTemplate;
 use broker_core::variables::CustomHeader;
@@ -625,10 +626,23 @@ fn rule_from_row(row: &SqliteRow) -> Result<Rule, StoreError> {
 }
 
 fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
+    let bundle = match (
+        get::<Option<String>>(row, "bundle_id")?,
+        get::<Option<String>>(row, "bundle_name")?,
+    ) {
+        (Some(id), Some(name)) => Some(SessionBundle {
+            id: id.parse().map_err(|e: uuid::Error| {
+                StoreError::backend("decode bundle_id", format!("'{id}': {e}"))
+            })?,
+            name,
+        }),
+        _ => None,
+    };
     Ok(ProxySession {
         id: get_id(row, "id")?,
         vault_id: get_id(row, "vault_id")?,
         rule_ids: from_json("rule_ids", &get::<String>(row, "rule_ids")?)?,
+        bundle,
         labels: from_json("labels", &get::<String>(row, "labels")?)?,
         request_limit: get::<Option<i64>>(row, "request_limit")?.map(to_u64),
         created_by: get(row, "created_by")?,
@@ -640,8 +654,45 @@ fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
 
 const RULE_COLUMNS: &str =
     "id, vault_id, credential_id, name, allow, enabled, created_by, created_at, updated_at";
-const SESSION_COLUMNS: &str =
-    "id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at";
+const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
+
+/// Bundle columns plus its rule ids as a JSON array, in one statement.
+const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
+
+fn bundle_from_row(row: &SqliteRow) -> Result<AccessBundle, StoreError> {
+    let mut rule_ids: Vec<RuleId> = from_json("rule_ids", &get::<String>(row, "rule_ids")?)?;
+    rule_ids.sort();
+    Ok(AccessBundle {
+        id: get_id(row, "id")?,
+        vault_id: get_id(row, "vault_id")?,
+        name: get(row, "name")?,
+        description: get(row, "description")?,
+        rule_ids,
+        created_by: get(row, "created_by")?,
+        created_at: get_ts(row, "created_at")?,
+        updated_at: get_ts(row, "updated_at")?,
+    })
+}
+
+async fn write_bundle_rules(
+    tx: &mut Transaction<'static, Sqlite>,
+    bundle: &AccessBundle,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM access_bundle_rules WHERE bundle_id = ?")
+        .bind(bundle.id.to_string())
+        .execute(&mut **tx)
+        .await
+        .map_err(db("clear access bundle rules", "access_bundle"))?;
+    for rule_id in &bundle.rule_ids {
+        sqlx::query("INSERT INTO access_bundle_rules (bundle_id, rule_id) VALUES (?, ?)")
+            .bind(bundle.id.to_string())
+            .bind(rule_id.to_string())
+            .execute(&mut **tx)
+            .await
+            .map_err(db("insert access bundle rule", "access_bundle"))?;
+    }
+    Ok(())
+}
 
 #[async_trait]
 impl PolicyStore for SqliteStore {
@@ -861,7 +912,128 @@ impl PolicyStore for SqliteStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("rule", id));
         }
+        sqlx::query("DELETE FROM access_bundle_rules WHERE rule_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("remove rule from access bundles", "access_bundle"))?;
         finish(tx, audit, "delete_rule").await
+    }
+
+    async fn insert_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_bundle").await?;
+        sqlx::query("INSERT INTO access_bundles (id, vault_id, name, description, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(bundle.id.to_string())
+            .bind(bundle.vault_id.to_string())
+            .bind(&bundle.name)
+            .bind(&bundle.description)
+            .bind(&bundle.created_by)
+            .bind(ts(&bundle.created_at))
+            .bind(ts(&bundle.updated_at))
+            .execute(&mut *tx)
+            .await
+            .map_err(db("insert access bundle", "access_bundle"))?;
+        write_bundle_rules(&mut tx, &bundle).await?;
+        finish(tx, audit, "insert_bundle").await
+    }
+
+    async fn get_bundle(&self, id: &BundleId) -> Result<Option<AccessBundle>, StoreError> {
+        let sql = format!("{BUNDLE_SELECT} WHERE b.id = ?");
+        sqlx::query(&sql)
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get access bundle", "access_bundle"))?
+            .map(|r| bundle_from_row(&r))
+            .transpose()
+    }
+
+    async fn get_bundle_by_name(
+        &self,
+        vault_id: &VaultId,
+        name: &str,
+    ) -> Result<Option<AccessBundle>, StoreError> {
+        let sql = format!("{BUNDLE_SELECT} WHERE b.vault_id = ? AND b.name = ?");
+        sqlx::query(&sql)
+            .bind(vault_id.to_string())
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get access bundle by name", "access_bundle"))?
+            .map(|r| bundle_from_row(&r))
+            .transpose()
+    }
+
+    async fn list_bundles(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<AccessBundle>, StoreError> {
+        let total = self
+            .count(
+                "SELECT COUNT(*) AS n FROM access_bundles WHERE vault_id = ?",
+                Some(&vault_id.to_string()),
+            )
+            .await?;
+        let sql = format!("{BUNDLE_SELECT} WHERE b.vault_id = ? ORDER BY b.name LIMIT ? OFFSET ?");
+        let rows = sqlx::query(&sql)
+            .bind(vault_id.to_string())
+            .bind(to_i64(page.page_size))
+            .bind(to_i64(page.offset()))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list access bundles", "access_bundle"))?;
+        Ok(Page {
+            items: rows.iter().map(bundle_from_row).collect::<Result<_, _>>()?,
+            total,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    async fn update_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("update_bundle").await?;
+        let result = sqlx::query(
+            "UPDATE access_bundles SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&bundle.name)
+        .bind(&bundle.description)
+        .bind(ts(&bundle.updated_at))
+        .bind(bundle.id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("update access bundle", "access_bundle"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("access_bundle", bundle.id));
+        }
+        write_bundle_rules(&mut tx, &bundle).await?;
+        finish(tx, audit, "update_bundle").await
+    }
+
+    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("delete_bundle").await?;
+        let result = sqlx::query("DELETE FROM access_bundles WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete access bundle", "access_bundle"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("access_bundle", id));
+        }
+        sqlx::query("DELETE FROM access_bundle_rules WHERE bundle_id = ?")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete access bundle rules", "access_bundle"))?;
+        finish(tx, audit, "delete_bundle").await
     }
 
     async fn insert_session(
@@ -870,7 +1042,7 @@ impl PolicyStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_session").await?;
-        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(s.id.to_string())
             .bind(s.vault_id.to_string())
             .bind(to_json("rule_ids", &s.rule_ids)?)
@@ -880,6 +1052,8 @@ impl PolicyStore for SqliteStore {
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
             .bind(opt_ts(&s.revoked_at))
+            .bind(s.bundle.as_ref().map(|b| b.id.to_string()))
+            .bind(s.bundle.as_ref().map(|b| b.name.clone()))
             .execute(&mut *tx)
             .await
             .map_err(db("insert session", "session"))?;

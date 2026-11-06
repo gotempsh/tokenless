@@ -3,6 +3,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod bundles;
 pub mod nodes;
 pub mod policy;
 mod render;
@@ -168,6 +169,7 @@ pub struct ControlPlane {
     pub auth: auth::AuthService,
     pub policy: policy::PolicyService,
     pub sessions: sessions::SessionService,
+    pub bundles: bundles::BundleService,
     pub nodes: nodes::NodeService,
     pub users: users::UserService,
     pub variables: variables::VariableService,
@@ -214,6 +216,7 @@ impl ControlPlane {
             guard.clone(),
             notifier.clone(),
         );
+        let bundles = bundles::BundleService::new(stores.policy.clone(), guard.clone());
         let sessions = sessions::SessionService::new(
             stores.policy.clone(),
             keys.clone(),
@@ -237,6 +240,7 @@ impl ControlPlane {
             auth,
             policy,
             sessions,
+            bundles,
             nodes,
             users,
             variables,
@@ -269,6 +273,7 @@ mod tests {
     use crate::memory::MemoryStore;
     use crate::model::PageRequest;
     use crate::store::RbacAuthorizer;
+    use crate::StoreError;
 
     async fn plane() -> ControlPlane {
         plane_with(Arc::new(crate::probe::DisabledProber)).await
@@ -914,6 +919,220 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_mint_from_an_access_bundle_by_name() {
+        use crate::service::bundles::{CreateBundle, UpdateBundle};
+
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let other = cp.policy.create_vault(&a, "other").await.unwrap();
+        let cred = cp
+            .policy
+            .create_credential(
+                &a,
+                &vault.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let mut rules = Vec::new();
+        for name in ["read", "write"] {
+            let rule = cp
+                .policy
+                .create_rule(
+                    &a,
+                    &vault.id,
+                    CreateRule {
+                        name: name.into(),
+                        credential_id: cred.id,
+                        hosts: None,
+                        paths: None,
+                        methods: None,
+                    },
+                )
+                .await
+                .unwrap();
+            rules.push(rule);
+        }
+        let bundle = cp
+            .bundles
+            .create(
+                &a,
+                &vault.id,
+                CreateBundle {
+                    name: "code-review".into(),
+                    description: "GitHub for reviews".into(),
+                    rule_ids: vec![rules[1].id, rules[0].id, rules[0].id],
+                },
+            )
+            .await
+            .unwrap();
+        let mut expected = vec![rules[0].id, rules[1].id];
+        expected.sort();
+        assert_eq!(bundle.rule_ids, expected, "sorted and deduplicated");
+
+        // A session_issuer key mints by name without reading the bundle.
+        let (plaintext, _) = cp
+            .auth
+            .create_api_key(
+                &a,
+                CreateApiKey {
+                    name: "launcher".into(),
+                    vault_id: vault.id,
+                    role: Role::SessionIssuer,
+                    expires_in_days: 30,
+                },
+            )
+            .await
+            .unwrap();
+        let key = cp.auth.authenticate_api_key(&plaintext).await.unwrap();
+        let by_bundle = |bundle: &str| MintSession {
+            rule_ids: vec![],
+            bundle: Some(bundle.into()),
+            ttl_secs: Some(600),
+            request_limit: None,
+            labels: BTreeMap::new(),
+        };
+        let minted = cp
+            .sessions
+            .mint(&key, &vault.id, by_bundle("code-review"))
+            .await
+            .unwrap();
+        assert_eq!(minted.session.rule_ids, expected);
+        let reference = minted.session.bundle.clone().unwrap();
+        assert_eq!(
+            (reference.id, reference.name.as_str()),
+            (bundle.id, "code-review")
+        );
+        // By id works too.
+        cp.sessions
+            .mint(&key, &vault.id, by_bundle(&bundle.id.to_string()))
+            .await
+            .unwrap();
+
+        // Disabled rules are skipped, and a bundle with none left refuses.
+        for (i, rule) in rules.iter().enumerate() {
+            cp.policy
+                .update_rule(
+                    &a,
+                    &rule.id,
+                    UpdateRule {
+                        enabled: Some(false),
+                        ..UpdateRule::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let result = cp
+                .sessions
+                .mint(&key, &vault.id, by_bundle("code-review"))
+                .await;
+            if i == 0 {
+                assert_eq!(result.unwrap().session.rule_ids, vec![rules[1].id]);
+            } else {
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains("has no enabled rules"), "{err}");
+            }
+        }
+
+        let both = MintSession {
+            rule_ids: vec![rules[0].id],
+            ..by_bundle("code-review")
+        };
+        assert!(matches!(
+            cp.sessions.mint(&a, &vault.id, both).await,
+            Err(ControlError::Validation { .. })
+        ));
+        let err = cp
+            .sessions
+            .mint(&a, &vault.id, by_bundle("missing"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("'missing' in vault"), "{err}");
+        // A bundle id from another vault is not found there.
+        assert!(matches!(
+            cp.sessions
+                .mint(&a, &other.id, by_bundle(&bundle.id.to_string()))
+                .await,
+            Err(ControlError::NotFound { .. })
+        ));
+
+        // Only editors and admins manage bundles.
+        assert!(matches!(
+            cp.bundles
+                .create(
+                    &key,
+                    &vault.id,
+                    CreateBundle {
+                        name: "mine".into(),
+                        description: String::new(),
+                        rule_ids: vec![],
+                    },
+                )
+                .await,
+            Err(ControlError::Forbidden { .. })
+        ));
+        // Rules from another vault cannot be bundled.
+        let foreign = cp
+            .bundles
+            .create(
+                &a,
+                &other.id,
+                CreateBundle {
+                    name: "x".into(),
+                    description: String::new(),
+                    rule_ids: vec![rules[0].id],
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(foreign.contains("belongs to vault"), "{foreign}");
+        // Names are unique per vault.
+        assert!(matches!(
+            cp.bundles
+                .create(
+                    &a,
+                    &vault.id,
+                    CreateBundle {
+                        name: "code-review".into(),
+                        description: String::new(),
+                        rule_ids: vec![],
+                    },
+                )
+                .await,
+            Err(ControlError::Store(StoreError::Conflict { .. }))
+        ));
+
+        // Deleting a rule takes it out of the bundle.
+        cp.policy.delete_rule(&a, &rules[0].id).await.unwrap();
+        let after = cp.bundles.get(&a, &bundle.id).await.unwrap();
+        assert_eq!(after.rule_ids, vec![rules[1].id]);
+        let renamed = cp
+            .bundles
+            .update(
+                &a,
+                &bundle.id,
+                UpdateBundle {
+                    name: Some("review".into()),
+                    ..UpdateBundle::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(renamed.rule_ids, vec![rules[1].id]);
+        cp.bundles.delete(&a, &bundle.id).await.unwrap();
+        assert!(cp
+            .bundles
+            .list(&a, &vault.id, PageRequest::new(None, None))
+            .await
+            .unwrap()
+            .items
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn api_keys_are_vault_bound_and_cannot_step_up() {
         let cp = plane().await;
         let a = admin(0);
@@ -966,6 +1185,7 @@ mod tests {
                 &vault.id,
                 MintSession {
                     rule_ids: vec![rule.id],
+                    bundle: None,
                     ttl_secs: None,
                     request_limit: None,
                     labels: BTreeMap::new(),
@@ -981,6 +1201,7 @@ mod tests {
                     &other.id,
                     MintSession {
                         rule_ids: vec![rule.id],
+                        bundle: None,
                         ttl_secs: None,
                         request_limit: None,
                         labels: BTreeMap::new(),
@@ -1077,6 +1298,7 @@ mod tests {
                 &vault.id,
                 MintSession {
                     rule_ids: vec![rule.id],
+                    bundle: None,
                     ttl_secs: Some(60),
                     request_limit: Some(3),
                     labels: BTreeMap::new(),

@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 
 use broker_control::model::{
-    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest, ProxySession,
-    Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable,
-    Vault,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest,
+    ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource, TemplateStatus,
+    UiSession, User, Variable, Vault,
 };
 use broker_control::store::{
     AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore,
@@ -23,7 +23,8 @@ use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::{Action, Decision, Principal, PrincipalKind, Role};
 use broker_core::egress::{EgressPolicy, IpCidr};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
@@ -131,6 +132,7 @@ fn session(vault_id: VaultId, expires_offset: i64, limit: Option<u64>) -> ProxyS
         id: SessionId::new(),
         vault_id,
         rule_ids: vec![RuleId::new()],
+        bundle: None,
         labels: BTreeMap::from([("agent".to_string(), "conformance".to_string())]),
         request_limit: limit,
         created_by: "user:conformance".into(),
@@ -825,6 +827,216 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "settings_round_trip",
         got == deny,
         "settings did not round-trip: {got:?}"
+    );
+    Ok(())
+}
+
+fn bundle(vault_id: VaultId, name: &str, mut rule_ids: Vec<RuleId>) -> AccessBundle {
+    rule_ids.sort();
+    AccessBundle {
+        id: BundleId::new(),
+        vault_id,
+        name: name.to_string(),
+        description: format!("{name} bundle"),
+        rule_ids,
+        created_by: "user:conformance".into(),
+        created_at: at(0),
+        updated_at: at(0),
+    }
+}
+
+/// Access bundles: names unique per vault, rule lists replaced whole and
+/// kept sorted, deleted rules dropped from every bundle, and the bundle a
+/// session was minted from kept on the session.
+pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), ConformanceFailure> {
+    const S: &str = "bundle_store";
+    let v1 = vault("alpha", -20);
+    let v2 = vault("beta", -10);
+    for v in [&v1, &v2] {
+        store
+            .insert_vault(v.clone(), &[])
+            .await
+            .map_err(backend(S, "vault_insert"))?;
+    }
+    let cred = CredentialId::new();
+    let mut rules = Vec::new();
+    for name in ["one", "two", "three"] {
+        let r = rule(v1.id, cred, name, true)?;
+        store
+            .insert_rule(r.clone(), &[])
+            .await
+            .map_err(backend(S, "rule_insert"))?;
+        rules.push(r);
+    }
+
+    let review = bundle(v1.id, "review", vec![rules[0].id, rules[1].id]);
+    let empty = bundle(v1.id, "empty", vec![]);
+    let other = bundle(v2.id, "review", vec![]);
+    for b in [&review, &empty, &other] {
+        store
+            .insert_bundle(b.clone(), &[])
+            .await
+            .map_err(backend(S, "insert"))?;
+    }
+    let got = store
+        .get_bundle(&review.id)
+        .await
+        .map_err(backend(S, "get"))?;
+    ensure!(
+        S,
+        "get_round_trip",
+        got.as_ref() == Some(&review),
+        "expected {review:?}, got {got:?}"
+    );
+    let got = store
+        .get_bundle(&empty.id)
+        .await
+        .map_err(backend(S, "get_empty"))?;
+    ensure!(
+        S,
+        "get_empty_round_trip",
+        got.as_ref() == Some(&empty),
+        "an empty bundle must round-trip with no rules, got {got:?}"
+    );
+    let by_name = store
+        .get_bundle_by_name(&v2.id, "review")
+        .await
+        .map_err(backend(S, "get_by_name"))?;
+    ensure!(
+        S,
+        "get_by_name_is_vault_scoped",
+        by_name.as_ref().map(|b| b.id) == Some(other.id),
+        "the name 'review' in vault beta is {}, got {by_name:?}",
+        other.id
+    );
+    let none = store
+        .get_bundle_by_name(&v1.id, "nope")
+        .await
+        .map_err(backend(S, "get_by_name_missing"))?;
+    ensure!(S, "get_by_name_missing", none.is_none(), "got {none:?}");
+    let dup = store
+        .insert_bundle(bundle(v1.id, "review", vec![]), &[])
+        .await;
+    ensure!(
+        S,
+        "name_conflict",
+        matches!(dup, Err(StoreError::Conflict { .. })),
+        "a second 'review' in vault alpha must conflict, got {dup:?}"
+    );
+
+    let page = store
+        .list_bundles(&v1.id, PageRequest::new(None, None))
+        .await
+        .map_err(backend(S, "list"))?;
+    let names: Vec<_> = page.items.iter().map(|b| b.name.as_str()).collect();
+    ensure!(
+        S,
+        "list_by_name_in_vault",
+        page.total == 2 && names == ["empty", "review"],
+        "expected [empty, review] (total 2), got {names:?} (total {})",
+        page.total
+    );
+
+    let mut renamed = review.clone();
+    renamed.name = "code-review".into();
+    renamed.description = "changed".into();
+    renamed.rule_ids = vec![rules[1].id, rules[2].id];
+    renamed.rule_ids.sort();
+    renamed.updated_at = at(5);
+    store
+        .update_bundle(renamed.clone(), &[])
+        .await
+        .map_err(backend(S, "update"))?;
+    let got = store
+        .get_bundle(&review.id)
+        .await
+        .map_err(backend(S, "update_get"))?;
+    ensure!(
+        S,
+        "update_replaces_rules",
+        got.as_ref() == Some(&renamed),
+        "expected {renamed:?}, got {got:?}"
+    );
+    let mut clash = empty.clone();
+    clash.name = "code-review".into();
+    let result = store.update_bundle(clash, &[]).await;
+    ensure!(
+        S,
+        "update_name_conflict",
+        matches!(result, Err(StoreError::Conflict { .. })),
+        "renaming onto a taken name must conflict, got {result:?}"
+    );
+    let result = store
+        .update_bundle(bundle(v1.id, "ghost", vec![]), &[])
+        .await;
+    ensure!(
+        S,
+        "update_missing",
+        matches!(result, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {result:?}"
+    );
+
+    store
+        .delete_rule(&rules[1].id, &[])
+        .await
+        .map_err(backend(S, "rule_delete"))?;
+    let got = store
+        .get_bundle(&review.id)
+        .await
+        .map_err(backend(S, "after_rule_delete"))?;
+    ensure!(
+        S,
+        "rule_delete_leaves_bundles",
+        got.map(|b| b.rule_ids) == Some(vec![rules[2].id]),
+        "deleting rule {} must drop it from the bundle",
+        rules[1].id
+    );
+
+    let mut minted = session(v1.id, 600, None);
+    minted.bundle = Some(SessionBundle {
+        id: review.id,
+        name: "code-review".into(),
+    });
+    store
+        .insert_session(minted.clone(), &[])
+        .await
+        .map_err(backend(S, "session_insert"))?;
+    let got = store
+        .get_session(&minted.id)
+        .await
+        .map_err(backend(S, "session_get"))?;
+    ensure!(
+        S,
+        "session_keeps_bundle",
+        got.as_ref() == Some(&minted),
+        "expected {minted:?}, got {got:?}"
+    );
+
+    store
+        .delete_bundle(&review.id, &[])
+        .await
+        .map_err(backend(S, "delete"))?;
+    let gone = store
+        .get_bundle(&review.id)
+        .await
+        .map_err(backend(S, "delete_get"))?;
+    ensure!(S, "delete", gone.is_none(), "got {gone:?}");
+    let missing = store.delete_bundle(&review.id, &[]).await;
+    ensure!(
+        S,
+        "delete_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+    let got = store
+        .get_session(&minted.id)
+        .await
+        .map_err(backend(S, "session_after_delete"))?;
+    ensure!(
+        S,
+        "session_outlives_bundle",
+        got.and_then(|s| s.bundle).map(|b| b.name) == Some("code-review".into()),
+        "a session keeps the bundle name it was minted with"
     );
     Ok(())
 }

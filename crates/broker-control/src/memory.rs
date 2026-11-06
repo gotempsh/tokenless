@@ -12,15 +12,16 @@ use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::Role;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
-    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
-    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
+    PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
 };
 use crate::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
@@ -31,6 +32,7 @@ struct Inner {
     vaults: HashMap<VaultId, Vault>,
     templates: BTreeMap<(String, u32), StoredTemplate>,
     rules: HashMap<RuleId, Rule>,
+    bundles: HashMap<BundleId, AccessBundle>,
     sessions: HashMap<SessionId, ProxySession>,
     settings: Option<Settings>,
     audit: Vec<AuditEvent>,
@@ -449,6 +451,98 @@ impl PolicyStore for MemoryStore {
             .remove(id)
             .map(|_| ())
             .ok_or_else(|| StoreError::not_found("rule", id))?;
+        for bundle in inner.bundles.values_mut() {
+            bundle.rule_ids.retain(|r| r != id);
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn insert_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if inner
+            .bundles
+            .values()
+            .any(|b| b.vault_id == bundle.vault_id && b.name == bundle.name)
+        {
+            return Err(StoreError::Conflict {
+                entity: "access_bundle",
+                detail: format!("name '{}' exists in vault {}", bundle.name, bundle.vault_id),
+            });
+        }
+        inner.bundles.insert(bundle.id, bundle);
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn get_bundle(&self, id: &BundleId) -> Result<Option<AccessBundle>, StoreError> {
+        Ok(self.lock()?.bundles.get(id).cloned())
+    }
+
+    async fn get_bundle_by_name(
+        &self,
+        vault_id: &VaultId,
+        name: &str,
+    ) -> Result<Option<AccessBundle>, StoreError> {
+        Ok(self
+            .lock()?
+            .bundles
+            .values()
+            .find(|b| &b.vault_id == vault_id && b.name == name)
+            .cloned())
+    }
+
+    async fn list_bundles(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<AccessBundle>, StoreError> {
+        let mut items: Vec<_> = self
+            .lock()?
+            .bundles
+            .values()
+            .filter(|b| &b.vault_id == vault_id)
+            .cloned()
+            .collect();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(page.apply(&items))
+    }
+
+    async fn update_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if inner
+            .bundles
+            .values()
+            .any(|b| b.id != bundle.id && b.vault_id == bundle.vault_id && b.name == bundle.name)
+        {
+            return Err(StoreError::Conflict {
+                entity: "access_bundle",
+                detail: format!("name '{}' exists in vault {}", bundle.name, bundle.vault_id),
+            });
+        }
+        let slot = inner
+            .bundles
+            .get_mut(&bundle.id)
+            .ok_or_else(|| StoreError::not_found("access_bundle", bundle.id))?;
+        *slot = bundle;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        inner
+            .bundles
+            .remove(id)
+            .ok_or_else(|| StoreError::not_found("access_bundle", id))?;
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

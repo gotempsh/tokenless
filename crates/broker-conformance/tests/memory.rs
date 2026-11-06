@@ -23,6 +23,11 @@ async fn memory_store_passes_policy_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_bundle_suite() {
+    bundle_store_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn memory_store_passes_audit_suite() {
     audit_sink_suite(&MemoryStore::new()).await.unwrap();
 }

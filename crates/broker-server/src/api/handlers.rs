@@ -18,6 +18,7 @@ use broker_control::model::{Page, PageRequest, Settings};
 use broker_control::service::auth::{
     AuthService, CreateApiKey, LoginRequest, SetupRequest, StepUpProof, TotpEnrollment, UserSummary,
 };
+use broker_control::service::bundles::{CreateBundle, UpdateBundle};
 use broker_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
 use broker_control::service::sessions::MintSession;
 use broker_control::service::users::{
@@ -25,7 +26,8 @@ use broker_control::service::users::{
 };
 use broker_control::service::variables::{CreateVariable, ReplaceVariable};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
@@ -484,6 +486,85 @@ pub async fn delete_rule(
 ) -> ApiResult<StatusCode> {
     let id: RuleId = parse_id("rule", &rule_id)?;
     s.control.policy.delete_rule(&authed.caller, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /sessions/revoke-self` with `Authorization: Bearer <session token>`.
+/// Holding the token is the only credential needed to end that session.
+pub async fn revoke_own_session(
+    State(s): St,
+    headers: axum::http::HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|t| t.trim_start().starts_with("v4.public."))
+        .ok_or_else(|| {
+            ApiError::Control(broker_control::ControlError::Unauthenticated {
+                reason: "send the proxy session token as 'Authorization: Bearer v4.public...'"
+                    .into(),
+            })
+        })?;
+    Ok(Json(s.control.sessions.revoke_self(token).await?))
+}
+
+// ----- access bundles ----------------------------------------------------
+
+pub async fn create_bundle(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+    ApiJson(req): ApiJson<CreateBundle>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    let bundle = s.control.bundles.create(&authed.caller, &id, req).await?;
+    Ok((StatusCode::CREATED, Json(bundle)))
+}
+
+pub async fn list_bundles(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(
+        s.control
+            .bundles
+            .list(&authed.caller, &id, q.request())
+            .await?,
+    ))
+}
+
+pub async fn get_bundle(
+    State(s): St,
+    authed: Authed,
+    Path(bundle_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: BundleId = parse_id("access bundle", &bundle_id)?;
+    Ok(Json(s.control.bundles.get(&authed.caller, &id).await?))
+}
+
+pub async fn update_bundle(
+    State(s): St,
+    authed: Authed,
+    Path(bundle_id): Path<String>,
+    ApiJson(req): ApiJson<UpdateBundle>,
+) -> ApiResult<impl IntoResponse> {
+    let id: BundleId = parse_id("access bundle", &bundle_id)?;
+    Ok(Json(
+        s.control.bundles.update(&authed.caller, &id, req).await?,
+    ))
+}
+
+pub async fn delete_bundle(
+    State(s): St,
+    authed: Authed,
+    Path(bundle_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let id: BundleId = parse_id("access bundle", &bundle_id)?;
+    s.control.bundles.delete(&authed.caller, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

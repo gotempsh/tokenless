@@ -47,6 +47,14 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/vaults/{vault_id}/sessions",
             get(list_sessions).post(mint_session),
         )
+        .route(
+            "/vaults/{vault_id}/bundles",
+            get(list_bundles).post(create_bundle),
+        )
+        .route(
+            "/bundles/{bundle_id}",
+            get(get_bundle).patch(update_bundle).delete(delete_bundle),
+        )
         .route("/templates", get(list_templates))
         .route("/templates/import", post(import_template))
         .route("/templates/{template_id}/{version}", get(get_template))
@@ -80,6 +88,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             get(get_rule).patch(update_rule).delete(delete_rule),
         )
         .route("/sessions", get(list_all_sessions))
+        .route("/sessions/revoke-self", post(revoke_own_session))
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(

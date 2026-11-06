@@ -9,7 +9,8 @@ use broker_core::authz::Role;
 use broker_core::egress::EgressPolicy;
 use broker_core::host::HostPattern;
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
@@ -166,11 +167,36 @@ pub struct Rule {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A named, reusable list of a vault's rules for one kind of job, such as
+/// `code-review` with the GitHub and Slack rules. Sessions are minted from
+/// it by name; each session keeps the rules it was minted with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessBundle {
+    pub id: BundleId,
+    pub vault_id: VaultId,
+    pub name: String,
+    pub description: String,
+    /// Sorted, without duplicates. Deleting a rule removes it from bundles.
+    pub rule_ids: Vec<RuleId>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// The bundle a session was minted from, as it was named at the time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionBundle {
+    pub id: BundleId,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxySession {
     pub id: SessionId,
     pub vault_id: VaultId,
     pub rule_ids: Vec<RuleId>,
+    #[serde(default)]
+    pub bundle: Option<SessionBundle>,
     pub labels: BTreeMap<String, String>,
     pub request_limit: Option<u64>,
     pub created_by: String,

@@ -13,15 +13,16 @@ use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use broker_core::ids::{
-    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
 };
 use broker_core::variables::CustomHeader;
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
-    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
-    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
+    PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
 };
 
 /// Stores credential metadata and an opaque, already-encrypted secret blob.
@@ -152,7 +153,35 @@ pub trait PolicyStore: Send + Sync {
     async fn count_rules_for_credential(&self, id: &CredentialId) -> Result<u64, StoreError>;
     /// `NotFound` if the rule does not exist.
     async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError>;
+    /// Also removes the rule from every access bundle that lists it.
     async fn delete_rule(&self, id: &RuleId, audit: &[AuditEvent]) -> Result<(), StoreError>;
+
+    /// `Conflict` if the vault already has a bundle with this name.
+    async fn insert_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_bundle(&self, id: &BundleId) -> Result<Option<AccessBundle>, StoreError>;
+    async fn get_bundle_by_name(
+        &self,
+        vault_id: &VaultId,
+        name: &str,
+    ) -> Result<Option<AccessBundle>, StoreError>;
+    /// Ordered by name.
+    async fn list_bundles(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<AccessBundle>, StoreError>;
+    /// Replaces name, description and rules. `NotFound` if it does not
+    /// exist, `Conflict` if the new name is taken in the vault.
+    async fn update_bundle(
+        &self,
+        bundle: AccessBundle,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn delete_bundle(&self, id: &BundleId, audit: &[AuditEvent]) -> Result<(), StoreError>;
 
     async fn insert_session(
         &self,

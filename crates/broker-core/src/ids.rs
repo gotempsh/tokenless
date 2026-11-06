@@ -56,6 +56,11 @@ id_type!(
 id_type!(CredentialId, "credential");
 id_type!(RuleId, "rule");
 id_type!(SessionId, "session");
+id_type!(
+    /// A named set of a vault's rules that sessions are minted from.
+    BundleId,
+    "access_bundle"
+);
 id_type!(NodeId, "node");
 id_type!(UserId, "user");
 id_type!(ApiKeyId, "api_key");

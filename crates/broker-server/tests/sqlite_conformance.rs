@@ -29,6 +29,7 @@ macro_rules! suite {
 suite!(credential_store_suite);
 suite!(variable_store_suite);
 suite!(policy_store_suite);
+suite!(bundle_store_suite);
 suite!(audit_sink_suite);
 suite!(identity_store_suite);
 suite!(user_management_suite);
