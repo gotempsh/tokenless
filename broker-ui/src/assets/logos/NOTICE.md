@@ -1,0 +1,37 @@
+# Third-party service logos
+
+The SVG files in this directory identify the services the built-in templates
+integrate with. Each logo is a trademark of its owner, used only to identify
+that service; no endorsement is implied. The files were taken from the
+collections below under their licences. `<key>.dark.svg` is the variant for
+dark backgrounds; where a collection had none, it is the same artwork with its
+dark fill set to white.
+
+Services without a logo here (SendGrid, Postmark and the custom templates) are
+shown with a generic icon.
+
+## Simple Icons
+
+- Source: https://github.com/simple-icons/simple-icons
+- Licence: CC0 1.0 Universal (public domain dedication)
+- Logos: airtable, bitbucket, confluence, hetzner, hubspot, intercom, jira, mailgun, paddle, pagerduty
+
+## svgl
+
+- Source: https://github.com/pheralb/svgl
+- Licence: MIT License — Copyright (c) 2022 Pablo Hdez
+- Logos: anthropic, asana, brave, cerebras, clickup, cloudflare, cohere, datadog, deepseek, digitalocean, discord, figma, firecrawl, fly, gemini, github, gitlab, grafana, groq, huggingface, lemonsqueezy, linear, mistral, neon, netlify, notion, npm, openai, openrouter, perplexity, posthog, railway, render, replicate, resend, sentry, shopify, slack, stripe, supabase, together, twilio, upstash, vercel, xai
+
+## Lobe Icons
+
+- Source: https://github.com/lobehub/lobe-icons
+- Licence: MIT License — Copyright (c) 2023 LobeHub
+- Logos: elevenlabs, exa, fireworks, tavily
+
+## MIT License (svgl, Lobe Icons)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
