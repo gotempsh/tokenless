@@ -553,11 +553,11 @@ export function rowOpener(open: (newTab: boolean) => void, className?: string | 
 }
 
 /** {@link rowOpener} for a row whose record has its own page. */
-export function rowLink(href: string) {
+export function rowLink(href: string, className?: string | false | null) {
   return rowOpener((newTab) => {
     if (newTab) window.open(href, "_blank", "noopener");
     else window.location.hash = href;
-  });
+  }, className);
 }
 
 export function RowActions({ children }: { children: ReactNode }) {

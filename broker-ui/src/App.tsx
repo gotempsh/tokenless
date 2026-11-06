@@ -54,6 +54,7 @@ import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
+import { ProxyDetail } from "./pages/ProxyDetail";
 import { Sessions } from "./pages/Sessions";
 import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
@@ -219,7 +220,8 @@ export function App() {
       {section === "templates" && <Templates user={user} />}
       {section === "people" && <People me={user} />}
       {section === "api-keys" && <ApiKeys />}
-      {section === "proxies" && <Nodes />}
+      {section === "proxies" && !id && <Nodes />}
+      {section === "proxies" && id && <ProxyDetail nodeId={id} />}
       {section === "audit" && <Audit me={user} />}
       {section === "settings" && <Settings />}
       <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />

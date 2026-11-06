@@ -453,6 +453,15 @@ impl NodeService {
         Ok(self.nodes.list_nodes(page).await?)
     }
 
+    /// One proxy, for its detail page.
+    pub async fn get_node(&self, caller: &Caller, id: &NodeId) -> Result<Node, ControlError> {
+        self.guard.check(caller, Action::NodeManage, None).await?;
+        self.nodes
+            .get_node(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("proxy", id))
+    }
+
     pub async fn revoke_node(&self, caller: &Caller, id: &NodeId) -> Result<(), ControlError> {
         self.guard.check(caller, Action::NodeManage, None).await?;
         let event = AuditEvent::new(caller.actor(), "node.revoke", AuditOutcome::Success)

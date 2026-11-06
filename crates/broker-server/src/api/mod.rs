@@ -116,6 +116,7 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/audit", get(query_audit))
         .route("/nodes", get(list_nodes))
         .route("/nodes/join-tokens", post(create_join_token))
+        .route("/nodes/{node_id}", get(get_node))
         .route("/nodes/{node_id}/revoke", post(revoke_node))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/ca/interception.pem", get(interception_ca))

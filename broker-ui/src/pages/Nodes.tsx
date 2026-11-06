@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Ban, Download, Info, Plus, Server, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Ban, Download, Plus, Server, ShieldCheck } from "lucide-react";
 import { get, post, type NodeInfo, type Page } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { proxyAttention, proxyState, type Attention, type ProxyState } from "../proxyHealth";
@@ -18,11 +18,10 @@ import {
   Mono,
   Pager,
   Panel,
-  Exact,
   Relative,
   RowActions,
   RowMenu,
-  rowOpener,
+  rowLink,
   Status,
   useConfirm,
   type Tone,
@@ -43,9 +42,9 @@ const STATUS: Record<ProxyState, { tone: Tone; label: string }> = {
 };
 
 /** Proxies check in every few seconds; refresh often enough that the page tells the truth. */
-const REFRESH_MS = 15_000;
+export const REFRESH_MS = 15_000;
 
-function ProxyStatus({ node, now }: { node: NodeInfo; now: Date }) {
+export function ProxyStatus({ node, now }: { node: NodeInfo; now: Date }) {
   const s = STATUS[proxyState(node, now)];
   return <Status tone={s.tone}>{s.label}</Status>;
 }
@@ -72,7 +71,6 @@ export function Nodes() {
   const nodes = useLoad(() => get<Page<NodeInfo>>(`/nodes?page=${page}`), [page]);
   const ca = useLoad(caFingerprint, []);
   const [joinToken, setJoinToken] = useState<string | null>(null);
-  const [viewing, setViewing] = useState<NodeInfo | null>(null);
   const [showRevoked, setShowRevoked] = useState(false);
   const confirm = useConfirm<NodeInfo>();
   const tokenAction = useAction();
@@ -100,7 +98,6 @@ export function Nodes() {
   const revoke = async (n: NodeInfo) => {
     await action.run(() => post<void>(`/nodes/${n.id}/revoke`));
     confirm.close();
-    setViewing(null);
     nodes.reload();
   };
 
@@ -173,7 +170,7 @@ export function Nodes() {
             </TableHeader>
             <TableBody>
               {rows.map((n) => (
-                <TableRow key={n.id} {...rowOpener(() => setViewing(n), n.revoked_at && "text-muted-foreground")}>
+                <TableRow key={n.id} {...rowLink(`#/proxies/${n.id}`, n.revoked_at && "text-muted-foreground")}>
                   <TableCell className="font-medium">{n.name}</TableCell>
                   <TableCell>
                     <ProxyStatus node={n} now={now} />
@@ -186,7 +183,6 @@ export function Nodes() {
                       <RowMenu
                         label={n.name}
                         items={[
-                          { label: "View details", icon: Info, onSelect: () => setViewing(n) },
                           ...(n.revoked_at
                             ? []
                             : [{ label: "Revoke proxy", icon: Ban, onSelect: () => confirm.ask(n), destructive: true }]),
@@ -201,22 +197,6 @@ export function Nodes() {
         )}
         <Pager page={nodes.data} onPage={setPage} />
       </Panel>
-      <FormDialog
-        open={viewing !== null}
-        onOpenChange={(o) => {
-          if (!o) setViewing(null);
-        }}
-        title={viewing?.name ?? "Proxy"}
-      >
-        {viewing && (
-          <ProxyDetails
-            node={all.find((n) => n.id === viewing.id) ?? viewing}
-            now={now}
-            onRevoke={(n) => confirm.ask(n)}
-            onClose={() => setViewing(null)}
-          />
-        )}
-      </FormDialog>
       <FormDialog
         open={joinToken !== null}
         onOpenChange={(o) => {
@@ -278,7 +258,7 @@ function joinCommand(token: string): string {
 }
 
 /** What is wrong with a proxy, and what to do about it. */
-function problemText(n: NodeInfo, now: Date): ReactNode {
+export function problemText(n: NodeInfo, now: Date): ReactNode {
   switch (proxyState(n, now)) {
     case "offline":
       return (
@@ -348,71 +328,3 @@ function AttentionBanner({
   );
 }
 
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-all text-sm">{children}</dd>
-    </div>
-  );
-}
-
-function ProxyDetails({
-  node,
-  now,
-  onRevoke,
-  onClose,
-}: {
-  node: NodeInfo;
-  now: Date;
-  onRevoke: (n: NodeInfo) => void;
-  onClose: () => void;
-}) {
-  const problem = problemText(node, now);
-  return (
-    <div className="space-y-4">
-      {problem && <p className="rounded-md border border-warning/50 bg-warning/10 p-3 text-sm">{problem}</p>}
-      <dl className="space-y-3">
-        <Fact label="Status">
-          <ProxyStatus node={node} now={now} />
-        </Fact>
-        <Fact label="Last seen">
-          <Exact at={node.last_seen_at} />
-        </Fact>
-        <Fact label="Enrolled">
-          <Exact at={node.enrolled_at} />
-        </Fact>
-        {node.revoked_at && (
-          <Fact label="Revoked">
-            <Exact at={node.revoked_at} />
-          </Fact>
-        )}
-        <Fact label="Certificate">
-          renewed automatically, current one valid until <Exact at={node.cert_not_after} />
-        </Fact>
-        <Fact label="Proxy ID">
-          <span className="flex items-center gap-2">
-            <Mono>{node.id}</Mono>
-            <CopyButton value={node.id} label="Copy ID" />
-          </span>
-        </Fact>
-        <Fact label="Certificate serial">
-          <Mono>{node.cert_serial}</Mono>
-        </Fact>
-        <Fact label="Sealing key">
-          <Mono>{node.seal_public_key}</Mono>
-        </Fact>
-      </dl>
-      <DialogActions>
-        {!node.revoked_at && (
-          <Button type="button" variant="destructive" onClick={() => onRevoke(node)}>
-            Revoke proxy
-          </Button>
-        )}
-        <Button type="button" variant="outline" onClick={onClose}>
-          Close
-        </Button>
-      </DialogActions>
-    </div>
-  );
-}

@@ -950,6 +950,15 @@ pub async fn create_join_token(
     Ok((StatusCode::CREATED, Json(issued)))
 }
 
+pub async fn get_node(
+    State(s): St,
+    authed: Authed,
+    Path(node_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: NodeId = parse_id("node", &node_id)?;
+    Ok(Json(s.control.nodes.get_node(&authed.caller, &id).await?))
+}
+
 pub async fn revoke_node(
     State(s): St,
     authed: Authed,

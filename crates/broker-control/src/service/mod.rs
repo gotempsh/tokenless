@@ -1391,6 +1391,22 @@ mod tests {
             Err(ControlError::Unauthenticated { .. })
         ));
         let node = cp.nodes.authenticate(&enrolled.node_id).await.unwrap();
+        // The proxy's detail page reads it by ID; admins only.
+        let fetched = cp.nodes.get_node(&a, &enrolled.node_id).await.unwrap();
+        assert_eq!(fetched.name, "node-a");
+        let missing = broker_core::ids::NodeId::new();
+        let err = cp.nodes.get_node(&a, &missing).await.unwrap_err();
+        assert!(
+            matches!(err, ControlError::NotFound { .. })
+                && err.to_string().contains(&missing.to_string()),
+            "{err}"
+        );
+        let mut viewer = a.clone();
+        viewer.principal.role = Role::Viewer;
+        assert!(matches!(
+            cp.nodes.get_node(&viewer, &enrolled.node_id).await,
+            Err(ControlError::Forbidden { .. })
+        ));
         let verify = decode_verifying_key(&enrolled.snapshot_verify_key).unwrap();
 
         let first = cp
