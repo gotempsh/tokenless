@@ -1,30 +1,18 @@
 // SPDX-FileCopyrightText: 2026 credential-broker contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { FileCode2, Search, ShieldAlert, Upload } from "lucide-react";
-import { get, post, type ServiceKind, type ServiceTemplate, type StoredTemplate, type TemplateCategory } from "../api";
-import { CATEGORIES, CATEGORY_LABEL, injectionSummary, KIND_LABEL, latestTemplates, matchesSearch } from "../catalog";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { Plus, ShieldAlert, Upload } from "lucide-react";
+import { get, post, type ServiceTemplate, type StoredTemplate, type UserSummary } from "../api";
+import { CATEGORY_LABEL, injectionSummary, KIND_LABEL } from "../catalog";
 import { useAction, useLoad } from "../hooks";
-import {
-  DialogActions,
-  Empty,
-  ErrorBanner,
-  Field,
-  FormDialog,
-  Mono,
-  Panel,
-  SelectField,
-  Status,
-  Tags,
-} from "../components/common";
+import { DialogActions, ErrorBanner, Field, FormDialog, Mono, Tags } from "../components/common";
+import { AddServiceFlow, type AddServiceRequest } from "../components/AddServiceFlow";
 import { ServiceLogo } from "../components/ServiceLogo";
-import { Input } from "../components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { TemplateCatalog } from "../components/TemplatePicker";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
-import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -81,28 +69,15 @@ function TemplateFacts({ t }: { t: ServiceTemplate }) {
   );
 }
 
-type KindFilter = "all" | ServiceKind;
-
-export function Templates({ isAdmin }: { isAdmin: boolean }) {
+export function Templates({ user }: { user: UserSummary }) {
+  const isAdmin = user.role === "admin";
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [importing, setImporting] = useState(false);
   const [yaml, setYaml] = useState("");
   const [reviewing, setReviewing] = useState<StoredTemplate | null>(null);
   const [viewing, setViewing] = useState<StoredTemplate | null>(null);
-  const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<KindFilter>("all");
-  const [category, setCategory] = useState<"all" | TemplateCategory>("all");
+  const [adding, setAdding] = useState<AddServiceRequest | null>(null);
   const importAction = useAction();
-  const rows = useMemo(
-    () =>
-      latestTemplates(templates.data ?? []).filter(
-        (t) =>
-          (kind === "all" || t.template.kind === kind) &&
-          (category === "all" || t.template.category === category) &&
-          matchesSearch(t.template, query),
-      ),
-    [templates.data, kind, category, query],
-  )
   const approveAction = useAction();
 
   const importTemplate = async (e: FormEvent) => {
@@ -126,11 +101,36 @@ export function Templates({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
+  const open = (t: StoredTemplate) => (t.status !== "approved" && isAdmin ? setReviewing(t) : setViewing(t));
+  const addTo = (t: StoredTemplate) => {
+    setViewing(null);
+    setAdding({ template: t.template });
+  };
+
+  const cardAction = (t: StoredTemplate) =>
+    t.status !== "approved" ? (
+      <Button type="button" size="sm" variant="outline" disabled={!isAdmin} onClick={() => setReviewing(t)}>
+        Review
+      </Button>
+    ) : (
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        disabled={!isAdmin}
+        title={isAdmin ? `Add ${t.template.name} to a vault and an access bundle` : "Only admins can add services"}
+        onClick={() => addTo(t)}
+      >
+        <Plus />
+        Add to vault
+      </Button>
+    );
+
   return (
     <PageContainer>
       <PageHeader
         title="Templates"
-        description="The service catalogue. A template knows a service's hosts, paths and methods and how its credential is sent; it sets the maximum scope, which services and rules can only narrow."
+        description="The service catalogue. Pick a service, add its credential to a vault and put it in an access bundle in one step. A template knows the service's hosts, paths and methods and how its credential is sent; rules can only narrow that."
         actions={
           <Button
             type="button"
@@ -145,109 +145,14 @@ export function Templates({ isAdmin }: { isAdmin: boolean }) {
         }
       />
       <ErrorBanner error={templates.error} />
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <div className="relative w-full sm:w-72">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search services or hosts…"
-            className="pl-9"
-            aria-label="Search templates"
-          />
-        </div>
-        <div className="w-full sm:w-[160px]">
-          <SelectField
-            value={kind}
-            onChange={(v) => setKind(v as KindFilter)}
-            options={[
-              { value: "all", label: "All types" },
-              { value: "http", label: "HTTP APIs" },
-              { value: "mcp", label: "MCP servers" },
-            ]}
-          />
-        </div>
-        <div className="w-full sm:w-[200px]">
-          <SelectField
-            value={category}
-            onChange={(v) => setCategory(v as "all" | TemplateCategory)}
-            options={[{ value: "all", label: "All categories" }, ...CATEGORIES]}
-          />
-        </div>
-      </div>
-      <Panel>
-        {templates.loading && !templates.data ? (
-          <div className="space-y-3 p-4">
-            {Array.from({ length: 6 }, (_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : rows.length === 0 ? (
-          <Empty
-            icon={FileCode2}
-            title={templates.data?.length ? "No template matches" : "No templates"}
-            description={
-              templates.data?.length
-                ? "Try another search or filter, or use a Custom HTTP API template for any service."
-                : "Import a template YAML to describe a service."
-            }
-          />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Service</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="hidden md:table-cell">Category</TableHead>
-                <TableHead className="hidden lg:table-cell">Hosts</TableHead>
-                <TableHead className="hidden xl:table-cell">Injects</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((t) => (
-                <TableRow
-                  key={`${t.template.id}@${t.template.version}`}
-                  className="cursor-pointer"
-                  onClick={() => (t.status !== "approved" && isAdmin ? setReviewing(t) : setViewing(t))}
-                >
-                  <TableCell>
-                    <div className="flex min-w-56 items-center gap-3">
-                      <ServiceLogo template={t.template} size="sm" />
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">{t.template.name}</div>
-                        <div className="line-clamp-1 text-xs text-muted-foreground">{t.template.description}</div>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">{KIND_LABEL[t.template.kind]}</TableCell>
-                  <TableCell className="hidden whitespace-nowrap text-muted-foreground md:table-cell">
-                    {CATEGORY_LABEL[t.template.category]}
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    {t.template.hosts.length ? (
-                      <Tags values={t.template.hosts.slice(0, 2).concat(t.template.hosts.length > 2 ? [`+${t.template.hosts.length - 2}`] : [])} />
-                    ) : (
-                      <span className="text-xs text-muted-foreground">per credential</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="hidden max-w-72 xl:table-cell">
-                    <Mono className="block truncate">{injectionSummary(t.template)}</Mono>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2 whitespace-nowrap">
-                      <Status tone={t.status === "approved" ? "success" : "warning"}>
-                        {t.status === "approved" ? "approved" : "pending approval"}
-                      </Status>
-                      <span className="text-xs text-muted-foreground">v{t.template.version}</span>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </Panel>
+      <TemplateCatalog
+        templates={templates.data ?? []}
+        loading={templates.loading && !templates.data}
+        includePending={isAdmin}
+        onOpen={open}
+        cardAction={cardAction}
+      />
+      <AddServiceFlow request={adding} onClose={() => setAdding(null)} user={user} />
       <FormDialog
         open={viewing !== null}
         onOpenChange={(o) => {
@@ -279,6 +184,17 @@ export function Templates({ isAdmin }: { isAdmin: boolean }) {
               <Button type="button" variant="outline" onClick={() => setViewing(null)}>
                 Close
               </Button>
+              {viewing.status === "approved" && (
+                <Button
+                  type="button"
+                  disabled={!isAdmin}
+                  title={isAdmin ? undefined : "Only admins can add services"}
+                  onClick={() => addTo(viewing)}
+                >
+                  <Plus />
+                  Add to a vault
+                </Button>
+              )}
             </DialogActions>
           </div>
         )}

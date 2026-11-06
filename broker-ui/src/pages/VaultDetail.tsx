@@ -163,7 +163,7 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
       </Tabs>
       {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
       {tab === "rules" && <Rules vaultId={vaultId} />}
-      {tab === "bundles" && <Bundles vaultId={vaultId} />}
+      {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
       {tab === "sessions" && <Sessions vaultId={vaultId} />}
       <FormDialog
         open={deleting}

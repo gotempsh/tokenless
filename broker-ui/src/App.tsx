@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
+  Boxes,
   Braces,
   ChevronRight,
   FileCode2,
@@ -30,6 +31,7 @@ import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { AcceptInvite, AuthLayout, Login, Setup, StepUpDialog } from "./pages/Auth";
+import { Bundles } from "./pages/Bundles";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
@@ -59,9 +61,10 @@ const NAV: { group: string; items: NavItem[] }[] = [
     group: "Broker",
     items: [
       { key: "vaults", label: "Vaults", icon: VaultIcon },
+      { key: "bundles", label: "Access bundles", icon: Boxes },
       { key: "sessions", label: "Sessions", icon: Timer },
-      { key: "variables", label: "Variables", icon: Braces },
       { key: "templates", label: "Templates", icon: FileCode2 },
+      { key: "variables", label: "Variables", icon: Braces },
     ],
   },
   {
@@ -185,9 +188,10 @@ export function App() {
       {section === "vaults" && id && (
         <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
       )}
+      {section === "bundles" && <Bundles user={user} />}
       {section === "sessions" && <Sessions />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}
-      {section === "templates" && <Templates isAdmin={isAdmin} />}
+      {section === "templates" && <Templates user={user} />}
       {section === "people" && <People me={user} />}
       {section === "api-keys" && <ApiKeys />}
       {section === "proxies" && <Nodes />}

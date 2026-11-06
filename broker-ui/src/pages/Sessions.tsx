@@ -101,7 +101,7 @@ export function Sessions() {
             }
             action={
               <Button type="button" variant="outline" asChild>
-                <a href="#/vaults">Open vaults</a>
+                <a href="#/bundles">Open access bundles</a>
               </Button>
             }
           />

@@ -3,12 +3,25 @@
 
 // Access bundles: named lists of a vault's rules, one per kind of job, that
 // sessions are minted from — by the CLI (`run --bundle code-review`) or the
-// Mint session dialog.
+// Mint session dialog. Shown for one vault (its tab) or for every vault
+// (the sidebar page).
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Boxes, Pencil, Plus, Terminal, Trash2 } from "lucide-react";
-import { api, get, patch, post, type AccessBundle, type CredentialMeta, type Page, type Rule } from "../api";
+import {
+  api,
+  get,
+  patch,
+  post,
+  type AccessBundle,
+  type CredentialMeta,
+  type Page,
+  type Rule,
+  type UserSummary,
+  type Vault,
+} from "../api";
 import { useAction, useLoad } from "../hooks";
+import { AddServiceFlow, type AddServiceRequest } from "../components/AddServiceFlow";
 import {
   CheckField,
   ConfirmDialog,
@@ -24,6 +37,7 @@ import {
   Panel,
   RowActions,
   Section,
+  SelectField,
   Status,
   Tags,
   useConfirm,
@@ -32,6 +46,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
+import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
@@ -63,18 +78,55 @@ interface FormState {
 
 const EMPTY: FormState = { name: "", description: "", rule_ids: [] };
 
-export function Bundles({ vaultId }: { vaultId: string }) {
+const DESCRIPTION =
+  "A bundle is the list of services an agent gets for one kind of job, such as code-review with GitHub and Slack. Agents start with one by name, and each run gets its own session.";
+
+/** The rules and credentials of the given vaults, for naming a bundle's services. */
+function useVaultServices(vaultIds: string[]) {
+  const key = vaultIds.join(",");
+  return useLoad(async () => {
+    const per = await Promise.all(
+      vaultIds.map((id) =>
+        Promise.all([
+          get<Page<Rule>>(`/vaults/${id}/rules?page_size=100`),
+          get<Page<CredentialMeta>>(`/vaults/${id}/credentials?page_size=100`),
+        ]),
+      ),
+    );
+    return {
+      rules: per.flatMap(([rules]) => rules.items),
+      credentials: per.flatMap(([, credentials]) => credentials.items),
+    };
+  }, [key]);
+}
+
+/** One vault's bundles when `vaultId` is given, every vault's otherwise. */
+export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary }) {
+  const scoped = vaultId !== undefined;
   const [page, setPage] = useState(1);
-  const bundles = useLoad(() => get<Page<AccessBundle>>(`/vaults/${vaultId}/bundles?page=${page}`), [vaultId, page]);
-  const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
-  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
+  const bundles = useLoad(
+    () => get<Page<AccessBundle>>(scoped ? `/vaults/${vaultId}/bundles?page=${page}` : `/bundles?page=${page}`),
+    [vaultId, page],
+  );
+  const vaults = useLoad(
+    () => (scoped ? Promise.resolve(undefined) : get<Page<Vault>>("/vaults?page_size=100")),
+    [scoped],
+  );
+  const vaultIds = useMemo(
+    () => (vaultId ? [vaultId] : [...new Set((bundles.data?.items ?? []).map((b) => b.vault_id))].sort()),
+    [vaultId, bundles.data],
+  );
+  const services = useVaultServices(vaultIds);
   const [editing, setEditing] = useState<AccessBundle | "new" | null>(null);
   const [running, setRunning] = useState<AccessBundle | null>(null);
+  const [adding, setAdding] = useState<AddServiceRequest | null>(null);
   const confirm = useConfirm<AccessBundle>();
   const action = useAction();
 
-  const ruleById = useMemo(() => new Map((rules.data?.items ?? []).map((r) => [r.id, r])), [rules.data]);
-  const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  const ruleById = useMemo(() => new Map((services.data?.rules ?? []).map((r) => [r.id, r])), [services.data]);
+  const credName = (id: string) => services.data?.credentials.find((c) => c.id === id)?.name ?? id.slice(0, 8);
+  const vaultName = (id: string) => vaults.data?.items.find((v) => v.id === id)?.name ?? id.slice(0, 8);
+  const noVaults = !scoped && vaults.data?.items.length === 0;
 
   const [removed, setRemoved] = useState<{ name: string; sessions: number } | null>(null);
   const remove = async (b: AccessBundle) => {
@@ -84,20 +136,28 @@ export function Bundles({ vaultId }: { vaultId: string }) {
     bundles.reload();
   };
 
-  const addButton = (
-    <Button type="button" onClick={() => setEditing("new")}>
+  const addServiceButton = (variant: "default" | "outline") => (
+    <Button type="button" variant={variant} onClick={() => setAdding({ vaultId })}>
       <Plus />
+      Add a service
+    </Button>
+  );
+  const createButton = (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={() => setEditing("new")}
+      disabled={noVaults}
+      title={noVaults ? "Create a vault first, or add a service: it creates one" : undefined}
+    >
+      <Boxes />
       Create bundle
     </Button>
   );
 
-  return (
-    <Section
-      title="Access bundles"
-      description="A bundle is the list of services an agent gets for one kind of job, such as code-review with GitHub and Slack. Agents start with one by name, and each run gets its own session."
-      actions={addButton}
-    >
-      <ErrorBanner error={bundles.error ?? action.error} />
+  const body = (
+    <>
+      <ErrorBanner error={bundles.error ?? vaults.error ?? services.error ?? action.error} />
       {removed && (
         <Alert>
           <Boxes className="size-4" />
@@ -118,17 +178,23 @@ export function Bundles({ vaultId }: { vaultId: string }) {
             title="No access bundles yet"
             description={
               <>
-                Group the rules an agent needs, then start it with{" "}
-                <Mono>{runCommand("code-review").replace(" -- <agent-command>", " -- claude")}</Mono>.
+                Pick a service from the catalogue and it is stored, given a rule and put in a new bundle in one step.
+                Then start an agent with <Mono>{runCommand("code-review").replace(" -- <agent-command>", " -- claude")}</Mono>.
               </>
             }
-            action={addButton}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                {addServiceButton("default")}
+                {createButton}
+              </div>
+            }
           />
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                {!scoped && <TableHead>Vault</TableHead>}
                 <TableHead>Services</TableHead>
                 <TableHead className="hidden md:table-cell">Updated</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -138,12 +204,21 @@ export function Bundles({ vaultId }: { vaultId: string }) {
               {bundles.data?.items.map((b) => (
                 <TableRow key={b.id}>
                   <TableCell>
-                    <div className="font-medium">{b.name}</div>
+                    <div className="font-mono font-medium">{b.name}</div>
                     {b.description && <p className="text-xs text-muted-foreground">{b.description}</p>}
                   </TableCell>
+                  {!scoped && (
+                    <TableCell>
+                      <a href={`#/vaults/${b.vault_id}/bundles`} className="hover:underline">
+                        {vaultName(b.vault_id)}
+                      </a>
+                    </TableCell>
+                  )}
                   <TableCell>
                     {b.rule_ids.length === 0 ? (
-                      <Status tone="warning">no rules</Status>
+                      <Status tone="warning">no services</Status>
+                    ) : services.loading && !services.data ? (
+                      <Skeleton className="h-5 w-32" />
                     ) : (
                       <BundleRules ids={b.rule_ids} ruleById={ruleById} credName={credName} />
                     )}
@@ -153,6 +228,16 @@ export function Bundles({ vaultId }: { vaultId: string }) {
                   </TableCell>
                   <TableCell>
                     <RowActions>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        title={`Add a service from the catalogue to ${b.name}`}
+                        onClick={() => setAdding({ vaultId: b.vault_id, bundleId: b.id })}
+                      >
+                        <Plus />
+                        <span className="hidden sm:inline">Add service</span>
+                      </Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => setRunning(b)}>
                         <Terminal />
                         <span className="hidden sm:inline">Run an agent</span>
@@ -185,6 +270,15 @@ export function Bundles({ vaultId }: { vaultId: string }) {
         )}
         <Pager page={bundles.data} onPage={setPage} />
       </Panel>
+      <AddServiceFlow
+        request={adding}
+        onClose={() => setAdding(null)}
+        user={user}
+        onAdded={() => {
+          bundles.reload();
+          services.reload();
+        }}
+      />
       <FormDialog
         open={editing !== null}
         onOpenChange={(o) => {
@@ -196,10 +290,9 @@ export function Bundles({ vaultId }: { vaultId: string }) {
       >
         {editing !== null && (
           <BundleForm
-            vaultId={vaultId}
+            vaultId={editing === "new" ? vaultId : editing.vault_id}
+            vaults={vaults.data?.items}
             bundle={editing === "new" ? null : editing}
-            rules={rules.data?.items}
-            credName={credName}
             onCancel={() => setEditing(null)}
             onSaved={() => {
               setEditing(null);
@@ -231,7 +324,27 @@ export function Bundles({ vaultId }: { vaultId: string }) {
           if (confirm.target) void remove(confirm.target);
         }}
       />
-    </Section>
+    </>
+  );
+
+  const actions: ReactNode = (
+    <>
+      {createButton}
+      {addServiceButton("default")}
+    </>
+  );
+  if (scoped) {
+    return (
+      <Section title="Access bundles" description={DESCRIPTION} actions={actions}>
+        {body}
+      </Section>
+    );
+  }
+  return (
+    <PageContainer>
+      <PageHeader title="Access bundles" description={DESCRIPTION} actions={actions} />
+      {body}
+    </PageContainer>
   );
 }
 
@@ -266,20 +379,33 @@ function BundleRules({
 }
 
 function BundleForm({
-  vaultId,
+  vaultId: fixedVault,
+  vaults,
   bundle,
-  rules,
-  credName,
   onCancel,
   onSaved,
 }: {
-  vaultId: string;
+  /** The bundle's vault; when absent (a new bundle from the sidebar page) the form asks. */
+  vaultId: string | undefined;
+  vaults: Vault[] | undefined;
   bundle: AccessBundle | null;
-  rules: Rule[] | undefined;
-  credName: (id: string) => string;
   onCancel: () => void;
   onSaved: () => void;
 }) {
+  const [chosenVault, setChosenVault] = useState(fixedVault ?? "");
+  const vaultId = fixedVault ?? chosenVault;
+  const services = useLoad(
+    () =>
+      vaultId
+        ? Promise.all([
+            get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`),
+            get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`),
+          ])
+        : Promise.resolve(undefined),
+    [vaultId],
+  );
+  const rules = services.data?.[0].items;
+  const credName = (id: string) => services.data?.[1].items.find((c) => c.id === id)?.name ?? id.slice(0, 8);
   const [form, setForm] = useState<FormState>(
     bundle ? { name: bundle.name, description: bundle.description, rule_ids: bundle.rule_ids } : EMPTY,
   );
@@ -300,7 +426,21 @@ function BundleForm({
 
   return (
     <form className="space-y-4" onSubmit={submit}>
-      <ErrorBanner error={action.error} />
+      <ErrorBanner error={action.error ?? services.error} />
+      {!fixedVault && (
+        <Field label="Vault" htmlFor="bundle-vault" hint="A bundle can only hold services from its own vault.">
+          <SelectField
+            id="bundle-vault"
+            value={chosenVault}
+            onChange={(v) => {
+              setChosenVault(v);
+              setForm({ ...form, rule_ids: [] });
+            }}
+            placeholder="Choose a vault…"
+            options={(vaults ?? []).map((v) => ({ value: v.id, label: v.name }))}
+          />
+        </Field>
+      )}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="Name" htmlFor="bundle-name" hint={nameProblem ?? "Used on the command line: --bundle <name>."}>
           <Input
@@ -324,16 +464,15 @@ function BundleForm({
         </Field>
       </div>
       <div className="space-y-3">
-        <p className="text-sm font-medium">Rules</p>
-        {rules === undefined ? (
+        <p className="text-sm font-medium">Services</p>
+        {!vaultId ? (
+          <p className="text-sm text-muted-foreground">Choose a vault to see its services.</p>
+        ) : rules === undefined ? (
           <Skeleton className="h-6 w-full" />
         ) : rules.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            This vault has no rules yet.{" "}
-            <a href={`#/vaults/${vaultId}/rules`} className="underline" onClick={onCancel}>
-              Add a rule
-            </a>{" "}
-            for a service, then put it in a bundle.
+            This vault has no services with a rule yet. Create the bundle empty, then use{" "}
+            <span className="font-medium text-foreground">Add service</span> on it to pick one from the catalogue.
           </p>
         ) : (
           <div className="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
@@ -362,7 +501,7 @@ function BundleForm({
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={action.busy || nameProblem !== null || !form.name.trim()}>
+        <Button type="submit" disabled={action.busy || nameProblem !== null || !form.name.trim() || !vaultId}>
           {bundle ? "Save bundle" : "Create bundle"}
         </Button>
       </DialogActions>
