@@ -73,6 +73,10 @@ pub enum Action {
     AuditRead,
     NodeManage,
     SettingsWrite,
+    /// List people and invitations.
+    UserRead,
+    /// Invite people, change their role, disable them.
+    UserManage,
 }
 
 impl Action {
@@ -86,6 +90,7 @@ impl Action {
                 | Action::TemplateImport
                 | Action::TemplateApprove
                 | Action::NodeManage
+                | Action::UserManage
         )
     }
 
@@ -99,6 +104,8 @@ impl Action {
                 | Action::ApiKeyManage
                 | Action::NodeManage
                 | Action::SettingsWrite
+                | Action::UserRead
+                | Action::UserManage
         )
     }
 }

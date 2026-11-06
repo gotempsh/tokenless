@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 
 use broker_control::model::{
-    ApiKey, AuditQuery, CredentialMeta, JoinTokenRecord, Node, PageRequest, ProxySession, Rule,
-    Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Vault,
+    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest, ProxySession,
+    Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Vault,
 };
 use broker_control::store::{
     AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore,
@@ -21,7 +21,9 @@ use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::{Action, Decision, Principal, PrincipalKind, Role};
 use broker_core::egress::{EgressPolicy, IpCidr};
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
@@ -873,6 +875,8 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
             Action::TemplateApprove,
             Action::CredentialWiden,
             Action::SettingsWrite,
+            Action::UserRead,
+            Action::UserManage,
         ] {
             let d = authz.authorize(&key(role), action, Some(&vault_a)).await;
             ensure!(
@@ -918,6 +922,308 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
         d == Decision::Allow,
         "an admin must be able to manage nodes, got {d:?}"
     );
+    for role in [Role::Editor, Role::Viewer] {
+        let person = Principal {
+            role,
+            ..admin.clone()
+        };
+        for action in [Action::UserRead, Action::UserManage] {
+            let d = authz.authorize(&person, action, None).await;
+            ensure!(
+                S,
+                "user_management_is_admin_only",
+                matches!(d, Decision::Deny { .. }),
+                "a person with role {role} must not get {action}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn person(username: &str, role: Role, created_offset: i64) -> User {
+    User {
+        id: UserId::new(),
+        username: username.into(),
+        password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".into(),
+        totp_secret_enc: vec![1, 2, 3],
+        totp_last_step: None,
+        role,
+        created_at: at(created_offset),
+        disabled_at: None,
+    }
+}
+
+fn invite(token_hash: &str, role: Role, created_offset: i64, expires_offset: i64) -> Invite {
+    Invite {
+        id: InviteId::new(),
+        token_hash: token_hash.into(),
+        role,
+        created_by: "user:conformance".into(),
+        created_at: at(created_offset),
+        expires_at: at(expires_offset),
+        accepted_at: None,
+        accepted_by: None,
+        revoked_at: None,
+    }
+}
+
+/// Role changes, disabling and invitations. Expects an empty store.
+pub async fn user_management_suite(store: &dyn IdentityStore) -> Result<(), ConformanceFailure> {
+    const S: &str = "user_management";
+    let alice = person("alice", Role::Admin, -20);
+    let bob = person("bob", Role::Editor, -10);
+    for u in [&alice, &bob] {
+        store
+            .insert_user(u.clone(), &[])
+            .await
+            .map_err(backend(S, "insert"))?;
+    }
+    let listed = store
+        .list_users(PageRequest::default())
+        .await
+        .map_err(backend(S, "list"))?;
+    ensure!(
+        S,
+        "list",
+        listed.total == 2 && listed.items.first().map(|u| u.id) == Some(bob.id),
+        "expected 2 users newest first, got {:?}",
+        listed.items.iter().map(|u| &u.username).collect::<Vec<_>>()
+    );
+
+    store
+        .update_user_access(&bob.id, Role::Viewer, None, &[])
+        .await
+        .map_err(backend(S, "change_role"))?;
+    let got = store
+        .get_user(&bob.id)
+        .await
+        .map_err(backend(S, "change_role"))?;
+    ensure!(
+        S,
+        "change_role",
+        got.map(|u| u.role) == Some(Role::Viewer),
+        "role change was not stored"
+    );
+
+    for (role, disabled, check) in [
+        (Role::Editor, None, "last_admin_demote"),
+        (Role::Admin, Some(at(0)), "last_admin_disable"),
+    ] {
+        let res = store
+            .update_user_access(&alice.id, role, disabled, &[])
+            .await;
+        ensure!(
+            S,
+            check,
+            matches!(res, Err(StoreError::Conflict { .. })),
+            "changing the only enabled admin must be Conflict, got {res:?}"
+        );
+        let got = store.get_user(&alice.id).await.map_err(backend(S, check))?;
+        ensure!(
+            S,
+            check,
+            got.is_some_and(|u| u.role == Role::Admin && u.disabled_at.is_none()),
+            "a refused change must leave the admin unchanged"
+        );
+    }
+
+    store
+        .update_user_access(&bob.id, Role::Admin, None, &[])
+        .await
+        .map_err(backend(S, "promote"))?;
+    store
+        .insert_ui_session(
+            UiSession {
+                token_hash: "alice-session".into(),
+                user_id: alice.id,
+                created_at: at(-1),
+                expires_at: at(100),
+                step_up_at: None,
+            },
+            &[],
+        )
+        .await
+        .map_err(backend(S, "disable"))?;
+    store
+        .update_user_access(&alice.id, Role::Admin, Some(at(1)), &[])
+        .await
+        .map_err(backend(S, "disable"))?;
+    let got = store
+        .get_user(&alice.id)
+        .await
+        .map_err(backend(S, "disable"))?;
+    ensure!(
+        S,
+        "disable",
+        got.and_then(|u| u.disabled_at) == Some(at(1)),
+        "disabled time was not stored"
+    );
+    let session = store
+        .get_ui_session("alice-session")
+        .await
+        .map_err(backend(S, "disable"))?;
+    ensure!(
+        S,
+        "disable_ends_sessions",
+        session.is_none(),
+        "disabling a user must delete their UI sessions"
+    );
+    let res = store
+        .update_user_access(&bob.id, Role::Admin, Some(at(2)), &[])
+        .await;
+    ensure!(
+        S,
+        "disabled_admins_do_not_count",
+        matches!(res, Err(StoreError::Conflict { .. })),
+        "a disabled admin must not count towards the last-admin check, got {res:?}"
+    );
+    let res = store
+        .update_user_access(&UserId::new(), Role::Viewer, None, &[])
+        .await;
+    ensure!(
+        S,
+        "update_missing",
+        matches!(res, Err(StoreError::NotFound { .. })),
+        "unknown user must be NotFound, got {res:?}"
+    );
+
+    let pending = invite("invite-1", Role::Editor, -5, 100);
+    store
+        .insert_invite(pending.clone(), &[])
+        .await
+        .map_err(backend(S, "invite_insert"))?;
+    let res = store
+        .insert_invite(invite("invite-1", Role::Viewer, 0, 100), &[])
+        .await;
+    ensure!(
+        S,
+        "invite_duplicate",
+        matches!(res, Err(StoreError::Conflict { .. })),
+        "a reused token hash must be Conflict, got {res:?}"
+    );
+    let got = store
+        .get_invite_by_token_hash("invite-1")
+        .await
+        .map_err(backend(S, "invite_get"))?;
+    ensure!(
+        S,
+        "invite_round_trip",
+        got.as_ref() == Some(&pending),
+        "invite did not round-trip: {got:?}"
+    );
+
+    let cases = [
+        (person("carol", Role::Viewer, 0), "accept_wrong_role"),
+        (person("carol", Role::Editor, 150), "accept_expired"),
+    ];
+    for (user, check) in cases {
+        let accepted = store
+            .accept_invite("invite-1", user.clone(), &[])
+            .await
+            .map_err(backend(S, check))?;
+        let created = store.get_user(&user.id).await.map_err(backend(S, check))?;
+        ensure!(
+            S,
+            check,
+            !accepted && created.is_none(),
+            "an invite must not be accepted with a different role or after expiry"
+        );
+    }
+    let res = store
+        .accept_invite("invite-1", person("bob", Role::Editor, 0), &[])
+        .await;
+    ensure!(
+        S,
+        "accept_taken_username",
+        matches!(res, Err(StoreError::Conflict { .. })),
+        "a taken username must be Conflict, got {res:?}"
+    );
+    let carol = person("carol", Role::Editor, 0);
+    let accepted = store
+        .accept_invite("invite-1", carol.clone(), &[])
+        .await
+        .map_err(backend(S, "accept"))?;
+    let stored = store
+        .get_invite_by_token_hash("invite-1")
+        .await
+        .map_err(backend(S, "accept"))?;
+    let created = store
+        .get_user(&carol.id)
+        .await
+        .map_err(backend(S, "accept"))?;
+    ensure!(
+        S,
+        "accept",
+        accepted
+            && created.as_ref() == Some(&carol)
+            && stored
+                .as_ref()
+                .is_some_and(|i| i.accepted_by == Some(carol.id) && i.accepted_at == Some(at(0))),
+        "accepting must create the user and mark the invite (stored invite {stored:?})"
+    );
+    let again = store
+        .accept_invite("invite-1", person("dave", Role::Editor, 1), &[])
+        .await
+        .map_err(backend(S, "accept_once"))?;
+    ensure!(S, "accept_once", !again, "an invite must be single-use");
+    let revoked = store
+        .revoke_invite(&pending.id, at(2), &[])
+        .await
+        .map_err(backend(S, "revoke_accepted"))?;
+    ensure!(
+        S,
+        "revoke_accepted",
+        !revoked,
+        "revoking an accepted invite must report no change"
+    );
+
+    let second = invite("invite-2", Role::Viewer, 5, 100);
+    store
+        .insert_invite(second.clone(), &[])
+        .await
+        .map_err(backend(S, "revoke"))?;
+    let first = store
+        .revoke_invite(&second.id, at(6), &[])
+        .await
+        .map_err(backend(S, "revoke"))?;
+    let repeat = store
+        .revoke_invite(&second.id, at(7), &[])
+        .await
+        .map_err(backend(S, "revoke"))?;
+    ensure!(
+        S,
+        "revoke",
+        first && !repeat,
+        "revoke must report a change once (got {first}, then {repeat})"
+    );
+    let accepted = store
+        .accept_invite("invite-2", person("erin", Role::Viewer, 8), &[])
+        .await
+        .map_err(backend(S, "accept_revoked"))?;
+    ensure!(
+        S,
+        "accept_revoked",
+        !accepted,
+        "a revoked invite must not be accepted"
+    );
+    let res = store.revoke_invite(&InviteId::new(), at(0), &[]).await;
+    ensure!(
+        S,
+        "revoke_missing",
+        matches!(res, Err(StoreError::NotFound { .. })),
+        "unknown invite must be NotFound, got {res:?}"
+    );
+    let listed = store
+        .list_invites(PageRequest::default())
+        .await
+        .map_err(backend(S, "invite_list"))?;
+    ensure!(
+        S,
+        "invite_list",
+        listed.total == 2 && listed.items.first().map(|i| i.id) == Some(second.id),
+        "expected 2 invites newest first, got {:?}",
+        listed.items
+    );
     Ok(())
 }
 
@@ -937,6 +1243,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         totp_last_step: Some(10),
         role: Role::Admin,
         created_at: at(0),
+        disabled_at: None,
     };
     store
         .insert_user(user.clone(), &[])

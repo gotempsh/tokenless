@@ -12,14 +12,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use broker_control::model::{
-    ApiKey, AuditQuery, CredentialMeta, JoinTokenRecord, Node, Page, PageRequest, ProxySession,
-    Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Vault,
+    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
+    ProxySession, Rule, Settings, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User,
+    Vault,
 };
 use broker_control::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Role;
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use broker_core::template::ServiceTemplate;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::de::DeserializeOwned;
@@ -861,7 +864,43 @@ fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
         totp_last_step: get::<Option<i64>>(row, "totp_last_step")?.map(to_u64),
         role: role(row)?,
         created_at: get_ts(row, "created_at")?,
+        disabled_at: get_opt_ts(row, "disabled_at")?,
     })
+}
+
+fn invite_from_row(row: &SqliteRow) -> Result<Invite, StoreError> {
+    Ok(Invite {
+        id: get_id(row, "id")?,
+        token_hash: get(row, "token_hash")?,
+        role: role(row)?,
+        created_by: get(row, "created_by")?,
+        created_at: get_ts(row, "created_at")?,
+        expires_at: get_ts(row, "expires_at")?,
+        accepted_at: get_opt_ts(row, "accepted_at")?,
+        accepted_by: get::<Option<String>>(row, "accepted_by")?
+            .map(|raw| {
+                raw.parse::<UserId>()
+                    .map_err(|e| StoreError::backend("decode accepted_by", format!("'{raw}': {e}")))
+            })
+            .transpose()?,
+        revoked_at: get_opt_ts(row, "revoked_at")?,
+    })
+}
+
+async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Result<(), StoreError> {
+    sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at, disabled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(u.id.to_string())
+        .bind(&u.username)
+        .bind(&u.password_hash)
+        .bind(&u.totp_secret_enc)
+        .bind(u.totp_last_step.map(to_i64))
+        .bind(u.role.as_str())
+        .bind(ts(&u.created_at))
+        .bind(opt_ts(&u.disabled_at))
+        .execute(&mut **tx)
+        .await
+        .map_err(db("insert user", "user"))?;
+    Ok(())
 }
 
 fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
@@ -888,17 +927,7 @@ impl IdentityStore for SqliteStore {
 
     async fn insert_user(&self, u: User, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_user").await?;
-        sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-            .bind(u.id.to_string())
-            .bind(&u.username)
-            .bind(&u.password_hash)
-            .bind(&u.totp_secret_enc)
-            .bind(u.totp_last_step.map(to_i64))
-            .bind(u.role.as_str())
-            .bind(ts(&u.created_at))
-            .execute(&mut *tx)
-            .await
-            .map_err(db("insert user", "user"))?;
+        insert_user_tx(&mut tx, &u).await?;
         finish(tx, audit, "insert_user").await
     }
 
@@ -920,6 +949,164 @@ impl IdentityStore for SqliteStore {
             .map_err(db("get user by name", "user"))?
             .map(|r| user_from_row(&r))
             .transpose()
+    }
+
+    async fn list_users(&self, page: PageRequest) -> Result<Page<User>, StoreError> {
+        let total = self.count("SELECT COUNT(*) AS n FROM users", None).await?;
+        let rows = sqlx::query("SELECT * FROM users ORDER BY created_at DESC, id LIMIT ? OFFSET ?")
+            .bind(to_i64(page.page_size))
+            .bind(to_i64(page.offset()))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list users", "user"))?;
+        Ok(Page {
+            items: rows.iter().map(user_from_row).collect::<Result<_, _>>()?,
+            total,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    async fn update_user_access(
+        &self,
+        id: &UserId,
+        role: Role,
+        disabled_at: Option<DateTime<Utc>>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        // The UPDATE comes first so the transaction holds the write lock
+        // before the admin count is read; concurrent changes serialise.
+        let mut tx = self.begin("update_user_access").await?;
+        let result = sqlx::query("UPDATE users SET role = ?, disabled_at = ? WHERE id = ?")
+            .bind(role.as_str())
+            .bind(opt_ts(&disabled_at))
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("update user access", "user"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("user", id));
+        }
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled_at IS NULL",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db("count enabled admins", "user"))?;
+        if get::<i64>(&row, "n")? == 0 {
+            return Err(StoreError::Conflict {
+                entity: "user",
+                detail: format!("changing user {id} would leave no enabled admin"),
+            });
+        }
+        if disabled_at.is_some() {
+            sqlx::query("DELETE FROM ui_sessions WHERE user_id = ?")
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db("delete disabled user's sessions", "ui_session"))?;
+        }
+        finish(tx, audit, "update_user_access").await
+    }
+
+    async fn insert_invite(&self, i: Invite, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut tx = self.begin("insert_invite").await?;
+        sqlx::query("INSERT INTO invites (id, token_hash, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(i.id.to_string())
+            .bind(&i.token_hash)
+            .bind(i.role.as_str())
+            .bind(&i.created_by)
+            .bind(ts(&i.created_at))
+            .bind(ts(&i.expires_at))
+            .bind(opt_ts(&i.accepted_at))
+            .bind(i.accepted_by.map(|u| u.to_string()))
+            .bind(opt_ts(&i.revoked_at))
+            .execute(&mut *tx)
+            .await
+            .map_err(db("insert invite", "invite"))?;
+        finish(tx, audit, "insert_invite").await
+    }
+
+    async fn get_invite_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<Invite>, StoreError> {
+        sqlx::query("SELECT * FROM invites WHERE token_hash = ?")
+            .bind(token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get invite", "invite"))?
+            .map(|r| invite_from_row(&r))
+            .transpose()
+    }
+
+    async fn list_invites(&self, page: PageRequest) -> Result<Page<Invite>, StoreError> {
+        let total = self
+            .count("SELECT COUNT(*) AS n FROM invites", None)
+            .await?;
+        let rows =
+            sqlx::query("SELECT * FROM invites ORDER BY created_at DESC, id LIMIT ? OFFSET ?")
+                .bind(to_i64(page.page_size))
+                .bind(to_i64(page.offset()))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db("list invites", "invite"))?;
+        Ok(Page {
+            items: rows.iter().map(invite_from_row).collect::<Result<_, _>>()?,
+            total,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    async fn revoke_invite(
+        &self,
+        id: &InviteId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("revoke_invite").await?;
+        let result = sqlx::query(
+            "UPDATE invites SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL AND accepted_at IS NULL",
+        )
+        .bind(ts(&at))
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("revoke invite", "invite"))?;
+        if result.rows_affected() == 1 {
+            return finish(tx, audit, "revoke_invite").await.map(|()| true);
+        }
+        if exists_tx(&mut tx, "invites", &id.to_string()).await? {
+            finish(tx, audit, "revoke_invite").await.map(|()| false)
+        } else {
+            Err(StoreError::not_found("invite", id))
+        }
+    }
+
+    async fn accept_invite(
+        &self,
+        token_hash: &str,
+        user: User,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("accept_invite").await?;
+        let result = sqlx::query(
+            "UPDATE invites SET accepted_at = ?, accepted_by = ? WHERE token_hash = ? AND role = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(ts(&user.created_at))
+        .bind(user.id.to_string())
+        .bind(token_hash)
+        .bind(user.role.as_str())
+        .bind(ts(&user.created_at))
+        .execute(&mut *tx)
+        .await
+        .map_err(db("accept invite", "invite"))?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        insert_user_tx(&mut tx, &user).await?;
+        finish(tx, audit, "accept_invite").await.map(|()| true)
     }
 
     async fn advance_totp_step(&self, id: &UserId, step: u64) -> Result<bool, StoreError> {

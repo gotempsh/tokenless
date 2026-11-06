@@ -30,6 +30,7 @@ suite!(credential_store_suite);
 suite!(policy_store_suite);
 suite!(audit_sink_suite);
 suite!(identity_store_suite);
+suite!(user_management_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
 

@@ -20,7 +20,12 @@ use broker_control::service::auth::{
 };
 use broker_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
 use broker_control::service::sessions::MintSession;
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, VaultId};
+use broker_control::service::users::{
+    AcceptInviteRequest, CreateInvite, InviteInfo, InviteIssued, UpdateUser,
+};
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -492,6 +497,110 @@ pub async fn revoke_api_key(
     let id: ApiKeyId = parse_id("api key", &api_key_id)?;
     s.control.auth.revoke_api_key(&authed.caller, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ----- people --------------------------------------------------------------
+
+pub async fn list_users(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<Json<Page<UserSummary>>> {
+    Ok(Json(
+        s.control
+            .users
+            .list_users(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
+pub async fn update_user(
+    State(s): St,
+    authed: Authed,
+    Path(user_id): Path<String>,
+    ApiJson(req): ApiJson<UpdateUser>,
+) -> ApiResult<Json<UserSummary>> {
+    let id: UserId = parse_id("user", &user_id)?;
+    Ok(Json(
+        s.control
+            .users
+            .update_user(&authed.caller, &id, req)
+            .await?,
+    ))
+}
+
+pub async fn list_invites(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .users
+            .list_invites(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
+pub async fn create_invite(
+    State(s): St,
+    authed: Authed,
+    ApiJson(req): ApiJson<CreateInvite>,
+) -> ApiResult<(StatusCode, Json<InviteIssued>)> {
+    let issued = s.control.users.create_invite(&authed.caller, req).await?;
+    Ok((StatusCode::CREATED, Json(issued)))
+}
+
+pub async fn revoke_invite(
+    State(s): St,
+    authed: Authed,
+    Path(invite_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let id: InviteId = parse_id("invite", &invite_id)?;
+    s.control.users.revoke_invite(&authed.caller, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct InviteTokenRequest {
+    invite_token: String,
+}
+
+/// Unauthenticated: what an invite token offers. The token travels in the
+/// body, never the URL, so it stays out of access logs.
+pub async fn inspect_invite(
+    State(s): St,
+    ApiJson(req): ApiJson<InviteTokenRequest>,
+) -> ApiResult<Json<InviteInfo>> {
+    Ok(Json(
+        s.control.users.inspect_invite(&req.invite_token).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct InviteTotpRequest {
+    invite_token: String,
+    username: String,
+}
+
+pub async fn invite_totp(
+    State(s): St,
+    ApiJson(req): ApiJson<InviteTotpRequest>,
+) -> ApiResult<Json<TotpEnrollment>> {
+    Ok(Json(
+        s.control
+            .users
+            .invite_totp(&req.invite_token, &req.username)
+            .await?,
+    ))
+}
+
+pub async fn accept_invite(
+    State(s): St,
+    ApiJson(req): ApiJson<AcceptInviteRequest>,
+) -> ApiResult<(StatusCode, Json<UserSummary>)> {
+    let user = s.control.users.accept_invite(req).await?;
+    Ok((StatusCode::CREATED, Json(user)))
 }
 
 // ----- audit -------------------------------------------------------------

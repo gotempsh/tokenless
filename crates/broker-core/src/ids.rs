@@ -59,6 +59,7 @@ id_type!(SessionId, "session");
 id_type!(NodeId, "node");
 id_type!(UserId, "user");
 id_type!(ApiKeyId, "api_key");
+id_type!(InviteId, "invite");
 id_type!(AuditEventId, "audit_event");
 
 #[cfg(test)]

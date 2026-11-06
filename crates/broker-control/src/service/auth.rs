@@ -28,11 +28,14 @@ const LOGIN_WINDOW: StdDuration = StdDuration::from_secs(300);
 const LIMITER_CAPACITY: usize = 10_000;
 const MAX_API_KEY_DAYS: u32 = 365;
 
+/// A person as the API shows them: never the password hash or TOTP secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserSummary {
     pub id: UserId,
     pub username: String,
     pub role: Role,
+    pub created_at: DateTime<Utc>,
+    pub disabled_at: Option<DateTime<Utc>>,
 }
 
 impl From<&User> for UserSummary {
@@ -41,6 +44,8 @@ impl From<&User> for UserSummary {
             id: u.id,
             username: u.username.clone(),
             role: u.role,
+            created_at: u.created_at,
+            disabled_at: u.disabled_at,
         }
     }
 }
@@ -92,7 +97,7 @@ pub struct CreateApiKey {
     pub expires_in_days: u32,
 }
 
-fn validate_username(username: &str) -> Result<(), ControlError> {
+pub(super) fn validate_username(username: &str) -> Result<(), ControlError> {
     let ok = (3..=64).contains(&username.len())
         && username
             .chars()
@@ -104,6 +109,44 @@ fn validate_username(username: &str) -> Result<(), ControlError> {
             "username must be 3-64 characters of a-z, 0-9, '_', '-' or '.'",
         ))
     }
+}
+
+/// Checks a new account's username, password and first TOTP code;
+/// returns the TOTP step the code used.
+pub(super) fn check_new_account(
+    username: &str,
+    password_plain: &str,
+    totp_secret: &str,
+    totp_code: &str,
+) -> Result<u64, ControlError> {
+    validate_username(username)?;
+    password::check_password_policy(password_plain)?;
+    totp::verify_code(totp_secret, username, totp_code, unix_now(), None)?.ok_or_else(|| {
+        ControlError::validation(
+            "the TOTP code does not match the secret; check the authenticator clock",
+        )
+    })
+}
+
+pub(super) fn build_user(
+    cipher: &dyn SecretCipher,
+    username: &str,
+    password_plain: &str,
+    totp_secret: &str,
+    totp_step: u64,
+    role: Role,
+) -> Result<User, ControlError> {
+    let id = UserId::new();
+    Ok(User {
+        id,
+        username: username.to_string(),
+        password_hash: password::hash_password(password_plain)?,
+        totp_secret_enc: cipher.encrypt(totp_secret.trim().as_bytes(), &totp_aad(&id))?,
+        totp_last_step: Some(totp_step),
+        role,
+        created_at: Utc::now(),
+        disabled_at: None,
+    })
 }
 
 fn unix_now() -> u64 {
@@ -175,7 +218,7 @@ pub struct AuthService {
     dummy_hash: String,
 }
 
-fn totp_aad(user_id: &UserId) -> Vec<u8> {
+pub(super) fn totp_aad(user_id: &UserId) -> Vec<u8> {
     format!("user-totp|{user_id}").into_bytes()
 }
 
@@ -229,20 +272,12 @@ impl AuthService {
     }
 
     pub async fn complete_setup(&self, req: SetupRequest) -> Result<UserSummary, ControlError> {
-        validate_username(&req.username)?;
-        password::check_password_policy(&req.password)?;
-        let step = totp::verify_code(
-            &req.totp_secret,
+        let step = check_new_account(
             &req.username,
+            &req.password,
+            &req.totp_secret,
             &req.totp_code,
-            unix_now(),
-            None,
-        )?
-        .ok_or_else(|| {
-            ControlError::validation(
-                "the TOTP code does not match the secret; check the authenticator clock",
-            )
-        })?;
+        )?;
         if !self.setup_required().await? {
             return Err(ControlError::Conflict {
                 message: "setup has already been completed".into(),
@@ -257,18 +292,15 @@ impl AuthService {
                 reason: "setup token is invalid or was already used".into(),
             });
         }
-        let id = UserId::new();
-        let user = User {
-            id,
-            username: req.username.clone(),
-            password_hash: password::hash_password(&req.password)?,
-            totp_secret_enc: self
-                .cipher
-                .encrypt(req.totp_secret.trim().as_bytes(), &totp_aad(&id))?,
-            totp_last_step: Some(step),
-            role: Role::Admin,
-            created_at: Utc::now(),
-        };
+        let user = build_user(
+            self.cipher.as_ref(),
+            &req.username,
+            &req.password,
+            &req.totp_secret,
+            step,
+            Role::Admin,
+        )?;
+        let id = user.id;
         let event = AuditEvent::new(format!("user:{id}"), "auth.setup", AuditOutcome::Success)
             .target(format!("user:{id}"))
             .detail("username", user.username.clone());
@@ -307,7 +339,11 @@ impl AuthService {
             }
         };
         let user = match (user, password_ok) {
-            (Some(u), true) if self.verify_totp(&u, &req.totp_code).await? => u,
+            (Some(u), true)
+                if u.disabled_at.is_none() && self.verify_totp(&u, &req.totp_code).await? =>
+            {
+                u
+            }
             _ => {
                 self.limiter.fail(&username);
                 warn!(username = %username, "login failed");
@@ -380,6 +416,9 @@ impl AuthService {
             .get_user(&session.user_id)
             .await?
             .ok_or_else(|| unauth("session user no longer exists"))?;
+        if user.disabled_at.is_some() {
+            return Err(unauth("the account has been disabled"));
+        }
         Ok(SessionAuth {
             caller: Caller {
                 principal: Principal {

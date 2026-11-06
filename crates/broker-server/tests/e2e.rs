@@ -730,3 +730,159 @@ async fn end_to_end() {
     assert!(dp.metrics().render().contains("lease_refusals_total"));
     dp.shutdown();
 }
+
+/// Logs `username` in on a fresh client and returns it with its cookie.
+async fn login_as(server: &RunningServer, username: &str, password: &str, code: &str) -> Api {
+    let mut api = Api::new(server);
+    let (status, headers, body) = api
+        .call(
+            reqwest::Method::POST,
+            "/auth/login",
+            Some(json!({ "username": username, "password": password, "totp_code": code })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "login {username}: {body}");
+    let set_cookie = headers.get(SET_COOKIE).unwrap().to_str().unwrap();
+    api.cookie = Some(set_cookie.split(';').next().unwrap().to_string());
+    api.csrf = Some(body["csrf_token"].as_str().unwrap().to_string());
+    api
+}
+
+#[tokio::test]
+async fn people_are_invited_with_a_role_and_can_be_disabled() {
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let (admin, _) = bootstrap_admin(&server).await;
+
+    let issued = admin
+        .post(
+            "/invites",
+            json!({ "role": "editor", "expires_in_hours": 24 }),
+        )
+        .await;
+    let invite_token = issued["token"].as_str().unwrap().to_string();
+    assert!(invite_token.starts_with("cbinv_"));
+    assert!(
+        issued["invite"].get("token_hash").is_none(),
+        "the stored hash must never be returned"
+    );
+    let listed = admin.get("/invites").await;
+    assert_eq!(listed["total"], 1);
+    assert!(!listed.to_string().contains(&invite_token));
+
+    // The invitee has no session: everything below is unauthenticated.
+    let guest = Api::new(&server);
+    let info = guest
+        .post("/invites/inspect", json!({ "invite_token": invite_token }))
+        .await;
+    assert_eq!(info["role"], "editor");
+    let (status, _, _) = guest
+        .call(
+            reqwest::Method::POST,
+            "/invites/inspect",
+            Some(json!({ "invite_token": "cbinv_forged" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let enrollment = guest
+        .post(
+            "/invites/totp",
+            json!({ "invite_token": invite_token, "username": "editor-one" }),
+        )
+        .await;
+    let secret = enrollment["secret"].as_str().unwrap().to_string();
+    let accepted = guest
+        .post(
+            "/invites/accept",
+            json!({
+                "invite_token": invite_token,
+                "username": "editor-one",
+                "password": PASSWORD,
+                "totp_secret": secret,
+                "totp_code": totp(&secret, 0),
+            }),
+        )
+        .await;
+    assert_eq!(accepted["role"], "editor");
+    let user_id = accepted["id"].as_str().unwrap().to_string();
+    let (status, _, _) = guest
+        .call(
+            reqwest::Method::POST,
+            "/invites/accept",
+            Some(json!({
+                "invite_token": invite_token,
+                "username": "editor-two",
+                "password": PASSWORD,
+                "totp_secret": secret,
+                "totp_code": totp(&secret, 30),
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "invites are single use");
+
+    let editor = login_as(&server, "editor-one", PASSWORD, &totp(&secret, 30)).await;
+    let me = editor.get("/auth/me").await;
+    assert_eq!(me["user"]["role"], "editor");
+    let (status, _, _) = editor.call(reqwest::Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = editor
+        .call(
+            reqwest::Method::POST,
+            "/invites",
+            Some(json!({ "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The only admin cannot demote themselves.
+    let users = admin.get("/users").await;
+    assert_eq!(users["total"], 2);
+    let admin_id = users["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "admin")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _, body) = admin
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/users/{admin_id}"),
+            Some(json!({ "role": "viewer" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Disabling ends the editor's session at once.
+    let (status, _, body) = admin
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/users/{user_id}"),
+            Some(json!({ "disabled": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["disabled_at"].is_string());
+    let (status, _, _) = editor.call(reqwest::Method::GET, "/auth/me", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let audit = admin.get("/audit?action_prefix=user.").await;
+    let actions: Vec<&str> = audit["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    for expected in ["user.invite", "user.invite.accept", "user.update"] {
+        assert!(
+            actions.contains(&expected),
+            "{expected} missing from {actions:?}"
+        );
+    }
+    server.shutdown();
+}

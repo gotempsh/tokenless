@@ -6,6 +6,7 @@ pub mod auth;
 pub mod nodes;
 pub mod policy;
 pub mod sessions;
+pub mod users;
 
 use std::sync::Arc;
 
@@ -159,6 +160,7 @@ pub struct ControlPlane {
     pub policy: policy::PolicyService,
     pub sessions: sessions::SessionService,
     pub nodes: nodes::NodeService,
+    pub users: users::UserService,
     pub audit: audit::AuditService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
@@ -176,6 +178,7 @@ impl ControlPlane {
         let notifier = Arc::new(PolicyNotifier::new());
         let guard = Guard::new(authorizer, config.step_up_window_secs);
         let recorder = AuditRecorder::new(stores.audit.clone());
+        let users = users::UserService::new(stores.identity.clone(), cipher.clone(), guard.clone());
         let auth = auth::AuthService::new(
             stores.identity.clone(),
             cipher.clone(),
@@ -218,6 +221,7 @@ impl ControlPlane {
             policy,
             sessions,
             nodes,
+            users,
             audit,
             keys,
             notifier,
@@ -369,6 +373,242 @@ mod tests {
         assert!(!cp.auth.verify_csrf(&auth.token_hash, "forged"));
         cp.auth.logout(&auth).await.unwrap();
         assert!(cp.auth.authenticate_session(&outcome.token).await.is_err());
+    }
+
+    /// Completes first-admin setup and returns a fresh-step-up caller for it.
+    async fn setup_admin(cp: &ControlPlane) -> Caller {
+        let token = cp.auth.issue_setup_token().await.unwrap().unwrap();
+        let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
+        let admin = cp
+            .auth
+            .complete_setup(SetupRequest {
+                setup_token: token,
+                username: "admin".into(),
+                password: "correct horse battery".into(),
+                totp_secret: enrol.secret.clone(),
+                totp_code: totp::code_at(&enrol.secret, now_secs()).unwrap(),
+            })
+            .await
+            .unwrap();
+        Caller {
+            principal: Principal {
+                kind: PrincipalKind::User,
+                actor: format!("user:{}", admin.id),
+                role: Role::Admin,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now()),
+        }
+    }
+
+    #[tokio::test]
+    async fn invited_people_get_the_offered_role_and_can_be_disabled() {
+        use super::users::{AcceptInviteRequest, CreateInvite, UpdateUser};
+
+        let cp = plane().await;
+        let admin = setup_admin(&cp).await;
+        let invite = |role| CreateInvite {
+            role,
+            expires_in_hours: None,
+        };
+        let stale = Caller {
+            step_up_at: Some(Utc::now() - chrono::Duration::seconds(3600)),
+            ..admin.clone()
+        };
+        assert!(matches!(
+            cp.users.create_invite(&stale, invite(Role::Editor)).await,
+            Err(ControlError::StepUpRequired { .. })
+        ));
+        assert!(matches!(
+            cp.users
+                .create_invite(&admin, invite(Role::SessionIssuer))
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        assert!(matches!(
+            cp.users
+                .create_invite(
+                    &admin,
+                    CreateInvite {
+                        role: Role::Viewer,
+                        expires_in_hours: Some(24 * 30),
+                    }
+                )
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+
+        let issued = cp
+            .users
+            .create_invite(&admin, invite(Role::Editor))
+            .await
+            .unwrap();
+        assert!(issued.token.starts_with("cbinv_"));
+        let info = cp.users.inspect_invite(&issued.token).await.unwrap();
+        assert_eq!(info.role, Role::Editor);
+        assert!(cp.users.inspect_invite("cbinv_unknown").await.is_err());
+
+        let enrol = cp.users.invite_totp(&issued.token, "bob").await.unwrap();
+        let accept = |code: String| AcceptInviteRequest {
+            invite_token: issued.token.clone(),
+            username: "bob".into(),
+            password: "a different long password".into(),
+            totp_secret: enrol.secret.clone(),
+            totp_code: code,
+        };
+        assert!(matches!(
+            cp.users.accept_invite(accept("000000".into())).await,
+            Err(ControlError::Validation { .. })
+        ));
+        // The previous step is still accepted; using it leaves the current
+        // and next steps for the logins below.
+        let bob = cp
+            .users
+            .accept_invite(accept(
+                totp::code_at(&enrol.secret, now_secs() - 30).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bob.role, Role::Editor);
+        assert!(matches!(
+            cp.users
+                .accept_invite(accept(totp::code_at(&enrol.secret, now_secs()).unwrap()))
+                .await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+
+        let login = |offset: u64| LoginRequest {
+            username: "bob".into(),
+            password: "a different long password".into(),
+            totp_code: totp::code_at(&enrol.secret, now_secs() + offset).unwrap(),
+        };
+        let session = cp.auth.login(login(0)).await.unwrap();
+        let bob_caller = cp
+            .auth
+            .authenticate_session(&session.token)
+            .await
+            .unwrap()
+            .caller;
+        assert_eq!(bob_caller.principal.role, Role::Editor);
+        assert!(matches!(
+            cp.users
+                .list_users(&bob_caller, PageRequest::default())
+                .await,
+            Err(ControlError::Forbidden { .. })
+        ));
+        assert!(matches!(
+            cp.users
+                .create_invite(&bob_caller, invite(Role::Admin))
+                .await,
+            Err(ControlError::Forbidden { .. })
+        ));
+
+        let admin_id: broker_core::ids::UserId =
+            admin.actor().trim_start_matches("user:").parse().unwrap();
+        let disable = UpdateUser {
+            role: None,
+            disabled: Some(true),
+        };
+        assert!(matches!(
+            cp.users
+                .update_user(&admin, &admin_id, disable.clone())
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        assert!(matches!(
+            cp.users
+                .update_user(
+                    &admin,
+                    &admin_id,
+                    UpdateUser {
+                        role: Some(Role::Viewer),
+                        disabled: None,
+                    }
+                )
+                .await,
+            Err(ControlError::Conflict { .. })
+        ));
+
+        let updated = cp
+            .users
+            .update_user(&admin, &bob.id, disable)
+            .await
+            .unwrap();
+        assert!(updated.disabled_at.is_some());
+        assert!(cp.auth.authenticate_session(&session.token).await.is_err());
+        // Refused before the TOTP code is checked, so the step stays unused.
+        assert!(cp.auth.login(login(30)).await.is_err());
+        cp.users
+            .update_user(
+                &admin,
+                &bob.id,
+                UpdateUser {
+                    role: Some(Role::Viewer),
+                    disabled: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        let session = cp.auth.login(login(30)).await.unwrap();
+        let auth = cp.auth.authenticate_session(&session.token).await.unwrap();
+        assert_eq!(auth.user.role, Role::Viewer);
+
+        let users = cp
+            .users
+            .list_users(&admin, PageRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(users.total, 2);
+        let invites = cp
+            .users
+            .list_invites(&admin, PageRequest::default())
+            .await
+            .unwrap();
+        assert_eq!(invites.items[0].accepted_by, Some(bob.id));
+
+        let actions: Vec<String> = cp
+            .audit
+            .query(&admin, None, Some("user.".into()), PageRequest::default())
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        for expected in ["user.invite", "user.invite.accept", "user.update"] {
+            assert!(
+                actions.iter().any(|a| a == expected),
+                "missing audit action {expected} in {actions:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_invites_cannot_be_accepted() {
+        use super::users::CreateInvite;
+
+        let cp = plane().await;
+        let admin = setup_admin(&cp).await;
+        let issued = cp
+            .users
+            .create_invite(
+                &admin,
+                CreateInvite {
+                    role: Role::Viewer,
+                    expires_in_hours: Some(1),
+                },
+            )
+            .await
+            .unwrap();
+        cp.users
+            .revoke_invite(&admin, &issued.invite.id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            cp.users.inspect_invite(&issued.token).await,
+            Err(ControlError::Unauthenticated { .. })
+        ));
+        assert!(cp.users.invite_totp(&issued.token, "carol").await.is_err());
     }
 
     #[tokio::test]

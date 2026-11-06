@@ -20,6 +20,7 @@ use crate::error::AuthError;
 pub const SESSION_PREFIX: &str = "cbs";
 pub const SETUP_PREFIX: &str = "cbsetup";
 pub const API_KEY_PREFIX: &str = "cbk";
+pub const INVITE_PREFIX: &str = "cbinv";
 
 fn random_part(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];

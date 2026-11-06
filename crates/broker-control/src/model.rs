@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use broker_core::authz::Role;
 use broker_core::egress::EgressPolicy;
 use broker_core::host::HostPattern;
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use broker_core::rule::RuleScope;
 use broker_core::scope::Scope;
 use broker_core::snapshot::UnmatchedHostPolicy;
@@ -184,6 +186,30 @@ pub struct User {
     pub totp_last_step: Option<u64>,
     pub role: Role,
     pub created_at: DateTime<Utc>,
+    /// A disabled user cannot log in and has no UI sessions.
+    pub disabled_at: Option<DateTime<Utc>>,
+}
+
+/// A single-use invitation for a person to create an account with a role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invite {
+    pub id: InviteId,
+    #[serde(skip)]
+    pub token_hash: String,
+    pub role: Role,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub accepted_at: Option<DateTime<Utc>>,
+    pub accepted_by: Option<UserId>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl Invite {
+    /// Neither accepted, revoked nor expired at `now`.
+    pub fn is_pending(&self, now: DateTime<Utc>) -> bool {
+        self.accepted_at.is_none() && self.revoked_at.is_none() && self.expires_at > now
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

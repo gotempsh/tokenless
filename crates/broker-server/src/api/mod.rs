@@ -75,6 +75,13 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/api-keys/{api_key_id}",
             axum::routing::delete(revoke_api_key),
         )
+        .route("/users", get(list_users))
+        .route("/users/{user_id}", axum::routing::patch(update_user))
+        .route("/invites", get(list_invites).post(create_invite))
+        .route("/invites/inspect", post(inspect_invite))
+        .route("/invites/totp", post(invite_totp))
+        .route("/invites/accept", post(accept_invite))
+        .route("/invites/{invite_id}", axum::routing::delete(revoke_invite))
         .route("/audit", get(query_audit))
         .route("/nodes", get(list_nodes))
         .route("/nodes/join-tokens", post(create_join_token))

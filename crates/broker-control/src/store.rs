@@ -11,14 +11,16 @@
 
 use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
-use broker_core::authz::{rbac_decide, Action, Decision, Principal};
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
+use broker_core::authz::{rbac_decide, Action, Decision, Principal, Role};
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
-    ApiKey, AuditQuery, CredentialMeta, JoinTokenRecord, Node, Page, PageRequest, ProxySession,
-    Rule, Settings, StoredTemplate, UiSession, User, Vault,
+    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
+    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Vault,
 };
 
 /// Stores credential metadata and an opaque, already-encrypted secret blob.
@@ -187,6 +189,45 @@ pub trait IdentityStore: Send + Sync {
     async fn insert_user(&self, user: User, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_user(&self, id: &UserId) -> Result<Option<User>, StoreError>;
     async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError>;
+    /// Newest first.
+    async fn list_users(&self, page: PageRequest) -> Result<Page<User>, StoreError>;
+    /// Sets a user's role and disabled time in one step; disabling also
+    /// deletes the user's UI sessions. `NotFound` if the user is missing,
+    /// `Conflict` (changing nothing) if no enabled admin would remain.
+    async fn update_user_access(
+        &self,
+        id: &UserId,
+        role: Role,
+        disabled_at: Option<DateTime<Utc>>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+
+    /// `Conflict` if the id or token hash exists.
+    async fn insert_invite(&self, invite: Invite, audit: &[AuditEvent]) -> Result<(), StoreError>;
+    async fn get_invite_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<Invite>, StoreError>;
+    /// Newest first.
+    async fn list_invites(&self, page: PageRequest) -> Result<Page<Invite>, StoreError>;
+    /// Returns false if the invite was already accepted or revoked.
+    /// `NotFound` if missing.
+    async fn revoke_invite(
+        &self,
+        id: &InviteId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Atomically marks the pending invite with this token hash and role as
+    /// accepted by `user` (unexpired at `user.created_at`) and inserts the
+    /// user. Returns false, changing nothing, when there is no such invite.
+    /// `Conflict` (invite left pending) if the username is taken.
+    async fn accept_invite(
+        &self,
+        token_hash: &str,
+        user: User,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
     /// Atomically records a used TOTP step if it is newer than the stored
     /// one. Returns false when the step was already used (replay).
     async fn advance_totp_step(&self, id: &UserId, step: u64) -> Result<bool, StoreError>;

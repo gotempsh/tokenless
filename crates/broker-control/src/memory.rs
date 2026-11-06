@@ -10,13 +10,16 @@ use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
 use broker_core::audit::AuditEvent;
-use broker_core::ids::{ApiKeyId, CredentialId, NodeId, RuleId, SessionId, UserId, VaultId};
+use broker_core::authz::Role;
+use broker_core::ids::{
+    ApiKeyId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VaultId,
+};
 use chrono::{DateTime, Utc};
 
 use crate::error::StoreError;
 use crate::model::{
-    ApiKey, AuditQuery, CredentialMeta, JoinTokenRecord, Node, Page, PageRequest, ProxySession,
-    Rule, Settings, StoredTemplate, UiSession, User, Vault,
+    ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page, PageRequest,
+    ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Vault,
 };
 use crate::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
@@ -33,6 +36,7 @@ struct Inner {
     ui_sessions: HashMap<String, UiSession>,
     setup_token: Option<String>,
     api_keys: HashMap<ApiKeyId, ApiKey>,
+    invites: HashMap<InviteId, Invite>,
     join_tokens: HashMap<String, JoinTokenRecord>,
     nodes: HashMap<NodeId, Node>,
     key_material: HashMap<String, Vec<u8>>,
@@ -462,6 +466,137 @@ impl IdentityStore for MemoryStore {
             .values()
             .find(|u| u.username == username)
             .cloned())
+    }
+
+    async fn list_users(&self, page: PageRequest) -> Result<Page<User>, StoreError> {
+        let items: Vec<_> = self.lock()?.users.values().cloned().collect();
+        Ok(page.apply(&newest_first(items, |u| u.created_at)))
+    }
+
+    async fn update_user_access(
+        &self,
+        id: &UserId,
+        role: Role,
+        disabled_at: Option<DateTime<Utc>>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if !inner.users.contains_key(id) {
+            return Err(StoreError::not_found("user", id));
+        }
+        let admins_left = inner
+            .users
+            .values()
+            .filter(|u| {
+                let (r, d) = if u.id == *id {
+                    (role, disabled_at)
+                } else {
+                    (u.role, u.disabled_at)
+                };
+                r == Role::Admin && d.is_none()
+            })
+            .count();
+        if admins_left == 0 {
+            return Err(StoreError::Conflict {
+                entity: "user",
+                detail: format!("changing user {id} would leave no enabled admin"),
+            });
+        }
+        if let Some(user) = inner.users.get_mut(id) {
+            user.role = role;
+            user.disabled_at = disabled_at;
+        }
+        if disabled_at.is_some() {
+            inner.ui_sessions.retain(|_, s| s.user_id != *id);
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn insert_invite(&self, invite: Invite, audit: &[AuditEvent]) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        if inner.invites.contains_key(&invite.id)
+            || inner
+                .invites
+                .values()
+                .any(|i| i.token_hash == invite.token_hash)
+        {
+            return Err(StoreError::Conflict {
+                entity: "invite",
+                detail: format!("invite {} exists", invite.id),
+            });
+        }
+        inner.invites.insert(invite.id, invite);
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn get_invite_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<Invite>, StoreError> {
+        Ok(self
+            .lock()?
+            .invites
+            .values()
+            .find(|i| i.token_hash == token_hash)
+            .cloned())
+    }
+
+    async fn list_invites(&self, page: PageRequest) -> Result<Page<Invite>, StoreError> {
+        let items: Vec<_> = self.lock()?.invites.values().cloned().collect();
+        Ok(page.apply(&newest_first(items, |i| i.created_at)))
+    }
+
+    async fn revoke_invite(
+        &self,
+        id: &InviteId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock()?;
+        let invite = inner
+            .invites
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("invite", id))?;
+        let changed = invite.accepted_at.is_none() && invite.revoked_at.is_none();
+        if changed {
+            invite.revoked_at = Some(at);
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(changed)
+    }
+
+    async fn accept_invite(
+        &self,
+        token_hash: &str,
+        user: User,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock()?;
+        let Some(invite_id) = inner
+            .invites
+            .values()
+            .find(|i| {
+                i.token_hash == token_hash && i.role == user.role && i.is_pending(user.created_at)
+            })
+            .map(|i| i.id)
+        else {
+            return Ok(false);
+        };
+        if inner.users.values().any(|u| u.username == user.username) {
+            return Err(StoreError::Conflict {
+                entity: "user",
+                detail: format!("username '{}' exists", user.username),
+            });
+        }
+        if let Some(invite) = inner.invites.get_mut(&invite_id) {
+            invite.accepted_at = Some(user.created_at);
+            invite.accepted_by = Some(user.id);
+        }
+        inner.users.insert(user.id, user);
+        inner.audit.extend_from_slice(audit);
+        Ok(true)
     }
 
     async fn advance_totp_step(&self, id: &UserId, step: u64) -> Result<bool, StoreError> {

@@ -28,6 +28,11 @@ async fn memory_store_passes_identity_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_user_management_suite() {
+    user_management_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn memory_store_passes_node_suite() {
     node_store_suite(&MemoryStore::new()).await.unwrap();
 }
