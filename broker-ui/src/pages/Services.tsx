@@ -107,7 +107,6 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
   return (
     <Section
       title="Services"
-      description="Each service holds the credential for one API. Secrets are write-only: once saved, nobody (admins included) can read them back. They are only ever delivered, encrypted, to enrolled proxies."
       actions={addButton}
     >
       <ErrorBanner error={creds.error ?? templates.error ?? variables.error ?? action.error} />

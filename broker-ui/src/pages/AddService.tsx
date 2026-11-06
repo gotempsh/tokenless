@@ -246,7 +246,6 @@ function Catalogue({ ctx, templates, loading }: { ctx: AddServiceContext; templa
     <>
       <PageHeader
         title="Add a service"
-        description="Pick the API or MCP server agents need. You choose its vault, what agents may do with it and its access bundle on the next page, then add the secret."
       />
       <TemplateCatalog
         templates={templates}

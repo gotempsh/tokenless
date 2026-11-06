@@ -173,7 +173,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
       <PageHeader
         title={b ? <span className="font-mono">{b.name}</span> : <Skeleton className="h-8 w-48" />}
         verdict={b ? verdict(b, rulesInVault) : undefined}
-        description={b ? b.description || "No description" : undefined}
+        description={b?.description || undefined}
         actions={
           b && (
             <>
@@ -392,7 +392,6 @@ function BundleServices({
   return (
     <Section
       title="Services"
-      description="What an agent started with this bundle can reach, and how. Changes apply to sessions minted afterwards."
       actions={bundle.rule_ids.length > 0 ? includeButton : undefined}
     >
       <ErrorBanner error={action.error} />
@@ -672,7 +671,6 @@ function BundleSessions({
   return (
     <Section
       title="Sessions"
-      description="Every agent run with this bundle gets its own session. Open one to see the requests it made; revoke it to cut that agent off."
     >
       <ErrorBanner error={sessions.error ?? action.error} />
       <Panel>
@@ -858,7 +856,7 @@ function McpConnect({
   return (
     <Section
       title="Connect an MCP client"
-      description="Claude Code, Cursor and other MCP clients reach this bundle's MCP servers through the proxy's MCP gateway with a token. The proxy swaps the token for the server's credential and applies the bundle's tool limits; the client never holds the credential."
+      description="Add this to your MCP client's configuration."
     >
       {servers.length === 0 ? (
         <div className="flex flex-col gap-3 rounded-md border border-dashed p-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
@@ -954,7 +952,7 @@ function Connect({
   return (
     <Section
       title={`Run an agent with ${bundle.name}`}
-      description="The CLI mints a session from the bundle, starts the agent behind a local session port with the broker's CA trusted, renews the session while it runs and ends it when the agent exits. The agent never sees a secret or the session token."
+      description="Run this where the agent runs."
     >
       {empty && (
         <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">

@@ -47,7 +47,6 @@ export function Settings() {
     <PageContainer>
       <PageHeader
         title="Settings"
-        description="Instance-wide proxy behaviour. Changes reach every proxy at its next policy refresh."
       />
       <ErrorBanner error={settings.error ?? action.error} />
       {!current ? (
@@ -59,7 +58,7 @@ export function Settings() {
         <>
           <Section
             title="Hosts without a rule"
-            description="What a proxy session does when an agent connects to a host none of its rules cover."
+            description="When an agent connects to a host no rule covers."
           >
             <ChoiceCards<Unmatched>
               name="unmatched"
@@ -82,7 +81,7 @@ export function Settings() {
           </Section>
           <Section
             title="Session lifetime"
-            description="The longest proxy session anyone may mint. tokenless run and session start renew sessions before they expire, so agents work for longer than this either way; a short lifetime limits how long a leaked token is useful."
+            description="The longest session anyone may mint. Running agents renew theirs."
           >
             <Panel>
               <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -99,7 +98,7 @@ export function Settings() {
           </Section>
           <Section
             title="Always reachable"
-            description="Hosts every session may reach even when hosts without a rule are denied, such as package registries and documentation. They are tunnelled untouched: never decrypted and never given a credential."
+            description="Reachable from every session, even when hosts without a rule are denied. Never given a credential."
           >
             <Panel>
               <form
@@ -137,7 +136,7 @@ export function Settings() {
           </Section>
           <Section
             title="Egress to private addresses"
-            description="Applies to tunnels opened for hosts without a rule and to credential tests. Hosts covered by a rule are always reachable, because an admin chose them."
+            description="For hosts without a rule and credential tests. Hosts with a rule are always reachable."
           >
             <Panel className="divide-y">
               <div className="flex items-start justify-between gap-4 p-4">

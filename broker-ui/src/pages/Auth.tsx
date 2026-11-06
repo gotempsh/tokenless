@@ -335,7 +335,7 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
   };
 
   return (
-    <AuthLayout title="Sign in" description="Manage the credentials your agents use without ever handing them over.">
+    <AuthLayout title="Sign in">
       <form onSubmit={submit} className="space-y-5">
         <ErrorBanner error={action.error} title="Sign-in failed" />
         <Field label="Username" htmlFor="username">

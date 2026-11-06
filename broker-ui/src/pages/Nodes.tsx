@@ -110,7 +110,6 @@ export function Nodes() {
     <PageContainer>
       <PageHeader
         title="Proxies"
-        description="The proxies agents connect to. They add the credentials to agents' requests."
         actions={rows.length === 0 ? undefined : createButton()}
       />
       <ErrorBanner error={nodes.error ?? ca.error ?? action.error ?? tokenAction.error} />

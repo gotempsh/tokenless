@@ -294,7 +294,6 @@ function Rules({ vaultId }: { vaultId: string }) {
   return (
     <Section
       title="Rules"
-      description="A rule lets a credential be injected for matching requests. Without a rule, a credential is never used."
       actions={addButton}
     >
       <ErrorBanner error={rules.error ?? action.error} />
@@ -566,7 +565,6 @@ function Sessions({ vaultId }: { vaultId: string }) {
   return (
     <Section
       title="Proxy sessions"
-      description="A session lets an agent use selected rules through the data plane for a limited time. The agent never sees the credentials."
       actions={mintButton}
     >
       <ErrorBanner error={sessions.error ?? action.error} />

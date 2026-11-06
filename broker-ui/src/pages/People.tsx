@@ -125,7 +125,6 @@ export function People({ me }: { me: UserSummary }) {
     <PageContainer>
       <PageHeader
         title="People"
-        description="Everyone who can sign in to this console, and the invites waiting to be accepted."
         actions={inviteButton}
       />
       {!isAdmin ? (

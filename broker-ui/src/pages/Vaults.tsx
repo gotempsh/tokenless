@@ -44,7 +44,6 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
     <PageContainer>
       <PageHeader
         title="Vaults"
-        description="A vault groups credentials, the rules that let them be injected, and the proxy sessions that may use those rules."
         actions={createButton}
       />
       <ErrorBanner error={vaults.error} />

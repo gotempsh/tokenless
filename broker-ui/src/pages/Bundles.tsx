@@ -82,9 +82,6 @@ interface FormState {
 
 const EMPTY: FormState = { name: "", description: "", rule_ids: [] };
 
-const DESCRIPTION =
-  "A bundle is the list of services an agent gets for one kind of job, such as code-review with GitHub and Slack. Agents start with one by name, and each run gets its own session.";
-
 /** The rules and credentials of the given vaults, for naming a bundle's services. */
 function useVaultServices(vaultIds: string[]) {
   const key = vaultIds.join(",");
@@ -347,14 +344,14 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   );
   if (scoped) {
     return (
-      <Section title="Access bundles" description={DESCRIPTION} actions={actions}>
+      <Section title="Access bundles" actions={actions}>
         {body}
       </Section>
     );
   }
   return (
     <PageContainer>
-      <PageHeader title="Access bundles" description={DESCRIPTION} actions={actions} />
+      <PageHeader title="Access bundles" actions={actions} />
       {body}
     </PageContainer>
   );

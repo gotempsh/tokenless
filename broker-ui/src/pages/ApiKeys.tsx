@@ -95,7 +95,6 @@ export function ApiKeys() {
     <PageContainer>
       <PageHeader
         title="API keys"
-        description="Keys let automation mint proxy sessions or manage one vault. Each key belongs to exactly one vault and role, and expires. Only a hash is stored."
         actions={createButton}
       />
       <ErrorBanner error={keys.error ?? action.error} />

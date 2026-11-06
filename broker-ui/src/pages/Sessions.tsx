@@ -87,7 +87,6 @@ export function Sessions() {
     <PageContainer>
       <PageHeader
         title="Sessions"
-        description="Short-lived proxy sessions agents use to reach services. Each one is limited to its vault's rules and can be revoked at any time."
       />
       <ErrorBanner error={sessions.error ?? action.error} />
       <Panel>

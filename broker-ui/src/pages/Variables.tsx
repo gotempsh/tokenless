@@ -67,11 +67,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
     <PageContainer>
       <PageHeader
         title="Variables"
-        description={
-          <>
-            Secrets you store once and use in any service as <Mono>{"{{NAME}}"}</Mono>.
-          </>
-        }
+        description={<>Use in a service as <Mono>{"{{NAME}}"}</Mono>.</>}
         actions={empty ? undefined : addButton}
       />
       {!isAdmin ? (

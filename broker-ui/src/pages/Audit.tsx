@@ -32,7 +32,6 @@ export function Audit() {
     <PageContainer>
       <PageHeader
         title="Audit log"
-        description="Every change, every injection and every denial, newest first. Entries are written in the same transaction as the change they describe."
       />
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <form

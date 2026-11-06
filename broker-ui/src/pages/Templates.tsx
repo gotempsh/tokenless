@@ -132,7 +132,6 @@ export function Templates({ user }: { user: UserSummary }) {
     <PageContainer>
       <PageHeader
         title="Templates"
-        description="The service catalogue. Click a service to add its credential to a vault and put it in an access bundle in one step. A template knows the service's hosts, paths and methods and how its credential is sent; rules can only narrow that."
         actions={
           <Button
             type="button"
