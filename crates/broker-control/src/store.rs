@@ -26,6 +26,7 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
     PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
+    VaultDeletion,
 };
 
 /// Stores credential metadata and an opaque, already-encrypted secret blob.
@@ -130,6 +131,21 @@ pub trait PolicyStore: Send + Sync {
     async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
+    /// Deletes the vault, its credentials, rules and bundles, and revokes
+    /// at `at` its live sessions and the API keys bound to it, all at once.
+    /// `NotFound` if missing.
+    async fn delete_vault(
+        &self,
+        id: &VaultId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<VaultDeletion, StoreError>;
+    /// Sessions of the vault that are neither revoked nor expired at `now`.
+    async fn count_live_sessions(
+        &self,
+        vault_id: &VaultId,
+        now: DateTime<Utc>,
+    ) -> Result<u64, StoreError>;
 
     /// Inserts a template version. `Conflict` if that id+version exists.
     async fn insert_template(

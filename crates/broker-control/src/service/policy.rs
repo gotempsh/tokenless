@@ -28,7 +28,7 @@ use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::model::{
     CredentialMeta, Page, PageRequest, Rule, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, Vault,
+    TemplateStatus, Vault, VaultDeletion,
 };
 use crate::notify::PolicyNotifier;
 use crate::probe::{CredentialProber, ProbeRequest};
@@ -401,6 +401,54 @@ impl PolicyService {
             .detail("name", vault.name.clone());
         self.policy.insert_vault(vault.clone(), &[event]).await?;
         Ok(vault)
+    }
+
+    /// Deletes a vault with its services, rules and bundles, and ends its
+    /// sessions and API keys. Refused while sessions are live unless
+    /// `force`, so a running agent is never cut off by accident.
+    pub async fn delete_vault(
+        &self,
+        caller: &Caller,
+        id: &VaultId,
+        force: bool,
+    ) -> Result<VaultDeletion, ControlError> {
+        self.guard
+            .check(caller, Action::VaultDelete, Some(id))
+            .await?;
+        self.guard.require_step_up(caller, Action::VaultDelete)?;
+        let vault = self
+            .policy
+            .get_vault(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("vault", id))?;
+        let now = Utc::now();
+        let live = self.policy.count_live_sessions(id, now).await?;
+        if live > 0 && !force {
+            return Err(ControlError::Conflict {
+                message: format!(
+                    "vault '{}' ({id}) has {live} live session(s); revoke them first, or delete with force to end them",
+                    vault.name
+                ),
+            });
+        }
+        let event = AuditEvent::new(caller.actor(), "vault.delete", AuditOutcome::Success)
+            .vault(*id)
+            .target(format!("vault:{id}"))
+            .detail("name", vault.name.clone())
+            .detail("forced", force.to_string());
+        let done = self.policy.delete_vault(id, now, &[event]).await?;
+        info!(
+            vault_id = %id,
+            credentials = done.credentials,
+            rules = done.rules,
+            bundles = done.bundles,
+            sessions_revoked = done.sessions_revoked,
+            api_keys_revoked = done.api_keys_revoked,
+            "vault deleted"
+        );
+        self.notifier.bump_content();
+        self.notifier.bump_sessions();
+        Ok(done)
     }
 
     pub async fn list_vaults(

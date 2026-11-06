@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use broker_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest,
     ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource, TemplateStatus,
-    UiSession, User, Variable, Vault,
+    UiSession, User, Variable, Vault, VaultDeletion,
 };
 use broker_control::store::{
     AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore,
@@ -1261,6 +1261,153 @@ async fn count_action(
 /// A mutating store method commits the audit events it is given together
 /// with the change, and only when the change succeeds. Run it against a
 /// single backend that implements all three traits.
+/// Deleting a vault removes what is in it, revokes its sessions and API
+/// keys, and leaves other vaults alone.
+pub async fn vault_deletion_suite<T>(store: &T) -> Result<(), ConformanceFailure>
+where
+    T: CredentialStore + PolicyStore + IdentityStore,
+{
+    const S: &str = "vault_deletion";
+    let doomed = vault("doomed", -20);
+    let kept = vault("kept", -10);
+    let mut creds = Vec::new();
+    for v in [&doomed, &kept] {
+        PolicyStore::insert_vault(store, v.clone(), &[])
+            .await
+            .map_err(backend(S, "vault_insert"))?;
+        let c = credential(v.id, "svc", -5);
+        store
+            .insert_credential(c.clone(), vec![1, 2, 3], &[])
+            .await
+            .map_err(backend(S, "credential_insert"))?;
+        let r = rule(v.id, c.id, "r", true)?;
+        store
+            .insert_rule(r.clone(), &[])
+            .await
+            .map_err(backend(S, "rule_insert"))?;
+        store
+            .insert_bundle(bundle(v.id, "b", vec![r.id]), &[])
+            .await
+            .map_err(backend(S, "bundle_insert"))?;
+        creds.push(c);
+    }
+    let live = session(doomed.id, 600, None);
+    let expired = session(doomed.id, -5, None);
+    let elsewhere = session(kept.id, 600, None);
+    for s in [&live, &expired, &elsewhere] {
+        store
+            .insert_session(s.clone(), &[])
+            .await
+            .map_err(backend(S, "session_insert"))?;
+    }
+    let count = store
+        .count_live_sessions(&doomed.id, at(0))
+        .await
+        .map_err(backend(S, "count"))?;
+    ensure!(
+        S,
+        "count_live",
+        count == 1,
+        "expected 1 live session, got {count}"
+    );
+    let key = ApiKey {
+        id: ApiKeyId::new(),
+        name: "ci".into(),
+        prefix: "cbk_vaultdel".into(),
+        secret_hash: "hash".into(),
+        vault_id: doomed.id,
+        role: Role::SessionIssuer,
+        created_by: "user:conformance".into(),
+        created_at: at(0),
+        expires_at: at(3600),
+        revoked_at: None,
+        last_used_at: None,
+    };
+    store
+        .insert_api_key(key.clone(), &[])
+        .await
+        .map_err(backend(S, "key_insert"))?;
+
+    let done = store
+        .delete_vault(&doomed.id, at(1), &[])
+        .await
+        .map_err(backend(S, "delete"))?;
+    let expected = VaultDeletion {
+        credentials: 1,
+        rules: 1,
+        bundles: 1,
+        sessions_revoked: 1,
+        api_keys_revoked: 1,
+    };
+    ensure!(
+        S,
+        "counts",
+        done == expected,
+        "expected {expected:?}, got {done:?}"
+    );
+    let gone = PolicyStore::get_vault(store, &doomed.id)
+        .await
+        .map_err(backend(S, "vault_get"))?;
+    ensure!(S, "vault_gone", gone.is_none(), "got {gone:?}");
+    let cred = store
+        .get_credential(&creds[0].id)
+        .await
+        .map_err(backend(S, "credential_get"))?;
+    ensure!(S, "credential_gone", cred.is_none(), "got {cred:?}");
+    let secret = store
+        .load_secret_ciphertext(&creds[0].id)
+        .await
+        .map_err(backend(S, "secret_get"))?;
+    ensure!(
+        S,
+        "secret_gone",
+        secret.is_none(),
+        "the ciphertext must go too"
+    );
+    let revoked = store
+        .get_session(&live.id)
+        .await
+        .map_err(backend(S, "session_get"))?;
+    ensure!(
+        S,
+        "session_revoked_not_deleted",
+        revoked.and_then(|s| s.revoked_at) == Some(at(1)),
+        "the session record stays, revoked, so its token is refused until it expires"
+    );
+    let key_after = store
+        .get_api_key_by_prefix(&key.prefix)
+        .await
+        .map_err(backend(S, "key_get"))?;
+    ensure!(
+        S,
+        "api_key_revoked",
+        key_after.and_then(|k| k.revoked_at).is_some(),
+        "keys bound to the vault are revoked"
+    );
+    let other = store
+        .get_credential(&creds[1].id)
+        .await
+        .map_err(backend(S, "other_get"))?;
+    let other_session = store
+        .get_session(&elsewhere.id)
+        .await
+        .map_err(backend(S, "other_session"))?;
+    ensure!(
+        S,
+        "other_vault_untouched",
+        other.is_some() && other_session.and_then(|s| s.revoked_at).is_none(),
+        "another vault's credential and session must be untouched"
+    );
+    let missing = store.delete_vault(&doomed.id, at(2), &[]).await;
+    ensure!(
+        S,
+        "delete_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing:?}"
+    );
+    Ok(())
+}
+
 pub async fn audited_writes_suite<T>(store: &T) -> Result<(), ConformanceFailure>
 where
     T: CredentialStore + PolicyStore + AuditSink,

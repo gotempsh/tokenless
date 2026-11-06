@@ -94,6 +94,18 @@ pub struct Vault {
     pub created_at: DateTime<Utc>,
 }
 
+/// What deleting a vault removed. Audit events and the (revoked) session
+/// records are kept: proxies must keep refusing those tokens until they
+/// expire.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultDeletion {
+    pub credentials: u64,
+    pub rules: u64,
+    pub bundles: u64,
+    pub sessions_revoked: u64,
+    pub api_keys_revoked: u64,
+}
+
 /// Credential metadata. There is deliberately no type that carries both the
 /// metadata and a decrypted secret: nothing can serialise one back out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

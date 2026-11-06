@@ -34,7 +34,7 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/me", get(me))
         .route("/auth/step-up", post(step_up))
         .route("/vaults", get(list_vaults).post(create_vault))
-        .route("/vaults/{vault_id}", get(get_vault))
+        .route("/vaults/{vault_id}", get(get_vault).delete(delete_vault))
         .route(
             "/vaults/{vault_id}/credentials",
             get(list_credentials).post(create_credential),

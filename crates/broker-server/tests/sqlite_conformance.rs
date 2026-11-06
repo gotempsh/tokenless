@@ -35,6 +35,7 @@ suite!(identity_store_suite);
 suite!(user_management_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
+suite!(vault_deletion_suite);
 
 /// If the audit row cannot be written the change it describes must not be
 /// committed either. A reused event id makes the audit insert fail.

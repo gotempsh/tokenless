@@ -56,3 +56,8 @@ async fn memory_store_passes_audited_writes_suite() {
 async fn rbac_authorizer_passes_authorizer_suite() {
     authorizer_suite(&RbacAuthorizer).await.unwrap();
 }
+
+#[tokio::test]
+async fn memory_store_passes_vault_deletion_suite() {
+    vault_deletion_suite(&MemoryStore::new()).await.unwrap();
+}

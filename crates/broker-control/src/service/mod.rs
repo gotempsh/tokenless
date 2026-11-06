@@ -1449,6 +1449,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vaults_are_deleted_by_admins_and_live_sessions_need_force() {
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "doomed").await.unwrap();
+        let cred = cp
+            .policy
+            .create_credential(
+                &a,
+                &vault.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let rule = cp
+            .policy
+            .create_rule(
+                &a,
+                &vault.id,
+                CreateRule {
+                    name: "r".into(),
+                    credential_id: cred.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        let minted = cp
+            .sessions
+            .mint(
+                &a,
+                &vault.id,
+                MintSession {
+                    rule_ids: vec![rule.id],
+                    bundle: None,
+                    ttl_secs: Some(600),
+                    request_limit: None,
+                    labels: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let editor = Caller {
+            principal: Principal {
+                kind: PrincipalKind::User,
+                actor: "user:test-editor".into(),
+                role: Role::Editor,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now()),
+            second_factor: true,
+        };
+        assert!(matches!(
+            cp.policy.delete_vault(&editor, &vault.id, true).await,
+            Err(ControlError::Forbidden { .. })
+        ));
+        assert!(matches!(
+            cp.policy.delete_vault(&admin(3600), &vault.id, true).await,
+            Err(ControlError::StepUpRequired { .. })
+        ));
+        let busy = cp
+            .policy
+            .delete_vault(&a, &vault.id, false)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(busy, ControlError::Conflict { .. })
+                && busy.to_string().contains("1 live session"),
+            "{busy}"
+        );
+
+        let done = cp.policy.delete_vault(&a, &vault.id, true).await.unwrap();
+        assert_eq!(
+            (done.credentials, done.rules, done.sessions_revoked),
+            (1, 1, 1)
+        );
+        assert!(matches!(
+            cp.policy.get_vault(&a, &vault.id).await,
+            Err(ControlError::NotFound { .. })
+        ));
+        // The token is refused from now on: discovery says it was revoked.
+        let err = cp.sessions.discover_self(&minted.token).await.unwrap_err();
+        assert!(err.to_string().contains("revoked"), "{err}");
+        let events = cp
+            .audit
+            .query(
+                &a,
+                Some(vault.id),
+                Some("vault.delete".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(events.items.len(), 1);
+        assert_eq!(
+            events.items[0].detail.get("forced").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
     async fn session_lifetime_cap_is_a_setting_and_labels_are_editable() {
         let cp = plane().await;
         let a = admin(0);

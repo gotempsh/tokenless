@@ -55,6 +55,8 @@ impl fmt::Display for Role {
 pub enum Action {
     VaultCreate,
     VaultRead,
+    /// Delete a vault with everything in it. Admin only, with step-up.
+    VaultDelete,
     TemplateRead,
     TemplateImport,
     TemplateApprove,
@@ -89,6 +91,7 @@ impl Action {
         matches!(
             self,
             Action::CredentialWrite
+                | Action::VaultDelete
                 | Action::CredentialWiden
                 | Action::ApiKeyManage
                 | Action::TemplateImport
@@ -103,6 +106,7 @@ impl Action {
         matches!(
             self,
             Action::VaultCreate
+                | Action::VaultDelete
                 | Action::TemplateImport
                 | Action::TemplateApprove
                 | Action::CredentialWiden

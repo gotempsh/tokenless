@@ -4,6 +4,7 @@
 import { useState, type FormEvent } from "react";
 import { ChevronLeft, ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
 import {
+  api,
   del,
   get,
   patch,
@@ -59,8 +60,64 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "sessions", label: "Sessions" },
 ];
 
+interface VaultDeletion {
+  credentials: number;
+  rules: number;
+  bundles: number;
+  sessions_revoked: number;
+  api_keys_revoked: number;
+}
+
+function DeleteVaultForm({ vault, onCancel }: { vault: Vault; onCancel: () => void }) {
+  const [typed, setTyped] = useState("");
+  const [force, setForce] = useState(false);
+  const action = useAction();
+  const busySessions = action.error?.includes("live session") ?? false;
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const done = await action.run(() =>
+      api<VaultDeletion>("DELETE", `/vaults/${vault.id}${force ? "?force=true" : ""}`),
+    );
+    if (done) window.location.hash = "#/vaults";
+  };
+  return (
+    <form className="space-y-4" onSubmit={submit} autoComplete="off">
+      <ErrorBanner error={action.error} />
+      <p className="text-sm text-muted-foreground">
+        Its services and their secrets, rules and access bundles are deleted, and the API keys bound to it are revoked.
+        The audit trail is kept. This cannot be undone.
+      </p>
+      <CheckField
+        id="vault-delete-force"
+        checked={force}
+        onChange={setForce}
+        hint={
+          busySessions
+            ? "Agents are using this vault right now. Tick this to end their sessions and delete anyway."
+            : "Without this, deletion is refused while any session is live."
+        }
+      >
+        End live sessions
+      </CheckField>
+      <Field label={`Type "${vault.name}" to confirm`} htmlFor="vault-delete-name">
+        <Input id="vault-delete-name" value={typed} onChange={(e) => setTyped(e.target.value)} />
+      </Field>
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={action.busy || typed !== vault.name}>
+          Delete vault
+        </Button>
+      </DialogActions>
+    </form>
+  );
+}
+
 export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab; user: UserSummary }) {
   const vault = useLoad(() => get<Vault>(`/vaults/${vaultId}`), [vaultId]);
+  const [deleting, setDeleting] = useState(false);
+  const isAdmin = user.role === "admin";
   return (
     <PageContainer>
       <div className="space-y-2">
@@ -74,6 +131,19 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         <PageHeader
           title={vault.data ? vault.data.name : <Skeleton className="h-8 w-48" />}
           description={vault.data ? <Mono>{vault.data.scope}</Mono> : undefined}
+          actions={
+            <Button
+              type="button"
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              disabled={!isAdmin || !vault.data}
+              title={isAdmin ? undefined : "Only admins can delete a vault"}
+              onClick={() => setDeleting(true)}
+            >
+              <Trash2 />
+              <span className="hidden sm:inline">Delete vault</span>
+            </Button>
+          }
         />
       </div>
       <ErrorBanner error={vault.error} />
@@ -95,6 +165,14 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
       {tab === "rules" && <Rules vaultId={vaultId} />}
       {tab === "bundles" && <Bundles vaultId={vaultId} />}
       {tab === "sessions" && <Sessions vaultId={vaultId} />}
+      <FormDialog
+        open={deleting}
+        onOpenChange={setDeleting}
+        title={vault.data ? `Delete vault "${vault.data.name}"?` : "Delete vault"}
+        description="Admins only, with a recent sign-in confirmation."
+      >
+        {vault.data && <DeleteVaultForm vault={vault.data} onCancel={() => setDeleting(false)} />}
+      </FormDialog>
     </PageContainer>
   );
 }

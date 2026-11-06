@@ -23,6 +23,7 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
     PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
+    VaultDeletion,
 };
 use crate::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
@@ -336,6 +337,59 @@ impl PolicyStore for MemoryStore {
 
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError> {
         Ok(self.lock()?.vaults.get(id).cloned())
+    }
+
+    async fn delete_vault(
+        &self,
+        id: &VaultId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<VaultDeletion, StoreError> {
+        let mut inner = self.lock()?;
+        inner
+            .vaults
+            .remove(id)
+            .ok_or_else(|| StoreError::not_found("vault", id))?;
+        let count = |before: usize, after: usize| (before - after) as u64;
+        let mut done = VaultDeletion::default();
+        let before = inner.credentials.len();
+        inner
+            .credentials
+            .retain(|_, (meta, _)| &meta.vault_id != id);
+        done.credentials = count(before, inner.credentials.len());
+        let before = inner.rules.len();
+        inner.rules.retain(|_, rule| &rule.vault_id != id);
+        done.rules = count(before, inner.rules.len());
+        let before = inner.bundles.len();
+        inner.bundles.retain(|_, bundle| &bundle.vault_id != id);
+        done.bundles = count(before, inner.bundles.len());
+        for session in inner.sessions.values_mut() {
+            if &session.vault_id == id && session.revoked_at.is_none() && session.expires_at > at {
+                session.revoked_at = Some(at);
+                done.sessions_revoked += 1;
+            }
+        }
+        for key in inner.api_keys.values_mut() {
+            if &key.vault_id == id && key.revoked_at.is_none() {
+                key.revoked_at = Some(at);
+                done.api_keys_revoked += 1;
+            }
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(done)
+    }
+
+    async fn count_live_sessions(
+        &self,
+        vault_id: &VaultId,
+        now: DateTime<Utc>,
+    ) -> Result<u64, StoreError> {
+        Ok(self
+            .lock()?
+            .sessions
+            .values()
+            .filter(|s| &s.vault_id == vault_id && s.revoked_at.is_none() && s.expires_at > now)
+            .count() as u64)
     }
 
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError> {

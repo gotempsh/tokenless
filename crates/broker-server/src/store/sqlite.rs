@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use broker_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
     PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, UiSession, User, Variable, Vault,
+    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
 use broker_control::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
 use broker_control::StoreError;
@@ -733,6 +733,87 @@ impl PolicyStore for SqliteStore {
             .await
             .map_err(db("insert vault", "vault"))?;
         finish(tx, audit, "insert_vault").await
+    }
+
+    async fn delete_vault(
+        &self,
+        id: &VaultId,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<VaultDeletion, StoreError> {
+        let mut tx = self.begin("delete_vault").await?;
+        let vault = id.to_string();
+        let removed = sqlx::query("DELETE FROM vaults WHERE id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault", "vault"))?
+            .rows_affected();
+        if removed == 0 {
+            return Err(StoreError::not_found("vault", id));
+        }
+        // Bundle membership goes before its bundles; sessions and API keys
+        // are revoked, not deleted, so their tokens stay refused.
+        let mut done = VaultDeletion::default();
+        sqlx::query("DELETE FROM access_bundle_rules WHERE bundle_id IN (SELECT id FROM access_bundles WHERE vault_id = ?)")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault bundle members", "vault"))?;
+        done.bundles = sqlx::query("DELETE FROM access_bundles WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault bundles", "vault"))?
+            .rows_affected();
+        done.rules = sqlx::query("DELETE FROM rules WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault rules", "vault"))?
+            .rows_affected();
+        done.credentials = sqlx::query("DELETE FROM credentials WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault credentials", "vault"))?
+            .rows_affected();
+        done.sessions_revoked = sqlx::query(
+            "UPDATE proxy_sessions SET revoked_at = ? WHERE vault_id = ? AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(ts(&at))
+        .bind(&vault)
+        .bind(ts(&at))
+        .execute(&mut *tx)
+        .await
+        .map_err(db("revoke vault sessions", "vault"))?
+        .rows_affected();
+        done.api_keys_revoked = sqlx::query(
+            "UPDATE api_keys SET revoked_at = ? WHERE vault_id = ? AND revoked_at IS NULL",
+        )
+        .bind(ts(&at))
+        .bind(&vault)
+        .execute(&mut *tx)
+        .await
+        .map_err(db("revoke vault api keys", "vault"))?
+        .rows_affected();
+        finish(tx, audit, "delete_vault").await.map(|()| done)
+    }
+
+    async fn count_live_sessions(
+        &self,
+        vault_id: &VaultId,
+        now: DateTime<Utc>,
+    ) -> Result<u64, StoreError> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM proxy_sessions WHERE vault_id = ? AND revoked_at IS NULL AND expires_at > ?",
+        )
+        .bind(vault_id.to_string())
+        .bind(ts(&now))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db("count live sessions", "session"))?;
+        Ok(u64::try_from(get::<i64>(&row, "n")?).unwrap_or(0))
     }
 
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError> {

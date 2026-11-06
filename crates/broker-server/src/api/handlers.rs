@@ -213,6 +213,29 @@ pub async fn get_vault(
     Ok(Json(s.control.policy.get_vault(&authed.caller, &id).await?))
 }
 
+#[derive(Deserialize, Default)]
+pub struct DeleteVaultQuery {
+    #[serde(default)]
+    force: bool,
+}
+
+/// `DELETE /vaults/{id}[?force=true]`: removes the vault and everything in
+/// it; `force` also ends live sessions instead of refusing.
+pub async fn delete_vault(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+    ApiQuery(q): ApiQuery<DeleteVaultQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(
+        s.control
+            .policy
+            .delete_vault(&authed.caller, &id, q.force)
+            .await?,
+    ))
+}
+
 // ----- templates ---------------------------------------------------------
 
 pub async fn list_templates(State(s): St, authed: Authed) -> ApiResult<impl IntoResponse> {
