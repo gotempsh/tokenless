@@ -81,9 +81,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # A tag can only restore caches saved on its own ref or on main, and
+      # every release is a new tag, so release-cache.yml saves these on main
+      # under the same key and a release only restores them.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
+          save-if: false
       - uses: mlugg/setup-zig@v2
         if: matrix.zig
         with:

@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Keeps the release builds' dependency cache warm on main. A release runs
+# on a new tag, and a tag can only restore caches saved on its own ref or on
+# the default branch, so without this every release compiles every
+# dependency from scratch on all four targets.
+#
+# It builds exactly as release.yml does (same targets, toolchain, cache key
+# and environment), so keep the two in step. It runs when dependencies
+# change, and twice a week so the cache is never evicted for going unused
+# for seven days.
+name: Release cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .github/workflows/release.yml
+      - .github/workflows/release-cache.yml
+  schedule:
+    - cron: "17 4 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Warm ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            zig: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            zig: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+      - uses: mlugg/setup-zig@v2
+        if: matrix.zig
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        if: matrix.zig
+        with:
+          tool: cargo-zigbuild
+      # Without the console: the cache keeps compiled dependencies only, and
+      # the binary builds (serving the API alone) when broker-ui/dist is absent.
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ matrix.zig }}" = "true" ]; then
+            cargo zigbuild --release --locked --bin tokenless --target "${{ matrix.target }}"
+          else
+            cargo build --release --locked --bin tokenless --target "${{ matrix.target }}"
+          fi

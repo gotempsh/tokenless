@@ -336,8 +336,11 @@ on the console.
 
 ### Releasing
 
-1. Set `version` in the root `Cargo.toml` (and `broker-ui/package.json`),
-   commit, and tag it: `git tag -s v0.2.0 && git push origin v0.2.0`.
+1. Set `version` in the root `Cargo.toml` (and `broker-ui/package.json`)
+   and push it to main. That starts **Release cache**, which compiles the
+   release targets' dependencies on main, where a tag can restore them;
+   when it finishes, tag the commit: `git tag -s v0.2.0 && git push origin
+   v0.2.0`. Tagging sooner still works, only slower.
 2. The **Release** workflow checks the tag matches `Cargo.toml`, builds the
    console and the four platform archives, signs them with Sigstore,
    attests their provenance, publishes the GitHub release, and pushes the
