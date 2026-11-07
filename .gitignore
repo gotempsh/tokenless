@@ -9,8 +9,9 @@ node_modules/
 broker-ui/dist/
 .env
 *.tsbuildinfo
-# Local runtime state: node identity and master key
+# Local runtime state: node identity and root key
 node.json
 master.key
+root.key
 # Release image staging (filled by the release workflow)
 /packaging/linux/

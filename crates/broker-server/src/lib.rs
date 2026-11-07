@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Standalone credential broker server: the management API (and UI), the
-//! node API, SQLite storage and the master key file.
+//! node API, SQLite storage and the root key.
 
 pub mod api;
 pub mod api_tls;
@@ -10,31 +10,35 @@ pub mod error;
 pub mod launcher;
 pub mod node_api;
 pub mod probe;
+pub mod root_key;
 pub mod store;
 
-use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use broker_control::cipher::AesGcmCipher;
+use broker_control::envelope::Envelope;
 pub use broker_control::service::auth::GeneratedCredentials;
 use broker_control::store::RbacAuthorizer;
 use broker_control::{ControlConfig, ControlPlane, Stores};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
-use zeroize::Zeroizing;
 
 pub use error::{ApiError, ServerError};
+pub use root_key::RootKeyInput;
 use store::SqliteStore;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    /// Holds `master.key` and, by default, the SQLite database.
+    /// Holds the SQLite database by default, and the root key when none is
+    /// supplied.
     pub data_dir: PathBuf,
+    /// The root key, kept outside the data directory. `None` reads or
+    /// generates `<data_dir>/root.key`.
+    pub root_key: Option<RootKeyInput>,
     /// Defaults to `sqlite://<data_dir>/broker.db`.
     pub database_url: Option<String>,
     pub api_listen: SocketAddr,
@@ -56,6 +60,7 @@ impl ServerConfig {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
+            root_key: None,
             database_url: None,
             api_listen: SocketAddr::from(([127, 0, 0, 1], 8080)),
             node_listen: SocketAddr::from(([127, 0, 0, 1], 8443)),
@@ -77,6 +82,9 @@ pub struct RunningServer {
     /// The admin created on this start, with its generated password, for
     /// the binary to print once; `None` when an account already existed.
     pub initial_admin: Option<GeneratedCredentials>,
+    /// Where the root key file sits when it is in the data directory, so a
+    /// copy of the directory can decrypt everything; the binary warns.
+    pub root_key_in_data_dir: Option<PathBuf>,
     pub control: Arc<ControlPlane>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -89,7 +97,6 @@ impl RunningServer {
     }
 }
 
-const MASTER_KEY_FILE: &str = "master.key";
 const UI_SESSION_PURGE: Duration = Duration::from_secs(600);
 
 fn ensure_private_dir(dir: &Path) -> Result<(), ServerError> {
@@ -104,60 +111,6 @@ fn ensure_private_dir(dir: &Path) -> Result<(), ServerError> {
     Ok(())
 }
 
-/// Loads the 32-byte master key, creating it (mode 0600) on first start.
-/// Everything sensitive in the database is encrypted under this key.
-pub fn load_or_create_master_key(path: &Path) -> Result<Zeroizing<[u8; 32]>, ServerError> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            let bytes = Zeroizing::new(bytes);
-            let key: [u8; 32] = bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| ServerError::Config {
-                    reason: format!(
-                        "master key {} must be exactly 32 bytes, found {}",
-                        path.display(),
-                        bytes.len()
-                    ),
-                })?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = std::fs::metadata(path) {
-                    if meta.permissions().mode() & 0o077 != 0 {
-                        warn!(path = %path.display(), "master key is readable by group or others; run chmod 600");
-                    }
-                }
-            }
-            Ok(Zeroizing::new(key))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let key = AesGcmCipher::generate_key();
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options.open(path).map_err(|e| {
-                ServerError::io(format!("creating master key {}", path.display()), e)
-            })?;
-            file.write_all(key.as_ref())
-                .and_then(|_| file.sync_all())
-                .map_err(|e| {
-                    ServerError::io(format!("writing master key {}", path.display()), e)
-                })?;
-            info!(path = %path.display(), "generated new master key");
-            Ok(key)
-        }
-        Err(e) => Err(ServerError::io(
-            format!("reading master key {}", path.display()),
-            e,
-        )),
-    }
-}
-
 async fn bind(addr: SocketAddr, what: &str) -> Result<TcpListener, ServerError> {
     TcpListener::bind(addr)
         .await
@@ -166,16 +119,27 @@ async fn bind(addr: SocketAddr, what: &str) -> Result<TcpListener, ServerError> 
 
 pub struct Server;
 
-/// Opens the data directory's master key and database as the control plane,
-/// without serving anything.
-async fn open_control(config: &ServerConfig) -> Result<Arc<ControlPlane>, ServerError> {
+/// The control plane over the data directory's database, with secrets
+/// under the root key, without serving anything.
+struct Opened {
+    control: Arc<ControlPlane>,
+    root_key_in_data_dir: Option<PathBuf>,
+}
+
+async fn open_store(config: &ServerConfig) -> Result<Arc<SqliteStore>, ServerError> {
     ensure_private_dir(&config.data_dir)?;
-    let key = load_or_create_master_key(&config.data_dir.join(MASTER_KEY_FILE))?;
     let url = config
         .database_url
         .clone()
         .unwrap_or_else(|| format!("sqlite://{}", config.data_dir.join("broker.db").display()));
-    let store = Arc::new(SqliteStore::connect(&url).await?);
+    Ok(Arc::new(SqliteStore::connect(&url).await?))
+}
+
+async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
+    let store = open_store(config).await?;
+    let empty = Envelope::is_empty(store.as_ref()).await?;
+    let root = root_key::resolve(config.root_key.as_ref(), &config.data_dir, empty)?;
+    let cipher = Arc::new(Envelope::open(&root.key, store.clone()).await?);
     let stores = Stores {
         credentials: store.clone(),
         policy: store.clone(),
@@ -183,8 +147,6 @@ async fn open_control(config: &ServerConfig) -> Result<Arc<ControlPlane>, Server
         identity: store.clone(),
         nodes: store,
     };
-    let cipher = Arc::new(AesGcmCipher::new(&key)?);
-    drop(key);
     let control = Arc::new(
         ControlPlane::new(
             stores,
@@ -198,7 +160,10 @@ async fn open_control(config: &ServerConfig) -> Result<Arc<ControlPlane>, Server
         )
         .await?,
     );
-    Ok(control)
+    Ok(Opened {
+        control,
+        root_key_in_data_dir: root.in_data_dir,
+    })
 }
 
 /// Replaces `username`'s password with a generated one and ends all of the
@@ -209,13 +174,46 @@ pub async fn reset_password(
     config: &ServerConfig,
     username: &str,
 ) -> Result<GeneratedCredentials, ServerError> {
-    let control = open_control(config).await?;
-    Ok(control.auth.reset_password(username).await?)
+    let opened = open_control(config).await?;
+    Ok(opened.control.auth.reset_password(username).await?)
+}
+
+/// Replaces the root key: writes a new one to `new_key_file` (which must
+/// not exist) and re-wraps the instance key under it. No secret is
+/// re-encrypted. Run on the server's host with the current root key in
+/// `config`; restart the server with the new key afterwards.
+pub async fn rotate_root_key(
+    config: &ServerConfig,
+    new_key_file: &Path,
+) -> Result<(), ServerError> {
+    let store = open_store(config).await?;
+    let current = root_key::resolve(config.root_key.as_ref(), &config.data_dir, false)?;
+    // Creates the hierarchy, or finishes moving secrets into it, under the
+    // current key before it is replaced.
+    Envelope::open(&current.key, store.clone()).await?;
+    let new_key = broker_control::cipher::AesGcmCipher::generate_key();
+    root_key::write_new(new_key_file, &new_key)?;
+    if let Err(e) = Envelope::rotate_root(store.as_ref(), &current.key, &new_key).await {
+        // The new key was never used; don't leave a file that looks valid.
+        let _ = std::fs::remove_file(new_key_file);
+        return Err(e.into());
+    }
+    info!(path = %new_key_file.display(), "root key replaced");
+    Ok(())
 }
 
 impl Server {
     pub async fn start(config: ServerConfig) -> Result<RunningServer, ServerError> {
-        let control = open_control(&config).await?;
+        let Opened {
+            control,
+            root_key_in_data_dir,
+        } = open_control(&config).await?;
+        if let Some(path) = &root_key_in_data_dir {
+            warn!(
+                path = %path.display(),
+                "the root key is stored in the data directory, so a copy of the directory can decrypt every secret; move it elsewhere and start with --root-key-file or TOKENLESS_ROOT_KEY"
+            );
+        }
         let initial_admin = control.auth.create_initial_admin().await?;
         let state = Arc::new(api::AppState {
             control: control.clone(),
@@ -295,37 +293,9 @@ impl Server {
             api_tls,
             node_addr,
             initial_admin,
+            root_key_in_data_dir,
             control,
             tasks,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn master_key_is_created_once_and_reused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(MASTER_KEY_FILE);
-        let first = load_or_create_master_key(&path).unwrap();
-        let second = load_or_create_master_key(&path).unwrap();
-        assert_eq!(*first, *second);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
-    }
-
-    #[test]
-    fn short_master_key_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(MASTER_KEY_FILE);
-        std::fs::write(&path, b"short").unwrap();
-        let err = load_or_create_master_key(&path).unwrap_err();
-        assert!(err.to_string().contains("32 bytes"));
     }
 }

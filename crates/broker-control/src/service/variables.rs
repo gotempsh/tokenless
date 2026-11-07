@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 use super::render::variable_aad;
 use super::{Caller, Guard};
-use crate::cipher::SecretCipher;
+use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::model::{Page, PageRequest, Variable};
 use crate::notify::PolicyNotifier;
@@ -217,7 +217,12 @@ impl VariableService {
         };
         let ciphertext = self
             .cipher
-            .encrypt(req.value.as_bytes(), &variable_aad(&variable.id))?;
+            .encrypt(
+                KeyScope::Instance,
+                req.value.as_bytes(),
+                &variable_aad(&variable.id),
+            )
+            .await?;
         let event = AuditEvent::new(caller.actor(), "variable.create", AuditOutcome::Success)
             .target(format!("variable:{}", variable.id))
             .detail("key", key.clone());
@@ -248,7 +253,12 @@ impl VariableService {
         validate_value(&variable.key, &value)?;
         let ciphertext = self
             .cipher
-            .encrypt(value.as_bytes(), &variable_aad(&variable.id))?;
+            .encrypt(
+                KeyScope::Instance,
+                value.as_bytes(),
+                &variable_aad(&variable.id),
+            )
+            .await?;
         let event = AuditEvent::new(caller.actor(), "variable.update", AuditOutcome::Success)
             .target(format!("variable:{id}"))
             .detail("key", variable.key.clone());

@@ -6,7 +6,8 @@
 # image runs exactly the binary in the release archives.
 #
 # The default command runs the control plane with its data in /data.
-# Mount a volume there: it holds the master key and the database.
+# Mount a volume there: it holds the database. Supply the root key from
+# outside it (TOKENLESS_ROOT_KEY or --root-key-file with a mounted secret).
 #   docker run -v tokenless:/data -p 127.0.0.1:8080:8080 -p 8443:8443 \
 #     ghcr.io/gotempsh/tokenless
 # Run a proxy instead with: ... ghcr.io/gotempsh/tokenless node run ...

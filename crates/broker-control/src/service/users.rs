@@ -290,7 +290,8 @@ impl UserService {
             &req.password,
             totp,
             invite.role,
-        )?;
+        )
+        .await?;
         let event = AuditEvent::new(
             format!("user:{}", user.id),
             "user.invite.accept",

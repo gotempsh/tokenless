@@ -24,7 +24,7 @@ use tracing::{debug, info};
 
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, Guard};
-use crate::cipher::SecretCipher;
+use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::{ControlError, StoreError};
 use crate::model::{
     CredentialMeta, Page, PageRequest, Rule, Settings, StoredTemplate, TemplateSource,
@@ -131,7 +131,7 @@ fn parse_methods(values: &[String]) -> Result<Vec<HttpMethod>, ControlError> {
         .map_err(ControlError::from)
 }
 
-fn credential_aad(id: &CredentialId, vault: &VaultId) -> Vec<u8> {
+pub(crate) fn credential_aad(id: &CredentialId, vault: &VaultId) -> Vec<u8> {
     format!("credential|{id}|{vault}").into_bytes()
 }
 
@@ -707,7 +707,12 @@ impl PolicyService {
         );
         let ciphertext = self
             .cipher
-            .encrypt(&plaintext, &credential_aad(&id, vault_id))?;
+            .encrypt(
+                KeyScope::Vault(*vault_id),
+                &plaintext,
+                &credential_aad(&id, vault_id),
+            )
+            .await?;
         let mut event = AuditEvent::new(caller.actor(), "credential.create", AuditOutcome::Success)
             .vault(*vault_id)
             .target(format!("credential:{id}"))
@@ -770,7 +775,12 @@ impl PolicyService {
         );
         let ciphertext = self
             .cipher
-            .encrypt(&plaintext, &credential_aad_for(&meta))?;
+            .encrypt(
+                KeyScope::Vault(meta.vault_id),
+                &plaintext,
+                &credential_aad_for(&meta),
+            )
+            .await?;
         let event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
             .vault(meta.vault_id)
             .target(format!("credential:{id}"));
@@ -810,7 +820,8 @@ impl PolicyService {
             .ok_or_else(|| ControlError::not_found("credential", id))?;
         let plaintext = self
             .cipher
-            .decrypt(&ciphertext, &credential_aad_for(&meta))?;
+            .decrypt(&ciphertext, &credential_aad_for(&meta))
+            .await?;
         let fields: SecretFields = serde_json::from_slice(&plaintext)
             .map_err(|e| ControlError::crypto("credential.decode", format!("{id}: {e}")))?;
         let variable_refs = self

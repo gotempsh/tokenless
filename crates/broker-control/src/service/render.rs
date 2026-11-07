@@ -38,7 +38,9 @@ pub(crate) async fn load_variables(
 ) -> Result<HashMap<String, Zeroizing<String>>, ControlError> {
     let mut values = HashMap::new();
     for (variable, ciphertext) in credentials.load_variable_ciphertexts(keys).await? {
-        let plaintext = cipher.decrypt(&ciphertext, &variable_aad(&variable.id))?;
+        let plaintext = cipher
+            .decrypt(&ciphertext, &variable_aad(&variable.id))
+            .await?;
         let value = String::from_utf8(plaintext.to_vec()).map_err(|_| {
             ControlError::crypto(
                 "variable.decode",
@@ -60,7 +62,9 @@ pub(crate) async fn render_credential(
         .load_secret_ciphertext(&meta.id)
         .await?
         .ok_or_else(|| ControlError::not_found("credential", meta.id))?;
-    let plaintext = cipher.decrypt(&ciphertext, &credential_aad_for(meta))?;
+    let plaintext = cipher
+        .decrypt(&ciphertext, &credential_aad_for(meta))
+        .await?;
     let fields: SecretFields = serde_json::from_slice(&plaintext)
         .map_err(|e| ControlError::crypto("credential.decode", format!("{}: {e}", meta.id)))?;
     let values = load_variables(credentials, cipher, &meta.variable_refs).await?;

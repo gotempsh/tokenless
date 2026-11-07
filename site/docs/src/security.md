@@ -20,17 +20,21 @@ This page is the summary an operator needs.
 - **Reaching your private network through the proxy.** Loopback, private,
   link-local and metadata addresses are refused unless you allow them.
 - **Reading secrets back.** Secrets are write-only for everyone, admins
-  included. They are encrypted at rest with AES-256-GCM under
-  `master.key` and only ever leave the control plane sealed to an enrolled
-  proxy.
+  included. They are encrypted at rest with AES-256-GCM under a
+  data key per vault; data keys are encrypted under an instance key, and
+  that one under a root key you keep outside the database. Secrets only
+  ever leave the control plane sealed to an enrolled proxy.
 
 ## What it doesn't
 
 - **A compromised proxy host** exposes the credentials of the rules in its
   policy and the interception CA's key. Run separate proxies per trust
   domain, and trust the interception CA only inside agent sandboxes.
-- **A compromised control plane host** with access to `master.key` and the
-  database exposes every secret. Protect it like any secret store.
+- **A compromised control plane host** while it runs, or anyone with both
+  the root key and the database, can decrypt every secret. Protect it like
+  any secret store. A copy of the database alone exposes nothing, provided
+  the root key is kept outside it
+  ([Deploy → The root key](deploy.md#the-root-key)).
 - **What a service does with a request it accepts.** A rule that allows
   `DELETE` lets an agent delete. Use read-only access and narrow paths
   where you can.

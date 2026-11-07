@@ -29,6 +29,23 @@ use crate::model::{
     VaultDeletion,
 };
 
+/// Whose encrypted value a [`StoredCiphertext`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CiphertextOwner {
+    Credential { id: CredentialId, vault_id: VaultId },
+    Variable { id: VariableId },
+    UserTotp { id: UserId },
+    KeyMaterial { name: String },
+}
+
+/// One encrypted value as stored, for re-encrypting every secret at once
+/// (a change of encryption scheme).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCiphertext {
+    pub owner: CiphertextOwner,
+    pub ciphertext: Vec<u8>,
+}
+
 /// Stores credential metadata and an opaque, already-encrypted secret blob.
 ///
 /// The store never sees plaintext and there is no method that returns a
@@ -447,6 +464,27 @@ pub trait NodeStore: Send + Sync {
         name: &str,
         value: Vec<u8>,
     ) -> Result<Vec<u8>, StoreError>;
+
+    /// Replaces stored key material. `NotFound` if `name` is missing.
+    async fn replace_key_material(
+        &self,
+        name: &str,
+        value: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+
+    /// Every encrypted value held: credential secrets, variable values,
+    /// authenticator secrets and key material.
+    async fn list_ciphertexts(&self) -> Result<Vec<StoredCiphertext>, StoreError>;
+
+    /// Replaces each `(old, new)` pair in one transaction, only where the
+    /// stored value is still `old.ciphertext`: a value rewritten meanwhile
+    /// is left alone. Returns how many were replaced.
+    async fn replace_ciphertexts(
+        &self,
+        changes: &[(StoredCiphertext, Vec<u8>)],
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError>;
 
     /// Strictly increasing across restarts.
     async fn next_snapshot_version(&self) -> Result<u64, StoreError>;

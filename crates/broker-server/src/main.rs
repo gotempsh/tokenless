@@ -26,7 +26,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
-use broker_server::{Server, ServerConfig};
+use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use tracing::{error, info};
@@ -290,9 +290,12 @@ enum SessionCommand {
 
 #[derive(clap::Args)]
 struct ServeArgs {
-    /// Directory for the master key and SQLite database.
+    /// Directory for the SQLite database (and the root key, when none is
+    /// supplied).
     #[arg(long, default_value = "./data")]
     data_dir: PathBuf,
+    #[command(flatten)]
+    key: RootKeyArgs,
     /// Database URL (default: sqlite://<data-dir>/broker.db).
     #[arg(long)]
     database_url: Option<String>,
@@ -379,6 +382,29 @@ enum ProxyCommand {
     },
 }
 
+/// Where the root key comes from. Without either, it is read from (or
+/// generated in) the data directory, and the server warns at every start.
+#[derive(clap::Args, Clone)]
+struct RootKeyArgs {
+    /// File holding the root key (32 bytes, or base64), kept outside the
+    /// data directory and its backups. Alternatively set TOKENLESS_ROOT_KEY
+    /// to the base64 key.
+    #[arg(long, env = "TOKENLESS_ROOT_KEY_FILE", value_name = "PATH")]
+    root_key_file: Option<PathBuf>,
+}
+
+impl RootKeyArgs {
+    fn input(&self) -> Option<RootKeyInput> {
+        match &self.root_key_file {
+            Some(path) => Some(RootKeyInput::File(path.clone())),
+            None => std::env::var("TOKENLESS_ROOT_KEY")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| RootKeyInput::Value(Zeroizing::new(v))),
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum AdminCommand {
     /// Give an account a new generated password and end its sessions. For
@@ -393,6 +419,25 @@ enum AdminCommand {
         /// Database URL, when `serve` uses one.
         #[arg(long)]
         database_url: Option<String>,
+        #[command(flatten)]
+        key: RootKeyArgs,
+    },
+    /// Replace the root key. Writes a new key to --out and re-wraps the
+    /// instance key under it; no secret is re-encrypted. Restart `serve`
+    /// with the new key afterwards and destroy the old one.
+    RotateRootKey {
+        /// Where to write the new root key; must not exist yet.
+        #[arg(long, value_name = "PATH")]
+        out: PathBuf,
+        /// The server's data directory (the one `serve` uses).
+        #[arg(long, default_value = "./data")]
+        data_dir: PathBuf,
+        /// Database URL, when `serve` uses one.
+        #[arg(long)]
+        database_url: Option<String>,
+        /// The current root key.
+        #[command(flatten)]
+        key: RootKeyArgs,
     },
 }
 
@@ -498,6 +543,8 @@ async fn wait_for_shutdown() -> Result<(), CliError> {
 async fn serve(args: ServeArgs) -> Result<(), CliError> {
     let data_dir = args.data_dir.clone();
     let mut config = ServerConfig::new(args.data_dir);
+    config.root_key = args.key.input();
+    let key_hint = config.root_key.clone();
     config.database_url = args.database_url;
     config.api_listen = args.api_listen;
     config.node_listen = args.node_listen;
@@ -517,8 +564,13 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
             admin,
         );
         eprintln!(
-            "  Lost it? On this host: tokenless admin reset-password --data-dir {}",
-            data_dir.display()
+            "  Lost it? On this host: tokenless admin reset-password --data-dir {}{}",
+            data_dir.display(),
+            match &key_hint {
+                Some(RootKeyInput::File(path)) => format!(" --root-key-file {}", path.display()),
+                Some(RootKeyInput::Value(_)) => " (with TOKENLESS_ROOT_KEY set)".into(),
+                None => String::new(),
+            }
         );
         eprintln!();
         eprintln!(
@@ -526,6 +578,14 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
             if running.api_tls { "https" } else { "http" },
             sign_in_addr(running.api_addr)
         );
+        eprintln!();
+    }
+    if let Some(path) = &running.root_key_in_data_dir {
+        eprintln!(
+            "  The root key is in the data directory ({}): a copy of the directory decrypts every secret.",
+            path.display()
+        );
+        eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
     wait_for_shutdown().await?;
@@ -773,14 +833,37 @@ async fn admin(command: AdminCommand) -> Result<(), CliError> {
             username,
             data_dir,
             database_url,
+            key,
         } => {
             let mut config = ServerConfig::new(data_dir);
             config.database_url = database_url;
+            config.root_key = key.input();
             let creds = broker_server::reset_password(&config, &username).await?;
             print_credentials(
                 "Password reset. Save it now: it is shown only once. Every session of this account has ended.",
                 &creds,
             );
+            eprintln!();
+            Ok(())
+        }
+        AdminCommand::RotateRootKey {
+            out,
+            data_dir,
+            database_url,
+            key,
+        } => {
+            let mut config = ServerConfig::new(data_dir);
+            config.database_url = database_url;
+            config.root_key = key.input();
+            broker_server::rotate_root_key(&config, &out).await?;
+            eprintln!();
+            eprintln!("  New root key written to {}.", out.display());
+            eprintln!();
+            eprintln!(
+                "  Restart the server with: tokenless serve --root-key-file {} ...",
+                out.display()
+            );
+            eprintln!("  The old key no longer opens this data: destroy it and its copies.");
             eprintln!();
             Ok(())
         }

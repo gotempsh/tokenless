@@ -14,6 +14,7 @@ Every command takes `--help` for its full list of options.
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
 | `tokenless admin reset-password` | On the server's host: replace a lost password. |
+| `tokenless admin rotate-root-key` | On the server's host: replace the root key. |
 | `tokenless node join` | Enrol this machine as a proxy with a one-time join token. |
 | `tokenless node run` | Run the proxy and the MCP gateway. |
 | `tokenless run` | Run a command behind a session from an access bundle. See [Run an agent](agents.md). |
@@ -29,7 +30,8 @@ Every command takes `--help` for its full list of options.
 
 | Option | Default | |
 |---|---|---|
-| `--data-dir` | `./data` | Master key and SQLite database |
+| `--data-dir` | `./data` | SQLite database, and `root.key` when none is supplied |
+| `--root-key-file` | `TOKENLESS_ROOT_KEY_FILE`; or the key itself in `TOKENLESS_ROOT_KEY` | The root key, kept outside the data directory. See [Deploy → The root key](deploy.md#the-root-key) |
 | `--database-url` | `sqlite://<data-dir>/broker.db` | |
 | `--api-listen` | `127.0.0.1:8080` | Console and management API |
 | `--api-tls-cert`, `--api-tls-key` | | Serve the API over HTTPS; reloaded on change |

@@ -307,8 +307,13 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   private address.
 - Keep the proxy listener (`node run --listen`) on loopback or a private
   network.
-- `data/master.key` (mode 0600) encrypts everything sensitive in
-  `data/broker.db`. Back up both, separately.
+- Secrets are encrypted under data keys, which are encrypted under a
+  root key the database never holds. Keep the root key outside the data
+  directory: `--root-key-file /etc/tokenless/root.key` (create one with
+  `openssl rand -base64 32`) or `TOKENLESS_ROOT_KEY`. Without it, `serve`
+  creates `data/root.key` and warns at every start. Back up the database
+  and the key separately. See
+  [Deploy → The root key](site/docs/src/deploy.md#the-root-key).
 - Logs are JSON lines on stdout. Set `RUST_LOG` (for example
   `RUST_LOG=debug`) to change the level.
 - Data plane metrics are exposed in Prometheus format with

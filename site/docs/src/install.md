@@ -88,8 +88,12 @@ cosign verify ghcr.io/gotempsh/tokenless:latest \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-`/data` holds the master key and the database: keep it on a volume and
-back it up (see [Deploy to production](deploy.md#backups)). The same image
+`/data` holds the database: keep it on a volume. Supply
+the root key from outside it, for example
+`-e TOKENLESS_ROOT_KEY="$(cat root.key)"` or a mounted secret with
+`--root-key-file`; otherwise `root.key` is created inside `/data`
+([Deploy → The root key](deploy.md#the-root-key)). Back up the database
+and the key separately (see [Deploy → Backups](deploy.md#backups)). The same image
 runs a proxy: `docker run ... ghcr.io/gotempsh/tokenless node run ...`.
 A proxy that reaches the control plane by a name other than `localhost`
 or `127.0.0.1` (another machine, another container) needs that name in

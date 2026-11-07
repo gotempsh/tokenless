@@ -10,7 +10,7 @@ use rand::RngCore;
 use tracing::info;
 use zeroize::Zeroizing;
 
-use crate::cipher::SecretCipher;
+use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::pki::{generate_ca, CaMaterial};
 use crate::store::NodeStore;
@@ -29,7 +29,7 @@ pub struct KeyRing {
     pub csrf_key: Zeroizing<[u8; 32]>,
 }
 
-fn aad(name: &str) -> Vec<u8> {
+pub(crate) fn aad(name: &str) -> Vec<u8> {
     format!("key-material|{name}").into_bytes()
 }
 
@@ -43,15 +43,17 @@ async fn load_or_create(
         Some(ct) => ct,
         None => {
             let plaintext = generate()?;
-            let ct = cipher.encrypt(&plaintext, &aad(name))?;
+            let ct = cipher
+                .encrypt(KeyScope::Instance, &plaintext, &aad(name))
+                .await?;
             info!(key = name, "generated new key material");
             store.put_key_material_if_absent(name, ct).await?
         }
     };
-    cipher.decrypt(&stored, &aad(name)).map_err(|e| {
+    cipher.decrypt(&stored, &aad(name)).await.map_err(|e| {
         ControlError::crypto(
             "keyring.load",
-            format!("key '{name}' could not be decrypted with the master key: {e}"),
+            format!("key '{name}' could not be decrypted: {e}"),
         )
     })
 }

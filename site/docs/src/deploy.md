@@ -92,8 +92,12 @@ Wants=network-online.target
 [Service]
 User=tokenless
 ExecStart=/usr/local/bin/tokenless serve --data-dir /var/lib/tokenless \
+  --root-key-file ${CREDENTIALS_DIRECTORY}/root.key \
   --api-listen 127.0.0.1:8080 --node-listen 10.0.0.5:8443 \
   --node-api-name tokenless.internal
+# The root key lives outside the data directory. LoadCredentialEncrypted=
+# with a key from `systemd-creds encrypt` binds it to this machine's TPM.
+LoadCredential=root.key:/etc/tokenless/root.key
 StateDirectory=tokenless
 Restart=on-failure
 NoNewPrivileges=true
@@ -121,6 +125,9 @@ services:
       - --api-listen=0.0.0.0:8080
       - --node-listen=0.0.0.0:8443
       - --node-api-name=tokenless.internal
+      - --root-key-file=/run/secrets/root_key
+    secrets:
+      - root_key
     volumes:
       - tokenless-data:/data
     ports:
@@ -128,20 +135,69 @@ services:
       - "8443:8443"             # proxies connect here
 volumes:
   tokenless-data:
+secrets:
+  root_key:
+    file: ./root.key   # outside the volume; not in its backups
 ```
+
+## The root key
+
+Every secret in the database is encrypted, and the keys that encrypt them
+are themselves encrypted under one **root key** that the database never
+contains:
+
+```text
+root key        yours, outside the database
+ └ instance key in the database, encrypted by the root key
+    └ data keys in the database, one per vault and one for the instance
+       └ secrets
+```
+
+A copy of the database or the data directory, without the root key,
+decrypts nothing.
+
+Create a key and keep it outside the data directory and its backups (a
+secrets manager, a systemd credential, a Docker or Kubernetes secret):
+
+```sh
+openssl rand -base64 32 > /etc/tokenless/root.key
+chmod 600 /etc/tokenless/root.key
+tokenless serve --root-key-file /etc/tokenless/root.key ...
+```
+
+or pass it in the environment as `TOKENLESS_ROOT_KEY` (the base64 text).
+
+Without either, `serve` creates `root.key` in the data directory on first
+start, which is fine on your laptop, and warns at every start that a copy
+of the directory then decrypts everything. To move it, stop the server,
+move the file, and start with `--root-key-file`. A server started on data
+whose key isn't there refuses to start; it never makes a new one.
+
+Replace the key with:
+
+```sh
+tokenless admin rotate-root-key --root-key-file /etc/tokenless/root.key \
+  --out /etc/tokenless/root-2.key --data-dir /var/lib/tokenless
+```
+
+It re-encrypts the instance key only, so it takes a moment however many
+secrets there are. Restart with the new file, then destroy the old one.
+
+Upgrading from a version with `master.key`: that file becomes the root
+key, and the first start re-encrypts every stored secret under the new
+keys in one transaction. Move `master.key` out as above.
 
 ## Backups
 
-`data/master.key` encrypts everything sensitive in `data/broker.db`. Back
-up **both**, and store them **separately**: either one alone is useless,
-which is the point. The database runs in WAL mode; take a consistent copy
-while it runs with:
+Back up the database and the root key **separately**: either alone is
+useless, which is the point. The database runs in WAL mode; take a
+consistent copy while it runs with:
 
 ```sh
 sqlite3 /var/lib/tokenless/broker.db ".backup '/backups/broker.db'"
 ```
 
-Losing `master.key` means losing every stored secret. You can't recover
+Losing the root key means losing every stored secret. You can't recover
 them, by design.
 
 ## Upgrades

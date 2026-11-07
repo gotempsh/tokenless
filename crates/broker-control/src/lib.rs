@@ -8,6 +8,7 @@
 //! about HTTP, SQL or any embedding platform.
 
 pub mod cipher;
+pub mod envelope;
 pub mod error;
 pub mod keys;
 pub mod memory;

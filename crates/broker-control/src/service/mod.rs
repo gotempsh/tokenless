@@ -6,7 +6,7 @@ pub mod auth;
 pub mod bundles;
 pub mod nodes;
 pub mod policy;
-mod render;
+pub(crate) mod render;
 pub mod sessions;
 pub mod users;
 pub mod variables;
@@ -275,27 +275,36 @@ mod tests {
     use super::sessions::MintSession;
     use super::*;
     use crate::cipher::AesGcmCipher;
+    use crate::envelope::Envelope;
     use crate::memory::MemoryStore;
     use crate::model::PageRequest;
     use crate::store::RbacAuthorizer;
+    use crate::store::{CiphertextOwner, NodeStore};
     use crate::StoreError;
 
     async fn plane() -> ControlPlane {
         plane_with(Arc::new(crate::probe::DisabledProber)).await
     }
 
-    async fn plane_with(prober: Arc<dyn CredentialProber>) -> ControlPlane {
-        let store = Arc::new(MemoryStore::new());
-        let stores = Stores {
+    fn stores(store: &Arc<MemoryStore>) -> Stores {
+        Stores {
             credentials: store.clone(),
             policy: store.clone(),
             audit: store.clone(),
             identity: store.clone(),
-            nodes: store,
-        };
-        let cipher = Arc::new(AesGcmCipher::new(&AesGcmCipher::generate_key()).unwrap());
+            nodes: store.clone(),
+        }
+    }
+
+    async fn plane_with(prober: Arc<dyn CredentialProber>) -> ControlPlane {
+        let store = Arc::new(MemoryStore::new());
+        let cipher = Arc::new(
+            Envelope::open(&AesGcmCipher::generate_key(), store.clone())
+                .await
+                .unwrap(),
+        );
         ControlPlane::new(
-            stores,
+            stores(&store),
             Arc::new(RbacAuthorizer),
             cipher,
             prober,
@@ -381,6 +390,97 @@ mod tests {
             password: password.into(),
             totp_code: code,
         }
+    }
+
+    #[tokio::test]
+    async fn secrets_stored_before_the_key_hierarchy_are_re_encrypted_under_it() {
+        let store = Arc::new(MemoryStore::new());
+        let root = AesGcmCipher::generate_key();
+        // As stored before: every secret directly under the one key file.
+        let old = ControlPlane::new(
+            stores(&store),
+            Arc::new(RbacAuthorizer),
+            Arc::new(AesGcmCipher::new(&root).unwrap()),
+            Arc::new(crate::probe::DisabledProber),
+            ControlConfig::default(),
+        )
+        .await
+        .unwrap();
+        let (auth, password, _) = first_admin(&old).await;
+        let secret = add_authenticator(&old, &auth, &password).await;
+        let vault = old.policy.create_vault(&admin(0), "main").await.unwrap();
+        let credential = old
+            .policy
+            .create_credential(
+                &admin(0),
+                &vault.id,
+                bearer(&[("token", "legacy-token")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let before = store.list_ciphertexts().await.unwrap();
+        assert!(before.iter().all(|c| c.ciphertext[0] == 1));
+
+        // A different key is refused before anything is written under it.
+        let wrong = Envelope::open(&AesGcmCipher::generate_key(), store.clone()).await;
+        assert!(matches!(wrong, Err(ControlError::Crypto { .. })));
+        assert!(store
+            .get_key_material("envelope/instance-key")
+            .await
+            .unwrap()
+            .is_none());
+
+        let envelope = Arc::new(Envelope::open(&root, store.clone()).await.unwrap());
+        for stored in store.list_ciphertexts().await.unwrap() {
+            let hierarchy = matches!(&stored.owner,
+                CiphertextOwner::KeyMaterial { name } if name.starts_with("envelope/"));
+            assert!(
+                hierarchy || stored.ciphertext[0] == 2,
+                "{:?} was not re-encrypted",
+                stored.owner
+            );
+        }
+        // Opening again finds nothing left to migrate.
+        Envelope::open(&root, store.clone()).await.unwrap();
+
+        // Everything still reads: the signing keys load, the authenticator
+        // verifies, and the credential decrypts under its vault's key.
+        let cp = ControlPlane::new(
+            stores(&store),
+            Arc::new(RbacAuthorizer),
+            envelope.clone(),
+            Arc::new(crate::probe::DisabledProber),
+            ControlConfig::default(),
+        )
+        .await
+        .unwrap();
+        cp.auth
+            .login(login(
+                "admin",
+                &password,
+                Some(totp::code_at(&secret, now_secs() + 30).unwrap()),
+            ))
+            .await
+            .unwrap();
+        let ciphertext = store
+            .load_secret_ciphertext(&credential.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let plaintext = envelope
+            .decrypt(
+                &ciphertext,
+                &policy::credential_aad(&credential.id, &vault.id),
+            )
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&plaintext).contains("legacy-token"));
+        let audit = cp
+            .audit
+            .query(&admin(0), None, None, PageRequest::default())
+            .await
+            .unwrap();
+        assert!(audit.items.iter().any(|e| e.action == "keys.migrate"));
     }
 
     #[tokio::test]

@@ -17,7 +17,7 @@ use broker_control::model::{
     UiSession, User, Variable, Vault, VaultDeletion,
 };
 use broker_control::store::{
-    AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
 };
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
@@ -2346,6 +2346,56 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         "key_get",
         got.as_deref() == Some(b"first".as_slice()),
         "key material not readable"
+    );
+
+    let missing = store
+        .replace_key_material("absent", b"x".to_vec(), &[])
+        .await;
+    ensure!(
+        S,
+        "key_replace_missing",
+        matches!(missing, Err(StoreError::NotFound { .. })),
+        "replacing missing key material must be NotFound, got {missing:?}"
+    );
+    store
+        .replace_key_material("k", b"rewrapped".to_vec(), &[])
+        .await
+        .map_err(backend(S, "key_replace"))?;
+    let listed = store
+        .list_ciphertexts()
+        .await
+        .map_err(backend(S, "ciphertext_list"))?;
+    let entry = listed
+        .iter()
+        .find(|c| c.owner == CiphertextOwner::KeyMaterial { name: "k".into() })
+        .cloned();
+    ensure!(
+        S,
+        "ciphertext_list",
+        entry.as_ref().map(|c| c.ciphertext.as_slice()) == Some(b"rewrapped".as_slice()),
+        "list_ciphertexts must include key material as stored, got {entry:?}"
+    );
+    let Some(entry) = entry else {
+        return Ok(());
+    };
+    let replaced = store
+        .replace_ciphertexts(&[(entry.clone(), b"re-encrypted".to_vec())], &[])
+        .await
+        .map_err(backend(S, "ciphertext_replace"))?;
+    // The same change again: the stored value is no longer the old one.
+    let stale = store
+        .replace_ciphertexts(&[(entry, b"stale write".to_vec())], &[])
+        .await
+        .map_err(backend(S, "ciphertext_replace"))?;
+    let got = store
+        .get_key_material("k")
+        .await
+        .map_err(backend(S, "key_get"))?;
+    ensure!(
+        S,
+        "ciphertext_replace_if_unchanged",
+        replaced == 1 && stale == 0 && got.as_deref() == Some(b"re-encrypted".as_slice()),
+        "replace_ciphertexts must replace only unchanged values (replaced {replaced}, then {stale})"
     );
 
     let a = store

@@ -17,7 +17,10 @@ use broker_control::model::{
     PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
     TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
-use broker_control::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
+use broker_control::store::{
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    StoredCiphertext,
+};
 use broker_control::StoreError;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Role;
@@ -2094,6 +2097,119 @@ impl NodeStore for SqliteStore {
         self.get_key_material(name).await?.ok_or_else(|| {
             StoreError::backend("put key material", format!("'{name}' missing after insert"))
         })
+    }
+
+    async fn replace_key_material(
+        &self,
+        name: &str,
+        value: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut tx = self.begin("replace_key_material").await?;
+        let result = sqlx::query("UPDATE key_material SET value = ? WHERE name = ?")
+            .bind(value)
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("replace key material", "key_material"))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::not_found("key material", name));
+        }
+        finish(tx, audit, "replace_key_material").await
+    }
+
+    async fn list_ciphertexts(&self) -> Result<Vec<StoredCiphertext>, StoreError> {
+        let mut out = Vec::new();
+        for row in sqlx::query("SELECT id, vault_id, secret FROM credentials")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list credential ciphertexts", "credential"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::Credential {
+                    id: get_id(&row, "id")?,
+                    vault_id: get_id(&row, "vault_id")?,
+                },
+                ciphertext: get(&row, "secret")?,
+            });
+        }
+        for row in sqlx::query("SELECT id, value FROM variables")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list variable ciphertexts", "variable"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::Variable {
+                    id: get_id(&row, "id")?,
+                },
+                ciphertext: get(&row, "value")?,
+            });
+        }
+        for row in
+            sqlx::query("SELECT id, totp_secret_enc FROM users WHERE totp_secret_enc IS NOT NULL")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(db("list authenticator ciphertexts", "user"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::UserTotp {
+                    id: get_id(&row, "id")?,
+                },
+                ciphertext: get(&row, "totp_secret_enc")?,
+            });
+        }
+        for row in sqlx::query("SELECT name, value FROM key_material")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list key material", "key_material"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::KeyMaterial {
+                    name: get(&row, "name")?,
+                },
+                ciphertext: get(&row, "value")?,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn replace_ciphertexts(
+        &self,
+        changes: &[(StoredCiphertext, Vec<u8>)],
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
+        let mut tx = self.begin("replace_ciphertexts").await?;
+        let mut replaced = 0;
+        for (old, new) in changes {
+            let (sql, key) = match &old.owner {
+                CiphertextOwner::Credential { id, .. } => (
+                    "UPDATE credentials SET secret = ? WHERE id = ? AND secret = ?",
+                    id.to_string(),
+                ),
+                CiphertextOwner::Variable { id } => (
+                    "UPDATE variables SET value = ? WHERE id = ? AND value = ?",
+                    id.to_string(),
+                ),
+                CiphertextOwner::UserTotp { id } => (
+                    "UPDATE users SET totp_secret_enc = ? WHERE id = ? AND totp_secret_enc = ?",
+                    id.to_string(),
+                ),
+                CiphertextOwner::KeyMaterial { name } => (
+                    "UPDATE key_material SET value = ? WHERE name = ? AND value = ?",
+                    name.clone(),
+                ),
+            };
+            let result = sqlx::query(sql)
+                .bind(new)
+                .bind(key)
+                .bind(&old.ciphertext)
+                .execute(&mut *tx)
+                .await
+                .map_err(db("replace ciphertext", "ciphertext"))?;
+            replaced += result.rows_affected();
+        }
+        finish(tx, audit, "replace_ciphertexts").await?;
+        Ok(replaced)
     }
 
     async fn next_snapshot_version(&self) -> Result<u64, StoreError> {

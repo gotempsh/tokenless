@@ -259,7 +259,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
     <div class="claim">
       <h3>Secrets are write-only</h3>
       <div>
-        <p>You paste a credential once and never see it again. No role can read one back, admins included: the API has no endpoint that returns a value, and the metadata type has no field that could carry one. Values are encrypted at rest with AES-256-GCM under a master key file. Rotating a credential replaces the value and returns metadata only.</p>
+        <p>You paste a credential once and never see it again. No role can read one back, admins included: the API has no endpoint that returns a value, and the metadata type has no field that could carry one. Values are encrypted at rest with AES-256-GCM under per-vault data keys, wrapped under a root key you keep outside the database. Rotating a credential replaces the value and returns metadata only.</p>
         <p>The end-to-end test checks this: it searches every read endpoint and the raw database files for the plaintext.</p>
       </div>
     </div>
@@ -406,7 +406,7 @@ claude mcp add --transport http github-mcp http://127.0.0.1:3129/mcp/api.githubc
   <div class="wrap">
     <div class="section-head">
       <h2 id="self-host-title">One binary, on your machines</h2>
-      <p>tokenless is a single binary with the console built in, for Linux and macOS. <code>serve</code> runs the control plane with SQLite and the web console, and <code>node run</code> runs a proxy next to your agents. Everything sensitive in <code>broker.db</code> is encrypted with <code>master.key</code>; back them up separately. The <a href="docs/">documentation</a> covers <a href="docs/deploy.html">production deployments</a>, the container image and building from source.</p>
+      <p>tokenless is a single binary with the console built in, for Linux and macOS. <code>serve</code> runs the control plane with SQLite and the web console, and <code>node run</code> runs a proxy next to your agents. Everything sensitive in <code>broker.db</code> is encrypted under a root key you keep outside it. The <a href="docs/">documentation</a> covers <a href="docs/deploy.html">production deployments</a>, the container image and building from source.</p>
     </div>
 
     <div class="exhibit">

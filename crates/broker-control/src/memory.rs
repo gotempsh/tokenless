@@ -25,7 +25,10 @@ use crate::model::{
     PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
     VaultDeletion,
 };
-use crate::store::{AuditSink, CredentialStore, IdentityStore, NodeStore, PolicyStore};
+use crate::store::{
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    StoredCiphertext,
+};
 
 #[derive(Default)]
 struct Inner {
@@ -1209,6 +1212,89 @@ impl NodeStore for MemoryStore {
             .entry(name.to_string())
             .or_insert(value)
             .clone())
+    }
+
+    async fn replace_key_material(
+        &self,
+        name: &str,
+        value: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let slot = inner
+            .key_material
+            .get_mut(name)
+            .ok_or_else(|| StoreError::not_found("key material", name))?;
+        *slot = value;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn list_ciphertexts(&self) -> Result<Vec<StoredCiphertext>, StoreError> {
+        let inner = self.lock()?;
+        let mut out = Vec::new();
+        for (meta, secret) in inner.credentials.values() {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::Credential {
+                    id: meta.id,
+                    vault_id: meta.vault_id,
+                },
+                ciphertext: secret.clone(),
+            });
+        }
+        for (variable, value) in inner.variables.values() {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::Variable { id: variable.id },
+                ciphertext: value.clone(),
+            });
+        }
+        for user in inner.users.values() {
+            if let Some(secret) = &user.totp_secret_enc {
+                out.push(StoredCiphertext {
+                    owner: CiphertextOwner::UserTotp { id: user.id },
+                    ciphertext: secret.clone(),
+                });
+            }
+        }
+        for (name, value) in &inner.key_material {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::KeyMaterial { name: name.clone() },
+                ciphertext: value.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    async fn replace_ciphertexts(
+        &self,
+        changes: &[(StoredCiphertext, Vec<u8>)],
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
+        let mut inner = self.lock()?;
+        let mut replaced = 0;
+        for (old, new) in changes {
+            let slot = match &old.owner {
+                CiphertextOwner::Credential { id, .. } => {
+                    inner.credentials.get_mut(id).map(|(_, secret)| secret)
+                }
+                CiphertextOwner::Variable { id } => {
+                    inner.variables.get_mut(id).map(|(_, value)| value)
+                }
+                CiphertextOwner::UserTotp { id } => inner
+                    .users
+                    .get_mut(id)
+                    .and_then(|user| user.totp_secret_enc.as_mut()),
+                CiphertextOwner::KeyMaterial { name } => inner.key_material.get_mut(name),
+            };
+            if let Some(slot) = slot {
+                if *slot == old.ciphertext {
+                    *slot = new.clone();
+                    replaced += 1;
+                }
+            }
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(replaced)
     }
 
     async fn next_snapshot_version(&self) -> Result<u64, StoreError> {

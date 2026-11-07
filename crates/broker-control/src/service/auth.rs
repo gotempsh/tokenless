@@ -19,7 +19,7 @@ use tracing::{info, warn};
 use zeroize::Zeroizing;
 
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
-use crate::cipher::SecretCipher;
+use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::model::{ApiKey, Page, PageRequest, UiSession, User};
@@ -198,7 +198,7 @@ pub(super) fn check_new_account<'a>(
     }
 }
 
-pub(super) fn build_user(
+pub(super) async fn build_user(
     cipher: &dyn SecretCipher,
     username: &str,
     password_plain: &str,
@@ -208,7 +208,11 @@ pub(super) fn build_user(
     let id = UserId::new();
     let (totp_secret_enc, totp_last_step) = match totp {
         Some(t) => (
-            Some(cipher.encrypt(t.secret.as_bytes(), &totp_aad(&id))?),
+            Some(
+                cipher
+                    .encrypt(KeyScope::Instance, t.secret.as_bytes(), &totp_aad(&id))
+                    .await?,
+            ),
             Some(t.step),
         ),
         None => (None, None),
@@ -294,7 +298,7 @@ pub struct AuthService {
     dummy_hash: String,
 }
 
-pub(super) fn totp_aad(user_id: &UserId) -> Vec<u8> {
+pub(crate) fn totp_aad(user_id: &UserId) -> Vec<u8> {
     format!("user-totp|{user_id}").into_bytes()
 }
 
@@ -344,7 +348,8 @@ impl AuthService {
             &password,
             None,
             Role::Admin,
-        )?;
+        )
+        .await?;
         let id = user.id;
         let event = AuditEvent::new("system", "auth.setup", AuditOutcome::Success)
             .target(format!("user:{id}"))
@@ -477,7 +482,8 @@ impl AuthService {
             })?;
         let secret_enc = self
             .cipher
-            .encrypt(secret.as_bytes(), &totp_aad(&user.id))?;
+            .encrypt(KeyScope::Instance, secret.as_bytes(), &totp_aad(&user.id))
+            .await?;
         let event = AuditEvent::new(
             auth.caller.actor(),
             "auth.totp_enable",
@@ -540,7 +546,7 @@ impl AuthService {
         let Some(secret_enc) = &user.totp_secret_enc else {
             return Ok(false);
         };
-        let secret = self.cipher.decrypt(secret_enc, &totp_aad(&user.id))?;
+        let secret = self.cipher.decrypt(secret_enc, &totp_aad(&user.id)).await?;
         let secret = std::str::from_utf8(&secret)
             .map_err(|e| ControlError::crypto("totp.decode", format!("user {}: {e}", user.id)))?;
         match totp::verify_code(

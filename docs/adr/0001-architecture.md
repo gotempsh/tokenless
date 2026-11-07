@@ -39,7 +39,7 @@ depends on Temps.
 | `broker-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
 | `broker-conformance` | Behavioural test suites any trait implementation must pass | none |
 | `broker-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
-| `broker-server` | axum binary: management API, node API, SQLite store, master key file, CLI | network, disk |
+| `broker-server` | axum binary: management API, node API, SQLite store, root key, CLI | network, disk |
 | `broker-ui` | Vite/React console | browser |
 
 ### Standalone mode
@@ -56,7 +56,7 @@ flowchart LR
     NAPI["Node API :8443<br/>TLS, mTLS for enrolled nodes"]
     SVC["broker-control services<br/>authz, step-up, audit"]
     DB[("SQLite<br/>secrets AES-256-GCM<br/>key material encrypted")]
-    MK["master.key (0600)"]
+    MK["root key (outside the data dir)"]
     API --> SVC
     NAPI --> SVC
     SVC --> DB
@@ -257,7 +257,11 @@ node protocol and the snapshot format are unchanged.
 
 No API returns a credential's value: there is no read endpoint, and the
 metadata type cannot carry one. Values are encrypted with AES-256-GCM
-under the master key, with AAD bound to the credential and vault ids.
+under the vault's data key, with AAD bound to the credential and vault
+ids. Data keys are wrapped by an instance key stored in the database,
+which is wrapped by a root key the operator supplies (`--root-key-file`
+or `TOKENLESS_ROOT_KEY`) and the database never holds; replacing the
+root key re-wraps one row.
 Rotation replaces the value and returns metadata only. The end-to-end test
 checks every read endpoint and the raw database files for the plaintext.
 
