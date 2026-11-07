@@ -166,9 +166,10 @@ tokenless skill                                  # print it
 ```
 
 The skill ([`skills/tokenless/SKILL.md`](skills/tokenless/SKILL.md))
-tells an agent behind the broker how to see what it can reach, hand tools
-a placeholder instead of a key, and read the proxy's `403`/`407`/`429`
-answers without trying to work around them. It is built into the binary, so
+tells an agent behind the broker how to see what it can reach, what to
+give a tool that insists on a key (a placeholder when the service has one,
+any dummy value when it doesn't), and read the proxy's and the MCP
+gateway's refusals without trying to work around them. It is built into the binary, so
 it always matches the CLI. A copy with local edits is only replaced with
 `--force`.
 

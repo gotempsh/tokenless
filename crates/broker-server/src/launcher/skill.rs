@@ -96,6 +96,17 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_covers_services_without_placeholders() {
+        // Templates create no placeholders, so the common case is a service
+        // with none: the skill must say what to do then, quote the error a
+        // `cb://` reference to it gets, and point at where an admin adds one.
+        assert!(SKILL_MD.contains("lists none (the usual case)"));
+        assert!(SKILL_MD.contains("has no placeholder for"));
+        assert!(SKILL_MD.contains("Services → Placeholders"));
+        assert!(SKILL_MD.contains("## 5. MCP servers through the gateway"));
+    }
+
+    #[test]
     fn install_creates_then_keeps_local_edits_unless_forced() {
         let dir = tempfile::tempdir().unwrap();
         let (path, outcome) = install(dir.path(), false).unwrap();
