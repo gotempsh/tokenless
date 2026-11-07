@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# Known false positives: made-up tokens in tests and a variable name in
+# the service catalogue.
+71a46d3f1ef5aa6aa16ba38bdd11b9128a9e869b:crates/broker-server/tests/root_key.rs:github-pat:27
+762c548cda7b54462ebf31379dbffa7c321980bf:crates/broker-server/tests/cli_setup.rs:github-pat:29
+b42e467f5232978524c0664121b0ba007926a71c:tools/catalog/services.toml:generic-api-key:1529
+crates/broker-server/tests/root_key.rs:github-pat:27
+crates/broker-server/tests/cli_setup.rs:github-pat:29
+tools/catalog/services.toml:generic-api-key:1531
