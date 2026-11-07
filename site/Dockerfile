@@ -24,6 +24,10 @@ COPY docs /book
 RUN mdbook build /book --dest-dir /out/docs
 
 FROM caddy:2.10-alpine
+# The image grants caddy a file capability to bind ports below 1024. Port
+# 8080 needs none, and a host that starts containers with no-new-privileges
+# refuses to run a binary that carries one.
+RUN apk add --no-cache libcap && setcap -r /usr/bin/caddy && apk del libcap
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY index.html styles.css favicon.svg install.sh /srv/
 COPY fonts /srv/fonts
