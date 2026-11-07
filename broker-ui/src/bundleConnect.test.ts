@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import type { CredentialMeta, Substitution } from "./api";
-import { envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "./bundleConnect";
+import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "./bundleConnect";
 
 const at = "2026-01-01T00:00:00Z";
 
@@ -62,5 +63,14 @@ describe("bundle connect commands", () => {
       "tokenless exec --bundle code-review \\\n  GITHUB_TOKEN='cb://Work GitHub/token' \\\n  -- ./script.sh",
     );
     expect(envFile(refs)).toBe('# References, not secrets: safe to commit.\nGITHUB_TOKEN="cb://Work GitHub/token"\n');
+  });
+});
+
+describe("AGENTS", () => {
+  test("every named agent shows its maker's logo, and it is bundled", () => {
+    for (const a of AGENTS.filter((a) => a.id !== "other")) {
+      expect(a.logo).toBeDefined();
+      expect(existsSync(new URL(`./assets/logos/${a.logo}.svg`, import.meta.url))).toBe(true);
+    }
   });
 });

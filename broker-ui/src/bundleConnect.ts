@@ -47,11 +47,13 @@ export interface AgentChoice {
   id: string;
   label: string;
   command: string;
+  /** Its maker's logo among the bundled service logos; none for "another command". */
+  logo?: string;
 }
 
 export const AGENTS: AgentChoice[] = [
-  { id: "claude", label: "Claude Code", command: "claude" },
-  { id: "codex", label: "Codex", command: "codex" },
+  { id: "claude", label: "Claude Code", command: "claude", logo: "anthropic" },
+  { id: "codex", label: "Codex", command: "codex", logo: "openai" },
   { id: "other", label: "Another command", command: "<agent-command>" },
 ];
 

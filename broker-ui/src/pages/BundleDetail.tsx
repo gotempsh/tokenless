@@ -7,12 +7,15 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   Ban,
+  Bot,
   Boxes,
+  Braces,
   ExternalLink,
   ListPlus,
   Pencil,
   Plus,
   ScrollText,
+  SquareTerminal,
   Terminal,
   Timer,
   Trash2,
@@ -65,7 +68,7 @@ import {
   When,
 } from "../components/common";
 import { cn } from "../lib/utils";
-import { ServiceLogo } from "../components/ServiceLogo";
+import { LogoTile, ServiceLogo } from "../components/ServiceLogo";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -911,8 +914,18 @@ function McpConnect({
                     onChange={setClient}
                     columns={2}
                     choices={[
-                      { value: "claude", title: "Claude Code", description: <Mono>claude mcp add</Mono> },
-                      { value: "json", title: "Another client", description: "An mcpServers JSON block" },
+                      {
+                        value: "claude",
+                        title: "Claude Code",
+                        description: <Mono>claude mcp add</Mono>,
+                        icon: <LogoTile logo="anthropic" fallback={Bot} />,
+                      },
+                      {
+                        value: "json",
+                        title: "Another client",
+                        description: "An mcpServers JSON block",
+                        icon: <LogoTile logo={undefined} fallback={Braces} />,
+                      },
                     ]}
                   />
                   {client === "claude" ? (
@@ -990,6 +1003,7 @@ function Connect({
                 value: a.id,
                 title: a.label,
                 description: a.id === "other" ? "Any program that honours HTTPS_PROXY" : <Mono>{a.command}</Mono>,
+                icon: <LogoTile logo={a.logo} fallback={SquareTerminal} />,
               }))}
             />
             <CommandSnippet command={runAgentCommand(bundle.name, command, vaultName)} />

@@ -44,9 +44,34 @@ export function ServiceLogo({
   size?: keyof typeof SIZES;
   className?: string;
 }) {
+  return (
+    <LogoTile
+      logo={template ? (template.logo ?? template.id) : undefined}
+      fallback={template?.kind === "mcp" ? Bot : Blocks}
+      size={size}
+      className={className}
+    />
+  );
+}
+
+/**
+ * A bundled logo by key (`anthropic`, `openai`, ...) on the same tile as
+ * service logos, or `fallback` when there is none: for things that are not
+ * services, such as the agents a bundle can start.
+ */
+export function LogoTile({
+  logo: key,
+  fallback: Fallback,
+  size = "md",
+  className,
+}: {
+  logo: string | undefined;
+  fallback: LucideIcon;
+  size?: keyof typeof SIZES;
+  className?: string;
+}) {
   const s = SIZES[size];
-  const logo = template ? LOGOS.get(template.logo ?? template.id) : undefined;
-  const Fallback: LucideIcon = template?.kind === "mcp" ? Bot : Blocks;
+  const logo = key ? LOGOS.get(key) : undefined;
   return (
     <span
       className={cn("flex shrink-0 items-center justify-center border bg-background", s.tile, className)}

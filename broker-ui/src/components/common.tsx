@@ -382,6 +382,8 @@ export interface Choice<T extends string> {
   value: T;
   title: string;
   description: ReactNode;
+  /** A logo or mark before the title, when the choice is a product. */
+  icon?: ReactNode;
 }
 
 /**
@@ -421,7 +423,8 @@ export function ChoiceCards<T extends string>({
               value === c.value && "border-foreground/40 bg-accent/40",
             )}
           >
-            <RadioGroupItem id={id} value={c.value} className="mt-0.5" />
+            <RadioGroupItem id={id} value={c.value} className={c.icon ? "mt-3" : "mt-0.5"} />
+            {c.icon}
             <span className="space-y-1">
               <span className="block text-sm font-medium">{c.title}</span>
               <span className="block text-xs leading-relaxed text-muted-foreground">{c.description}</span>
