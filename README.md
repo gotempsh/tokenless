@@ -129,6 +129,9 @@ token anywhere in its environment. Sessions are capped at an hour unless
 an admin raises it (**Settings → Session lifetime**, up to 7 days), so the
 port renews the session before it expires. When the agent exits, every
 session the run minted is ended and `run` exits with the agent's code.
+`run` prints nothing of its own, so what you read is only the agent's
+output; add `-v` to see the session, the session port and the proxy it
+used.
 The agent never inherits `TOKENLESS_API_KEY` or
 `TOKENLESS_SESSION_TOKEN` from your shell.
 

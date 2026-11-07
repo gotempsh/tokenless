@@ -28,14 +28,22 @@ use broker_server::launcher::trust::{
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
+use messages::{detail, say};
 use serde::Serialize;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
+mod messages;
+
 #[derive(Parser)]
 #[command(name = "tokenless", version, about = "Credential broker for AI agents")]
 struct Cli {
+    /// Also say what tokenless itself does (sessions, ports, proxy) on
+    /// standard error. Without it `run`, `session` and `mcp` print nothing of
+    /// their own when they succeed, so their output is only the command's.
+    #[arg(short, long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -639,41 +647,38 @@ async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
         }
     };
     let stored = SessionStore::system().store(&session)?;
-    eprintln!(
-        "tokenless: signed in to {} as {} until {}.",
-        session.server,
-        session.username,
-        session.expires_at.format("%Y-%m-%d %H:%M UTC")
-    );
-    match stored {
-        Stored::Keychain => eprintln!("tokenless: the session is kept in the OS keychain."),
-        Stored::File { path, reason } => eprintln!(
-            "tokenless: the OS keychain is not available here ({reason}), so the session is in {}, readable only by you. tokenless logout removes it.",
-            path.display()
-        ),
-    }
+    let until = session.expires_at.format("%Y-%m-%d %H:%M UTC").to_string();
+    let file = match &stored {
+        Stored::Keychain => None,
+        Stored::File { path, reason } => Some((path.display().to_string(), reason.to_string())),
+    };
+    say(messages::signed_in(
+        &session.server,
+        &session.username,
+        &until,
+        file.as_ref().map(|(p, r)| (p.as_str(), r.as_str())),
+    ));
     Ok(ExitCode::SUCCESS)
 }
 
 async fn logout(server: String) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let store = SessionStore::system();
-    if let Ok(client) = ConsoleClient::open(&store, &server, &prompter) {
-        // Ending it on the server is best effort; the keychain entry goes
-        // either way.
-        if let Err(e) = client.logout().await {
-            tracing::warn!(error = %e, "could not end the session on the server");
-        }
+    // Ending it on the server is best effort; the keychain entry goes
+    // either way.
+    let ended = match ConsoleClient::open(&store, &server, &prompter) {
+        Ok(client) => client.logout().await.err(),
+        Err(_) => None,
+    };
+    let server = server.trim().trim_end_matches('/');
+    let removed = store.delete(server)?;
+    match (removed, ended) {
+        (false, _) => say(format_args!("not signed in to {server}")),
+        (true, None) => say("signed out"),
+        (true, Some(e)) => say(format_args!(
+            "signed out here, but {server} could not end the session, which stays valid until it expires: {e}"
+        )),
     }
-    let removed = store.delete(server.trim().trim_end_matches('/'))?;
-    eprintln!(
-        "tokenless: {}",
-        if removed {
-            "signed out"
-        } else {
-            "was not signed in"
-        }
-    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -743,11 +748,12 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             let prompter = TerminalPrompter;
             let client = ConsoleClient::open(&SessionStore::system(), &server, &prompter)?;
             let template = account::pick_template(client.templates().await?, &template)?;
-            eprintln!(
-                "tokenless: adding {} to vault '{}'. The credential is stored encrypted and can't be read back.",
-                template.template.name,
-                vault.trim()
-            );
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                say(messages::service_prompt(
+                    &template.template.name,
+                    vault.trim(),
+                ));
+            }
             let fields = read_fields(&template, &prompter)?;
             let plan = AddService {
                 template_id: template.template.id.clone(),
@@ -757,29 +763,16 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
                 read_only,
             };
             let added = client.add_service(&plan, &template, fields).await?;
-            eprintln!(
-                "tokenless: added service '{}' to vault '{}'{}",
-                added.credential.name,
-                added.vault.name,
-                if added.vault_created {
-                    " (new vault)"
-                } else {
-                    ""
-                }
-            );
-            match &added.bundle {
-                Some((bundle, created)) => eprintln!(
-                    "tokenless: {} bundle '{}'. Run an agent with: tokenless run --vault {} --bundle {} -- <command>",
-                    if *created { "created access" } else { "added it to access" },
-                    bundle.name,
-                    added.vault.name,
-                    bundle.name
-                ),
-                None => eprintln!(
-                    "tokenless: it is in no access bundle yet; pass --bundle, or add rule '{}' to one in the console",
-                    added.rule.name
-                ),
-            }
+            say(messages::added_service(&messages::AddedService {
+                service: &added.credential.name,
+                vault: &added.vault.name,
+                vault_created: added.vault_created,
+                bundle: added
+                    .bundle
+                    .as_ref()
+                    .map(|(b, created)| (b.name.as_str(), *created)),
+                rule: &added.rule.name,
+            }));
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -802,15 +795,7 @@ async fn proxy(command: ProxyCommand) -> Result<ExitCode, CliError> {
             let join = client.create_join_token().await?;
             let identity = enroll(&control_url, &join.token, &name).await?;
             identity.save(&state)?;
-            eprintln!(
-                "tokenless: enrolled proxy '{name}' ({}); its identity is in {}",
-                identity.node_id,
-                state.display()
-            );
-            eprintln!(
-                "tokenless: start it with: tokenless node run --state {}",
-                state.display()
-            );
+            say(messages::enrolled(&name, &state.display().to_string()));
             Ok(ExitCode::SUCCESS)
         }
     }
@@ -881,6 +866,7 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
             let identity = enroll(&control_url, &token, &name).await?;
             identity.save(&state)?;
             info!(node_id = %identity.node_id, state = %state.display(), "node enrolled");
+            say(messages::enrolled(&name, &state.display().to_string()));
             Ok(())
         }
         NodeCommand::Run {
@@ -997,7 +983,7 @@ async fn prepare_trust(
     }
     let files = write_trust_files(dir, &pem, port.trust_base.as_deref())?;
     if files.base.is_none() {
-        eprintln!("tokenless: no system root bundle found, so HTTPS to hosts outside the bundle may fail; pass --trust-base <roots.pem>");
+        say("no system root bundle found, so HTTPS to hosts outside the bundle may fail; pass --trust-base <roots.pem>");
     }
     Ok((files, actual))
 }
@@ -1039,7 +1025,7 @@ struct CreatedSession<'a> {
     session: &'a broker_control::model::ProxySession,
 }
 
-async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
+async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, CliError> {
     match command {
         SessionCommand::Create { mint, json } => {
             let client = client(&mint.broker)?;
@@ -1055,11 +1041,13 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
             } else {
                 println!("{}", minted.token);
             }
-            eprintln!(
-                "tokenless: session {} expires at {}",
-                minted.session.id,
-                minted.session.expires_at.to_rfc3339()
-            );
+            detail(verbose, || {
+                format!(
+                    "session {} expires at {}",
+                    minted.session.id,
+                    minted.session.expires_at.to_rfc3339()
+                )
+            });
             Ok(ExitCode::SUCCESS)
         }
         SessionCommand::Info { broker, json } => {
@@ -1097,7 +1085,7 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
                     client.revoke_self(&token).await?
                 }
             };
-            eprintln!("tokenless: session {} ended", session.id);
+            detail(verbose, || format!("session {} ended", session.id));
             Ok(ExitCode::SUCCESS)
         }
         SessionCommand::Start {
@@ -1140,26 +1128,30 @@ async fn session(command: SessionCommand) -> Result<ExitCode, CliError> {
                 }
             }
             let current = live.current.load();
-            eprintln!(
-                "tokenless: session port {} relays to the proxy at {} with bundle '{}' (session {}, renewed before {}). Interception CA {ca}.",
-                session_port.addr,
-                port.proxy,
+            detail(verbose, || {
+                format!(
+                    "session port {} relays to the proxy at {} (session {}, renewed before {}). Interception CA {ca}",
+                    session_port.addr,
+                    port.proxy,
+                    current.id,
+                    current.expires_at.to_rfc3339()
+                )
+            });
+            // The one line a person needs: what the exports are for and how
+            // it ends. The exports themselves go to standard output.
+            say(format_args!(
+                "session port open for bundle '{}'; point agents at it with these exports{}. Ctrl-C ends it",
                 mint.bundle,
-                current.id,
-                current.expires_at.to_rfc3339()
-            );
-            eprintln!(
-                "tokenless: point agents at it with these exports{}; Ctrl-C ends the session.",
                 env_file
                     .as_ref()
                     .map(|p| format!(" (also in {})", p.display()))
                     .unwrap_or_default()
-            );
+            ));
             print!("{exports}");
             let signal = stop_signal().await?;
             session_port.stop();
             let ended = live.end().await;
-            eprintln!("tokenless: {signal}, ended {ended} session(s)");
+            detail(verbose, || format!("{signal}, ended {ended} session(s)"));
             if let Some(path) = &env_file {
                 let _ = std::fs::remove_file(path);
             }
@@ -1237,13 +1229,15 @@ async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
             println!("{out}");
         }
     }
-    eprintln!(
-        "tokenless: session {} for bundle '{}' lasts until {}. The token above is what the client stores, never the services' credentials; end the session on the Sessions page or with `tokenless session revoke --id {}` to cut the client off. The proxy node must be running with its MCP gateway at {gateway}.",
-        minted.session.id,
-        args.bundle,
-        minted.session.expires_at.to_rfc3339(),
-        minted.session.id,
-    );
+    say(messages::mcp_token(
+        &minted
+            .session
+            .expires_at
+            .format("%Y-%m-%d %H:%M UTC")
+            .to_string(),
+        &minted.session.id.to_string(),
+        &gateway,
+    ));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1355,7 +1349,7 @@ fn read_assignments(args: &RunArgs) -> Result<Vec<Assignment>, CliError> {
     Ok(all)
 }
 
-async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
+async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     let assignments = read_assignments(&args)?;
     let program = args.command[0].clone();
     let name = std::path::Path::new(&program)
@@ -1401,13 +1395,15 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
         .chain(requested)
         .chain(trust_env)
         .collect();
-    {
-        let current = live.current.load();
-        eprintln!(
-            "tokenless: running '{name}' with bundle '{}' (session {}) through {} -> {}",
-            args.mint.bundle, current.id, session_port.addr, args.port.proxy
-        );
-    }
+    detail(verbose, || {
+        format!(
+            "running '{name}' with bundle '{}' (session {}) through {} -> {}",
+            args.mint.bundle,
+            live.current.load().id,
+            session_port.addr,
+            args.port.proxy
+        )
+    });
     let spawned = inject::agent_command(&program, &args.command[1..], &env).spawn();
     let mut child = match spawned {
         Ok(c) => c,
@@ -1444,7 +1440,11 @@ async fn run(args: RunArgs) -> Result<ExitCode, CliError> {
         context: format!("waiting for '{program}'"),
         source: e,
     })?;
-    eprintln!("tokenless: '{name}' exited ({status}); ended {ended} session(s)");
+    // Silent otherwise: the command's own output and exit code are the
+    // result, and anything added here would end up in what reads them.
+    detail(verbose, || {
+        format!("'{name}' exited ({status}); ended {ended} session(s)")
+    });
     Ok(exit_code(status))
 }
 
@@ -1463,7 +1463,7 @@ fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<Exi
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
     };
-    eprintln!("tokenless: skill {what} at {}", path.display());
+    say(format_args!("skill {what} at {}", path.display()));
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1491,8 +1491,8 @@ async fn main() -> ExitCode {
         Command::Logout { server } => logout(server).await,
         Command::Service { command } => service(command).await,
         Command::Proxy { command } => proxy(command).await,
-        Command::Session { command } => session(command).await,
-        Command::Run(args) => run(args).await,
+        Command::Session { command } => session(command, cli.verbose).await,
+        Command::Run(args) => run(args, cli.verbose).await,
         Command::Mcp(args) => mcp_command(args).await,
         Command::Skill {
             install,
