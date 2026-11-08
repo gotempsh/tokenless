@@ -90,7 +90,7 @@ piped in on standard input.
 | `--api-key-file` | `TOKENLESS_API_KEY` (the key itself) | |
 | `--vault` | `TOKENLESS_VAULT` | the API key's vault |
 | `--bundle` | `TOKENLESS_BUNDLE` | |
-| `--session-token-file` (`run`, `exec`, `session start`) | `TOKENLESS_SESSION_TOKEN` (the token itself) | used when no bundle is given |
+| `--session-token-file` (`run`, `exec`, `session start`, `session revoke`) | `TOKENLESS_SESSION_TOKEN` (the token itself) | used when no bundle is given |
 | `--name` (when minting) | | the session's name on the Sessions page |
 | `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
 

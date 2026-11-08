@@ -217,18 +217,111 @@ pub fn check_listen(listen: SocketAddr) -> Result<(), LauncherError> {
     )))
 }
 
-/// Checks a proxy is listening at `address` before a session is minted
-/// for it, so a proxy that isn't running is reported up front instead of
-/// as every request the agent makes failing to connect.
+/// How long the proxy check waits for a connection and an answer.
+const PROXY_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What the proxy check sends: a `CONNECT` without a session. A tokenless
+/// proxy answers it with 407, or with 503 while it has no policy, without
+/// opening anything or writing to the audit log.
+const PROXY_PROBE: &[u8] =
+    b"CONNECT tokenless-proxy-check.invalid:443 HTTP/1.1\r\nHost: tokenless-proxy-check.invalid:443\r\n\r\n";
+
+/// Checks a tokenless proxy answers at `address` before a session is
+/// minted for it, so a proxy that isn't running is reported up front
+/// instead of as every request the agent makes failing to connect. An open
+/// port is not enough: a tailnet route, a load balancer or a port forward
+/// accepts connections with nothing behind it, so the check asks the proxy
+/// something and waits for its answer.
 pub async fn check_proxy(address: &str) -> Result<(), LauncherError> {
+    check_proxy_within(address, PROXY_CHECK_TIMEOUT).await
+}
+
+async fn check_proxy_within(address: &str, timeout: Duration) -> Result<(), LauncherError> {
     let unreachable = |reason: String| LauncherError::ProxyUnreachable {
         address: address.to_string(),
         reason,
     };
-    match tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(address)).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => Err(unreachable(e.to_string())),
-        Err(_) => Err(unreachable("connecting timed out after 3 s".into())),
+    let secs = timeout.as_secs_f32();
+    let mut stream = match tokio::time::timeout(timeout, TcpStream::connect(address)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => return Err(unreachable(e.to_string())),
+        Err(_) => return Err(unreachable(format!("connecting timed out after {secs} s"))),
+    };
+    let answer = match tokio::time::timeout(timeout, probe(&mut stream)).await {
+        Ok(Ok(answer)) => answer,
+        Ok(Err(e)) => {
+            return Err(unreachable(format!(
+                "the connection was accepted, then failed without an answer ({e}): something forwards this address, but no tokenless proxy is behind it"
+            )))
+        }
+        Err(_) => {
+            return Err(unreachable(format!(
+                "the connection was accepted, but nothing answered within {secs} s"
+            )))
+        }
+    };
+    proxy_answer(address, &answer)
+}
+
+/// Sends the probe and reads the answer's head (and the start of its body).
+async fn probe(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    stream.write_all(PROXY_PROBE).await?;
+    let mut answer = Vec::with_capacity(512);
+    let mut buf = [0u8; 512];
+    loop {
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            if answer.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "closed by the other end",
+                ));
+            }
+            return Ok(answer);
+        }
+        answer.extend_from_slice(&buf[..n]);
+        // Not HTTP at all: no need to wait for more.
+        if answer.len() >= 5 && !answer.starts_with(b"HTTP/") {
+            return Ok(answer);
+        }
+        // The head is enough, except for a 503, whose first body line says
+        // why the proxy refuses.
+        if let Some(end) = head_end(&answer) {
+            if answer.get(9..12) != Some(b"503".as_slice()) || answer.len() > end {
+                return Ok(answer);
+            }
+        }
+        if answer.len() >= 1024 {
+            return Ok(answer);
+        }
+    }
+}
+
+/// Reads what answered the probe: a tokenless proxy, one that refuses all
+/// traffic, or something that isn't a proxy.
+fn proxy_answer(address: &str, answer: &[u8]) -> Result<(), LauncherError> {
+    let text = String::from_utf8_lossy(answer);
+    let status = text
+        .strip_prefix("HTTP/1.")
+        .and_then(|rest| rest.get(2..5))
+        .and_then(|code| code.parse::<u16>().ok());
+    match status {
+        Some(503) => {
+            let reason = text
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.lines().next().unwrap_or_default().trim())
+                .filter(|line| !line.is_empty())
+                .unwrap_or("503 Service Unavailable");
+            Err(LauncherError::ProxyRefusing {
+                address: address.to_string(),
+                reason: reason.to_string(),
+            })
+        }
+        Some(_) => Ok(()),
+        None => Err(LauncherError::ProxyUnreachable {
+            address: address.to_string(),
+            reason: "something answered, but not an HTTP proxy".into(),
+        }),
     }
 }
 
@@ -302,12 +395,87 @@ impl Drop for SessionPort {
 mod tests {
     use super::*;
 
+    /// A listener that answers every connection with `reply` (after reading
+    /// the probe) and keeps it open, as a proxy does; or closes it at once
+    /// when `reply` is `None`.
+    async fn fake_proxy(reply: Option<&'static [u8]>) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let task = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((mut stream, _)) = listener.accept().await {
+                if let Some(reply) = reply {
+                    let mut buf = [0u8; 512];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream.write_all(reply).await;
+                    open.push(stream);
+                }
+            }
+        });
+        (addr, task)
+    }
+
+    #[tokio::test]
+    async fn a_proxy_that_answers_is_accepted() {
+        let (up, task) = fake_proxy(Some(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\ncontent-length: 0\r\n\r\n",
+        ))
+        .await;
+        check_proxy(&up).await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn an_open_port_with_no_proxy_behind_it_is_reported() {
+        // What a tailnet route or port forward does when nothing listens
+        // behind it: accept, then close.
+        let (up, task) = fake_proxy(None).await;
+        let shown = check_proxy(&up).await.unwrap_err().to_string();
+        assert!(
+            shown.contains(&up) && shown.contains("no tokenless proxy is behind it"),
+            "{shown}"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_listener_that_never_answers_is_reported() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = listener.local_addr().unwrap().to_string();
+        let shown = check_proxy_within(&up, Duration::from_millis(200))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(shown.contains("nothing answered within 0.2 s"), "{shown}");
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn a_proxy_without_policy_says_why_it_refuses() {
+        let (up, task) = fake_proxy(Some(
+            b"HTTP/1.1 503 Service Unavailable\r\ncontent-length: 61\r\n\r\ndata plane has no policy snapshot yet; refusing all traffic\n",
+        ))
+        .await;
+        let shown = check_proxy(&up).await.unwrap_err().to_string();
+        assert!(
+            shown.contains("refuses all traffic: data plane has no policy snapshot yet"),
+            "{shown}"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn something_that_is_not_a_proxy_is_reported() {
+        let (up, task) = fake_proxy(Some(b"SSH-2.0-OpenSSH_9.0\r\n")).await;
+        let shown = check_proxy(&up).await.unwrap_err().to_string();
+        assert!(shown.contains("not an HTTP proxy"), "{shown}");
+        task.abort();
+    }
+
     #[tokio::test]
     async fn a_proxy_that_is_not_running_is_reported_before_minting() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let up = listener.local_addr().unwrap().to_string();
-        check_proxy(&up).await.unwrap();
-
         drop(listener);
         let err = check_proxy(&up).await.unwrap_err();
         assert!(matches!(err, LauncherError::ProxyUnreachable { .. }));

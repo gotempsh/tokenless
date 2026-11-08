@@ -285,6 +285,10 @@ enum SessionCommand {
         broker: BrokerArgs,
         #[arg(long)]
         id: Option<String>,
+        /// File holding the token of the session to end, instead of
+        /// TOKENLESS_SESSION_TOKEN.
+        #[arg(long, conflicts_with = "id")]
+        session_token_file: Option<PathBuf>,
     },
     /// Show what a session can reach and which placeholders it accepts.
     /// Inside `run` or behind `session start` it asks the session port
@@ -1040,11 +1044,7 @@ fn given_session(
     from_env: Option<Zeroizing<String>>,
 ) -> Result<Option<Zeroizing<String>>, CliError> {
     let token = if let Some(path) = &given.session_token_file {
-        let token = std::fs::read_to_string(path).map_err(|e| CliError::Io {
-            context: format!("reading the session token file {}", path.display()),
-            source: e,
-        })?;
-        Zeroizing::new(token.trim().to_string())
+        read_token_file(path)?
     } else {
         let Some(token) = from_env else {
             return Ok(None);
@@ -1074,6 +1074,14 @@ fn given_session(
         .into());
     }
     Ok(Some(token))
+}
+
+fn read_token_file(path: &std::path::Path) -> Result<Zeroizing<String>, CliError> {
+    let token = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| CliError::Io {
+        context: format!("reading the session token file {}", path.display()),
+        source: e,
+    })?);
+    Ok(Zeroizing::new(token.trim().to_string()))
 }
 
 /// The session behind a session port: the one handed over, or a new one
@@ -1208,13 +1216,23 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             }
             Ok(ExitCode::SUCCESS)
         }
-        SessionCommand::Revoke { broker, id } => {
-            let client = client(&broker)?;
+        SessionCommand::Revoke {
+            broker,
+            id,
+            session_token_file,
+        } => {
             let session = match id {
-                Some(id) => client.revoke_by_id(&id).await?,
+                Some(id) => client(&broker)?.revoke_by_id(&id).await?,
                 None => {
-                    let token = session_token_from_env()?;
-                    client.revoke_self(&token).await?
+                    // A session ends itself with its own token, so no
+                    // sign-in is read (and no keychain is opened).
+                    let token = match &session_token_file {
+                        Some(path) => read_token_file(path)?,
+                        None => session_token_from_env()?,
+                    };
+                    ApiClient::new(&broker.server, None)?
+                        .revoke_self(&token)
+                        .await?
                 }
             };
             detail(verbose, || format!("session {} ended", session.id));
@@ -1717,6 +1735,16 @@ mod tests {
             launcher_client(&args.mint.broker, false, &vault).unwrap();
             assert_eq!(vault.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
+    }
+
+    #[test]
+    fn a_session_ends_itself_from_a_token_file_or_by_id_never_both() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(["tokenless", "session", "revoke"].iter().chain(args)).map(|_| ())
+        };
+        assert!(parse(&["--session-token-file", "token.txt"]).is_ok());
+        assert!(parse(&["--id", "4729a575-c2bb-4348-a77b-14aae3808e16"]).is_ok());
+        assert!(parse(&["--session-token-file", "token.txt", "--id", "x"]).is_err());
     }
 
     #[test]
