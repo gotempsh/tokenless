@@ -28,6 +28,34 @@ export interface BundlePlan {
   create?: { name: string; description: string };
 }
 
+/**
+ * The bundles a service joins: every chosen one, by id, named from the
+ * vault's bundles when they have loaded. A chosen bundle the list does not
+ * show (still loading, failed to load, or past its first page) still joins.
+ */
+export function bundlesToJoin(
+  chosen: readonly string[],
+  loaded: readonly AccessBundle[] | undefined,
+): BundlePlan["join"] {
+  return chosen.map((id) => ({ id, name: loaded?.find((b) => b.id === id)?.name ?? "the access bundle" }));
+}
+
+/**
+ * What is wrong with the name of a bundle to create, if anything. Until the
+ * vault's bundles have loaded (`loaded` undefined) a name cannot be checked
+ * against them, so it waits.
+ */
+export function newBundleProblem(name: string, loaded: readonly AccessBundle[] | undefined): string | null {
+  const trimmed = name.trim();
+  if (trimmed === "") return "Name the new access bundle first.";
+  if (!BUNDLE_NAME.test(trimmed)) return "Fix the bundle name first.";
+  if (loaded === undefined) return "The vault's access bundles haven't loaded, so the new name can't be checked yet.";
+  if (loaded.some((b) => b.name === trimmed)) return `Check ${trimmed} above instead of creating it again.`;
+  return null;
+}
+
+export const BUNDLE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 /** How much of the template's scope the new rule allows. */
 export type AccessPreset = "full" | "read_only";
 

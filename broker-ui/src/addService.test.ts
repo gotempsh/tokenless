@@ -5,6 +5,8 @@ import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
 import {
   sessionsWithout,
+  bundlesToJoin,
+  newBundleProblem,
   addService,
   freeName,
   nameTaken,
@@ -322,5 +324,26 @@ describe("service names", () => {
     expect(freeName("GitHub", [])).toBe("GitHub");
     expect(freeName("GitHub", ["GitHub"])).toBe("GitHub 2");
     expect(freeName("GitHub", ["GitHub", "GitHub 2", "GitHub1"])).toBe("GitHub 3");
+  });
+});
+
+describe("bundles a service joins", () => {
+  const b = (id: string, name: string) => ({ id, name }) as AccessBundle;
+
+  test("a chosen bundle joins even when the vault's list hasn't loaded or doesn't show it", () => {
+    expect(bundlesToJoin(["b1"], undefined)).toEqual([{ id: "b1", name: "the access bundle" }]);
+    expect(bundlesToJoin(["b1", "b2"], [b("b2", "triage")])).toEqual([
+      { id: "b1", name: "the access bundle" },
+      { id: "b2", name: "triage" },
+    ]);
+    expect(bundlesToJoin([], [b("b2", "triage")])).toEqual([]);
+  });
+
+  test("a new bundle's name waits for the list it must not repeat", () => {
+    expect(newBundleProblem("triage", undefined)).toContain("haven't loaded");
+    expect(newBundleProblem("triage", [b("b2", "triage")])).toBe("Check triage above instead of creating it again.");
+    expect(newBundleProblem(" review ", [b("b2", "triage")])).toBeNull();
+    expect(newBundleProblem("", [])).toBe("Name the new access bundle first.");
+    expect(newBundleProblem("no spaces", [])).toBe("Fix the bundle name first.");
   });
 });

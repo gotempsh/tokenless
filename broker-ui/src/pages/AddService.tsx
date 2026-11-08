@@ -26,6 +26,9 @@ import {
   addService,
   AddServiceError,
   addServiceHref,
+  BUNDLE_NAME,
+  bundlesToJoin,
+  newBundleProblem,
   READ_ONLY_METHODS,
   sessionsWithout,
   type AccessPreset,
@@ -60,7 +63,6 @@ import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 
 const NEW_VAULT = "__new__";
-const BUNDLE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const liveApi: AddServiceApi = {
   createVault: (name) => post<Vault>("/vaults", { name }),
@@ -95,16 +97,11 @@ function initialWhere(ctx: AddServiceContext): Where {
 }
 
 /** What still has to be chosen before the service can be added, if anything. */
-function whereProblem(where: Where, bundles: readonly AccessBundle[]): string | null {
+/** `bundles` is undefined until the chosen vault's bundles have loaded. */
+function whereProblem(where: Where, bundles: readonly AccessBundle[] | undefined): string | null {
   if (where.vaultId === "") return "Choose a vault first.";
   if (where.vaultId === NEW_VAULT && where.newVaultName.trim() === "") return "Name the new vault first.";
-  if (where.newBundle) {
-    const name = where.newBundleName.trim();
-    if (name === "") return "Name the new access bundle first.";
-    if (!BUNDLE_NAME.test(name)) return "Fix the bundle name first.";
-    if (bundles.some((b) => b.name === name)) return `Check ${name} above instead of creating it again.`;
-  }
-  return null;
+  return where.newBundle ? newBundleProblem(where.newBundleName, bundles) : null;
 }
 
 /** A compact choice between a few options, as a row of toggle buttons. */
@@ -141,7 +138,11 @@ function Segmented<T extends string>({
   );
 }
 
-function planFor(where: Where, bundles: AccessBundle[], credential: CredentialBody): AddServicePlan {
+function planFor(
+  where: Where,
+  bundles: readonly AccessBundle[] | undefined,
+  credential: CredentialBody,
+): AddServicePlan {
   const vault: AddServicePlan["vault"] =
     where.vaultId === NEW_VAULT
       ? { kind: "new", name: where.newVaultName }
@@ -151,7 +152,7 @@ function planFor(where: Where, bundles: AccessBundle[], credential: CredentialBo
     credential,
     access: where.access,
     bundles: {
-      join: bundles.filter((b) => where.bundleIds.includes(b.id)).map((b) => ({ id: b.id, name: b.name })),
+      join: bundlesToJoin(where.bundleIds, bundles),
       create: where.newBundle ? { name: where.newBundleName, description: "" } : undefined,
     },
   };
@@ -261,6 +262,8 @@ function ServicePage({
     [chosenVault],
   );
   const bundleItems = useMemo(() => bundles.data?.items ?? [], [bundles.data]);
+  // The vault's bundles once loaded; a new vault has none.
+  const loadedBundles = where.vaultId === NEW_VAULT ? [] : bundles.data?.items;
   // Names already used in the vault, so the form can suggest a free one
   // instead of failing on save. A service this page already saved (before
   // a later step failed) is the user's own, not a clash.
@@ -294,11 +297,11 @@ function ServicePage({
       : vaults.data?.items.find((v) => v.id === where.vaultId)?.name;
   // The bundles the service will join, by name, for the summary and button.
   const bundleNames = [
-    ...bundleItems.filter((b) => where.bundleIds.includes(b.id)).map((b) => ({ name: b.name, isNew: false })),
+    ...bundlesToJoin(where.bundleIds, loadedBundles).map((b) => ({ name: b.name, isNew: false })),
     ...(where.newBundle ? [{ name: where.newBundleName.trim(), isNew: true }] : []),
   ];
   const onlyBundle = bundleNames.length === 1 && bundleNames[0]?.name ? bundleNames[0].name : undefined;
-  const problem = whereProblem(where, bundleItems);
+  const problem = whereProblem(where, loadedBundles);
 
   if (result) {
     return (
@@ -372,7 +375,7 @@ function ServicePage({
                 }}
                 onSubmit={async (body) => {
                   try {
-                    const done = await addService(planFor(where, bundleItems, body), liveApi, progress.current);
+                    const done = await addService(planFor(where, loadedBundles, body), liveApi, progress.current);
                     progress.current = done;
                     return done;
                   } catch (e) {
