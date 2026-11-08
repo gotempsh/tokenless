@@ -85,6 +85,12 @@ could not.
   credentials and rules, managing people, API keys, templates and proxies)
   need a code entered within the last five minutes. Signing in counts.
 - Changing your password ends your other sessions.
+- With [single sign-on](settings.md#single-sign-on), the identity
+  provider handles passwords and second factors, and the person's groups
+  decide their role at every sign-in. A step-up sends them back to the
+  provider with `prompt=login`, and only a sign-in there after the
+  request counts. The provider's client secret is encrypted at rest and
+  never returned by the API. Turning a provider off ends its sessions.
 - The console session cookie is `HttpOnly`, `Secure` and `SameSite=Strict`,
   and every change carries a CSRF token. `tokenless login` keeps its
   session in the OS keychain, or in a file only you can read

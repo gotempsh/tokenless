@@ -15,7 +15,10 @@ tokenless login                 # the admin printed by `tokenless serve`
 ```
 
 It asks for the password, and an authenticator code if the account has
-one. The session is kept in the operating system's keychain (macOS
+one. People who sign in to the console with
+[single sign-on](settings.md#single-sign-on) have no password here; in a
+terminal they use a session token from an access bundle's page, or an API
+key from an admin. The session is kept in the operating system's keychain (macOS
 Keychain, Windows Credential Manager, the Linux kernel keyring) and lasts
 as long as a console session. `--server` signs in to another control
 plane; `tokenless logout` ends the session.
