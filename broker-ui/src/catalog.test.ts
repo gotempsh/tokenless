@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { StoredTemplate, TemplateCategory } from "./api";
-import { catalogShelves, shelfItems } from "./catalog";
+import { activeShelf, catalogShelves, shelfItems } from "./catalog";
 
 function tpl(
   id: string,
@@ -72,5 +72,28 @@ describe("catalogShelves", () => {
 
   test("an empty list still offers all services", () => {
     expect(catalogShelves([])).toEqual([{ key: "all", label: "All services", count: 0 }]);
+  });
+});
+
+describe("activeShelf", () => {
+  const shelves = (l: StoredTemplate[]) => catalogShelves(l);
+
+  test("a search whose only match awaits approval shows that shelf", () => {
+    const matching = list.filter((t) => t.template.id === "imported-tool");
+    expect(activeShelf(shelves(matching), "all", true)?.key).toBe("pending");
+  });
+
+  test("keeps the chosen shelf while it has matches", () => {
+    expect(activeShelf(shelves(list), "all", true)?.key).toBe("all");
+    expect(activeShelf(shelves(list), "monitoring", false)?.key).toBe("monitoring");
+  });
+
+  test("a shelf the filters removed falls back to all services", () => {
+    const llms = list.filter((t) => t.template.category === "llm_providers");
+    expect(activeShelf(shelves(llms), "monitoring", false)?.key).toBe("all");
+  });
+
+  test("with no match anywhere, all services (and its empty state)", () => {
+    expect(activeShelf(shelves([]), "all", true)?.key).toBe("all");
   });
 });

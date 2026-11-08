@@ -101,3 +101,16 @@ export function catalogShelves(list: StoredTemplate[]): ShelfEntry[] {
   const categories = CATEGORIES.map((c) => entry(c.value, c.label)).filter((e) => e.count > 0);
   return [...head, entry("all", "All services"), ...categories];
 }
+
+/**
+ * The shelf to show: the one chosen, unless a search emptied it, then the
+ * first shelf holding a match (an import awaiting approval included), so a
+ * search never says "no match" while a match sits on another shelf.
+ */
+export function activeShelf(shelves: ShelfEntry[], chosen: Shelf, searching: boolean): ShelfEntry | undefined {
+  const all = shelves.find((s) => s.key === "all");
+  const picked = shelves.find((s) => s.key === chosen);
+  if (picked && (picked.count > 0 || !searching)) return picked;
+  if (searching) return shelves.find((s) => s.count > 0) ?? all;
+  return all;
+}

@@ -8,7 +8,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import type { ServiceKind, StoredTemplate } from "../api";
-import { catalogShelves, latestTemplates, matchesSearch, shelfItems, type Shelf } from "../catalog";
+import { activeShelf, catalogShelves, latestTemplates, matchesSearch, shelfItems, type Shelf } from "../catalog";
 import { cn } from "../lib/utils";
 import { SelectField } from "./common";
 import { ServiceLogo } from "./ServiceLogo";
@@ -57,8 +57,7 @@ export function TemplateCatalog({
     [latest, kind, query],
   );
   const shelves = useMemo(() => catalogShelves(matching), [matching]);
-  // A shelf the filters emptied falls back to everything that matches.
-  const active = shelves.find((s) => s.key === shelf) ?? shelves.find((s) => s.key === "all");
+  const active = activeShelf(shelves, shelf, query.trim() !== "");
   const items = useMemo(() => (active ? shelfItems(matching, active.key) : []), [matching, active]);
 
   const counts = useMemo(
