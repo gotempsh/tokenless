@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// "Add a service to a vault and a bundle" in one go: the vault (new or
-// existing), the credential, a rule for it and its place in an access
-// bundle. Each step that succeeded is remembered, so trying again after a
+// "Add a service to a vault" in one go: the vault (new or existing), the
+// credential, a rule for it and, if chosen, its place in access bundles.
+// Each step that succeeded is remembered, so trying again after a
 // failure continues from the step that failed instead of creating a second
 // credential.
 
@@ -20,10 +20,13 @@ export interface CredentialBody {
 
 export type VaultChoice = { kind: "existing"; id: string; name: string } | { kind: "new"; name: string };
 
-export type BundleChoice =
-  | { kind: "none" }
-  | { kind: "existing"; id: string; name: string }
-  | { kind: "new"; name: string; description: string };
+/** The access bundles the new rule goes into; none is a valid choice. */
+export interface BundlePlan {
+  /** Bundles of the vault to add the rule to. */
+  join: { id: string; name: string }[];
+  /** A new bundle to create holding the rule. */
+  create?: { name: string; description: string };
+}
 
 /** How much of the template's scope the new rule allows. */
 export type AccessPreset = "full" | "read_only";
@@ -34,7 +37,7 @@ export interface AddServicePlan {
   vault: VaultChoice;
   credential: CredentialBody;
   access: AccessPreset;
-  bundle: BundleChoice;
+  bundles: BundlePlan;
 }
 
 export interface AddServiceApi {
@@ -51,7 +54,8 @@ export interface AddServiceProgress {
   vault?: { id: string; name: string; created: boolean };
   credential?: CredentialMeta;
   rule?: Rule;
-  bundle?: AccessBundle;
+  /** The bundles that hold the rule so far, in the order they were done. */
+  bundles?: AccessBundle[];
 }
 
 export type AddServiceStep = "vault" | "credential" | "rule" | "bundle";
@@ -61,8 +65,9 @@ export class AddServiceError extends Error {
     readonly step: AddServiceStep,
     readonly progress: AddServiceProgress,
     readonly cause: unknown,
+    label: string = STEP_LABEL[step],
   ) {
-    super(describeFailure(step, progress, cause));
+    super(describeFailure(label, progress, cause));
     this.name = "AddServiceError";
   }
 }
@@ -75,15 +80,15 @@ const STEP_LABEL: Record<AddServiceStep, string> = {
   vault: "creating the vault",
   credential: "saving the service",
   rule: "creating its rule",
-  bundle: "adding it to the access bundle",
+  bundle: "adding it to an access bundle",
 };
 
-function describeFailure(step: AddServiceStep, progress: AddServiceProgress, cause: unknown): string {
+function describeFailure(label: string, progress: AddServiceProgress, cause: unknown): string {
   const done: string[] = [];
   if (progress.vault?.created) done.push(`vault "${progress.vault.name}"`);
   if (progress.credential) done.push(`service "${progress.credential.name}"`);
   if (progress.rule) done.push(`rule "${progress.rule.name}"`);
-  const failed = `${STEP_LABEL[step]} failed: ${reason(cause)}`;
+  const failed = `${label} failed: ${reason(cause)}`;
   if (done.length === 0) return `${failed.charAt(0).toUpperCase()}${failed.slice(1)}`;
   return `Created ${done.join(", ")}, but ${failed}. Try again to continue from that step; nothing is created twice.`;
 }
@@ -97,11 +102,12 @@ async function step<T>(
   name: AddServiceStep,
   progress: AddServiceProgress,
   run: () => Promise<T>,
+  label?: string,
 ): Promise<T> {
   try {
     return await run();
   } catch (e) {
-    throw new AddServiceError(name, { ...progress }, e);
+    throw new AddServiceError(name, { ...progress }, e, label);
   }
 }
 
@@ -141,22 +147,32 @@ export async function addService(
     );
   }
   const rule = p.rule;
-  const bundle = plan.bundle;
-  if (!p.bundle && bundle.kind !== "none") {
-    p.bundle = await step("bundle", p, async () => {
-      if (bundle.kind === "new") {
-        return api.createBundle(vaultId, {
-          name: bundle.name.trim(),
-          description: bundle.description,
-          rule_ids: [rule.id],
-        });
-      }
-      // Read the bundle just before writing it, so rules added since the
-      // dialog opened are kept.
-      const current = await api.getBundle(bundle.id);
-      if (current.rule_ids.includes(rule.id)) return current;
-      return api.setBundleRules(bundle.id, [...current.rule_ids, rule.id]);
-    });
+  for (const bundle of plan.bundles.join) {
+    if (p.bundles?.some((b) => b.id === bundle.id)) continue;
+    const joined = await step(
+      "bundle",
+      p,
+      async () => {
+        // Read the bundle just before writing it, so rules added since the
+        // page opened are kept.
+        const current = await api.getBundle(bundle.id);
+        if (current.rule_ids.includes(rule.id)) return current;
+        return api.setBundleRules(bundle.id, [...current.rule_ids, rule.id]);
+      },
+      `adding it to access bundle "${bundle.name}"`,
+    );
+    p.bundles = [...(p.bundles ?? []), joined];
+  }
+  const create = plan.bundles.create;
+  const name = create?.name.trim();
+  if (create && name && !p.bundles?.some((b) => b.name === name)) {
+    const created = await step(
+      "bundle",
+      p,
+      () => api.createBundle(vaultId, { name, description: create.description, rule_ids: [rule.id] }),
+      `creating access bundle "${name}"`,
+    );
+    p.bundles = [...(p.bundles ?? []), created];
   }
   return p;
 }

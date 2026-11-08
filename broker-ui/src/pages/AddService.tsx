@@ -3,7 +3,7 @@
 
 // "Add a service" as a page with its own address: the catalogue first, then
 // one form for where the service lives, what agents may do with it, the
-// access bundle it joins and its credential, with a summary of what will be
+// access bundles it joins (if any) and its credential, with a summary of what will be
 // created beside it. Started from the catalogue, a vault or a bundle.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -31,7 +31,6 @@ import {
   type AddServiceContext,
   type AddServicePlan,
   type AddServiceProgress,
-  type BundleChoice,
   type CredentialBody,
 } from "../addService";
 import { latestTemplates } from "../catalog";
@@ -40,6 +39,7 @@ import { backCrumbs, useBreadcrumbs } from "../breadcrumbs";
 import { cn } from "../lib/utils";
 
 import {
+  CheckField,
   DialogActions,
   ErrorBanner,
   Field,
@@ -58,8 +58,6 @@ import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 
 const NEW_VAULT = "__new__";
-const NEW_BUNDLE = "__new_bundle__";
-const NO_BUNDLE = "__no_bundle__";
 const BUNDLE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const liveApi: AddServiceApi = {
@@ -75,8 +73,9 @@ interface Where {
   vaultId: string;
   newVaultName: string;
   access: AccessPreset;
-  bundleMode: BundleChoice["kind"];
-  bundleId: string;
+  /** Bundles of the vault to add the service to; none is fine. */
+  bundleIds: string[];
+  newBundle: boolean;
   newBundleName: string;
 }
 
@@ -85,49 +84,25 @@ function initialWhere(ctx: AddServiceContext): Where {
     vaultId: ctx.vault ?? "",
     newVaultName: "",
     access: "full",
-    // Joining an existing bundle is the common case; the form switches to
-    // "new" when the vault has none.
-    bundleMode: "existing",
-    bundleId: ctx.bundle ?? "",
+    // Opened from a bundle, the service is meant for it; otherwise it
+    // joins nothing until the person checks a bundle.
+    bundleIds: ctx.bundle ? [ctx.bundle] : [],
+    newBundle: false,
     newBundleName: "",
   };
 }
 
 /** What still has to be chosen before the service can be added, if anything. */
-function whereProblem(where: Where): string | null {
+function whereProblem(where: Where, bundles: readonly AccessBundle[]): string | null {
   if (where.vaultId === "") return "Choose a vault first.";
   if (where.vaultId === NEW_VAULT && where.newVaultName.trim() === "") return "Name the new vault first.";
-  if (where.bundleMode === "existing" && where.bundleId === "") return "Choose the access bundle first.";
-  if (where.bundleMode === "new") {
+  if (where.newBundle) {
     const name = where.newBundleName.trim();
     if (name === "") return "Name the new access bundle first.";
     if (!BUNDLE_NAME.test(name)) return "Fix the bundle name first.";
+    if (bundles.some((b) => b.name === name)) return `Check ${name} above instead of creating it again.`;
   }
   return null;
-}
-
-/** The bundle select's value: a bundle id, "new", "none" or nothing yet. */
-function bundleSelectValue(where: Where): string {
-  if (where.bundleMode === "new") return NEW_BUNDLE;
-  if (where.bundleMode === "none") return NO_BUNDLE;
-  return where.bundleId;
-}
-
-function fromBundleSelect(value: string): Partial<Where> {
-  if (value === NEW_BUNDLE) return { bundleMode: "new" };
-  if (value === NO_BUNDLE) return { bundleMode: "none" };
-  return { bundleMode: "existing", bundleId: value };
-}
-
-function bundleHint(where: Where): string {
-  if (where.bundleMode === "new") {
-    const name = where.newBundleName.trim();
-    return name && !BUNDLE_NAME.test(name)
-      ? "Letters, digits, '-', '_' and '.', starting with a letter or digit."
-      : "Agents start with it by name: --bundle <name>.";
-  }
-  if (where.bundleMode === "none") return "Add it to a bundle later from the bundle's page.";
-  return "Agents started with the bundle get this service.";
 }
 
 /** A compact choice between a few options, as a row of toggle buttons. */
@@ -164,18 +139,20 @@ function Segmented<T extends string>({
   );
 }
 
-function planFor(where: Where, credential: CredentialBody): AddServicePlan {
+function planFor(where: Where, bundles: AccessBundle[], credential: CredentialBody): AddServicePlan {
   const vault: AddServicePlan["vault"] =
     where.vaultId === NEW_VAULT
       ? { kind: "new", name: where.newVaultName }
       : { kind: "existing", id: where.vaultId, name: where.vaultId };
-  const bundle: BundleChoice =
-    where.bundleMode === "existing"
-      ? { kind: "existing", id: where.bundleId, name: "" }
-      : where.bundleMode === "new"
-        ? { kind: "new", name: where.newBundleName, description: "" }
-        : { kind: "none" };
-  return { vault, credential, access: where.access, bundle };
+  return {
+    vault,
+    credential,
+    access: where.access,
+    bundles: {
+      join: bundles.filter((b) => where.bundleIds.includes(b.id)).map((b) => ({ id: b.id, name: b.name })),
+      create: where.newBundle ? { name: where.newBundleName, description: "" } : undefined,
+    },
+  };
 }
 
 /** Where Back, Cancel and Done return to: the page that opened this one. */
@@ -309,27 +286,17 @@ function ServicePage({
       setWhere((w) => (w.vaultId === "" ? { ...w, vaultId: only } : w));
     }
   }, [vaultItems]);
-  // A new vault, or one without bundles, has nothing to join: add the
-  // service on its own, and the bundle can come later. One bundle is the
-  // obvious choice; several are a real decision.
-  const nothingToJoin = (where.vaultId === NEW_VAULT || bundles.data !== undefined) && bundleItems.length === 0;
-  const onlyBundle = bundleItems.length === 1 ? bundleItems[0]?.id : undefined;
-  useEffect(() => {
-    if (nothingToJoin) setWhere((w) => (w.bundleMode === "existing" ? { ...w, bundleMode: "none" } : w));
-    else if (onlyBundle) setWhere((w) => (w.bundleMode === "existing" && w.bundleId === "" ? { ...w, bundleId: onlyBundle } : w));
-  }, [nothingToJoin, onlyBundle]);
-
   const vaultName =
     where.vaultId === NEW_VAULT
       ? where.newVaultName.trim()
       : vaults.data?.items.find((v) => v.id === where.vaultId)?.name;
-  const bundleName =
-    where.bundleMode === "existing"
-      ? bundleItems.find((b) => b.id === where.bundleId)?.name
-      : where.bundleMode === "new"
-        ? where.newBundleName.trim()
-        : undefined;
-  const problem = whereProblem(where);
+  // The bundles the service will join, by name, for the summary and button.
+  const bundleNames = [
+    ...bundleItems.filter((b) => where.bundleIds.includes(b.id)).map((b) => ({ name: b.name, isNew: false })),
+    ...(where.newBundle ? [{ name: where.newBundleName.trim(), isNew: true }] : []),
+  ];
+  const onlyBundle = bundleNames.length === 1 && bundleNames[0]?.name ? bundleNames[0].name : undefined;
+  const problem = whereProblem(where, bundleItems);
 
   if (result) {
     return (
@@ -340,7 +307,11 @@ function ServicePage({
           result={result}
           access={where.access}
           back={back}
-          another={addServiceHref({ vault: result.vault?.id, bundle: result.bundle?.id, back: ctx.back })}
+          another={addServiceHref({
+            vault: result.vault?.id,
+            bundle: result.bundles?.length === 1 ? result.bundles[0]?.id : undefined,
+            back: ctx.back,
+          })}
         />
       </>
     );
@@ -392,14 +363,14 @@ function ServicePage({
                 blocked={problem}
                 takenNames={takenNames}
                 vaultName={vaultName}
-                submitLabel={bundleName ? `Add to ${bundleName}` : "Add service"}
+                submitLabel={onlyBundle ? `Add to ${onlyBundle}` : "Add service"}
                 backLabel="Cancel"
                 onBack={() => {
                   window.location.hash = back;
                 }}
                 onSubmit={async (body) => {
                   try {
-                    const done = await addService(planFor(where, body), liveApi, progress.current);
+                    const done = await addService(planFor(where, bundleItems, body), liveApi, progress.current);
                     progress.current = done;
                     return done;
                   } catch (e) {
@@ -437,7 +408,7 @@ function ServicePage({
                         <SelectField
                           id="add-vault"
                           value={where.vaultId}
-                          onChange={(vaultId) => set({ vaultId, bundleId: "", bundleMode: "existing" })}
+                          onChange={(vaultId) => set({ vaultId, bundleIds: [] })}
                           placeholder={vaults.data?.items.length === 0 ? "No vaults yet" : "Choose a vault…"}
                           options={[
                             ...(vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name })),
@@ -457,35 +428,12 @@ function ServicePage({
                       />
                     )}
                   </div>
-                  <div className="space-y-3">
-                    <Field label="Access bundle" htmlFor="add-bundle" hint={bundleHint(where)}>
-                      <SelectField
-                        id="add-bundle"
-                        value={bundleSelectValue(where)}
-                        onChange={(v) => set(fromBundleSelect(v))}
-                        placeholder="Choose a bundle…"
-                        options={[
-                          ...bundleItems.map((b) => ({
-                            value: b.id,
-                            label: `${b.name} (${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"})`,
-                          })),
-                          { value: NEW_BUNDLE, label: "New bundle…" },
-                          { value: NO_BUNDLE, label: "No bundle" },
-                        ]}
-                      />
-                    </Field>
-                    {where.bundleMode === "new" && (
-                      <Input
-                        id="add-bundle-name"
-                        aria-label="New bundle name"
-                        aria-invalid={where.newBundleName !== "" && !BUNDLE_NAME.test(where.newBundleName.trim())}
-                        className="font-mono"
-                        value={where.newBundleName}
-                        onChange={(e) => set({ newBundleName: e.target.value })}
-                        placeholder="code-review"
-                      />
-                    )}
-                  </div>
+                  <BundleChoices
+                    where={where}
+                    set={set}
+                    bundles={where.vaultId === NEW_VAULT ? [] : chosenVault && bundles.data ? bundleItems : undefined}
+                    vaultChosen={where.vaultId !== ""}
+                  />
                   <Field label="Agents may" htmlFor="add-access-full" hint={accessChoices.find((c) => c.value === where.access)?.description}>
                     <div>
                       <Segmented<AccessPreset> name="add-access" value={where.access} onChange={(access) => set({ access })} choices={accessChoices} />
@@ -502,12 +450,90 @@ function ServicePage({
             vaultName={vaultName}
             newVault={where.vaultId === NEW_VAULT}
             access={where.access}
-            bundleName={bundleName}
-            newBundle={where.bundleMode === "new"}
+            bundles={bundleNames}
           />
         </aside>
       </div>
     </>
+  );
+}
+
+/**
+ * The access bundles the service joins: one checkbox row per bundle of the
+ * vault and one to create a bundle. All optional; a service can join a
+ * bundle later from the bundle's page.
+ */
+function BundleChoices({
+  where,
+  set,
+  bundles,
+  vaultChosen,
+}: {
+  where: Where;
+  set: (patch: Partial<Where>) => void;
+  /** The vault's bundles, or `undefined` while they load. */
+  bundles: AccessBundle[] | undefined;
+  vaultChosen: boolean;
+}) {
+  const toggle = (id: string, checked: boolean) =>
+    set({ bundleIds: checked ? [...where.bundleIds, id] : where.bundleIds.filter((b) => b !== id) });
+  const newName = where.newBundleName.trim();
+  const badName = newName !== "" && !BUNDLE_NAME.test(newName);
+  const taken = bundles?.some((b) => b.name === newName) ?? false;
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">
+        Access bundles <span className="font-normal text-muted-foreground">(optional)</span>
+      </legend>
+      {!vaultChosen ? (
+        <p className="text-sm text-muted-foreground">Choose a vault to see its bundles.</p>
+      ) : bundles === undefined ? (
+        <Skeleton className="h-24 w-full rounded-lg" />
+      ) : (
+        <div className="divide-y rounded-lg border">
+          {bundles.map((b) => (
+            <div key={b.id} className="px-3 py-3">
+              <CheckField
+                id={`add-bundle-${b.id}`}
+                checked={where.bundleIds.includes(b.id)}
+                onChange={(checked) => toggle(b.id, checked)}
+                hint={`${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"}${b.description ? ` · ${b.description}` : ""}`}
+              >
+                <span className="font-mono">{b.name}</span>
+              </CheckField>
+            </div>
+          ))}
+          <div className="space-y-2 px-3 py-3">
+            <CheckField id="add-bundle-new" checked={where.newBundle} onChange={(newBundle) => set({ newBundle })}>
+              New bundle
+            </CheckField>
+            {where.newBundle && (
+              <div className="space-y-1 pl-7">
+                <Input
+                  id="add-bundle-name"
+                  aria-label="New bundle name"
+                  aria-invalid={badName || taken}
+                  aria-describedby="add-bundle-name-hint"
+                  className="font-mono"
+                  value={where.newBundleName}
+                  onChange={(e) => set({ newBundleName: e.target.value })}
+                  placeholder="triage"
+                  autoFocus
+                />
+                <p id="add-bundle-name-hint" className="text-xs text-muted-foreground">
+                  {badName
+                    ? "Letters, digits, '-', '_' and '.', starting with a letter or digit."
+                    : taken
+                      ? `This vault already has ${newName}; check it above.`
+                      : "Agents start with it by name: --bundle <name>."}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">Agents started with a checked bundle get this service.</p>
+    </fieldset>
   );
 }
 
@@ -548,16 +574,16 @@ function Summary({
   vaultName,
   newVault,
   access,
-  bundleName,
-  newBundle,
+  bundles,
 }: {
   template: ServiceTemplate;
   vaultName: string | undefined;
   newVault: boolean;
   access: AccessPreset;
-  bundleName: string | undefined;
-  newBundle: boolean;
+  /** The bundles it will join; a new one may not be named yet. */
+  bundles: { name: string; isNew: boolean }[];
 }) {
+  const named = bundles.filter((b) => b.name !== "");
   const pending = <span className="text-muted-foreground">not chosen yet</span>;
   return (
     <Panel className="space-y-4 p-4">
@@ -582,24 +608,31 @@ function Summary({
             {template.hosts.length ? <Tags values={template.hosts} /> : <span className="text-muted-foreground">the host you enter</span>}
           </div>
         </SummaryRow>
-        <SummaryRow label="Access bundle">
-          {bundleName ? (
-            <>
-              <Mono>{bundleName}</Mono>
-              {newBundle && <span className="text-muted-foreground"> (new)</span>}
-            </>
-          ) : newBundle ? (
-            pending
-          ) : (
+        <SummaryRow label={bundles.length > 1 ? "Access bundles" : "Access bundle"}>
+          {bundles.length === 0 ? (
             <span className="text-muted-foreground">none</span>
+          ) : (
+            <ul className="space-y-1">
+              {bundles.map((b, i) => (
+                <li key={b.isNew ? "new" : b.name || i}>
+                  {b.name ? <Mono>{b.name}</Mono> : pending}
+                  {b.isNew && <span className="text-muted-foreground"> (new)</span>}
+                </li>
+              ))}
+            </ul>
           )}
         </SummaryRow>
       </dl>
-      {bundleName && (
+      {named.length > 0 && (
         <div className="space-y-2 border-t pt-4">
           <p className="text-xs text-muted-foreground">
-            Agents then get a session from <span className="font-mono text-foreground">{bundleName}</span>: its token
-            reaches the service, never the secret.
+            Agents then get a session from{" "}
+            {named.length === 1 ? (
+              <span className="font-mono text-foreground">{named[0]?.name}</span>
+            ) : (
+              "any of these bundles"
+            )}
+            : its token reaches the service, never the secret.
           </p>
         </div>
       )}
@@ -621,6 +654,7 @@ function Done({
   another: string;
 }) {
   const vault = result.vault;
+  const bundles = result.bundles ?? [];
   const items = [
     vault?.created ? (
       <>
@@ -639,14 +673,14 @@ function Done({
         <Tags values={result.rule.allow.hosts} />
       </>
     ) : null,
-    result.bundle ? (
-      <>
-        In access bundle <span className="font-mono font-medium">{result.bundle.name}</span> ({result.bundle.rule_ids.length}{" "}
-        service{result.bundle.rule_ids.length === 1 ? "" : "s"})
-      </>
-    ) : (
-      <span className="text-muted-foreground">Not in an access bundle yet</span>
-    ),
+    ...(bundles.length > 0
+      ? bundles.map((b) => (
+          <>
+            In access bundle <span className="font-mono font-medium">{b.name}</span> ({b.rule_ids.length} service
+            {b.rule_ids.length === 1 ? "" : "s"})
+          </>
+        ))
+      : [<span className="text-muted-foreground">Not in an access bundle</span>]),
   ].filter((x) => x !== null);
   return (
     <Panel className="space-y-5 p-6 text-sm">
@@ -658,16 +692,20 @@ function Done({
           </li>
         ))}
       </ul>
-      {result.bundle ? (
+      {bundles.length > 0 ? (
         <div className="space-y-2 rounded-md border bg-muted/40 p-4">
           <p className="font-medium">Run an agent with it</p>
           <p className="text-xs text-muted-foreground">
-            Create a session from {result.bundle.name} and give its token to the agent. The agent never sees the
-            secret.
+            Create a session from {bundles.length === 1 ? bundles[0]?.name : "one of its bundles"} and give its token
+            to the agent. The agent never sees the secret.
           </p>
-          <Button type="button" variant="outline" size="sm" asChild>
-            <a href={`#/bundles/${result.bundle.id}/connect`}>Run an agent</a>
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {bundles.map((b) => (
+              <Button key={b.id} type="button" variant="outline" size="sm" asChild>
+                <a href={`#/bundles/${b.id}/connect`}>{bundles.length === 1 ? "Run an agent" : `Run with ${b.name}`}</a>
+              </Button>
+            ))}
+          </div>
         </div>
       ) : (
         <p className="text-muted-foreground">

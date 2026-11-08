@@ -21,6 +21,7 @@ function fakeApi(failOnce?: keyof AddServiceApi) {
   const calls: string[] = [];
   const bundles = new Map<string, AccessBundle>([
     ["b1", { id: "b1", vault_id: "v1", name: "code-review", description: "", rule_ids: ["r0"], created_by: "u", created_at: at, updated_at: at }],
+    ["b2", { id: "b2", vault_id: "v1", name: "research", description: "", rule_ids: [], created_by: "u", created_at: at, updated_at: at }],
   ]);
   let failed = false;
   const guard = (name: keyof AddServiceApi) => {
@@ -107,13 +108,46 @@ describe("addService", () => {
       vault: { kind: "existing", id: "v1", name: "main" },
       credential,
       access: "read_only",
-      bundle: { kind: "existing", id: "b1", name: "code-review" },
+      bundles: { join: [{ id: "b1", name: "code-review" }] },
     };
     const done = await addService(plan, api);
     expect(calls).toEqual(["createCredential", "createRule", "getBundle", "setBundleRules"]);
     expect(done.rule?.allow.methods).toEqual(["GET", "HEAD"]);
     expect(done.rule?.name).toBe("Example API");
-    expect(done.bundle?.rule_ids).toEqual(["r0", "r1"]);
+    expect(done.bundles?.map((b) => b.rule_ids)).toEqual([["r0", "r1"]]);
+  });
+
+  test("adds the service to several bundles and a new one", async () => {
+    const { api, calls } = fakeApi();
+    const done = await addService(
+      {
+        vault: { kind: "existing", id: "v1", name: "main" },
+        credential,
+        access: "full",
+        bundles: {
+          join: [
+            { id: "b1", name: "code-review" },
+            { id: "b2", name: "research" },
+          ],
+          create: { name: " triage ", description: "" },
+        },
+      },
+      api,
+    );
+    expect(calls).toEqual([
+      "createCredential",
+      "createRule",
+      "getBundle",
+      "setBundleRules",
+      "getBundle",
+      "setBundleRules",
+      "createBundle",
+    ]);
+    expect(done.bundles?.map((b) => [b.name, b.rule_ids])).toEqual([
+      ["code-review", ["r0", "r1"]],
+      ["research", ["r1"]],
+      ["triage", ["r1"]],
+    ]);
   });
 
   test("creates the vault and a new bundle", async () => {
@@ -123,24 +157,50 @@ describe("addService", () => {
         vault: { kind: "new", name: "  agents  " },
         credential,
         access: "full",
-        bundle: { kind: "new", name: "research", description: "" },
+        bundles: { join: [], create: { name: "research", description: "" } },
       },
       api,
     );
     expect(calls).toEqual(["createVault", "createCredential", "createRule", "createBundle"]);
     expect(done.vault).toEqual({ id: "v-new", name: "agents", created: true });
     expect(done.rule?.allow.methods).toEqual(["*"]);
-    expect(done.bundle).toMatchObject({ vault_id: "v-new", name: "research", rule_ids: ["r1"] });
+    expect(done.bundles).toEqual([expect.objectContaining({ vault_id: "v-new", name: "research", rule_ids: ["r1"] })]);
   });
 
-  test("skips the bundle when none is chosen", async () => {
+  test("adds the service to no bundle when none is chosen", async () => {
     const { api, calls } = fakeApi();
     const done = await addService(
-      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundle: { kind: "none" } },
+      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundles: { join: [] } },
       api,
     );
     expect(calls).toEqual(["createCredential", "createRule"]);
-    expect(done.bundle).toBeUndefined();
+    expect(done.bundles).toBeUndefined();
+  });
+
+  test("a bundle that fails is named, and a retry does not join the others again", async () => {
+    const { api, calls } = fakeApi("createBundle");
+    const plan: AddServicePlan = {
+      vault: { kind: "existing", id: "v1", name: "main" },
+      credential,
+      access: "full",
+      bundles: { join: [{ id: "b1", name: "code-review" }], create: { name: "triage", description: "" } },
+    };
+    let error: unknown;
+    try {
+      await addService(plan, api);
+    } catch (e) {
+      error = e;
+    }
+    const failure = error as AddServiceError;
+    expect(failure.step).toBe("bundle");
+    expect(failure.message).toBe(
+      'Created service "Example API", rule "Example API", but creating access bundle "triage" failed: createBundle refused. Try again to continue from that step; nothing is created twice.',
+    );
+    expect(failure.progress.bundles?.map((b) => b.name)).toEqual(["code-review"]);
+
+    const done = await addService(plan, api, failure.progress);
+    expect(calls.filter((c) => c === "setBundleRules")).toHaveLength(1);
+    expect(done.bundles?.map((b) => b.name)).toEqual(["code-review", "triage"]);
   });
 
   test("a failed step names what exists, and a retry resumes without duplicates", async () => {
@@ -149,7 +209,7 @@ describe("addService", () => {
       vault: { kind: "existing", id: "v1", name: "main" },
       credential,
       access: "full",
-      bundle: { kind: "existing", id: "b1", name: "code-review" },
+      bundles: { join: [{ id: "b1", name: "code-review" }] },
     };
     let error: unknown;
     try {
@@ -167,13 +227,13 @@ describe("addService", () => {
 
     const done = await addService(plan, api, failure.progress);
     expect(calls.filter((c) => c === "createCredential")).toHaveLength(1);
-    expect(done.bundle?.rule_ids).toEqual(["r0", "r1"]);
+    expect(done.bundles?.[0]?.rule_ids).toEqual(["r0", "r1"]);
   });
 
   test("a failure on the first step reads as a plain error", async () => {
     const { api } = fakeApi("createVault");
     const run = addService(
-      { vault: { kind: "new", name: "x" }, credential, access: "full", bundle: { kind: "none" } },
+      { vault: { kind: "new", name: "x" }, credential, access: "full", bundles: { join: [] } },
       api,
     );
     await expect(run).rejects.toThrow("Creating the vault failed: createVault refused");
@@ -188,7 +248,7 @@ describe("addService", () => {
         vault: { kind: "existing", id: "v1", name: "main" },
         credential,
         access: "full",
-        bundle: { kind: "existing", id: "b1", name: "code-review" },
+        bundles: { join: [{ id: "b1", name: "code-review" }] },
       },
       api,
     );
