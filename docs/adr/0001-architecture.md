@@ -117,8 +117,9 @@ Hot path guarantees:
   injection stops once it is full, so a control plane that is down for
   long stops injection rather than growing the loss.
 - `DataPlane::shutdown(drain)` stops in order. The listeners close and a
-  binding refuses new connections; open tunnels may finish, idle and
-  intercepted connections close once their requests in flight answer, and
+  binding refuses new connections; open tunnels and MCP gateway streams
+  may finish, idle, intercepted and gateway connections close once their
+  requests in flight answer, and
   snapshots keep arriving, so a revocation still cuts. At the deadline
   whatever is open is cut and audited as cut, the audit queue gets one
   last shipping attempt of up to 2 s, and the returned report says how
@@ -289,10 +290,15 @@ node protocol and the snapshot format are unchanged.
   that changes a security decision raises the snapshot `format` (claims
   rely on the unknown-field refusal), so a node too old to enforce it
   refuses the snapshot or session instead of ignoring the field: it fails
-  closed. Upgrade nodes first, then the control plane. A snapshot is
-  written in the oldest format that carries everything in it, so older
-  nodes keep working until a feature that needs the newer one is used.
-  Format 2 adds a credential's `not_after`.
+  closed. A snapshot is written in the oldest format that carries
+  everything in it, and a node opens the snapshot stream with the newest
+  format it reads (`?reads_format=`, absent on nodes older than format 2,
+  which read format 1). A rule that needs a newer format is left out of
+  that node's snapshot, so an older node stops using that one service and
+  serves the rest, and the control plane logs which node it is. Either
+  upgrade order is therefore safe: the control plane first, as the
+  deploy guide says, costs only the services that use a new feature on
+  the proxies not yet upgraded. Format 2 adds a credential's `not_after`.
 - An embedded data plane is scoped: its snapshot holds only the rules of
   live sessions minted for it (`node_id`), not every enabled rule, so a
   compromised worker holds sealed credentials only for the workloads it
@@ -342,9 +348,12 @@ checks every read endpoint and the raw database files for the plaintext.
   working. Revoking a binding cuts every connection it opened.
 - A binding holds one session per group of services that share a
   deadline, so one service can end while the others keep working. No two
-  of its sessions may cover the same host: `bind` refuses them, so one
-  session's credential is never used under another's rules (and a request
-  that still finds two, after a policy change, is refused). Deadlines are
+  of its sessions may cover the same host, so one session's credential is
+  never used under another's rules. `bind` refuses them when the snapshot
+  in force already holds their rules. On a scoped node the rules arrive
+  after the mint, so the binding's status reports `overlapping_sessions`
+  once they do, `Binding::ready` fails with it, and a request to that
+  host is refused. Deadlines are
   absolute: a mint's `not_after` caps the session's `exp`, and no session
   is minted once it has passed, so the embedder that owns a grant passes
   its deadline on every renewal and a renewal never extends it.
@@ -354,7 +363,7 @@ checks every read endpoint and the raw database files for the plaintext.
   upstream failure (unreachable, or a 401 to the injected credential).
   Every "cannot carry traffic" has a typed reason (provisioning, stale
   policy, not configured, expired, revoked, binding revoked, invalid
-  session) taken from the proxy's own checks. `DataPlane::events()` is a
+  session, overlapping sessions) taken from the proxy's own checks. `DataPlane::events()` is a
   `watch` of the latest status, updated on each change, including a
   lease or session running out, so nobody polls; `Binding::ready`
   resolves once a given snapshot is in force and every session of the

@@ -44,6 +44,10 @@ pub enum NotReady {
     /// The token does not verify against the snapshot's keys, or was
     /// minted for another node or binding.
     InvalidSession,
+    /// Two of the binding's sessions cover the same host, so requests there
+    /// are refused. Found at bind when the snapshot already holds their
+    /// rules, otherwise once a snapshot that does arrives.
+    OverlappingSessions,
 }
 
 impl NotReady {
@@ -58,6 +62,9 @@ impl NotReady {
             Self::Revoked => "the session was revoked",
             Self::BindingRevoked => "the binding was revoked",
             Self::InvalidSession => "the session does not verify here: wrong keys, node or binding",
+            Self::OverlappingSessions => {
+                "two of its sessions cover the same host; bind it again with each service in one session"
+            }
         }
     }
 
@@ -115,14 +122,20 @@ pub struct BindingStatus {
     pub max_connections: usize,
     pub sessions: Vec<SessionStatus>,
     pub last_failure: Option<UpstreamFailure>,
+    /// Which sessions cover the same host, and which host, when two do.
+    pub overlap: Option<String>,
 }
 
 impl BindingStatus {
     /// Why the binding cannot carry all of its services, if so: its own
-    /// revocation, or the first session's problem.
+    /// revocation, two sessions covering one host, or the first session's
+    /// problem.
     pub fn problem(&self) -> Option<NotReady> {
         if self.revoked {
             return Some(NotReady::BindingRevoked);
+        }
+        if self.overlap.is_some() {
+            return Some(NotReady::OverlappingSessions);
         }
         self.sessions.iter().find_map(|s| s.problem)
     }
@@ -217,6 +230,7 @@ pub(crate) fn binding_status(
         max_connections: binding.max_connections,
         sessions: binding.session_statuses(snapshot, node, now),
         last_failure: binding.last_failure(),
+        overlap: binding.overlap(snapshot),
     }
 }
 

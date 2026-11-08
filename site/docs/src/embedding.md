@@ -87,7 +87,9 @@ tokio::spawn(async move { binding.serve(workload_connection).await });
 
 Give a binding one session per group of services that end at the same
 time. When one session ends, the others keep working. Two sessions of a
-binding may not cover the same host; `bind` refuses them.
+binding may not cover the same host. `bind` refuses them when the
+snapshot in force already has their rules; otherwise `ready` fails with
+`overlapping_sessions` once the snapshot that has them arrives.
 
 `not_after` is an absolute deadline: it caps the session's lifetime, and
 once it has passed no session is minted with it. Pass the same
@@ -109,7 +111,7 @@ Read the data plane's state instead of its logs:
   the credential expired).
 - Anything that stops traffic has a typed reason: provisioning, stale
   policy, not configured, expired, revoked, binding revoked, invalid
-  session.
+  session, overlapping sessions.
 - `dataplane.events()` is a `watch` of the latest status, updated on each
   change, so you never poll.
 - `binding.ready(version, timeout)` resolves once that snapshot is in
@@ -123,8 +125,9 @@ Nothing in the status holds a token or a secret.
 let report = dataplane.shutdown(Duration::from_secs(30)).await;
 ```
 
-New connections are refused at once. Open tunnels get the drain time to
-finish, idle connections close, and revocations still cut traffic. At
+New connections are refused at once. Open tunnels and MCP gateway
+streams get the drain time to finish, idle connections close, and
+revocations still cut traffic. At
 the deadline whatever is still open is cut, the audit queue gets one last
 try to ship, and the report says how many connections were cut and how
 many audit events never shipped. `dataplane.abort()` stops at once

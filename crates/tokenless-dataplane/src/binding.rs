@@ -138,6 +138,14 @@ impl BindingState {
         Some(self.claims.get_or_init(|| verified))
     }
 
+    /// Two sessions covering one host under `snapshot`, described, if so.
+    /// Checked on every status, not only at bind: a node that holds only
+    /// its sessions' rules learns them after the binding is made.
+    pub fn overlap(&self, snapshot: Option<&ActiveSnapshot>) -> Option<String> {
+        let snapshot = snapshot?;
+        overlap(snapshot, self.claims(Some(snapshot))?)
+    }
+
     pub fn session_statuses(
         &self,
         snapshot: Option<&ActiveSnapshot>,
@@ -223,7 +231,9 @@ impl BindingState {
 /// Why two of a binding's sessions may not be held together, if they may
 /// not: both cover some host, so a request there would have no single
 /// session, and one session's credential could be used under the other's
-/// rules. Each service belongs to one session.
+/// rules. Each service belongs to one session. `bind` refuses it when the
+/// snapshot in force already holds the sessions' rules; otherwise the
+/// binding's status reports it once they arrive.
 fn overlap(snapshot: &ActiveSnapshot, sessions: &[SessionClaims]) -> Option<String> {
     for (i, first) in sessions.iter().enumerate() {
         for second in &sessions[i + 1..] {
@@ -456,8 +466,9 @@ mod tests {
     use crate::audit::AuditShipper;
     use crate::state::tests::Fixture;
     use crate::state::NodeKeys;
+    use crate::status::NotReady;
     use crate::tls::upstream_client_config;
-    use crate::{DataPlane, DataPlaneConfig};
+    use crate::{DataPlane, DataPlaneConfig, SnapshotInstaller};
 
     struct Discard;
 
@@ -474,6 +485,7 @@ mod tests {
     struct Plane {
         f: Fixture,
         dp: DataPlane,
+        installer: SnapshotInstaller,
         rule_a: RuleId,
         rule_b: RuleId,
     }
@@ -515,6 +527,7 @@ mod tests {
         Plane {
             f,
             dp,
+            installer,
             rule_a,
             rule_b,
         }
@@ -654,6 +667,50 @@ mod tests {
         assert!(
             err.to_string().contains("both cover a.example.com"),
             "{err}"
+        );
+        p.dp.abort();
+    }
+
+    /// A node that holds only its sessions' rules gets them after the
+    /// binding is made, so the overlap is found then: the binding reports
+    /// it and `ready` fails with it instead of succeeding.
+    #[tokio::test]
+    async fn sessions_found_to_overlap_after_bind_make_the_binding_not_ready() {
+        let p = plane().await;
+        let (rule_c, rule_d) = (RuleId::new(), RuleId::new());
+        let both = vec![p.bound(rule_c, "sbx-c", 1), p.bound(rule_d, "sbx-c", 1)];
+        // Snapshot 1 has neither rule yet, so bind cannot see the overlap.
+        let binding = p.bind("sbx-c", both, 8);
+        let mut body = p.f.snapshot_body(
+            2,
+            vec![
+                (p.rule_a, scope(), "a.example.com", "ta"),
+                (rule_c, scope(), "c.example.com", "tc"),
+                (rule_d, scope(), "c.example.com", "td"),
+            ],
+        );
+        body.unmatched_host_policy = UnmatchedHostPolicy::Deny;
+        p.installer.install(&p.f.sign(&body)).unwrap();
+
+        let err = binding.ready(2, Duration::from_secs(2)).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DataPlaneError::NotReady {
+                    reason: NotReady::OverlappingSessions,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        let status = binding.status();
+        assert_eq!(status.problem(), Some(NotReady::OverlappingSessions));
+        assert!(
+            status
+                .overlap
+                .as_deref()
+                .is_some_and(|o| o.contains("c.example.com")),
+            "{status:?}"
         );
         p.dp.abort();
     }
