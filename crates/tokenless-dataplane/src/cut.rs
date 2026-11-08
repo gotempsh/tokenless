@@ -24,6 +24,20 @@
 //! in snapshots for that long after it expires, so revoking it still cuts
 //! that traffic.
 //!
+//! A [strict](tokenless_core::session::SessionClaims::strict) session has no
+//! grace period: access granted for a set time ends then, open traffic
+//! included. Each request's streams, the upload and the response, are
+//! watched on their own and cut at the earliest of the session's expiry,
+//! their rule's deadline in the session and the credential's `not_after`,
+//! so one grant ending leaves the session's others running. A tunnel is cut
+//! at the latest deadline among the rules covering its host. Deadlines are
+//! checked against a clock that setting the wall clock back cannot rewind
+//! (see `clock`), and fresh snapshots arriving do not move them.
+//!
+//! A request through a binding is watched the same way, strict or not, for
+//! the rule it uses no longer being granted to the binding (an update left
+//! it out) or leaving the policy.
+//!
 //! Nothing is registered per session: every open tunnel holds a receiver of
 //! the snapshot-change signal and its own deadline, so a new snapshot wakes
 //! each open tunnel once, O(open tunnels), and opening one takes no lock.
@@ -36,16 +50,18 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use hyper::body::{Body, Frame, SizeHint};
-use tokenless_core::ids::SessionId;
-use tokenless_core::session::{open_traffic_deadline, SessionClaims};
+use tokenless_core::ids::{RuleId, SessionId};
+use tokenless_core::scope::Scope;
+use tokenless_core::session::SessionClaims;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, Instant};
 
 use crate::binding::{BindingState, BindingWatch};
+use crate::clock;
 use crate::proxy::{BodyError, ProxyBody};
 use crate::shutdown::{closed, Lifecycle};
-use crate::state::SnapshotHandle;
+use crate::state::{ActiveRule, SnapshotHandle};
 
 /// Why open traffic was cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,10 +71,19 @@ pub enum SessionEnd {
     BindingRevoked,
     /// The snapshot lease ran out, so a revocation could no longer arrive.
     LeaseExpired,
-    /// The session expired longer ago than open traffic may outlive it.
+    /// The session expired longer ago than open traffic may outlive it,
+    /// or, strict, it expired.
     Expired,
     /// The data plane shut down and its drain deadline passed.
     Shutdown,
+    /// Strict: the deadline the session gives the rule passed.
+    GrantExpired,
+    /// Strict: the credential's `not_after` passed.
+    CredentialExpired,
+    /// The rule is no longer in the policy: deleted, disabled or moved.
+    RuleRemoved,
+    /// The binding was updated and none of its sessions grants the rule.
+    GrantRemoved,
 }
 
 impl SessionEnd {
@@ -73,6 +98,10 @@ impl SessionEnd {
                 "the session it was opened under expired longer ago than open traffic may outlive it"
             }
             Self::Shutdown => "the data plane shut down and its drain deadline passed",
+            Self::GrantExpired => "the session's grant of this rule reached its deadline",
+            Self::CredentialExpired => "the credential reached its not_after",
+            Self::RuleRemoved => "the rule is no longer in the policy",
+            Self::GrantRemoved => "no session of the binding grants this rule any more",
         }
     }
 }
@@ -85,9 +114,22 @@ pub(crate) struct SessionWatch {
     pub jti: SessionId,
     /// When the traffic is cut even if nothing revokes it.
     pub deadline: DateTime<Utc>,
+    /// One request's streams: the rule whose credential they carry.
+    pub rule: Option<RuleWatch>,
     pub binding: Option<BindingWatch>,
     /// The data plane's lifecycle; traffic is cut when it closes.
     pub lifecycle: Option<watch::Receiver<Lifecycle>>,
+}
+
+/// The rule a request's streams carry a credential for.
+#[derive(Clone)]
+pub(crate) struct RuleWatch {
+    pub id: RuleId,
+    pub scope: Scope,
+    /// The session's deadline for the rule.
+    pub deadline: DateTime<Utc>,
+    /// Cut at that deadline and at the credential's `not_after`.
+    pub strict: bool,
 }
 
 impl SessionWatch {
@@ -100,10 +142,28 @@ impl SessionWatch {
             changes,
             snapshot,
             jti: claims.jti,
-            deadline: open_traffic_deadline(claims.exp),
+            deadline: claims.open_traffic_deadline(),
+            rule: None,
             binding: None,
             lifecycle: None,
         }
+    }
+
+    /// Ends by `deadline` at the latest.
+    pub fn until(mut self, deadline: DateTime<Utc>) -> Self {
+        self.deadline = self.deadline.min(deadline);
+        self
+    }
+
+    /// Watches one request's streams, which carry `rule`'s credential.
+    pub fn for_rule(mut self, rule: &ActiveRule, claims: &SessionClaims) -> Self {
+        self.rule = Some(RuleWatch {
+            id: rule.id,
+            scope: rule.scope.clone(),
+            deadline: claims.rule_deadline(&rule.id),
+            strict: claims.strict,
+        });
+        self
     }
 
     /// Also ends when the data plane closes at the end of a shutdown.
@@ -119,13 +179,26 @@ impl SessionWatch {
     }
 }
 
-/// Resolves when the binding is revoked or gone; never without one.
-async fn binding_revoked(binding: &mut Option<BindingWatch>) {
-    match binding {
-        Some(b) => {
-            let _ = b.revoked.wait_for(|revoked| *revoked).await;
-        }
-        None => std::future::pending().await,
+/// What happened to the binding traffic came through.
+enum BindingChange {
+    /// Revoked, or gone.
+    Revoked,
+    /// Its sessions were replaced.
+    Updated,
+}
+
+/// Resolves when the binding is revoked or gone, or its sessions change;
+/// never without one.
+async fn binding_changed(binding: &mut Option<BindingWatch>) -> BindingChange {
+    let Some(b) = binding else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = b.revoked.wait_for(|revoked| *revoked) => BindingChange::Revoked,
+        changed = b.sessions.changed() => match changed {
+            Ok(()) => BindingChange::Updated,
+            Err(_) => BindingChange::Revoked,
+        },
     }
 }
 
@@ -168,11 +241,36 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
             if !current.lease_valid() {
                 return SessionEnd::LeaseExpired;
             }
-            let Ok(left) = (watch.deadline - Utc::now()).to_std() else {
-                return SessionEnd::Expired;
+            let now = clock::now();
+            let mut due = (watch.deadline, SessionEnd::Expired);
+            if let Some(rule) = &watch.rule {
+                let Some(active) = current
+                    .rules
+                    .iter()
+                    .find(|r| r.id == rule.id && r.scope == rule.scope)
+                else {
+                    return SessionEnd::RuleRemoved;
+                };
+                if let Some(binding) = &watch.binding {
+                    if !binding.state.grants(&current, &rule.id, now) {
+                        return SessionEnd::GrantRemoved;
+                    }
+                }
+                if rule.strict {
+                    if rule.deadline < due.0 {
+                        due = (rule.deadline, SessionEnd::GrantExpired);
+                    }
+                    if let Some(not_after) = active.not_after.filter(|at| *at < due.0) {
+                        due = (not_after, SessionEnd::CredentialExpired);
+                    }
+                }
+            }
+            let (at, end) = due;
+            let Ok(left) = (at - now).to_std() else {
+                return end;
             };
             if left.is_zero() {
-                return SessionEnd::Expired;
+                return end;
             }
             (Instant::now() + left).min(Instant::from_std(current.lease_deadline))
         };
@@ -185,7 +283,11 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
                 }
             }
             () = sleep_until(deadline) => {}
-            () = binding_revoked(&mut watch.binding) => return SessionEnd::BindingRevoked,
+            change = binding_changed(&mut watch.binding) => {
+                if matches!(change, BindingChange::Revoked) {
+                    return SessionEnd::BindingRevoked;
+                }
+            }
             () = plane_closed(&mut watch.lifecycle) => return SessionEnd::Shutdown,
         }
     }
@@ -199,14 +301,75 @@ pub struct StreamCut {
     pub end: SessionEnd,
 }
 
-/// A response body that ends with [`StreamCut`] when its session ends.
+/// A body that ends with [`StreamCut`] when its session ends.
 pub(crate) struct CutBody {
     inner: ProxyBody,
     session_id: SessionId,
     end: oneshot::Receiver<SessionEnd>,
-    /// Aborted when the body finishes or is dropped.
-    watcher: JoinHandle<()>,
+    /// Aborted once every body it watches for is finished or dropped.
+    _watcher: Arc<AbortOnDrop>,
     cut: bool,
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// One watcher for the bodies of a request, its upload and its response:
+/// each is cut when the watch ends. `on_cut` runs once if any of them is
+/// still being read then, and before they end: once a reader sees the
+/// cut, its record exists.
+pub(crate) struct CutSignal {
+    session_id: SessionId,
+    ends: Vec<oneshot::Receiver<SessionEnd>>,
+    watcher: Arc<AbortOnDrop>,
+}
+
+impl CutSignal {
+    pub fn spawn(
+        watch: SessionWatch,
+        bodies: usize,
+        on_cut: impl FnOnce(SessionEnd) + Send + 'static,
+    ) -> Self {
+        let session_id = watch.jti;
+        let (txs, ends): (Vec<_>, Vec<_>) = (0..bodies).map(|_| oneshot::channel()).unzip();
+        let watcher = tokio::spawn(async move {
+            let end = session_end(watch).await;
+            // Record first, then end the bodies: whoever sees a stream end
+            // may let the connection go, and a shutdown counting connections
+            // must then find the record already queued.
+            if txs.iter().any(|tx| !tx.is_closed()) {
+                on_cut(end);
+                for tx in txs {
+                    let _ = tx.send(end);
+                }
+            }
+        });
+        Self {
+            session_id,
+            ends,
+            watcher: Arc::new(AbortOnDrop(watcher)),
+        }
+    }
+
+    /// Wraps the next body; one beyond those it was spawned for is
+    /// returned as it is.
+    pub fn wrap(&mut self, inner: ProxyBody) -> ProxyBody {
+        let Some(end) = self.ends.pop() else {
+            return inner;
+        };
+        http_body_util::BodyExt::boxed(CutBody {
+            inner,
+            session_id: self.session_id,
+            end,
+            _watcher: self.watcher.clone(),
+            cut: false,
+        })
+    }
 }
 
 impl CutBody {
@@ -217,31 +380,7 @@ impl CutBody {
         watch: SessionWatch,
         on_cut: impl FnOnce(SessionEnd) + Send + 'static,
     ) -> ProxyBody {
-        let session_id = watch.jti;
-        let (tx, end) = oneshot::channel();
-        let watcher = tokio::spawn(async move {
-            let end = session_end(watch).await;
-            // Record first, then end the body: whoever sees the stream end
-            // may let the connection go, and a shutdown counting connections
-            // must then find the record already queued.
-            if !tx.is_closed() {
-                on_cut(end);
-                let _ = tx.send(end);
-            }
-        });
-        http_body_util::BodyExt::boxed(Self {
-            inner,
-            session_id,
-            end,
-            watcher,
-            cut: false,
-        })
-    }
-}
-
-impl Drop for CutBody {
-    fn drop(&mut self) {
-        self.watcher.abort();
+        CutSignal::spawn(watch, 1, on_cut).wrap(inner)
     }
 }
 
@@ -274,6 +413,9 @@ impl Body for CutBody {
         self.inner.size_hint()
     }
 }
+
+#[cfg(test)]
+mod deadline_tests;
 
 #[cfg(test)]
 mod tests {

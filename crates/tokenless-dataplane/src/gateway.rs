@@ -300,6 +300,7 @@ async fn handle(
         shared: shared.clone(),
         upstream,
         binding: None,
+        bound_token: None,
     });
     let mut response = handle_intercepted(req, ctx.clone()).await;
     // The client authenticated to the gateway, not to the upstream. An

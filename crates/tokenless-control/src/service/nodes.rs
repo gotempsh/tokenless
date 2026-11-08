@@ -663,6 +663,8 @@ mod tests {
             node_id: node,
             binding: None,
             not_after: None,
+            rule_not_after: Default::default(),
+            strict: false,
         }
     }
 

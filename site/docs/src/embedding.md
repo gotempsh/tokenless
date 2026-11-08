@@ -61,14 +61,16 @@ let minted = control.sessions.mint(&host, &vault.id, MintSession {
     node_id: Some(node.id),
     binding: Some(SessionBinding { id: "sbx-42".into(), generation: 1 }),
     not_after: Some(grant_ends_at),
+    strict: true,
     ttl_secs: Some(900),
-    ..
+    ..Default::default()
 }).await?;
 let version = installer.install(&control.nodes.build_snapshot(&node).await?)?;
 let binding = dataplane.bind(BindingSpec {
     binding_id: "sbx-42".into(),
     generation: 1,
     sessions: vec![minted.token],
+    version: 1,
     max_connections: 8,
 })?;
 binding.ready(version, Duration::from_secs(5)).await?;
@@ -86,19 +88,47 @@ tokio::spawn(async move { binding.serve(workload_connection).await });
   vsock. Call it once per connection the workload opens.
 - `binding.revoke()` cuts everything the workload has open and refuses
   new connections.
+- `binding.update(BindingUpdate { version, sessions })` replaces its
+  sessions: to add or remove a grant, or to renew. The version must be
+  higher than the binding's, so a delayed command can't bring back an
+  older set (`StaleBindingUpdate`). New connections use the new sessions.
+  Open traffic under a rule a new session still grants carries on, so a
+  renewal interrupts nothing; traffic under a rule none grants is cut.
 
 ## Deadlines
-
-Give a binding one session per group of services that end at the same
-time. When one session ends, the others keep working. Two sessions of a
-binding may not cover the same host. `bind` refuses them when the
-snapshot in force already has their rules; otherwise `ready` fails with
-`overlapping_sessions` once the snapshot that has them arrives.
 
 `not_after` is an absolute deadline: it caps the session's lifetime, and
 once it has passed no session is minted with it. Pass the same
 `not_after` on every renewal and a renewal can never extend access past
 it.
+
+Grants that end at different times can share one session, even on the
+same host: `rule_not_after` gives each rule its own earlier deadline.
+After it the rule is refused (`403`) while the session's other rules
+keep working. Pass the same deadlines on every renewal; one that has
+passed refuses the mint, so a late renewal can't bring a grant back.
+
+Mint with `strict: true` when you promise access for a set time. Without
+it, a deadline stops new requests and open traffic gets a grace period
+(an hour), so a tunnel doesn't break at every renewal. With it, open
+traffic stops at the deadline itself:
+
+- each request's upload and response are cut at the earliest of the
+  session's expiry, their rule's deadline and the credential's
+  `not_after`, so one grant ending leaves the others' streams running;
+- a tunnel closes when the last grant that covers its host ends, and a
+  tunnel to an uncovered host when the session expires;
+- deadlines are checked against a clock that setting the system time
+  back cannot rewind, and fresh snapshots arriving don't move them.
+
+A node that predates strict sessions or rule deadlines refuses their
+tokens rather than enforcing less.
+
+Two sessions of a binding may not cover the same host: give grants on
+one host to one session, with their own deadlines. `bind` refuses
+overlapping sessions when the snapshot in force already has their rules;
+otherwise `ready` fails with `overlapping_sessions` once the snapshot
+that has them arrives. A binding holds at most 16 sessions.
 
 A service's secret can carry its own expiry (`not_after` when you create
 the service or replace its secret, or **Expires** in the console). After

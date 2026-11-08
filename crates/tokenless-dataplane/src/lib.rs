@@ -16,6 +16,7 @@
 
 pub mod audit;
 pub mod binding;
+mod clock;
 pub mod cut;
 pub mod embedded;
 pub mod error;
@@ -50,7 +51,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-pub use binding::{Binding, BindingSpec};
+pub use binding::{Binding, BindingSpec, BindingUpdate};
 pub use embedded::SnapshotInstaller;
 pub use error::DataPlaneError;
 pub use node::{enroll, NodeIdentity};

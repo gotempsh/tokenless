@@ -286,6 +286,8 @@ impl Harness {
                         generation,
                     }),
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -342,6 +344,7 @@ impl Harness {
                 binding_id: id.into(),
                 generation,
                 sessions,
+                version: 0,
                 max_connections: 8,
             })
             .map(Arc::new)

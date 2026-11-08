@@ -145,6 +145,7 @@ impl Running {
                     binding_id: id.into(),
                     generation: 1,
                     sessions,
+                    version: 0,
                     max_connections: 8,
                 })
                 .unwrap(),

@@ -56,6 +56,20 @@ pub enum DataPlaneError {
     #[error("binding '{binding_id}' has been revoked; bind the workload again")]
     BindingRevoked { binding_id: String },
 
+    #[error("binding '{binding_id}' was not updated to version {version}: {reason}")]
+    InvalidBindingUpdate {
+        binding_id: String,
+        version: u64,
+        reason: String,
+    },
+
+    #[error("binding '{binding_id}' is at version {current}, so the update to version {offered} is stale and was refused")]
+    StaleBindingUpdate {
+        binding_id: String,
+        current: u64,
+        offered: u64,
+    },
+
     #[error("binding '{binding_id}' already has its {max_connections} connections open")]
     BindingFull {
         binding_id: String,

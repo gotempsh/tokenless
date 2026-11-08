@@ -1360,6 +1360,8 @@ mod tests {
             node_id: None,
             binding: None,
             not_after: None,
+            rule_not_after: Default::default(),
+            strict: false,
         };
         let minted = cp
             .sessions
@@ -1393,6 +1395,8 @@ mod tests {
                     node_id: None,
                     binding: None,
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -1730,6 +1734,8 @@ mod tests {
                     node_id: None,
                     binding: None,
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -1750,6 +1756,8 @@ mod tests {
                         node_id: None,
                         binding: None,
                         not_after: None,
+                        rule_not_after: Default::default(),
+                        strict: false,
                     },
                 )
                 .await,
@@ -1868,6 +1876,8 @@ mod tests {
                     node_id: None,
                     binding: None,
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -2041,6 +2051,8 @@ mod tests {
                     node_id: None,
                     binding: None,
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -2173,6 +2185,8 @@ mod tests {
                     node_id: None,
                     binding: None,
                     not_after: None,
+                    rule_not_after: Default::default(),
+                    strict: false,
                 },
             )
             .await
@@ -2317,6 +2331,8 @@ mod tests {
                 generation: 4,
             }),
             not_after: None,
+            rule_not_after: Default::default(),
+            strict: false,
         };
         let minted = cp
             .sessions
@@ -2442,6 +2458,8 @@ mod tests {
             node_id: None,
             binding: None,
             not_after: None,
+            rule_not_after: Default::default(),
+            strict: false,
         };
         let err = cp
             .sessions
@@ -2915,6 +2933,8 @@ mod tests {
             node_id: None,
             binding: None,
             not_after: None,
+            rule_not_after: Default::default(),
+            strict: false,
         };
         cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
         let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();

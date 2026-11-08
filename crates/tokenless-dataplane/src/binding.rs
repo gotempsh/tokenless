@@ -11,14 +11,23 @@
 //! `Proxy-Authorization` header on a bound stream is ignored. Sessions are
 //! minted for one binding (`sub` = `<binding id>/<generation>`), so they
 //! work only through it, and a binding takes no other session.
+//!
+//! The host replaces a binding's sessions with [`Binding::update`] to add or
+//! remove grants and to renew, without cutting what still applies: each
+//! update carries a higher version than the last, so a stale command is
+//! refused. New connections use the new sessions; open traffic carrying a
+//! rule that no session of the binding grants any more is cut, and an
+//! intercepted connection under a session that is gone closes once its
+//! requests in flight finish, so the workload reconnects under the new one.
 
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use chrono::{DateTime, Utc};
-use tokenless_core::ids::NodeId;
+use sha2::{Digest, Sha256};
+use tokenless_core::ids::{NodeId, RuleId};
 use tokenless_core::session::{binding_subject, verify_session, SessionClaims, SessionError};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch, Semaphore};
@@ -33,8 +42,8 @@ use crate::status::{
     UpstreamFailureKind,
 };
 
-/// Sessions one binding may hold: one per group of services that share a
-/// deadline.
+/// Sessions one binding may hold. Grants on one host share a session,
+/// each with its own deadline if it needs one.
 pub const MAX_BINDING_SESSIONS: usize = 16;
 
 /// What [`DataPlane::bind`](crate::DataPlane::bind) needs.
@@ -46,6 +55,9 @@ pub struct BindingSpec {
     /// Session tokens minted for this binding. Kept in memory only and
     /// zeroed when the binding goes away.
     pub sessions: Vec<String>,
+    /// The host's version of this set of sessions. Each
+    /// [`Binding::update`] must carry a higher one.
+    pub version: u64,
     /// Open connections, tunnels included, the workload may hold at once.
     pub max_connections: usize,
 }
@@ -56,9 +68,75 @@ impl fmt::Debug for BindingSpec {
             .field("binding_id", &self.binding_id)
             .field("generation", &self.generation)
             .field("sessions", &self.sessions.len())
+            .field("version", &self.version)
             .field("max_connections", &self.max_connections)
             .finish()
     }
+}
+
+/// A new set of sessions for a binding: [`Binding::update`].
+pub struct BindingUpdate {
+    /// Higher than the binding's current version, or the update is
+    /// refused as stale.
+    pub version: u64,
+    /// Every session the binding holds from now on, minted for the same
+    /// binding and generation.
+    pub sessions: Vec<String>,
+}
+
+impl fmt::Debug for BindingUpdate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindingUpdate")
+            .field("version", &self.version)
+            .field("sessions", &self.sessions.len())
+            .finish()
+    }
+}
+
+/// One version of a binding's sessions.
+pub(crate) struct SessionSet {
+    pub version: u64,
+    tokens: Vec<Zeroizing<String>>,
+    /// SHA-256 of each token: how open traffic tells whether its session
+    /// is still one of the binding's.
+    digests: Vec<[u8; 32]>,
+    /// The sessions' claims, once every token has verified: what the
+    /// status reads instead of verifying each token again.
+    claims: OnceLock<Vec<SessionClaims>>,
+}
+
+impl SessionSet {
+    fn new(version: u64, tokens: Vec<String>, claims: OnceLock<Vec<SessionClaims>>) -> Self {
+        let digests = tokens.iter().map(|t| token_digest(t)).collect();
+        Self {
+            version,
+            tokens: tokens.into_iter().map(Zeroizing::new).collect(),
+            digests,
+            claims,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    fn claims(&self, snapshot: Option<&ActiveSnapshot>) -> Option<&[SessionClaims]> {
+        if let Some(claims) = self.claims.get() {
+            return Some(claims);
+        }
+        let snapshot = snapshot?;
+        let verified: Vec<_> = self
+            .tokens
+            .iter()
+            .map(|t| verify_session(t, &snapshot.session_keys, Utc::now()).ok())
+            .collect::<Option<_>>()?;
+        Some(self.claims.get_or_init(|| verified))
+    }
+}
+
+/// Identifies a token without keeping it.
+pub(crate) fn token_digest(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
 }
 
 pub(crate) struct BindingState {
@@ -66,10 +144,13 @@ pub(crate) struct BindingState {
     pub generation: u64,
     /// `<binding id>/<generation>`: the `sub` its sessions carry.
     pub subject: Arc<str>,
-    tokens: Vec<Zeroizing<String>>,
-    /// The sessions' claims, once every token has verified: what the
-    /// status reads instead of verifying each token again.
-    claims: OnceLock<Vec<SessionClaims>>,
+    /// The data plane node it is on.
+    node: NodeId,
+    sessions: ArcSwap<SessionSet>,
+    /// Bumped by every [`Binding::update`].
+    sessions_changed: watch::Sender<u64>,
+    /// Serialises updates, so two cannot both pass the version check.
+    updating: Mutex<()>,
     revoked: watch::Sender<bool>,
     connections: Arc<Semaphore>,
     pub max_connections: usize,
@@ -86,11 +167,13 @@ impl Drop for BindingState {
 }
 
 /// What a tunnel opened through a binding watches: the binding being
-/// revoked cuts it.
+/// revoked cuts it, and an update that no longer grants the rule its
+/// traffic carries.
 #[derive(Clone)]
 pub(crate) struct BindingWatch {
     pub state: Arc<BindingState>,
     pub revoked: watch::Receiver<bool>,
+    pub sessions: watch::Receiver<u64>,
 }
 
 impl BindingState {
@@ -98,6 +181,42 @@ impl BindingState {
         BindingWatch {
             state: self.clone(),
             revoked: self.revoked.subscribe(),
+            sessions: self.sessions_changed.subscribe(),
+        }
+    }
+
+    /// The sessions in force.
+    pub fn current(&self) -> Arc<SessionSet> {
+        self.sessions.load_full()
+    }
+
+    /// Whether the session with this token digest is still one of the
+    /// binding's.
+    pub fn holds(&self, digest: &[u8; 32]) -> bool {
+        self.sessions.load().digests.contains(digest)
+    }
+
+    /// Whether a session of the binding still grants `rule` at `now`.
+    pub fn grants(&self, snapshot: &ActiveSnapshot, rule: &RuleId, now: DateTime<Utc>) -> bool {
+        let set = self.sessions.load();
+        let Some(claims) = set.claims(Some(snapshot)) else {
+            return false;
+        };
+        claims.iter().any(|c| {
+            c.rules.contains(rule)
+                && now < c.rule_deadline(rule)
+                && check_session(snapshot, c, &self.node, Some(&self.subject)).is_ok()
+        })
+    }
+
+    /// Resolves once the session with this token digest is no longer one
+    /// of the binding's, or the binding is gone.
+    pub async fn left(&self, digest: [u8; 32]) {
+        let mut changes = self.sessions_changed.subscribe();
+        while self.holds(&digest) {
+            if changes.changed().await.is_err() {
+                return std::future::pending().await;
+            }
         }
     }
 
@@ -125,25 +244,12 @@ impl BindingState {
         self.status_changed.send_modify(|n| *n = n.wrapping_add(1));
     }
 
-    fn claims(&self, snapshot: Option<&ActiveSnapshot>) -> Option<&[SessionClaims]> {
-        if let Some(claims) = self.claims.get() {
-            return Some(claims);
-        }
-        let snapshot = snapshot?;
-        let verified: Vec<_> = self
-            .tokens
-            .iter()
-            .map(|t| verify_session(t, &snapshot.session_keys, Utc::now()).ok())
-            .collect::<Option<_>>()?;
-        Some(self.claims.get_or_init(|| verified))
-    }
-
     /// Two sessions covering one host under `snapshot`, described, if so.
     /// Checked on every status, not only at bind: a node that holds only
     /// its sessions' rules learns them after the binding is made.
     pub fn overlap(&self, snapshot: Option<&ActiveSnapshot>) -> Option<String> {
         let snapshot = snapshot?;
-        overlap(snapshot, self.claims(Some(snapshot))?)
+        overlap(snapshot, self.current().claims(Some(snapshot))?)
     }
 
     pub fn session_statuses(
@@ -157,10 +263,11 @@ impl BindingState {
             expires_at: Some(c.exp),
             problem: session_problem(snapshot, c, node, &self.subject, now),
         };
-        if let Some(claims) = self.claims(snapshot) {
+        let set = self.current();
+        if let Some(claims) = set.claims(snapshot) {
             return claims.iter().map(of).collect();
         }
-        self.tokens
+        set.tokens
             .iter()
             .map(|token| {
                 let Some(s) = snapshot else {
@@ -190,42 +297,90 @@ impl BindingState {
             .collect()
     }
 
-    /// The session a CONNECT to `host:port` uses: the one valid session
-    /// whose rules cover the host, or, when none does, the first valid one
-    /// (the unmatched-host policy then decides).
+    /// The session a CONNECT to `host:port` uses, with its token's
+    /// digest: the one valid session whose rules cover the host, or, when
+    /// none does, the first valid one (the unmatched-host policy then
+    /// decides).
     pub fn session_for(
         &self,
         snapshot: &ActiveSnapshot,
         host: &str,
         port: u16,
         node: &NodeId,
-    ) -> Result<SessionClaims, &'static str> {
+    ) -> Result<(SessionClaims, [u8; 32]), &'static str> {
         if self.is_revoked() {
             return Err("this binding has been revoked");
         }
         let now = Utc::now();
-        let mut valid = self.tokens.iter().filter_map(|token| {
-            let claims = verify_session(token, &snapshot.session_keys, now).ok()?;
-            check_session(snapshot, &claims, node, Some(&self.subject)).ok()?;
-            Some(claims)
-        });
+        let set = self.current();
+        let mut valid = set
+            .tokens
+            .iter()
+            .zip(&set.digests)
+            .filter_map(|(token, digest)| {
+                let claims = verify_session(token, &snapshot.session_keys, now).ok()?;
+                check_session(snapshot, &claims, node, Some(&self.subject)).ok()?;
+                Some((claims, *digest))
+            });
         let Some(first) = valid.next() else {
             return Err("no session of this binding is valid: each has expired or been revoked");
         };
         let covers = |c: &SessionClaims| {
             session_rules(snapshot, c).any(|r| r.allow.matches_host(host, port))
         };
-        let mut chosen: Option<SessionClaims> = covers(&first).then(|| first.clone());
-        for claims in valid {
+        let mut chosen = covers(&first.0).then(|| first.clone());
+        for (claims, digest) in valid {
             if covers(&claims) {
                 if chosen.is_some() {
                     return Err("more than one session of this binding covers this host, so none is used; give each service to one session");
                 }
-                chosen = Some(claims);
+                chosen = Some((claims, digest));
             }
         }
         Ok(chosen.unwrap_or(first))
     }
+}
+
+/// Checks a binding's sessions against the snapshot in force, if there is
+/// one: each verifies, was minted for this binding and node, and no two
+/// cover one host. Without a snapshot they are checked once one arrives.
+fn verify_sessions(
+    tokens: &[String],
+    subject: &str,
+    shared: &ProxyShared,
+) -> Result<OnceLock<Vec<SessionClaims>>, String> {
+    if tokens.is_empty() || tokens.len() > MAX_BINDING_SESSIONS {
+        return Err(format!(
+            "a binding needs 1-{MAX_BINDING_SESSIONS} sessions, got {}",
+            tokens.len()
+        ));
+    }
+    let Some(snapshot) = shared.snapshot.load_full() else {
+        return Ok(OnceLock::new());
+    };
+    let mut verified: Vec<SessionClaims> = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        let claims = verify_session(token, &snapshot.session_keys, Utc::now())
+            .map_err(|e| format!("a session is not usable: {e}"))?;
+        if claims.sub.as_deref() != Some(subject) {
+            return Err(format!(
+                "session {} was minted for {}, not {subject}",
+                claims.jti,
+                claims.sub.as_deref().unwrap_or("use without a binding")
+            ));
+        }
+        if let Some(aud) = claims.aud.filter(|aud| *aud != shared.node) {
+            return Err(format!(
+                "session {} is for node {aud}, this node is {}",
+                claims.jti, shared.node
+            ));
+        }
+        verified.push(claims);
+    }
+    if let Some(reason) = overlap(&snapshot, &verified) {
+        return Err(reason);
+    }
+    Ok(OnceLock::from(verified))
 }
 
 /// Why two of a binding's sessions may not be held together, if they may
@@ -269,50 +424,21 @@ impl Binding {
             reason,
         };
         let subject = binding_subject(&spec.binding_id, spec.generation)?;
-        if spec.sessions.is_empty() || spec.sessions.len() > MAX_BINDING_SESSIONS {
-            return Err(invalid(format!(
-                "a binding needs 1-{MAX_BINDING_SESSIONS} sessions, got {}",
-                spec.sessions.len()
-            )));
-        }
         if spec.max_connections == 0 {
             return Err(invalid("max_connections must be at least 1".into()));
         }
         // With a snapshot in force, a session that can never work here is
         // refused now rather than on the workload's first request.
-        let mut claims = OnceLock::new();
-        if let Some(snapshot) = shared.snapshot.load_full() {
-            let mut verified: Vec<SessionClaims> = Vec::with_capacity(spec.sessions.len());
-            for token in &spec.sessions {
-                let claims = verify_session(token, &snapshot.session_keys, Utc::now())
-                    .map_err(|e| invalid(format!("a session is not usable: {e}")))?;
-                if claims.sub.as_deref() != Some(subject.as_str()) {
-                    return Err(invalid(format!(
-                        "session {} was minted for {}, not {subject}",
-                        claims.jti,
-                        claims.sub.as_deref().unwrap_or("use without a binding")
-                    )));
-                }
-                if let Some(aud) = claims.aud.filter(|aud| *aud != shared.node) {
-                    return Err(invalid(format!(
-                        "session {} is for node {aud}, this node is {}",
-                        claims.jti, shared.node
-                    )));
-                }
-                verified.push(claims);
-            }
-            if let Some(reason) = overlap(&snapshot, &verified) {
-                return Err(invalid(reason));
-            }
-            claims = OnceLock::from(verified);
-        }
+        let claims = verify_sessions(&spec.sessions, &subject, &shared).map_err(invalid)?;
         let (revoked, _) = watch::channel(false);
         let state = Arc::new(BindingState {
             id: spec.binding_id,
             generation: spec.generation,
             subject: subject.into(),
-            tokens: spec.sessions.into_iter().map(Zeroizing::new).collect(),
-            claims,
+            node: shared.node,
+            sessions: ArcSwap::from_pointee(SessionSet::new(spec.version, spec.sessions, claims)),
+            sessions_changed: watch::channel(spec.version).0,
+            updating: Mutex::new(()),
             revoked,
             connections: Arc::new(Semaphore::new(spec.max_connections)),
             max_connections: spec.max_connections,
@@ -379,6 +505,54 @@ impl Binding {
         Ok(())
     }
 
+    /// Replaces the binding's sessions. Refused when `update.version` is
+    /// not higher than the current one, so a delayed command cannot bring
+    /// back an older set, and with the same checks as
+    /// [`DataPlane::bind`](crate::DataPlane::bind). Open traffic under a
+    /// rule some new session still grants carries on, so a renewal
+    /// interrupts nothing; traffic under a rule none grants is cut.
+    pub fn update(&self, update: BindingUpdate) -> Result<(), DataPlaneError> {
+        let state = &self.state;
+        if state.is_revoked() {
+            return Err(DataPlaneError::BindingRevoked {
+                binding_id: state.id.clone(),
+            });
+        }
+        let _one_at_a_time = state
+            .updating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let current = state.sessions.load().version;
+        if update.version <= current {
+            return Err(DataPlaneError::StaleBindingUpdate {
+                binding_id: state.id.clone(),
+                current,
+                offered: update.version,
+            });
+        }
+        let claims =
+            verify_sessions(&update.sessions, &state.subject, &self.shared).map_err(|reason| {
+                DataPlaneError::InvalidBindingUpdate {
+                    binding_id: state.id.clone(),
+                    version: update.version,
+                    reason,
+                }
+            })?;
+        state.sessions.store(Arc::new(SessionSet::new(
+            update.version,
+            update.sessions,
+            claims,
+        )));
+        state.sessions_changed.send_replace(update.version);
+        self.shared.status_bump();
+        Ok(())
+    }
+
+    /// The version of the sessions in force.
+    pub fn version(&self) -> u64 {
+        self.state.current().version
+    }
+
     /// Cuts every connection and tunnel of this binding and refuses new
     /// ones. Idempotent.
     pub fn revoke(&self) {
@@ -441,7 +615,8 @@ impl fmt::Debug for Binding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Binding")
             .field("subject", &self.state.subject)
-            .field("sessions", &self.state.tokens.len())
+            .field("sessions", &self.state.current().len())
+            .field("version", &self.version())
             .field("revoked", &self.state.is_revoked())
             .finish()
     }
@@ -573,6 +748,7 @@ mod tests {
                         binding_id: id.into(),
                         generation: 1,
                         sessions,
+                        version: 0,
                         max_connections,
                     })
                     .unwrap(),
@@ -661,6 +837,7 @@ mod tests {
                 binding_id: "sbx-a".into(),
                 generation: 1,
                 sessions: twice,
+                version: 0,
                 max_connections: 8,
             })
             .unwrap_err();
@@ -745,6 +922,7 @@ mod tests {
                 binding_id: "sbx-a".into(),
                 generation: 2,
                 sessions,
+                version: 0,
                 max_connections: 8,
             })
             .unwrap_err()

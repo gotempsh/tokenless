@@ -51,7 +51,8 @@ use tracing::{debug, info, warn};
 
 use crate::audit::AuditPipeline;
 use crate::binding::BindingState;
-use crate::cut::{session_end, session_expiry, SessionEnd, SessionWatch};
+use crate::clock;
+use crate::cut::{session_end, session_expiry, CutSignal, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
 use crate::shutdown::{closed, stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
@@ -202,7 +203,7 @@ pub(crate) fn check_session(
     node: &NodeId,
     binding: Option<&str>,
 ) -> Result<(), &'static str> {
-    if Utc::now() >= claims.exp {
+    if clock::now() >= claims.exp {
         return Err("proxy session has expired");
     }
     if snapshot.revoked.contains(&claims.jti) {
@@ -397,13 +398,14 @@ fn header_session(
     Ok(claims)
 }
 
-/// The session a bound CONNECT uses, chosen by its target.
+/// The session a bound CONNECT uses, chosen by its target, and its token's
+/// digest.
 fn bound_session(
     req: &Request<Incoming>,
     snapshot: &ActiveSnapshot,
     shared: &ProxyShared,
     binding: &BindingState,
-) -> Result<SessionClaims, Refused> {
+) -> Result<(SessionClaims, [u8; 32]), Refused> {
     let Some((host, port)) = req
         .uri()
         .authority()
@@ -449,11 +451,12 @@ async fn handle_proxy_request(
         );
     }
     let session = match &binding {
-        None => header_session(&req, &snapshot, &shared),
-        Some(binding) => bound_session(&req, &snapshot, &shared, binding),
+        None => header_session(&req, &snapshot, &shared).map(|claims| (claims, None)),
+        Some(binding) => bound_session(&req, &snapshot, &shared, binding)
+            .map(|(claims, digest)| (claims, Some(digest))),
     };
-    let claims = match session {
-        Ok(claims) => claims,
+    let (claims, bound_token) = match session {
+        Ok(session) => session,
         Err(refusal) => return *refusal,
     };
     if req.method() != Method::CONNECT {
@@ -566,10 +569,21 @@ async fn handle_proxy_request(
             reason,
         );
     }
+    // Strict: the tunnel lasts as long as the longest grant that covers its
+    // host; each request's streams are watched for their own rule.
+    let mut watch = shared.session_watch(&claims).through(binding.as_ref());
+    if claims.strict && tls_config.is_some() {
+        if let Some(last) = session_rules(&snapshot, &claims)
+            .filter(|r| r.allow.matches_host(&host, port))
+            .map(|r| claims.rule_deadline(&r.id))
+            .max()
+        {
+            watch = watch.until(last);
+        }
+    }
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
-    let watch = shared.session_watch(&claims).through(binding.as_ref());
     let claims = Arc::new(claims);
     tokio::spawn(async move {
         // The tunnel counts against the connection limits until it closes.
@@ -592,6 +606,7 @@ async fn handle_proxy_request(
                     claims,
                     shared,
                     watch,
+                    bound_token,
                 )
                 .await;
             }
@@ -718,6 +733,7 @@ pub(crate) fn tunnel_cut(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn intercept_tunnel(
     io: TokioIo<hyper::upgrade::Upgraded>,
     config: Arc<rustls::ServerConfig>,
@@ -726,13 +742,27 @@ async fn intercept_tunnel(
     claims: Arc<SessionClaims>,
     shared: Arc<ProxyShared>,
     watch: SessionWatch,
+    bound_token: Option<[u8; 32]>,
 ) {
     // The handshake is bounded by its own timeouts; the session is watched
     // from the moment requests can flow.
-    let binding = watch.binding.as_ref().map(|b| b.state.clone());
+    let binding = watch
+        .binding
+        .as_ref()
+        .map(|b| b.state.clone())
+        .zip(bound_token);
     tokio::select! {
         () = intercepted_connection(io, config, host.clone(), port, claims.clone(), shared.clone(), binding) => {}
         end = session_end(watch) => tunnel_cut(&shared, &claims, &host, port, end),
+    }
+}
+
+/// Resolves once the bound session is no longer one of its binding's;
+/// never for a session from a header.
+async fn left_binding(binding: Option<(Arc<BindingState>, [u8; 32])>) {
+    match binding {
+        Some((state, digest)) => state.left(digest).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -743,7 +773,7 @@ async fn intercepted_connection(
     port: u16,
     claims: Arc<SessionClaims>,
     shared: Arc<ProxyShared>,
-    binding: Option<Arc<BindingState>>,
+    binding: Option<(Arc<BindingState>, [u8; 32])>,
 ) {
     let start = match timeout(
         Duration::from_secs(10),
@@ -783,6 +813,8 @@ async fn intercepted_connection(
     );
     let exp = claims.exp;
     let mut lifecycle = shared.lifecycle.subscribe();
+    let left = left_binding(binding.clone());
+    let (binding, bound_token) = binding.unzip();
     let ctx = Arc::new(TunnelCtx {
         host,
         port,
@@ -790,6 +822,7 @@ async fn intercepted_connection(
         shared,
         upstream,
         binding,
+        bound_token,
     });
     let service = service_fn(move |req| {
         let ctx = ctx.clone();
@@ -817,6 +850,13 @@ async fn intercepted_connection(
             connection.as_mut().graceful_shutdown();
             connection.await
         }
+        () = left => {
+            // The binding was updated without this session: what is in
+            // flight finishes (or is cut, if its rule is no longer
+            // granted), and the workload reconnects under a current one.
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
     };
     if let Err(e) = served {
         debug!(error = %e, "intercepted connection ended with error");
@@ -833,6 +873,9 @@ pub(crate) struct TunnelCtx {
     pub(crate) upstream: UpstreamHandle,
     /// The binding the tunnel came through, if any.
     pub(crate) binding: Option<Arc<BindingState>>,
+    /// The digest of the binding's session token the tunnel was opened
+    /// under.
+    pub(crate) bound_token: Option<[u8; 32]>,
 }
 
 /// Does the request's own Host (or absolute authority) name the CONNECT target?
@@ -1148,7 +1191,61 @@ pub(crate) async fn handle_intercepted(
             ),
         );
     };
-    if let Some(not_after) = rule.not_after.filter(|at| Utc::now() >= *at) {
+    let now = clock::now();
+    let rule_deadline = claims.rule_deadline(&rule.id);
+    if now >= rule_deadline {
+        Metrics::inc(&shared.metrics.requests_denied_total);
+        audit_best_effort(
+            shared,
+            claims,
+            "proxy.deny",
+            AuditOutcome::Denied,
+            &ctx.host,
+            ctx.port,
+            Some((&method, &path)),
+            &format!(
+                "grant_expired: the session's grant of rule {} has ended",
+                rule.id
+            ),
+        );
+        return respond(
+            StatusCode::FORBIDDEN,
+            &format!(
+                "this session's access to rule {} on {} ended at {}",
+                rule.id,
+                ctx.host,
+                rule_deadline.to_rfc3339()
+            ),
+        );
+    }
+    if let (Some(binding), Some(token)) = (&ctx.binding, &ctx.bound_token) {
+        // A tunnel opened before an update still serves the requests in
+        // flight; it may use only what the binding still grants.
+        if !binding.holds(token) && !binding.grants(&snapshot, &rule.id, now) {
+            Metrics::inc(&shared.metrics.requests_denied_total);
+            audit_best_effort(
+                shared,
+                claims,
+                "proxy.deny",
+                AuditOutcome::Denied,
+                &ctx.host,
+                ctx.port,
+                Some((&method, &path)),
+                &format!(
+                    "grant_removed: no session of the binding grants rule {}",
+                    rule.id
+                ),
+            );
+            return respond(
+                StatusCode::FORBIDDEN,
+                &format!(
+                    "rule {} is no longer granted to this workload; reconnect to use its current access",
+                    rule.id
+                ),
+            );
+        }
+    }
+    if let Some(not_after) = rule.not_after.filter(|at| now >= *at) {
         Metrics::inc(&shared.metrics.requests_denied_total);
         audit_best_effort(
             shared,
@@ -1331,6 +1428,21 @@ pub(crate) async fn handle_intercepted(
     rewrite_headers(req.headers_mut(), rule);
     let rule_id = rule.id;
     let credential_id = rule.credential_id;
+    // Strict sessions and bindings: the upload and the response are cut
+    // when this request's grant ends, not just when the tunnel does.
+    let mut cut = (claims.strict || ctx.binding.is_some()).then(|| {
+        let watch = shared
+            .session_watch(claims)
+            .through(ctx.binding.as_ref())
+            .for_rule(rule, claims);
+        let ctx = ctx.clone();
+        CutSignal::spawn(watch, 2, move |end| {
+            tunnel_cut(&ctx.shared, &ctx.claims, &ctx.host, ctx.port, end);
+        })
+    });
+    if let Some(cut) = &mut cut {
+        req = req.map(|b| cut.wrap(b));
+    }
     drop(snapshot);
     let started = std::time::Instant::now();
     let sent = ctx.upstream.send(req).await;
@@ -1365,7 +1477,11 @@ pub(crate) async fn handle_intercepted(
                     );
                 }
             }
-            response.map(|b| b.map_err(BodyError::from).boxed())
+            let response = response.map(|b| b.map_err(BodyError::from).boxed());
+            match &mut cut {
+                Some(cut) => response.map(|b| cut.wrap(b)),
+                None => response,
+            }
         }
         Err(e) => {
             Metrics::inc(&shared.metrics.upstream_errors_total);

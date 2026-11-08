@@ -25,7 +25,7 @@ use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle}
 use crate::notify::PolicyNotifier;
 use crate::store::{CredentialStore, NodeStore, PolicyStore};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct MintSession {
     /// The rules to grant. Leave empty when minting from `bundle`.
     #[serde(default)]
@@ -57,6 +57,17 @@ pub struct MintSession {
     /// never extends it.
     #[serde(default)]
     pub not_after: Option<DateTime<Utc>>,
+    /// Earlier deadlines for some of the granted rules, so grants that end
+    /// at different times share one session. Like `not_after`, a caller
+    /// that renews passes the same deadlines each time; one that has
+    /// passed refuses the mint.
+    #[serde(default)]
+    pub rule_not_after: BTreeMap<RuleId, DateTime<Utc>>,
+    /// Cut open traffic at the deadlines themselves (the session's, each
+    /// rule's, each credential's), not a grace period after the session
+    /// expires. For access promised for a set time.
+    #[serde(default)]
+    pub strict: bool,
 }
 
 /// Which binding a session is minted for: the workload's id and which start
@@ -261,6 +272,8 @@ impl SessionService {
             now,
             max_ttl,
         )?;
+        let claims = claims.with_rule_deadlines(&req.rule_not_after, now)?;
+        let claims = if req.strict { claims.strict() } else { claims };
         let claims = match req.node_id {
             Some(node) => claims.for_node(node),
             None => claims,
@@ -305,6 +318,12 @@ impl SessionService {
         }
         if let Some(not_after) = req.not_after {
             event = event.detail("not_after", not_after.to_rfc3339());
+        }
+        if claims.strict {
+            event = event.detail("strict", "true");
+        }
+        for (rule_id, deadline) in &claims.rule_exp {
+            event = event.detail(&format!("rule_not_after.{rule_id}"), deadline.to_rfc3339());
         }
         self.policy
             .insert_session(session.clone(), &[event])
@@ -746,6 +765,8 @@ mod tests {
             node_id: None,
             binding: None,
             not_after: Some(not_after),
+            rule_not_after: Default::default(),
+            strict: false,
         }
     }
 
@@ -797,6 +818,102 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(err, ControlError::Validation { .. }), "{err}");
             assert!(err.to_string().contains("has passed"), "{err}");
+        }
+    }
+
+    /// A strict session with an earlier deadline for one rule carries both
+    /// in its signed claims and its mint record. A deadline already passed,
+    /// as a late renewal would pass it, or for a rule the session does not
+    /// grant, refuses the mint, so it cannot bring a grant back.
+    #[tokio::test]
+    async fn rule_deadlines_and_strict_are_signed_and_a_passed_one_is_refused() {
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let other = cs
+            .policy
+            .create_rule(
+                &host,
+                &vault,
+                crate::service::policy::CreateRule {
+                    name: "second".into(),
+                    credential_id: cs
+                        .policy
+                        .get_rule(&host, &rule)
+                        .await
+                        .unwrap()
+                        .credential_id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let grant = Utc::now() + TimeDelta::minutes(5);
+        let mint = |deadlines: BTreeMap<RuleId, DateTime<Utc>>| MintSession {
+            rule_ids: vec![rule, other],
+            ttl_secs: Some(3600),
+            rule_not_after: deadlines,
+            strict: true,
+            ..MintSession::default()
+        };
+        let minted = cs
+            .sessions
+            .mint(&host, &vault, mint(BTreeMap::from([(rule, grant)])))
+            .await
+            .unwrap();
+        let keys = std::collections::HashMap::from([(
+            key_id(&cs.keys.session_signer.verifying_key()),
+            cs.keys.session_signer.verifying_key(),
+        )]);
+        let claims = verify_session(&minted.token, &keys, Utc::now()).unwrap();
+        assert!(claims.strict);
+        assert_eq!(claims.rule_deadline(&rule), grant);
+        assert_eq!(claims.rule_deadline(&other), claims.exp);
+
+        let events = cs
+            .audit
+            .query(
+                &host,
+                Some(vault),
+                Some("session.mint".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        let detail = &events.items[0].detail;
+        assert_eq!(detail.get("strict").map(String::as_str), Some("true"));
+        assert_eq!(
+            detail.get(&format!("rule_not_after.{rule}")),
+            Some(&grant.to_rfc3339())
+        );
+
+        for (deadlines, says) in [
+            (
+                BTreeMap::from([(rule, Utc::now() - TimeDelta::seconds(1))]),
+                "has already passed",
+            ),
+            (
+                BTreeMap::from([(RuleId::new(), grant)]),
+                "not one the session grants",
+            ),
+        ] {
+            let err = cs
+                .sessions
+                .mint(&host, &vault, mint(deadlines))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ControlError::Core(tokenless_core::CoreError::InvalidRuleDeadline { .. })
+                ),
+                "{err}"
+            );
+            assert!(err.to_string().contains(says), "{err}");
         }
     }
 

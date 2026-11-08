@@ -87,8 +87,8 @@ async fn main() -> Result<(), Error> {
                 fields: [("token".to_string(), API_TOKEN.to_string())].into(),
                 custom_headers: vec![],
                 substitutions: vec![],
-            not_after: None,
-        },
+                not_after: None,
+            },
         )
         .await?;
     let rule = control
@@ -157,6 +157,8 @@ async fn main() -> Result<(), Error> {
                     generation: 1,
                 }),
                 not_after: None,
+                rule_not_after: Default::default(),
+                strict: true,
             },
         )
         .await?;
@@ -169,6 +171,7 @@ async fn main() -> Result<(), Error> {
         binding_id: "workload-1".into(),
         generation: 1,
         sessions: vec![minted.token],
+        version: 1,
         max_connections: 8,
     })?);
     binding.ready(version, Duration::from_secs(5)).await?;

@@ -63,6 +63,9 @@ pub enum CoreError {
     #[error("invalid binding '{binding_id}': {reason}")]
     InvalidBinding { binding_id: String, reason: String },
 
+    #[error("invalid deadline for rule {rule_id} in a session: {reason}")]
+    InvalidRuleDeadline { rule_id: String, reason: String },
+
     #[error("invalid session TTL {requested_secs}s: must be between 1s and {max_secs}s")]
     InvalidTtl { requested_secs: u64, max_secs: u64 },
 

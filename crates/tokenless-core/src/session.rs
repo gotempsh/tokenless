@@ -69,6 +69,19 @@ pub struct SessionClaims {
     /// from a `Proxy-Authorization` header; see [`binding_subject`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
+    /// Open traffic stops at the session's deadlines themselves, with no
+    /// grace period: its expiry, each rule's deadline and each
+    /// credential's `not_after`. For a host that promises access for a set
+    /// time; see [`SessionClaims::strict`]. A node that predates it
+    /// refuses the token, so it never runs with the grace period instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
+    /// Rules that end before the session does, with their deadlines, so
+    /// one session can hold grants that end at different times. A rule
+    /// past its deadline is refused as if the session did not hold it;
+    /// see [`SessionClaims::with_rule_deadlines`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rule_exp: BTreeMap<RuleId, DateTime<Utc>>,
 }
 
 /// The `sub` of a session for a binding: the workload's id and which start
@@ -161,7 +174,64 @@ impl SessionClaims {
             labels,
             aud: None,
             sub: None,
+            strict: false,
+            rule_exp: BTreeMap::new(),
         })
+    }
+
+    /// Cuts open traffic at the deadlines, not a grace period after them.
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Gives some of the session's rules their own, earlier deadline. Each
+    /// must be a rule of the session and still ahead at `now`; one at or
+    /// after the session's expiry adds nothing and is left out.
+    pub fn with_rule_deadlines(
+        mut self,
+        deadlines: &BTreeMap<RuleId, DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<Self, CoreError> {
+        for (rule_id, deadline) in deadlines {
+            let invalid = |reason: String| CoreError::InvalidRuleDeadline {
+                rule_id: rule_id.to_string(),
+                reason,
+            };
+            if !self.rules.contains(rule_id) {
+                return Err(invalid("the rule is not one the session grants".into()));
+            }
+            if *deadline <= now {
+                return Err(invalid(format!(
+                    "{} has already passed",
+                    deadline.to_rfc3339()
+                )));
+            }
+            if *deadline < self.exp {
+                self.rule_exp.insert(*rule_id, *deadline);
+            }
+        }
+        Ok(self)
+    }
+
+    /// When `rule` stops being usable under this session: its own
+    /// deadline, or the session's expiry.
+    pub fn rule_deadline(&self, rule: &RuleId) -> DateTime<Utc> {
+        self.rule_exp
+            .get(rule)
+            .copied()
+            .unwrap_or(self.exp)
+            .min(self.exp)
+    }
+
+    /// When open traffic under the session is cut even if nothing revokes
+    /// it: at its expiry when strict, a grace period later otherwise.
+    pub fn open_traffic_deadline(&self) -> DateTime<Utc> {
+        if self.strict {
+            self.exp
+        } else {
+            open_traffic_deadline(self.exp)
+        }
     }
 
     /// Restricts the session to one data plane node.
@@ -447,6 +517,52 @@ mod tests {
         let verified = verify_session(&token, &keys, Utc::now()).unwrap();
         assert_eq!(verified.aud, Some(node));
         assert_eq!(verified, bound);
+    }
+
+    #[test]
+    fn rule_deadlines_and_strict_are_signed_and_absent_by_default() {
+        let (signer, keys, claims) = setup();
+        // Sessions without them serialize as before, so nodes that predate
+        // them keep accepting them.
+        let plain = serde_json::to_string(&claims).unwrap();
+        assert!(
+            !plain.contains("strict") && !plain.contains("rule_exp"),
+            "{plain}"
+        );
+        assert_eq!(
+            claims.open_traffic_deadline(),
+            open_traffic_deadline(claims.exp)
+        );
+
+        let now = Utc::now();
+        let rule = claims.rules[0];
+        let early = now + Duration::minutes(5);
+        let deadlines = BTreeMap::from([(rule, early)]);
+        let strict = claims
+            .clone()
+            .strict()
+            .with_rule_deadlines(&deadlines, now)
+            .unwrap();
+        assert_eq!(strict.rule_deadline(&rule), early);
+        assert_eq!(strict.open_traffic_deadline(), strict.exp);
+        let token = signer.sign(&strict).unwrap();
+        assert_eq!(verify_session(&token, &keys, now).unwrap(), strict);
+
+        // A deadline at or after expiry adds nothing; one of another rule,
+        // or already passed, is refused.
+        let late = BTreeMap::from([(rule, claims.exp + Duration::hours(1))]);
+        let same = claims.clone().with_rule_deadlines(&late, now).unwrap();
+        assert!(same.rule_exp.is_empty());
+        assert_eq!(same.rule_deadline(&rule), claims.exp);
+        for bad in [
+            BTreeMap::from([(RuleId::new(), early)]),
+            BTreeMap::from([(rule, now)]),
+        ] {
+            assert!(matches!(
+                claims.clone().with_rule_deadlines(&bad, now),
+                Err(CoreError::InvalidRuleDeadline { .. })
+            ));
+        }
     }
 
     #[test]
