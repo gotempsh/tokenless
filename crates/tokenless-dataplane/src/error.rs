@@ -71,6 +71,9 @@ pub enum DataPlaneError {
     #[error("the data plane already has its {max_connections} connections open")]
     ConnectionLimit { max_connections: usize },
 
+    #[error("the data plane is shutting down and accepts no new connections")]
+    ShuttingDown,
+
     #[error(transparent)]
     Core(#[from] CoreError),
 }

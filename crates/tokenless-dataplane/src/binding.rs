@@ -325,7 +325,7 @@ impl Binding {
     /// Serves one proxy connection from the workload: any byte stream (a
     /// TCP or Unix socket, a container relay, vsock). Returns when the
     /// connection and the tunnel it opened have closed, or when the binding
-    /// is revoked.
+    /// is revoked. Refused once the data plane is shutting down.
     pub async fn serve<S>(&self, stream: S) -> Result<(), DataPlaneError>
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -335,6 +335,9 @@ impl Binding {
             return Err(DataPlaneError::BindingRevoked {
                 binding_id: state.id.clone(),
             });
+        }
+        if !self.shared.is_running() {
+            return Err(DataPlaneError::ShuttingDown);
         }
         let Ok(own) = state.connections.clone().try_acquire_owned() else {
             Metrics::inc(&self.shared.metrics.connections_rejected);
@@ -631,7 +634,7 @@ mod tests {
         let answer = String::from_utf8_lossy(&buf[..n]);
         assert!(answer.starts_with("HTTP/1.1 407"), "{answer}");
         assert!(answer.contains("works only through it"), "{answer}");
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     /// Two sessions covering one host would leave a request there with no
@@ -652,7 +655,7 @@ mod tests {
             err.to_string().contains("both cover a.example.com"),
             "{err}"
         );
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     /// One session per group of services that share a deadline: when A's
@@ -674,7 +677,7 @@ mod tests {
         assert!(status.contains(" 403 "), "{status}");
         let (status, _) = connect(&binding, "b.example.com:443", None).await;
         assert!(status.contains(" 200 "), "{status}");
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     #[tokio::test]
@@ -708,7 +711,7 @@ mod tests {
             refused(vec![]),
             DataPlaneError::InvalidBinding { .. }
         ));
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     #[tokio::test]
@@ -734,7 +737,7 @@ mod tests {
             a.serve(server).await,
             Err(DataPlaneError::BindingRevoked { .. })
         ));
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     #[tokio::test]
@@ -752,7 +755,7 @@ mod tests {
                 ..
             })
         ));
-        p.dp.shutdown();
+        p.dp.abort();
     }
 
     #[tokio::test]
@@ -783,6 +786,6 @@ mod tests {
             Err(DataPlaneError::ConnectionLimit { max_connections: 1 })
         ));
         drop(first);
-        p.dp.shutdown();
+        p.dp.abort();
     }
 }

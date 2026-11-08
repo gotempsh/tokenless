@@ -23,6 +23,7 @@ pub mod gateway;
 pub mod metrics;
 pub mod node;
 pub mod proxy;
+pub mod shutdown;
 pub mod state;
 pub mod status;
 pub mod tls;
@@ -53,6 +54,7 @@ pub use binding::{Binding, BindingSpec};
 pub use embedded::SnapshotInstaller;
 pub use error::DataPlaneError;
 pub use node::{enroll, NodeIdentity};
+pub use shutdown::{Lifecycle, ShutdownReport};
 pub use status::{
     BindingStatus, NotReady, SessionStatus, Status, UpstreamFailure, UpstreamFailureKind,
 };
@@ -112,6 +114,9 @@ pub struct DataPlane {
     metrics: Arc<Metrics>,
     shared: Arc<ProxyShared>,
     status: watch::Receiver<Status>,
+    /// The listeners: stopped first when shutting down.
+    accepting: Vec<JoinHandle<()>>,
+    /// Snapshots, renewal, audit and status: kept through the drain.
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -199,6 +204,7 @@ impl DataPlane {
             node_id: node_id.to_string(),
             bindings: std::sync::Mutex::new(Vec::new()),
             status_changed: watch::channel(0).0,
+            lifecycle: watch::channel(Lifecycle::Running).0,
         });
         let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
@@ -221,8 +227,9 @@ impl DataPlane {
                 config.max_connections,
             )));
         }
-        let mut tasks = vec![
-            tokio::spawn(proxy::serve(listener, shared.clone())),
+        let mut accepting = vec![tokio::spawn(proxy::serve(listener, shared.clone()))];
+        accepting.extend(gateway_task);
+        let tasks = vec![
             tokio::spawn(run_batcher(
                 audit_rx,
                 shipper,
@@ -231,20 +238,17 @@ impl DataPlane {
                     flush_interval: config.audit_flush_interval,
                 },
                 metrics.clone(),
+                shared.lifecycle.subscribe(),
             )),
+            tokio::spawn(status::run_status_loop(shared.clone(), status_tx)),
         ];
-        tasks.extend(gateway_task);
-        tasks.push(tokio::spawn(status::run_status_loop(
-            shared.clone(),
-            status_tx,
-        )));
         let mut metrics_addr = None;
         if let Some(addr) = config.metrics_listen {
             let listener = TcpListener::bind(addr)
                 .await
                 .map_err(|e| DataPlaneError::io(format!("binding metrics listener {addr}"), e))?;
             metrics_addr = listener.local_addr().ok();
-            tasks.push(tokio::spawn(serve_metrics(listener, metrics.clone())));
+            accepting.push(tokio::spawn(serve_metrics(listener, metrics.clone())));
         }
         info!(%local_addr, node_id = %node_id, "data plane proxy listening");
         Ok(Self {
@@ -256,6 +260,7 @@ impl DataPlane {
             metrics,
             shared,
             status,
+            accepting,
             tasks,
         })
     }
@@ -309,8 +314,27 @@ impl DataPlane {
         self.status.clone()
     }
 
-    pub fn shutdown(self) {
+    /// Stops without losing what is in flight: nothing new is accepted,
+    /// open traffic gets `drain` to finish, what is still open then is cut
+    /// and the audit queue gets one last chance to ship. Reports what was
+    /// cut and how many audit events never reached the control plane; see
+    /// [`shutdown`].
+    pub async fn shutdown(self, drain: Duration) -> ShutdownReport {
+        for task in &self.accepting {
+            task.abort();
+        }
+        let report = shutdown::drain(&self.shared, tokio::time::Instant::now() + drain).await;
         for task in self.tasks {
+            task.abort();
+        }
+        report
+    }
+
+    /// Stops at once: open traffic is cut and queued audit events are
+    /// lost. [`DataPlane::shutdown`] is the orderly way.
+    pub fn abort(self) {
+        self.shared.lifecycle.send_replace(Lifecycle::Closed);
+        for task in self.accepting.into_iter().chain(self.tasks) {
             task.abort();
         }
     }

@@ -33,7 +33,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
-use crate::cut::{CutBody, SessionWatch};
+use crate::cut::CutBody;
 use crate::metrics::Metrics;
 use crate::proxy::{
     audit_best_effort, check_session, handle_intercepted, respond, session_rules, tunnel_cut,
@@ -263,11 +263,7 @@ async fn handle(
     }
 
     let upstream = upstream_for(&slot, &host, port, &shared);
-    let watch = SessionWatch::new(
-        shared.snapshot_changed.subscribe(),
-        shared.snapshot.clone(),
-        &claims,
-    );
+    let watch = shared.session_watch(&claims);
     let claims = Arc::new(claims);
     let ctx = Arc::new(TunnelCtx {
         host,

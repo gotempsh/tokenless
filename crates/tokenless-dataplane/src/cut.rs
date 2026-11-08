@@ -9,7 +9,8 @@
 //! [`session_end`] next to its I/O and is dropped when it resolves: when a
 //! snapshot lists the session as revoked, when the binding it came through
 //! is revoked, when the snapshot lease runs out (revocations can no longer
-//! arrive), or a grace period after the session expired
+//! arrive), when the data plane closes at the end of a
+//! [shutdown](crate::shutdown), or a grace period after the session expired
 //! ([`OPEN_TRAFFIC_GRACE_SECS`](tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS)).
 //!
 //! Expiry itself stops only new traffic: no new tunnel, no new request
@@ -43,6 +44,7 @@ use tokio::time::{sleep_until, Instant};
 
 use crate::binding::{BindingState, BindingWatch};
 use crate::proxy::{BodyError, ProxyBody};
+use crate::shutdown::{closed, Lifecycle};
 use crate::state::SnapshotHandle;
 
 /// Why open traffic was cut.
@@ -55,6 +57,8 @@ pub enum SessionEnd {
     LeaseExpired,
     /// The session expired longer ago than open traffic may outlive it.
     Expired,
+    /// The data plane shut down and its drain deadline passed.
+    Shutdown,
 }
 
 impl SessionEnd {
@@ -68,6 +72,7 @@ impl SessionEnd {
             Self::Expired => {
                 "the session it was opened under expired longer ago than open traffic may outlive it"
             }
+            Self::Shutdown => "the data plane shut down and its drain deadline passed",
         }
     }
 }
@@ -81,6 +86,8 @@ pub(crate) struct SessionWatch {
     /// When the traffic is cut even if nothing revokes it.
     pub deadline: DateTime<Utc>,
     pub binding: Option<BindingWatch>,
+    /// The data plane's lifecycle; traffic is cut when it closes.
+    pub lifecycle: Option<watch::Receiver<Lifecycle>>,
 }
 
 impl SessionWatch {
@@ -95,7 +102,14 @@ impl SessionWatch {
             jti: claims.jti,
             deadline: open_traffic_deadline(claims.exp),
             binding: None,
+            lifecycle: None,
         }
+    }
+
+    /// Also ends when the data plane closes at the end of a shutdown.
+    pub fn until_closed(mut self, lifecycle: watch::Receiver<Lifecycle>) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     /// Also ends when `binding`, the one the traffic came through, is revoked.
@@ -115,6 +129,14 @@ async fn binding_revoked(binding: &mut Option<BindingWatch>) {
     }
 }
 
+/// Resolves when the data plane closes; never without its lifecycle.
+async fn plane_closed(lifecycle: &mut Option<watch::Receiver<Lifecycle>>) {
+    match lifecycle {
+        Some(l) => closed(l).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Resolves at the session's expiry: the moment it may start nothing new.
 pub(crate) async fn session_expiry(exp: DateTime<Utc>) {
     if let Ok(left) = (exp - Utc::now()).to_std() {
@@ -128,6 +150,13 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
     loop {
         if watch.binding.as_ref().is_some_and(|b| *b.revoked.borrow()) {
             return SessionEnd::BindingRevoked;
+        }
+        if watch
+            .lifecycle
+            .as_ref()
+            .is_some_and(|l| *l.borrow() == Lifecycle::Closed)
+        {
+            return SessionEnd::Shutdown;
         }
         let deadline = {
             let Some(current) = watch.snapshot.load_full() else {
@@ -157,6 +186,7 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
             }
             () = sleep_until(deadline) => {}
             () = binding_revoked(&mut watch.binding) => return SessionEnd::BindingRevoked,
+            () = plane_closed(&mut watch.lifecycle) => return SessionEnd::Shutdown,
         }
     }
 }
@@ -553,7 +583,7 @@ mod tests {
             let took = until_closed(stream).await;
             assert!(took < CUT_BOUND, "cut took {took:?}");
             assert_eq!(cuts(&r.dp), 1);
-            r.dp.shutdown();
+            r.dp.abort();
         }
 
         #[tokio::test]
@@ -576,7 +606,7 @@ mod tests {
             let took = until_closed(tls).await;
             assert!(took < CUT_BOUND, "cut took {took:?}");
             assert_eq!(cuts(&r.dp), 1);
-            r.dp.shutdown();
+            r.dp.abort();
         }
 
         /// `tokenless run` renews before expiry and keeps relaying tunnels
@@ -606,7 +636,7 @@ mod tests {
                 after += n;
             }
             assert_eq!(cuts(&r.dp), 0);
-            r.dp.shutdown();
+            r.dp.abort();
         }
 
         /// An idle intercepted connection closes at expiry, so the client
@@ -621,7 +651,7 @@ mod tests {
             let took = until_closed(tls).await;
             assert!(took < Duration::from_secs(3), "closed after {took:?}");
             assert_eq!(cuts(&r.dp), 0);
-            r.dp.shutdown();
+            r.dp.abort();
         }
 
         #[tokio::test]
@@ -690,7 +720,7 @@ mod tests {
             // Then the connection closes, with nothing cut.
             until_closed(tls).await;
             assert_eq!(cuts(&r.dp), 0);
-            r.dp.shutdown();
+            r.dp.abort();
         }
     }
 }

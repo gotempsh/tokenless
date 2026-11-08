@@ -53,6 +53,7 @@ use crate::audit::AuditPipeline;
 use crate::binding::BindingState;
 use crate::cut::{session_end, session_expiry, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
+use crate::shutdown::{stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::status::UpstreamFailureKind;
 use crate::upstream::UpstreamHandle;
@@ -93,9 +94,25 @@ pub struct ProxyShared {
     pub(crate) bindings: std::sync::Mutex<Vec<std::sync::Weak<BindingState>>>,
     /// Bumped when a binding is made or revoked or records a failure.
     pub status_changed: watch::Sender<u64>,
+    /// Running, draining or closed; see [`crate::shutdown`].
+    pub lifecycle: watch::Sender<Lifecycle>,
 }
 
 impl ProxyShared {
+    /// What open traffic under `claims` watches to know when to stop.
+    pub(crate) fn session_watch(&self, claims: &SessionClaims) -> SessionWatch {
+        SessionWatch::new(
+            self.snapshot_changed.subscribe(),
+            self.snapshot.clone(),
+            claims,
+        )
+        .until_closed(self.lifecycle.subscribe())
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        *self.lifecycle.borrow() == Lifecycle::Running
+    }
+
     pub(crate) fn register_binding(&self, binding: &Arc<BindingState>) {
         let mut all = self
             .bindings
@@ -272,6 +289,7 @@ pub(crate) async fn serve_stream<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
+    let mut lifecycle = shared.lifecycle.subscribe();
     let service = service_fn(move |req| {
         let shared = shared.clone();
         let binding = binding.clone();
@@ -282,11 +300,20 @@ pub(crate) async fn serve_stream<S>(
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(Duration::from_secs(30));
-    if let Err(e) = builder
+    let connection = builder
         .serve_connection(TokioIo::new(stream), service)
-        .with_upgrades()
-        .await
-    {
+        .with_upgrades();
+    tokio::pin!(connection);
+    let served = tokio::select! {
+        served = connection.as_mut() => served,
+        () = stopping(&mut lifecycle) => {
+            // Draining: a CONNECT being answered still opens its tunnel,
+            // and the idle connection then closes.
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    };
+    if let Err(e) = served {
         debug!(error = %e, "proxy connection ended with error");
     }
 }
@@ -489,12 +516,7 @@ async fn handle_proxy_request(
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
-    let watch = SessionWatch::new(
-        shared.snapshot_changed.subscribe(),
-        shared.snapshot.clone(),
-        &claims,
-    )
-    .through(binding.as_ref());
+    let watch = shared.session_watch(&claims).through(binding.as_ref());
     let claims = Arc::new(claims);
     tokio::spawn(async move {
         // The tunnel counts against the connection limits until it closes.
@@ -707,6 +729,7 @@ async fn intercepted_connection(
         shared.connect_timeout,
     );
     let exp = claims.exp;
+    let mut lifecycle = shared.lifecycle.subscribe();
     let ctx = Arc::new(TunnelCtx {
         host,
         port,
@@ -727,6 +750,12 @@ async fn intercepted_connection(
     tokio::pin!(connection);
     let served = tokio::select! {
         served = connection.as_mut() => served,
+        () = stopping(&mut lifecycle) => {
+            // Draining: requests in flight answer, then the connection
+            // closes; the drain deadline cuts it if they do not.
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
         () = session_expiry(exp) => {
             // The session may start nothing new, but what is in flight
             // finishes, within the open-traffic grace period that
@@ -1535,6 +1564,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(received.load(Ordering::SeqCst), 1);
-        r.dp.shutdown();
+        r.dp.abort();
     }
 }

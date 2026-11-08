@@ -79,6 +79,7 @@ piped in on standard input.
 | `--metrics-listen` | | Prometheus metrics |
 | `--upstream-ca` | | Extra CAs for upstream TLS (repeatable) |
 | `--no-public-roots` | | Trust only `--upstream-ca` |
+| `--drain-secs` | `30` | On Ctrl-C or SIGTERM, how long open tunnels get to finish before they are cut |
 
 ## Client commands
 

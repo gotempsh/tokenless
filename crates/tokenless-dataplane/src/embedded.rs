@@ -179,7 +179,7 @@ mod tests {
         let metrics = dp.metrics().render();
         assert!(metrics.contains("snapshots_applied_total 1"), "{metrics}");
         assert!(metrics.contains("snapshots_rejected_total 2"), "{metrics}");
-        dp.shutdown();
+        dp.abort();
     }
 
     #[tokio::test]
@@ -191,7 +191,7 @@ mod tests {
                 .unwrap();
         let status = connect(&dp, "api.example.com:443", None).await;
         assert!(status.contains(" 503 "), "{status}");
-        dp.shutdown();
+        dp.abort();
     }
 
     #[tokio::test]
@@ -240,6 +240,6 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        dp.shutdown();
+        dp.abort();
     }
 }

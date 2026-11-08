@@ -60,6 +60,16 @@ pub async fn running_for(
     upstream_roots: Vec<CertificateDer<'static>>,
     ttl_secs: u64,
 ) -> Running {
+    running_with(host, upstream_roots, ttl_secs, Arc::new(Discard)).await
+}
+
+/// [`running_for`] shipping its audit batches to `shipper`.
+pub async fn running_with(
+    host: &str,
+    upstream_roots: Vec<CertificateDer<'static>>,
+    ttl_secs: u64,
+    shipper: Arc<dyn AuditShipper>,
+) -> Running {
     let f = Fixture::new();
     let keys = NodeKeys {
         node_id: f.keys.node_id,
@@ -72,7 +82,7 @@ pub async fn running_for(
         extra_upstream_roots: upstream_roots,
         ..DataPlaneConfig::default()
     };
-    let (dp, installer) = DataPlane::start_embedded(config, keys, Arc::new(Discard))
+    let (dp, installer) = DataPlane::start_embedded(config, keys, shipper)
         .await
         .unwrap();
     let rule = RuleId::new();

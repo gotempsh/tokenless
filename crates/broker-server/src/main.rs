@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use broker_server::launcher::account::{
     self, AddService, ConsoleClient, Prompter, SessionStore, SessionVault, SignIn, Stored,
@@ -30,7 +31,7 @@ use messages::{detail, say};
 use serde::Serialize;
 use tokenless_dataplane::node::{enroll, NodeIdentity};
 use tokenless_dataplane::{DataPlane, DataPlaneConfig};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
 
@@ -514,6 +515,10 @@ enum NodeCommand {
         /// Do not trust the public web PKI roots for upstreams.
         #[arg(long)]
         no_public_roots: bool,
+        /// On Ctrl-C or SIGTERM, seconds open tunnels get to finish before
+        /// they are cut. A second signal cuts them at once.
+        #[arg(long, default_value_t = 30)]
+        drain_secs: u64,
     },
 }
 
@@ -901,6 +906,7 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
             no_mcp_gateway,
             upstream_ca,
             no_public_roots,
+            drain_secs,
         } => {
             let identity = NodeIdentity::load(&state)?;
             let extra = read_cas(&upstream_ca)?;
@@ -914,9 +920,22 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
                 ..DataPlaneConfig::default()
             };
             let dp = DataPlane::start(config, identity).await?;
-            wait_for_shutdown().await?;
-            info!("shutting down");
-            dp.shutdown();
+            let signal = stop_signal().await?;
+            info!(signal, drain_secs, "shutting down; open tunnels may finish");
+            let report = tokio::select! {
+                report = dp.shutdown(Duration::from_secs(drain_secs)) => report,
+                _ = stop_signal() => {
+                    warn!("second stop signal: stopping without draining");
+                    return Ok(());
+                }
+            };
+            if !report.clean() {
+                warn!(
+                    cut_connections = report.cut_connections,
+                    unshipped_audit_events = report.unshipped_audit_events,
+                    "node stopped with traffic cut or audit events unshipped"
+                );
+            }
             Ok(())
         }
     }

@@ -319,7 +319,7 @@ mod tests {
         drop(binding);
         let seen = until(&mut events, |s| s.bindings.is_empty()).await;
         assert!(seen.bindings.is_empty());
-        r.dp.shutdown();
+        r.dp.abort();
     }
 
     #[tokio::test]
@@ -357,7 +357,7 @@ mod tests {
         let err = binding.ready(3, Duration::from_secs(5)).await.unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(err.to_string().contains("the session was revoked"), "{err}");
-        r.dp.shutdown();
+        r.dp.abort();
     }
 
     /// A credential past its deadline is not sent: the request gets a
@@ -380,7 +380,7 @@ mod tests {
         assert!(status.contains(" 503 "), "{status}");
         let failure = binding.status().last_failure.unwrap();
         assert_eq!(failure.kind, UpstreamFailureKind::CredentialExpired);
-        r.dp.shutdown();
+        r.dp.abort();
     }
 
     #[tokio::test]
@@ -410,6 +410,6 @@ mod tests {
         assert!(status.contains(" 502 "), "{status}");
         let failure = binding.status().last_failure.unwrap();
         assert_eq!(failure.kind, UpstreamFailureKind::Unreachable);
-        r.dp.shutdown();
+        r.dp.abort();
     }
 }

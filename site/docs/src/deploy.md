@@ -80,6 +80,14 @@ the control plane fails closed.
 For upstreams with a private CA, pass `--upstream-ca ca.pem` (repeatable).
 `--no-public-roots` trusts only those.
 
+On Ctrl-C or `SIGTERM` (what systemd and Docker send to stop it) the
+proxy stops taking new connections and gives open tunnels `--drain-secs`
+(30 by default) to finish before it cuts them. A second signal stops it at
+once. It logs a warning if it had to cut traffic or could not ship audit
+events. Keep the stop timeout above the drain time: systemd waits 90
+seconds, Docker only 10, so give a proxy container
+`stop_grace_period: 40s` or a shorter `--drain-secs`.
+
 ## systemd
 
 ```ini

@@ -1281,7 +1281,7 @@ async fn end_to_end() {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
     assert!(dp.metrics().render().contains("lease_refusals_total"));
-    dp.shutdown();
+    dp.abort();
 }
 
 /// Logs `username` in on a fresh client and returns it with its cookie.

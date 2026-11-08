@@ -211,8 +211,18 @@ async fn main() -> Result<(), Error> {
     };
     println!("audited: {} by {}", event.action, event.actor);
 
+    // Stopping: open traffic gets a deadline to finish and the audit queue
+    // ships what it holds; the report says what did not make it.
     binding.revoke();
-    dataplane.shutdown();
+    let report = dataplane.shutdown(Duration::from_secs(5)).await;
+    if report.unshipped_audit_events > 0 {
+        return Err(format!(
+            "{} audit events were not shipped",
+            report.unshipped_audit_events
+        )
+        .into());
+    }
+    println!("data plane stopped: {report:?}");
     Ok(())
 }
 

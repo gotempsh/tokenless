@@ -109,6 +109,22 @@ Hot path guarantees:
   flushes 256 events or every 500 ms. When the channel is full, injection
   is refused with 503 and `broker_dataplane_audit_dropped_total` is incremented. The broker
   never injects without an audit record.
+- An audit event counts as recorded once the control plane accepts its
+  batch. Until then it lives only in the data plane's memory: a crash
+  loses up to the queue's capacity plus the batch being shipped. The
+  bound is deliberate; a disk queue would add I/O to the request path.
+  What a crash can lose is limited by what the queue may hold, and
+  injection stops once it is full, so a control plane that is down for
+  long stops injection rather than growing the loss.
+- `DataPlane::shutdown(drain)` stops in order. The listeners close and a
+  binding refuses new connections; open tunnels may finish, idle and
+  intercepted connections close once their requests in flight answer, and
+  snapshots keep arriving, so a revocation still cuts. At the deadline
+  whatever is open is cut and audited as cut, the audit queue gets one
+  last shipping attempt of up to 2 s, and the returned report says how
+  many connections were cut and how many audit events never shipped.
+  `tokenless node run` drains for `--drain-secs` (30 s by default) on
+  Ctrl-C or SIGTERM; a second signal stops at once.
 - Connection count is bounded (default 4096) by a semaphore with
   `try_acquire`. Excess connections are dropped rather than queued.
 
