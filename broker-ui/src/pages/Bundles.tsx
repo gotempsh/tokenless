@@ -17,13 +17,13 @@ import {
   type CredentialMeta,
   type Page,
   type Rule,
+  type StoredTemplate,
   type UserSummary,
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import {
-  fromWidth,
   CheckField,
   ConfirmDialog,
   CopyButton,
@@ -33,27 +33,25 @@ import {
   Field,
   FormDialog,
   Loading,
-  Mono,
   Pager,
   Panel,
-  RowActions,
+  Relative,
   RowMenu,
-  rowLink,
   Section,
   SelectField,
   Status,
   Tags,
   useConfirm,
-  When,
 } from "../components/common";
-import { cn } from "../lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
+import { ServiceLogo } from "../components/ServiceLogo";
+import { PANEL_GRID } from "../components/layout";
+import { templateOf } from "./Services";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -113,6 +111,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
     [vaultId, bundles.data],
   );
   const services = useVaultServices(vaultIds);
+  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [editing, setEditing] = useState<AccessBundle | "new" | null>(null);
   const here = vaultId ? `vaults/${vaultId}/bundles` : "bundles";
   const goAdd = (vault?: string, bundle?: string) => {
@@ -122,7 +121,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   const action = useAction();
 
   const ruleById = useMemo(() => new Map((services.data?.rules ?? []).map((r) => [r.id, r])), [services.data]);
-  const credName = (id: string) => services.data?.credentials.find((c) => c.id === id)?.name ?? id.slice(0, 8);
   const vaultName = (id: string) => vaults.data?.items.find((v) => v.id === id)?.name ?? id.slice(0, 8);
   const noVaults = !scoped && vaults.data?.items.length === 0;
 
@@ -174,10 +172,13 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
           </AlertDescription>
         </Alert>
       )}
-      <Panel>
+      <div className="space-y-4">
         {bundles.loading && !bundles.data ? (
-          <Loading />
+          <Panel>
+            <Loading />
+          </Panel>
         ) : bundles.data?.items.length === 0 ? (
+          <Panel>
           <Empty
             icon={Boxes}
             title="No access bundles yet"
@@ -194,94 +195,45 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
               </div>
             }
           />
+          </Panel>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                {!scoped && <TableHead className={fromWidth["2xl"]}>Vault</TableHead>}
-                <TableHead className={fromWidth.md}>Services</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Updated</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {bundles.data?.items.map((b) => (
-                <TableRow key={b.id} {...rowLink(`#/bundles/${b.id}`)}>
-                  <TableCell>
-                    <span className="font-mono font-medium">{b.name}</span>
-                    {b.description && <p className="text-xs text-muted-foreground">{b.description}</p>}
-                    {/* Narrow tables fold the services and vault in here. */}
-                    <p className="text-xs text-muted-foreground @md:hidden">
-                      {b.rule_ids.length === 0 ? (
-                        <Status tone="warning">no services</Status>
-                      ) : (
-                        `${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"}`
-                      )}
-                    </p>
-                    {!scoped && <p className="text-xs text-muted-foreground @2xl:hidden">in {vaultName(b.vault_id)}</p>}
-                  </TableCell>
-                  {!scoped && (
-                    <TableCell className={cn(fromWidth["2xl"], "whitespace-nowrap")}>
-                      {vaultName(b.vault_id)}
-                    </TableCell>
-                  )}
-                  <TableCell className={fromWidth.md}>
-                    {b.rule_ids.length === 0 ? (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Status tone="warning">no services</Status>
-                        {canAdd && (
-                          <button
-                            type="button"
-                            className="text-xs font-medium text-primary hover:text-primary/80"
-                            onClick={() => goAdd(b.vault_id, b.id)}
-                          >
-                            Add a service
-                          </button>
-                        )}
-                      </div>
-                    ) : services.loading && !services.data ? (
-                      <Skeleton className="h-5 w-32" />
-                    ) : (
-                      <BundleRules ids={b.rule_ids} ruleById={ruleById} credName={credName} />
-                    )}
-                  </TableCell>
-                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>
-                    <When at={b.updated_at} />
-                  </TableCell>
-                  <TableCell>
-                    <RowActions>
-                      <RowMenu
-                        label={b.name}
-                        items={[
-                          {
-                            label: "Add a service",
-                            icon: Plus,
-                            onSelect: () => goAdd(b.vault_id, b.id),
-                            disabled: !canAdd,
-                            reason: "Only admins can add services",
-                          },
-                          {
-                            label: "Open bundle",
-                            icon: Boxes,
-                            onSelect: () => {
-                              window.location.hash = `#/bundles/${b.id}`;
-                            },
-                          },
-                          { label: "Run an agent", icon: Terminal, onSelect: () => (window.location.hash = `#/bundles/${b.id}/connect`) },
-                          { label: "Edit bundle", icon: Pencil, onSelect: () => setEditing(b) },
-                          { label: "Delete bundle", icon: Trash2, onSelect: () => confirm.ask(b), destructive: true },
-                        ]}
-                      />
-                    </RowActions>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <div className={PANEL_GRID}>
+            {bundles.data?.items.map((b) => (
+              <BundlePanel
+                key={b.id}
+                bundle={b}
+                vaultName={scoped ? undefined : vaultName(b.vault_id)}
+                rules={b.rule_ids.map((id) => ruleById.get(id)).filter((r) => r !== undefined)}
+                credentials={services.data?.credentials ?? []}
+                templates={templates.data ?? []}
+                loading={services.loading && !services.data}
+                menu={
+                  <RowMenu
+                    label={b.name}
+                    items={[
+                      { label: "Run an agent", icon: Terminal, onSelect: () => (window.location.hash = `#/bundles/${b.id}/connect`) },
+                      {
+                        label: "Add a service",
+                        icon: Plus,
+                        onSelect: () => goAdd(b.vault_id, b.id),
+                        disabled: !canAdd,
+                        reason: "Only admins can add services",
+                      },
+                      { label: "Edit bundle", icon: Pencil, onSelect: () => setEditing(b) },
+                      { label: "Delete bundle", icon: Trash2, onSelect: () => confirm.ask(b), destructive: true },
+                    ]}
+                  />
+                }
+              />
+            ))}
+          </div>
         )}
-        <Pager page={bundles.data} onPage={setPage} />
-      </Panel>
+        {bundles.data && bundles.data.total > bundles.data.page_size && (
+          <Panel>
+            <Pager page={bundles.data} onPage={setPage} />
+          </Panel>
+        )}
+      </div>
       <FormDialog
         open={editing !== null}
         onOpenChange={(o) => {
@@ -340,34 +292,89 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   );
 }
 
-function BundleRules({
-  ids,
-  ruleById,
-  credName,
+/** How many of a bundle's services its panel names. */
+const SHOWN = 4;
+
+/** One bundle: what it is for, its first services and when it changed. */
+function BundlePanel({
+  bundle: b,
+  vaultName,
+  rules,
+  credentials,
+  templates,
+  loading,
+  menu,
 }: {
-  ids: string[];
-  ruleById: Map<string, Rule>;
-  credName: (id: string) => string;
+  bundle: AccessBundle;
+  /** Shown when the list spans vaults. */
+  vaultName?: string;
+  rules: Rule[];
+  credentials: CredentialMeta[];
+  templates: StoredTemplate[];
+  loading: boolean;
+  menu: ReactNode;
 }) {
+  const href = `#/bundles/${b.id}`;
+  const off = rules.filter((r) => !r.enabled).length;
+  const more = b.rule_ids.length - Math.min(rules.length, SHOWN);
   return (
-    <div className="flex flex-wrap gap-1">
-      {ids.map((id) => {
-        const rule = ruleById.get(id);
-        if (!rule) return <Mono key={id}>{id.slice(0, 8)}</Mono>;
-        return (
-          <span
-            key={id}
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded border bg-muted/40 px-1.5 py-0.5 text-xs"
-            title={rule.allow.hosts.join(", ")}
-          >
-            {credName(rule.credential_id)}
-            {/* The rule is worth naming only when it is not the service's own name. */}
-            {rule.name !== credName(rule.credential_id) && <span className="text-muted-foreground">· {rule.name}</span>}
-            {!rule.enabled && <span className="text-muted-foreground">(disabled)</span>}
+    <Panel className="relative flex flex-col transition-colors focus-within:border-foreground/40 hover:border-foreground/25">
+      <div className="flex items-start justify-between gap-2 px-4 pt-3">
+        <div className="min-w-0 pt-1">
+          <h2 className="truncate font-mono text-base font-semibold">
+            {/* The name's link covers the whole panel. */}
+            <a href={href} className="after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none">
+              {b.name}
+            </a>
+          </h2>
+          {(b.description || vaultName) && (
+            <p className="truncate text-xs text-muted-foreground">
+              {[b.description, vaultName && `in ${vaultName}`].filter(Boolean).join(" · ")}
+            </p>
+          )}
+        </div>
+        <div className="relative z-10 -mr-2">{menu}</div>
+      </div>
+      <div className="flex-1 px-4 py-3">
+        {b.rule_ids.length === 0 ? (
+          <p className="py-1 text-sm text-warning-strong">No services yet</p>
+        ) : loading ? (
+          <Skeleton className="h-16 w-full" />
+        ) : (
+          <ul className="space-y-1">
+            {rules.slice(0, SHOWN).map((r) => {
+              const c = credentials.find((x) => x.id === r.credential_id);
+              const tpl = c ? templateOf(templates, c) : undefined;
+              return (
+                <li key={r.id} className="flex min-w-0 items-center gap-3 py-1">
+                  <ServiceLogo template={tpl ?? { id: c?.template_id ?? "", kind: "http" }} size="sm" />
+                  <span className="min-w-0 truncate text-sm font-medium">{c?.name ?? r.name}</span>
+                  {/* The rule is worth naming only when it is not the service's own name. */}
+                  {c && r.name !== c.name && <span className="truncate text-xs text-muted-foreground">{r.name}</span>}
+                  {!r.enabled && (
+                    <span className="ml-auto shrink-0">
+                      <Status tone="warning">Turned off</Status>
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+            {more > 0 && <li className="pl-11 text-xs text-muted-foreground">+{more} more</li>}
+          </ul>
+        )}
+      </div>
+      <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+        {off > 0 ? (
+          <span className="text-warning-strong">
+            {off} rule{off === 1 ? " is" : "s are"} turned off
           </span>
-        );
-      })}
-    </div>
+        ) : (
+          <>
+            Updated <Relative at={b.updated_at} />
+          </>
+        )}
+      </div>
+    </Panel>
   );
 }
 
