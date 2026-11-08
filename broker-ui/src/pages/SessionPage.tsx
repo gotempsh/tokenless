@@ -70,6 +70,10 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
   const action = useAction();
   const canChange = user.role === "admin" || user.role === "editor";
   const active = s ? isActive(s) : false;
+  // A live session can end elsewhere (revoked by someone else, ended by
+  // the agent's own `tokenless run`, or expired): follow it, so the
+  // header, the Revoke action and the log's polling stop with it.
+  usePolling(session.reload, REFRESH_MS, active);
 
   useBreadcrumbs([
     { label: "Sessions", href: "#/sessions" },
