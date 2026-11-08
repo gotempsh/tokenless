@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   agentEnv,
+  customLifetime,
   agentScript,
   defaultLifetime,
   gatewayFor,
@@ -24,6 +25,17 @@ describe("new session form", () => {
   test("defaults to a day, or the cap when it is shorter", () => {
     expect(defaultLifetime(90 * 86400)).toBe(86400);
     expect(defaultLifetime(3600)).toBe(3600);
+  });
+
+  test("takes a lifetime typed by hand, within the Settings cap", () => {
+    const week = 7 * 86400;
+    expect(customLifetime("", "hours", week)).toBeNull();
+    expect(customLifetime(" 36 ", "hours", week)).toEqual({ secs: 36 * 3600 });
+    expect(customLifetime("45", "minutes", week)).toEqual({ secs: 45 * 60 });
+    expect(customLifetime("7", "days", week)).toEqual({ secs: week });
+    expect(customLifetime("8", "days", week)).toEqual({ problem: "Settings allow up to 7 days" });
+    expect(customLifetime("0", "days", week)).toEqual({ problem: "A whole number, at least 1" });
+    expect(customLifetime("1.5", "hours", week)).toEqual({ problem: "A whole number, at least 1" });
   });
 
   test("names a lifetime in its largest whole unit", () => {

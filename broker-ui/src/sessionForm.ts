@@ -40,6 +40,32 @@ export function lifetimesUpTo(maxSecs: number): Lifetime[] {
   return allowed;
 }
 
+export type LifetimeUnit = "minutes" | "hours" | "days";
+
+export const LIFETIME_UNITS: { value: LifetimeUnit; label: string; secs: number }[] = [
+  { value: "minutes", label: "minutes", secs: 60 },
+  { value: "hours", label: "hours", secs: HOUR },
+  { value: "days", label: "days", secs: DAY },
+];
+
+/**
+ * A lifetime typed by hand ("36" "hours"): its length in seconds, or why
+ * it can't be used. `null` while nothing is typed.
+ */
+export function customLifetime(
+  amount: string,
+  unit: LifetimeUnit,
+  maxSecs: number,
+): { secs: number } | { problem: string } | null {
+  const raw = amount.trim();
+  if (!raw) return null;
+  if (!/^[1-9][0-9]*$/.test(raw)) return { problem: "A whole number, at least 1" };
+  const per = LIFETIME_UNITS.find((u) => u.value === unit)?.secs ?? 60;
+  const secs = Number(raw) * per;
+  if (secs > maxSecs) return { problem: `Settings allow up to ${lifetimeLabel(maxSecs)}` };
+  return { secs };
+}
+
 /** One day when allowed: long enough for a day's work, short enough to forget safely. */
 export function defaultLifetime(maxSecs: number): number {
   return Math.min(DAY, maxSecs);

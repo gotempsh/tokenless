@@ -16,7 +16,14 @@ import {
 } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
-import { defaultLifetime, lifetimeLabel, lifetimesUpTo } from "../sessionForm";
+import {
+  customLifetime,
+  defaultLifetime,
+  LIFETIME_UNITS,
+  lifetimeLabel,
+  lifetimesUpTo,
+  type LifetimeUnit,
+} from "../sessionForm";
 import { SessionHandoff } from "./SessionHandoff";
 
 interface SessionLimits {
@@ -24,7 +31,10 @@ interface SessionLimits {
   default_ttl_secs: number;
 }
 
-const EMPTY = { bundle: "", name: "", ttl: "", limit: "" };
+/** The Expires after choice that reveals the typed-in lifetime. */
+const CUSTOM = "custom";
+
+const EMPTY = { bundle: "", name: "", ttl: "", amount: "", unit: "hours" as LifetimeUnit, limit: "" };
 
 export function NewSessionDialog({
   bundle: fixed,
@@ -56,7 +66,9 @@ export function NewSessionDialog({
   const action = useAction();
   const max = limits.data?.max_ttl_secs;
   const lifetimes = max ? lifetimesUpTo(max) : [];
-  const ttl = form.ttl || (max ? String(defaultLifetime(max)) : "");
+  const choice = form.ttl || (max ? String(defaultLifetime(max)) : "");
+  const custom = choice === CUSTOM && max ? customLifetime(form.amount, form.unit, max) : null;
+  const ttl = choice === CUSTOM ? (custom && "secs" in custom ? String(custom.secs) : "") : choice;
   const limit = form.limit.trim();
   const limitProblem = limit && !/^[1-9][0-9]*$/.test(limit) ? "A whole number of requests, at least 1" : null;
 
@@ -160,12 +172,40 @@ export function NewSessionDialog({
           >
             <SelectField
               id="session-ttl"
-              value={ttl}
+              value={choice}
               onChange={(v) => setForm({ ...form, ttl: v })}
-              options={lifetimes.map((l) => ({ value: String(l.secs), label: l.label }))}
+              options={[
+                ...lifetimes.map((l) => ({ value: String(l.secs), label: l.label })),
+                ...(max ? [{ value: CUSTOM, label: "Custom…" }] : []),
+              ]}
               placeholder={!bundle ? "Choose a bundle first" : limits.loading ? "Loading…" : undefined}
             />
           </Field>
+          {choice === CUSTOM && (
+            <Field
+              label="Custom lifetime"
+              htmlFor="session-ttl-amount"
+              error={custom && "problem" in custom ? custom.problem : null}
+            >
+              <div className="flex gap-2">
+                <Input
+                  id="session-ttl-amount"
+                  inputMode="numeric"
+                  autoFocus
+                  className="w-28"
+                  value={form.amount}
+                  placeholder="36"
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                />
+                <SelectField
+                  value={form.unit}
+                  onChange={(v) => setForm({ ...form, unit: v as LifetimeUnit })}
+                  options={LIFETIME_UNITS.map((u) => ({ value: u.value, label: u.label }))}
+                  className="w-36"
+                />
+              </div>
+            </Field>
+          )}
           <Field
             label="Request limit"
             htmlFor="session-limit"
