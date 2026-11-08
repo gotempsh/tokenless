@@ -33,6 +33,7 @@ use rustls::pki_types::CertificateDer;
 use rustls::ServerConfig;
 use zeroize::Zeroizing;
 
+use tokio::sync::watch;
 use tracing::debug;
 
 use crate::error::DataPlaneError;
@@ -165,13 +166,15 @@ fn leaf_configs(
 }
 
 /// Verifies `signed` against the snapshot in force and swaps it in, counting
-/// the outcome. Returns the version now in force. Callers that may run
-/// concurrently serialize around it, so an older snapshot never replaces a
-/// newer one.
+/// the outcome, and tells open tunnels through `changed` so they can see
+/// whether their session was revoked. Returns the version now in force.
+/// Callers that may run concurrently serialize around it, so an older
+/// snapshot never replaces a newer one.
 pub fn apply(
     signed: &SignedSnapshot,
     keys: &NodeKeys,
     handle: &SnapshotHandle,
+    changed: &watch::Sender<u64>,
     metrics: &Metrics,
 ) -> Result<u64, DataPlaneError> {
     let previous = handle.load_full();
@@ -180,6 +183,7 @@ pub fn apply(
             let version = active.version;
             debug!(version, rules = active.rules.len(), "applied snapshot");
             handle.store(Some(Arc::new(active)));
+            changed.send_replace(version);
             Metrics::inc(&metrics.snapshots_applied_total);
             Ok(version)
         }
@@ -382,9 +386,22 @@ pub(crate) mod tests {
             version: u64,
             rules: Vec<(RuleId, Scope, &str, &str)>,
         ) -> SignedSnapshot {
+            self.sign(&self.snapshot_body(version, rules))
+        }
+
+        pub fn sign(&self, body: &SnapshotBody) -> SignedSnapshot {
+            SignedSnapshot::sign(body, &self.signer).unwrap()
+        }
+
+        /// The body of [`Fixture::snapshot`], for tests that change a field.
+        pub fn snapshot_body(
+            &self,
+            version: u64,
+            rules: Vec<(RuleId, Scope, &str, &str)>,
+        ) -> SnapshotBody {
             let public = SealPublicKey::from(&self.keys.seal_secret);
             let node = self.keys.node_id;
-            let body = SnapshotBody {
+            SnapshotBody {
                 format: SNAPSHOT_FORMAT,
                 version,
                 node_id: node,
@@ -434,8 +451,7 @@ pub(crate) mod tests {
                         }
                     })
                     .collect(),
-            };
-            SignedSnapshot::sign(&body, &self.signer).unwrap()
+            }
         }
     }
 

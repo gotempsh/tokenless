@@ -32,6 +32,7 @@ use rustls::ClientConfig;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsConnector;
 use tracing::{debug, info, warn};
@@ -416,6 +417,7 @@ impl NodeClient {
         &self,
         keys: &NodeKeys,
         handle: &SnapshotHandle,
+        changed: &watch::Sender<u64>,
         metrics: &Metrics,
         on_applied: &(dyn Fn() + Send + Sync),
     ) -> Result<(), DataPlaneError> {
@@ -454,7 +456,7 @@ impl NodeClient {
                     continue;
                 }
                 match serde_json::from_slice::<SignedSnapshot>(line) {
-                    Ok(signed) => match apply(&signed, keys, handle, metrics) {
+                    Ok(signed) => match apply(&signed, keys, handle, changed, metrics) {
                         Ok(_) => on_applied(),
                         Err(e) => warn!(error = %e, "rejected snapshot"),
                     },
@@ -499,6 +501,7 @@ pub async fn run_snapshot_loop(
     client: Arc<NodeClient>,
     keys: Arc<NodeKeys>,
     handle: SnapshotHandle,
+    changed: watch::Sender<u64>,
     metrics: Arc<Metrics>,
 ) {
     let mut backoff = Duration::from_millis(500);
@@ -506,7 +509,7 @@ pub async fn run_snapshot_loop(
         let applied = std::sync::atomic::AtomicBool::new(false);
         let mark = || applied.store(true, std::sync::atomic::Ordering::Relaxed);
         match client
-            .stream_snapshots(&keys, &handle, &metrics, &mark)
+            .stream_snapshots(&keys, &handle, &changed, &metrics, &mark)
             .await
         {
             Ok(()) => debug!("snapshot stream ended; reconnecting"),

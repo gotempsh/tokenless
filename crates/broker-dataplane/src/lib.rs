@@ -15,6 +15,7 @@
 //! [`AuditShipper`](audit::AuditShipper). Verification is the same either way.
 
 pub mod audit;
+pub mod cut;
 pub mod embedded;
 pub mod error;
 pub mod gateway;
@@ -24,6 +25,9 @@ pub mod proxy;
 pub mod state;
 pub mod tls;
 pub mod upstream;
+
+#[cfg(test)]
+pub(crate) mod testing;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -39,6 +43,7 @@ use hyper::Response;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::CertificateDer;
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -97,6 +102,7 @@ pub struct DataPlane {
     metrics_addr: Option<SocketAddr>,
     mcp_addr: Option<SocketAddr>,
     snapshot: SnapshotHandle,
+    snapshot_changed: watch::Sender<u64>,
     metrics: Arc<Metrics>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -117,6 +123,7 @@ impl DataPlane {
             client.clone(),
             keys,
             dp.snapshot.clone(),
+            dp.snapshot_changed.clone(),
             dp.metrics.clone(),
         )));
         dp.tasks
@@ -137,7 +144,12 @@ impl DataPlane {
     ) -> Result<(Self, SnapshotInstaller), DataPlaneError> {
         let keys = Arc::new(keys);
         let dp = Self::launch(config, keys.clone(), audit).await?;
-        let installer = SnapshotInstaller::new(keys, dp.snapshot.clone(), dp.metrics.clone());
+        let installer = SnapshotInstaller::new(
+            keys,
+            dp.snapshot.clone(),
+            dp.snapshot_changed.clone(),
+            dp.metrics.clone(),
+        );
         Ok((dp, installer))
     }
 
@@ -151,6 +163,7 @@ impl DataPlane {
         let node_id = keys.node_id;
         let metrics = Arc::new(Metrics::default());
         let snapshot: SnapshotHandle = Arc::new(ArcSwapOption::empty());
+        let (snapshot_changed, _) = watch::channel(0);
         let (audit, audit_rx) = AuditPipeline::new(config.audit_capacity, metrics.clone());
         let listener = TcpListener::bind(config.listen).await.map_err(|e| {
             DataPlaneError::io(format!("binding proxy listener {}", config.listen), e)
@@ -163,6 +176,7 @@ impl DataPlane {
         }
         let shared = Arc::new(ProxyShared {
             snapshot: snapshot.clone(),
+            snapshot_changed: snapshot_changed.clone(),
             audit,
             metrics: metrics.clone(),
             upstream_tls: tls::upstream_client_config(
@@ -219,6 +233,7 @@ impl DataPlane {
             metrics_addr,
             mcp_addr,
             snapshot,
+            snapshot_changed,
             metrics,
             tasks,
         })

@@ -43,17 +43,20 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls::ClientConfig;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{watch, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::LazyConfigAcceptor;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::audit::AuditPipeline;
+use crate::cut::{session_end, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::upstream::UpstreamHandle;
 
-pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
+/// A body error: the upstream connection's, or a [`StreamCut`](crate::cut::StreamCut).
+pub type BodyError = Box<dyn std::error::Error + Send + Sync>;
+pub type ProxyBody = BoxBody<Bytes, BodyError>;
 
 const REALM: &str = "Basic realm=\"tokenless\"";
 const HOP_BY_HOP: &[&str] = &[
@@ -69,6 +72,9 @@ const HOP_BY_HOP: &[&str] = &[
 
 pub struct ProxyShared {
     pub snapshot: SnapshotHandle,
+    /// Bumped to each applied snapshot's version; open tunnels watch it to
+    /// notice their session being revoked.
+    pub snapshot_changed: watch::Sender<u64>,
     pub audit: AuditPipeline,
     pub metrics: Arc<Metrics>,
     pub upstream_tls: Arc<ClientConfig>,
@@ -341,6 +347,11 @@ async fn handle_proxy_request(
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
+    let watch = SessionWatch::new(
+        shared.snapshot_changed.subscribe(),
+        shared.snapshot.clone(),
+        &claims,
+    );
     let claims = Arc::new(claims);
     tokio::spawn(async move {
         let upgraded = match on_upgrade.await {
@@ -353,7 +364,16 @@ async fn handle_proxy_request(
         match tls_config {
             Some(config) => {
                 Metrics::inc(&shared.metrics.tunnels_intercepted_total);
-                intercept_tunnel(TokioIo::new(upgraded), config, host, port, claims, shared).await;
+                intercept_tunnel(
+                    TokioIo::new(upgraded),
+                    config,
+                    host,
+                    port,
+                    claims,
+                    shared,
+                    watch,
+                )
+                .await;
             }
             None => {
                 Metrics::inc(&shared.metrics.tunnels_passthrough_total);
@@ -363,6 +383,8 @@ async fn handle_proxy_request(
                     port,
                     &passthrough_addrs,
                     &shared,
+                    &claims,
+                    watch,
                 )
                 .await;
             }
@@ -419,12 +441,15 @@ async fn resolve_passthrough(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn passthrough(
     mut client: TokioIo<hyper::upgrade::Upgraded>,
     host: &str,
     port: u16,
     addrs: &[std::net::SocketAddr],
     shared: &ProxyShared,
+    claims: &SessionClaims,
+    watch: SessionWatch,
 ) {
     let upstream = timeout(shared.connect_timeout, TcpStream::connect(addrs)).await;
     let mut upstream = match upstream {
@@ -440,12 +465,57 @@ async fn passthrough(
             return;
         }
     };
-    if let Err(e) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await {
-        debug!(%host, port, error = %e, "passthrough tunnel closed");
+    tokio::select! {
+        copied = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {
+            if let Err(e) = copied {
+                debug!(%host, port, error = %e, "passthrough tunnel closed");
+            }
+        }
+        end = session_end(watch) => tunnel_cut(shared, claims, host, port, end),
     }
 }
 
+/// Records traffic cut because its session ended. The caller drops the
+/// connection, which closes both sides.
+pub(crate) fn tunnel_cut(
+    shared: &ProxyShared,
+    claims: &SessionClaims,
+    host: &str,
+    port: u16,
+    end: SessionEnd,
+) {
+    Metrics::inc(&shared.metrics.tunnels_cut_total);
+    info!(session_id = %claims.jti, %host, port, reason = end.reason(), "cut open traffic");
+    audit_best_effort(
+        shared,
+        claims,
+        "proxy.tunnel_cut",
+        AuditOutcome::Denied,
+        host,
+        port,
+        None,
+        end.reason(),
+    );
+}
+
 async fn intercept_tunnel(
+    io: TokioIo<hyper::upgrade::Upgraded>,
+    config: Arc<rustls::ServerConfig>,
+    host: String,
+    port: u16,
+    claims: Arc<SessionClaims>,
+    shared: Arc<ProxyShared>,
+    watch: SessionWatch,
+) {
+    // The handshake is bounded by its own timeouts; the session is watched
+    // from the moment requests can flow.
+    tokio::select! {
+        () = intercepted_connection(io, config, host.clone(), port, claims.clone(), shared.clone()) => {}
+        end = session_end(watch) => tunnel_cut(&shared, &claims, &host, port, end),
+    }
+}
+
+async fn intercepted_connection(
     io: TokioIo<hyper::upgrade::Upgraded>,
     config: Arc<rustls::ServerConfig>,
     host: String,
@@ -848,7 +918,7 @@ pub(crate) async fn handle_intercepted(
                     return respond(StatusCode::BAD_REQUEST, &reason);
                 }
                 body_skipped = Some(reason);
-                req.map(|b| b.boxed())
+                req.map(|b| b.map_err(BodyError::from).boxed())
             }
             Ok(ReadBody::Buffered(mut parts, bytes)) => {
                 if check_tools {
@@ -910,7 +980,7 @@ pub(crate) async fn handle_intercepted(
             }
         }
     } else {
-        req.map(|b| b.boxed())
+        req.map(|b| b.map_err(BodyError::from).boxed())
     };
     let mut req = req;
     let mut event = proxy_event(
@@ -975,7 +1045,7 @@ pub(crate) async fn handle_intercepted(
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
             let _ = shared.audit.try_record(outcome);
-            response.map(|b| b.boxed())
+            response.map(|b| b.map_err(BodyError::from).boxed())
         }
         Err(e) => {
             Metrics::inc(&shared.metrics.upstream_errors_total);
@@ -1191,5 +1261,71 @@ mod tests {
         // Names are resolved and checked too, so `localhost` cannot bypass it.
         let named = resolve_passthrough("localhost", 443, &EgressPolicy::default(), limit).await;
         assert!(matches!(named, Err(Refusal::Blocked { .. })));
+    }
+
+    /// The proxy sends each request upstream once. A request that may not be
+    /// idempotent is never replayed, even when the upstream drops it.
+    #[tokio::test]
+    async fn a_request_the_upstream_drops_is_not_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use rustls::pki_types::CertificateDer;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::TlsAcceptor;
+
+        use crate::testing::running;
+        use crate::tls::leaf_server_config;
+
+        // An upstream that reads each request and hangs up without answering.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let upstream_root = CertificateDer::from(cert.cert.der().to_vec());
+        let server = leaf_server_config(
+            "localhost",
+            vec![upstream_root.clone()],
+            cert.signing_key.serialize_der(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let received = Arc::new(AtomicUsize::new(0));
+        let counter = received.clone();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = TlsAcceptor::from(server.clone());
+                let counter = counter.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if tls.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+        });
+
+        let target = format!("localhost:{port}");
+        let r = running(&target, vec![upstream_root]).await;
+        let mut tls = r.intercepted(&target, "localhost").await;
+        tls.write_all(
+            format!("POST /charge HTTP/1.1\r\nHost: {target}\r\nContent-Length: 0\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = tls.read(&mut buf).await.unwrap();
+        let answer = String::from_utf8_lossy(&buf[..n]);
+        assert!(answer.starts_with("HTTP/1.1 502"), "{answer}");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+        r.dp.shutdown();
     }
 }

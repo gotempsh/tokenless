@@ -33,6 +33,7 @@ metrics! {
     proxy_auth_failures_total: "CONNECTs refused with 407 (missing, invalid, expired or revoked session)",
     tunnels_passthrough_total: "CONNECTs tunnelled without interception",
     tunnels_intercepted_total: "CONNECTs intercepted for credential injection",
+    tunnels_cut_total: "Open tunnels and streaming responses cut because their session was revoked or expired, or the lease ran out",
     connect_denied_total: "CONNECTs denied by policy",
     egress_blocked_total: "Passthrough CONNECTs refused because the destination is not a permitted address",
     requests_injected_total: "Requests forwarded with an injected credential",

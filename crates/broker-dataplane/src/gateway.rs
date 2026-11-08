@@ -33,10 +33,11 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::cut::{CutBody, SessionWatch};
 use crate::metrics::Metrics;
 use crate::proxy::{
-    audit_best_effort, check_session, handle_intercepted, respond, session_rules, ProxyBody,
-    ProxyShared, TunnelCtx,
+    audit_best_effort, check_session, handle_intercepted, respond, session_rules, tunnel_cut,
+    ProxyBody, ProxyShared, TunnelCtx,
 };
 use crate::upstream::UpstreamHandle;
 
@@ -262,21 +263,34 @@ async fn handle(
     }
 
     let upstream = upstream_for(&slot, &host, port, &shared);
+    let watch = SessionWatch::new(
+        shared.snapshot_changed.subscribe(),
+        shared.snapshot.clone(),
+        &claims,
+    );
+    let claims = Arc::new(claims);
     let ctx = Arc::new(TunnelCtx {
         host,
         port,
-        claims: Arc::new(claims),
+        claims: claims.clone(),
         shared: shared.clone(),
         upstream,
     });
-    let mut response = handle_intercepted(req, ctx).await;
+    let mut response = handle_intercepted(req, ctx.clone()).await;
     // The client authenticated to the gateway, not to the upstream. An
     // upstream challenge would start an OAuth flow that bypasses the broker,
     // so only the gateway's own refusals carry one.
-    if response.headers().get("x-broker-error").is_none() {
-        response.headers_mut().remove(WWW_AUTHENTICATE);
+    if response.headers().get("x-broker-error").is_some() {
+        return response;
     }
-    response
+    response.headers_mut().remove(WWW_AUTHENTICATE);
+    // An MCP server may answer with an event stream that stays open; it ends
+    // when the session does.
+    response.map(|body| {
+        CutBody::wrap(body, watch, move |end| {
+            tunnel_cut(&ctx.shared, &claims, &ctx.host, ctx.port, end);
+        })
+    })
 }
 
 #[cfg(test)]

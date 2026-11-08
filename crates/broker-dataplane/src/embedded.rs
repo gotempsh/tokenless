@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use broker_core::snapshot::SignedSnapshot;
+use tokio::sync::watch;
 
 use crate::error::DataPlaneError;
 use crate::metrics::Metrics;
@@ -18,6 +19,7 @@ use crate::state::{apply, NodeKeys, SnapshotHandle};
 pub struct SnapshotInstaller {
     keys: Arc<NodeKeys>,
     handle: SnapshotHandle,
+    changed: watch::Sender<u64>,
     metrics: Arc<Metrics>,
     /// Serializes installs: two hosts' tasks installing at once must not let
     /// an older snapshot replace a newer one between check and swap.
@@ -25,10 +27,16 @@ pub struct SnapshotInstaller {
 }
 
 impl SnapshotInstaller {
-    pub(crate) fn new(keys: Arc<NodeKeys>, handle: SnapshotHandle, metrics: Arc<Metrics>) -> Self {
+    pub(crate) fn new(
+        keys: Arc<NodeKeys>,
+        handle: SnapshotHandle,
+        changed: watch::Sender<u64>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             keys,
             handle,
+            changed,
             metrics,
             installing: Arc::new(Mutex::new(())),
         }
@@ -46,7 +54,13 @@ impl SnapshotInstaller {
             .installing
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        apply(signed, &self.keys, &self.handle, &self.metrics)
+        apply(
+            signed,
+            &self.keys,
+            &self.handle,
+            &self.changed,
+            &self.metrics,
+        )
     }
 
     /// Version of the snapshot in force, if any.
