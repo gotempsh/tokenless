@@ -937,13 +937,36 @@ fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError
 /// An API key when one is given; otherwise the session of `tokenless login`
 /// for this server, when there is one.
 fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
+    signed_in_client(args, &SessionStore::system())
+}
+
+/// The client `run` and `session start` use. A given session token needs no
+/// sign-in: it authenticates its own calls and the CA download is public. So
+/// with one, neither the API key nor the `tokenless login` session is read,
+/// and the OS keychain stays closed (macOS asks to unlock it again for each
+/// new build of the binary).
+fn launcher_client(
+    args: &BrokerArgs,
+    given: bool,
+    saved: &dyn SessionVault,
+) -> Result<Arc<ApiClient>, CliError> {
+    if given {
+        return Ok(Arc::new(ApiClient::new(&args.server, None)?));
+    }
+    signed_in_client(args, saved)
+}
+
+fn signed_in_client(
+    args: &BrokerArgs,
+    saved: &dyn SessionVault,
+) -> Result<Arc<ApiClient>, CliError> {
     let credentials = match read_api_key(args)? {
         Some(key) => Some(Credentials::ApiKey(key)),
         None => {
             let server = args.server.trim().trim_end_matches('/');
             // A session store that cannot be read is the same as not signed
             // in: the error then says how to authenticate.
-            match SessionStore::system().load(server) {
+            match saved.load(server) {
                 Ok(Some(saved)) if saved.expires_at > chrono::Utc::now() => {
                     Some(Credentials::Session {
                         token: Zeroizing::new(saved.token),
@@ -1210,7 +1233,7 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             }
             check_listen(listen)?;
             check_proxy(&port.proxy).await?;
-            let client = client(&mint.broker)?;
+            let client = launcher_client(&mint.broker, given.is_some(), &SessionStore::system())?;
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
             let live = open_session(&client, &mint, given, &[]).await?;
@@ -1486,7 +1509,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     }
     check_listen(args.listen)?;
     check_proxy(&args.port.proxy).await?;
-    let client = client(&args.mint.broker)?;
+    let client = launcher_client(&args.mint.broker, given.is_some(), &SessionStore::system())?;
     let dir = private_dir()?;
     let (trust, _) = prepare_trust(&client, &args.port, dir.path()).await?;
     let live = open_session(&client, &args.mint, given, &[("command", name.clone())]).await?;
@@ -1663,6 +1686,37 @@ mod tests {
 
     fn token(value: &str) -> Option<Zeroizing<String>> {
         Some(Zeroizing::new(value.to_string()))
+    }
+
+    /// A session store that counts how often it is read.
+    #[derive(Default)]
+    struct CountingVault(std::sync::atomic::AtomicUsize);
+
+    impl SessionVault for CountingVault {
+        fn load(&self, _server: &str) -> Result<Option<account::SavedSession>, LauncherError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(None)
+        }
+        fn save(&self, _session: &account::SavedSession) -> Result<(), LauncherError> {
+            Ok(())
+        }
+        fn delete(&self, _server: &str) -> Result<bool, LauncherError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn a_given_session_token_never_opens_the_saved_sign_in() {
+        let args = run_args(&["--server", "http://127.0.0.1:9"]);
+        let vault = CountingVault::default();
+        launcher_client(&args.mint.broker, true, &vault).unwrap();
+        assert_eq!(vault.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Minting from a bundle signs in, so it reads the saved session
+        // (unless an API key is set, which comes first).
+        if std::env::var_os("TOKENLESS_API_KEY").is_none() {
+            launcher_client(&args.mint.broker, false, &vault).unwrap();
+            assert_eq!(vault.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
     }
 
     #[test]
