@@ -168,7 +168,9 @@ fn map_auth(e: &AuthError) -> Mapped {
             "Authentication Required",
             "unauthenticated",
         ),
-        AuthError::Hashing { .. } | AuthError::MalformedHash { .. } => mapped(
+        AuthError::Hashing { .. }
+        | AuthError::MalformedHash { .. }
+        | AuthError::KeyDerivation { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Error",
             "internal",

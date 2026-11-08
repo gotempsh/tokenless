@@ -80,8 +80,9 @@ the provider again in a popup window. Turning a provider off hides its
 button and ends the sessions of everyone who signed in with it; a
 provider people have signed in with can't be deleted, only turned off.
 
-The browser is sent to the provider with PKCE and a nonce; the answer is
-accepted once, only in the browser that asked, within 10 minutes. ID
+The browser is sent to the provider with PKCE and a nonce. The answer is
+accepted only in the browser that asked, within 10 minutes: the sign-in
+travels in a sealed cookie, so starting one stores nothing on the server. ID
 tokens must be signed (RS, PS, ES or EdDSA; never `none` or a shared
 secret) by a key in the provider's published key set, and are checked for
 issuer, audience, expiry and nonce.

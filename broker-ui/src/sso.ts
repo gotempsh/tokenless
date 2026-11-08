@@ -115,14 +115,19 @@ export function providerForm(p: OidcProvider): ProviderForm {
   };
 }
 
+/** What the server accepts as a slug. */
+export const SLUG_MAX = 32;
+const SLUG = /^[a-z0-9][a-z0-9-]{1,31}$/;
+
 /** A slug for the sign-in URL, from the provider's name. */
 export function slugFromName(name: string): string {
   return name
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
+    .replace(/^-+/, "")
+    .slice(0, SLUG_MAX)
+    .replace(/-+$/, "");
 }
 
 function mappings(form: ProviderForm): RoleMapping[] {
@@ -135,6 +140,8 @@ function mappings(form: ProviderForm): RoleMapping[] {
 export function providerFormProblem(form: ProviderForm): string | null {
   if (!form.name.trim()) return "Give the provider a name for the sign-in button.";
   if (!form.slug.trim()) return "Give the provider a slug for its sign-in URL.";
+  if (!SLUG.test(form.slug.trim()))
+    return `The slug takes 2-${SLUG_MAX} characters of a-z, 0-9 and '-', not starting with '-'.`;
   if (!form.issuer.trim()) return "Enter the issuer URL from the provider.";
   if (!form.client_id.trim()) return "Enter the client ID the provider gave this instance.";
   const rows = mappings(form);

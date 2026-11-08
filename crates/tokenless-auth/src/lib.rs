@@ -11,6 +11,7 @@ pub mod csrf;
 pub mod error;
 pub mod jwt;
 pub mod password;
+pub mod sealed;
 pub mod token;
 pub mod totp;
 

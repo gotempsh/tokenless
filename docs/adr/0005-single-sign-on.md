@@ -23,11 +23,15 @@ hand.
   scopes, claims, group mappings) in the console or through
   `/api/v1/identity-providers`. Managing them is the instance-level
   `identity_provider_manage` action, admin-only and behind step-up.
-- **The browser is bound to the flow.** `start` stores the state (hashed),
-  nonce, PKCE verifier and purpose server-side for 10 minutes and sets a
-  `__Host-` cookie holding a random value that the callback must present.
-  The request is deleted when the callback reads it, so an answer works
-  once, in the browser that asked. Pending requests are capped.
+- **The browser carries the flow, and the server stores nothing until
+  the provider answers.** `start` seals the state (hashed), nonce, PKCE
+  verifier, purpose and return path into a `__Host-` cookie with
+  AES-256-GCM, under a key derived with HKDF from an instance secret.
+  The browser can neither read nor change it. The callback accepts an
+  answer only with that cookie, within 10 minutes, and when the `state`
+  matches, then clears the cookie. `start` needs no account, so
+  server-side requests would be a table anyone could fill. A global cap
+  on them would let an anonymous client crowd out every real sign-in.
 - **ID tokens are verified here**, with `ring`, which the TLS stack
   already depends on: RS/PS 256–512, ES256/384 and EdDSA; `none`, HMAC
   and tokens with `crit` headers are refused. Keys come from the
@@ -71,4 +75,10 @@ hand.
   is immediate.
 - Providers that don't put groups in the ID token or user info (Google's
   OpenID Connect, for one) can't be mapped and so can't be used.
+- An answer is not recorded as used on the server. Replaying one needs
+  the sign-in's cookie, which is `HttpOnly` and cleared by the callback,
+  and the provider refuses an authorization code used twice, as OAuth
+  requires.
+- An admin disabling an account while it signs in is never undone: the
+  role from groups is written only while the account is still enabled.
 - SAML is not supported.

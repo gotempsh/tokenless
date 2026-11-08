@@ -120,8 +120,21 @@ describe("the provider form", () => {
     expect(form.enabled).toBe(false);
   });
 
-  test("slugs come from the name", () => {
+  test("slugs come from the name, within what the server accepts", () => {
     expect(slugFromName("Corp Login (EU)")).toBe("corp-login-eu");
     expect(slugFromName("  ")).toBe("");
+    const long = slugFromName("Example Corporate Identity Provider");
+    expect(long).toBe("example-corporate-identity-provi");
+    expect(long.length).toBeLessThanOrEqual(32);
+    // A cut that lands on a separator leaves none at the end.
+    expect(slugFromName("Example Corporate Identity Ab Cd")).toBe("example-corporate-identity-ab-cd");
+    expect(slugFromName("Example Corporate Identity Abcd Efg")).toBe("example-corporate-identity-abcd");
+    expect(providerFormProblem({ ...filled(), slug: long })).toBeNull();
+  });
+
+  test("a slug the server would refuse is caught first", () => {
+    for (const slug of ["x", "-corp", "Corp", "corp_eu", "a".repeat(33)]) {
+      expect(providerFormProblem({ ...filled(), slug })).toContain("slug");
+    }
   });
 });

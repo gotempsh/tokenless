@@ -5,17 +5,16 @@
 //! settings (a row of `settings`).
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::sqlite::SqliteRow;
-use tokenless_control::model::{OidcProvider, OidcPurpose, OidcRequest, SignInSettings, User};
+use tokenless_control::model::{OidcProvider, SignInSettings, User};
 use tokenless_control::store::SsoStore;
 use tokenless_control::StoreError;
 use tokenless_core::audit::AuditEvent;
-use tokenless_core::ids::OidcProviderId;
+use tokenless_core::authz::Role;
+use tokenless_core::ids::{OidcProviderId, UserId};
 
 use super::{
-    db, finish, from_json, get, get_id, get_opt_id, get_ts, to_json, to_u64, ts, user_from_row,
-    SqliteStore,
+    db, finish, from_json, get, get_id, get_ts, to_json, to_u64, ts, user_from_row, SqliteStore,
 };
 
 fn provider_from_row(row: &SqliteRow) -> Result<OidcProvider, StoreError> {
@@ -34,25 +33,6 @@ fn provider_from_row(row: &SqliteRow) -> Result<OidcProvider, StoreError> {
         enabled: get::<i64>(row, "enabled")? != 0,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
-    })
-}
-
-fn request_from_row(row: &SqliteRow) -> Result<OidcRequest, StoreError> {
-    let purpose: String = get(row, "purpose")?;
-    Ok(OidcRequest {
-        state_hash: get(row, "state_hash")?,
-        browser_hash: get(row, "browser_hash")?,
-        provider_id: get_id(row, "provider_id")?,
-        purpose: OidcPurpose::parse(&purpose).ok_or_else(|| {
-            StoreError::backend("decode purpose", format!("unknown purpose '{purpose}'"))
-        })?,
-        nonce: get(row, "nonce")?,
-        pkce_verifier: get(row, "pkce_verifier")?,
-        ui_session_hash: get(row, "ui_session_hash")?,
-        user_id: get_opt_id(row, "user_id")?,
-        return_to: get(row, "return_to")?,
-        created_at: get_ts(row, "created_at")?,
-        expires_at: get_ts(row, "expires_at")?,
     })
 }
 
@@ -194,63 +174,47 @@ impl SsoStore for SqliteStore {
             .transpose()
     }
 
-    async fn insert_oidc_request(
+    async fn set_sso_role(
         &self,
-        r: OidcRequest,
-        max_pending: u64,
+        id: &UserId,
+        role: Role,
+        audit: &[AuditEvent],
     ) -> Result<bool, StoreError> {
-        let mut tx = self.begin("insert_oidc_request").await?;
-        let row = sqlx::query("SELECT COUNT(*) AS n FROM oidc_requests WHERE expires_at > ?")
-            .bind(ts(&r.created_at))
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db("count pending sign-ins", "oidc_request"))?;
-        if to_u64(get::<i64>(&row, "n")?) >= max_pending {
-            return Ok(false);
-        }
-        sqlx::query("INSERT INTO oidc_requests (state_hash, browser_hash, provider_id, purpose, nonce, pkce_verifier, ui_session_hash, user_id, return_to, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(&r.state_hash)
-            .bind(&r.browser_hash)
-            .bind(r.provider_id.to_string())
-            .bind(r.purpose.as_str())
-            .bind(&r.nonce)
-            .bind(&r.pkce_verifier)
-            .bind(&r.ui_session_hash)
-            .bind(r.user_id.map(|u| u.to_string()))
-            .bind(&r.return_to)
-            .bind(ts(&r.created_at))
-            .bind(ts(&r.expires_at))
+        // Only while enabled: a disable that lands first is never undone.
+        let mut tx = self.begin("set_sso_role").await?;
+        let result = sqlx::query("UPDATE users SET role = ? WHERE id = ? AND disabled_at IS NULL")
+            .bind(role.as_str())
+            .bind(id.to_string())
             .execute(&mut *tx)
             .await
-            .map_err(db("insert sign-in request", "oidc_request"))?;
-        finish(tx, &[], "insert_oidc_request").await?;
+            .map_err(db("set role from groups", "user"))?;
+        if result.rows_affected() == 0 {
+            let exists = sqlx::query("SELECT 1 FROM users WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db("find user", "user"))?
+                .is_some();
+            return if exists {
+                Ok(false)
+            } else {
+                Err(StoreError::not_found("user", id))
+            };
+        }
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND disabled_at IS NULL",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db("count enabled admins", "user"))?;
+        if get::<i64>(&row, "n")? == 0 {
+            return Err(StoreError::Conflict {
+                entity: "user",
+                detail: format!("changing user {id} would leave no enabled admin"),
+            });
+        }
+        finish(tx, audit, "set_sso_role").await?;
         Ok(true)
-    }
-
-    async fn take_oidc_request(
-        &self,
-        state_hash: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<OidcRequest>, StoreError> {
-        let row = sqlx::query("DELETE FROM oidc_requests WHERE state_hash = ? RETURNING *")
-            .bind(state_hash)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db("take sign-in request", "oidc_request"))?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let request = request_from_row(&row)?;
-        Ok((request.expires_at > now).then_some(request))
-    }
-
-    async fn delete_expired_oidc_requests(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
-        let result = sqlx::query("DELETE FROM oidc_requests WHERE expires_at <= ?")
-            .bind(ts(&now))
-            .execute(&self.pool)
-            .await
-            .map_err(db("delete expired sign-in requests", "oidc_request"))?;
-        Ok(result.rows_affected())
     }
 
     async fn get_sign_in_settings(&self) -> Result<SignInSettings, StoreError> {

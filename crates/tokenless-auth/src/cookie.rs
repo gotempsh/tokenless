@@ -22,9 +22,10 @@ pub fn session_from_cookie_header(header: &str) -> Option<&str> {
     named_cookie(header, SESSION_COOKIE)
 }
 
-/// Ties a single sign-on in progress to the browser that started it. `Lax`,
-/// not `Strict`: the browser comes back from the identity provider, another
-/// site, and must still send it. Only for the callback path.
+/// Carries a single sign-on in progress, sealed (see [`crate::sealed`]),
+/// in the browser that started it. `Lax`, not `Strict`: the browser comes
+/// back from the identity provider, another site, and must still send it.
+/// `Path=/`, as a `__Host-` cookie must be; only the callback reads it.
 pub const SSO_FLOW_COOKIE: &str = "__Host-tokenless_sso";
 
 pub fn sso_flow_cookie(value: &str, max_age_secs: u64) -> String {

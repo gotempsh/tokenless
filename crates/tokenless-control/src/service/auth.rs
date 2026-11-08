@@ -892,14 +892,9 @@ impl AuthService {
         Ok(())
     }
 
-    /// Deletes expired UI sessions, and single sign-ons never finished;
-    /// returns how many sessions.
+    /// Deletes expired UI sessions; returns how many.
     pub async fn purge_expired_sessions(&self) -> Result<u64, ControlError> {
-        let now = Utc::now();
-        if let Err(e) = self.sso.delete_expired_oidc_requests(now).await {
-            warn!(error = %e, "failed to delete expired single sign-on requests");
-        }
-        Ok(self.identity.delete_expired_ui_sessions(now).await?)
+        Ok(self.identity.delete_expired_ui_sessions(Utc::now()).await?)
     }
 
     pub async fn authenticate_api_key(&self, presented: &str) -> Result<Caller, ControlError> {

@@ -19,4 +19,7 @@ pub enum AuthError {
 
     #[error("token is malformed: expected prefix '{expected_prefix}'")]
     MalformedToken { expected_prefix: String },
+
+    #[error("could not derive the sealing key for '{purpose}'")]
+    KeyDerivation { purpose: String },
 }

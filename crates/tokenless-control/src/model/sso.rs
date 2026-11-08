@@ -108,14 +108,14 @@ impl OidcPurpose {
     }
 }
 
-/// A sign-in sent to a provider and not yet back. Used once.
-#[derive(Clone, PartialEq, Eq)]
+/// A sign-in sent to a provider and not yet back. The server keeps
+/// nothing: the browser that started it carries it in a sealed cookie
+/// (encrypted and authenticated), so the answer is accepted only there,
+/// and starting sign-ins anonymously fills no table.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OidcRequest {
-    /// Hash of the `state` sent to the provider; the lookup key.
+    /// Hash of the `state` sent to the provider; the answer must match it.
     pub state_hash: String,
-    /// Hash of the cookie given to the browser that started it, so the
-    /// answer is accepted only in that browser.
-    pub browser_hash: String,
     pub provider_id: OidcProviderId,
     pub purpose: OidcPurpose,
     pub nonce: String,
@@ -131,5 +131,5 @@ pub struct OidcRequest {
 
 tokenless_core::redacted_debug!(OidcRequest {
     provider_id, purpose, user_id, return_to, created_at, expires_at;
-    state_hash, browser_hash, nonce, pkce_verifier, ui_session_hash
+    state_hash, nonce, pkce_verifier, ui_session_hash
 });

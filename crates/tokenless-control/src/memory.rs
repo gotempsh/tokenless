@@ -25,8 +25,8 @@ mod sso;
 use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    OidcRequest, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate,
-    UiSession, User, Variable, Vault, VaultDeletion,
+    Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate, UiSession,
+    User, Variable, Vault, VaultDeletion,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -53,7 +53,6 @@ struct Inner {
     key_material: HashMap<String, Vec<u8>>,
     snapshot_version: u64,
     oidc_providers: HashMap<OidcProviderId, OidcProvider>,
-    oidc_requests: HashMap<String, OidcRequest>,
     sign_in_settings: Option<SignInSettings>,
 }
 

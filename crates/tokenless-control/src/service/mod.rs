@@ -330,7 +330,7 @@ impl ControlPlane {
             AuditRecorder::new(stores.audit.clone()),
             config.clone(),
             oidc,
-        );
+        )?;
         let auth = auth::AuthService::new(
             stores.identity.clone(),
             stores.sso.clone(),

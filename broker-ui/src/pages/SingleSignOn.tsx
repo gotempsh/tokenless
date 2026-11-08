@@ -48,6 +48,7 @@ import {
   providerFormProblem,
   providerInput,
   slugFromName,
+  SLUG_MAX,
   type ProviderForm,
 } from "../sso";
 
@@ -278,6 +279,7 @@ function ProviderFormBody({ provider, onDone }: { provider: OidcProvider | null;
           <Input
             id="sso-slug"
             className="font-mono"
+            maxLength={SLUG_MAX}
             value={form.slug}
             onChange={(e) => {
               setSlugEdited(true);

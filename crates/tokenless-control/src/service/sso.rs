@@ -5,9 +5,12 @@
 //! flow with PKCE, people's groups mapped to roles, accounts created on
 //! first sign-in, and step-up by signing in at the provider again.
 //!
-//! A sign-in is a server-side [`OidcRequest`] found by the hash of its
-//! `state` and tied to the starting browser by a cookie, used once and
-//! expiring after [`REQUEST_TTL_SECS`]. The ID token is checked against the
+//! A sign-in in progress is an [`OidcRequest`] the starting browser
+//! carries in a sealed cookie (see [`FLOW_CONTEXT`]): the server stores
+//! nothing until the provider answers, so anonymous starts cannot fill a
+//! table or crowd out real sign-ins. It expires after [`REQUEST_TTL_SECS`],
+//! the answer's `state` must match it, and the callback clears the cookie;
+//! the provider refuses a code used twice. The ID token is checked against the
 //! provider's published keys and must carry the request's nonce. The role
 //! comes from the provider's groups at every sign-in; a person whose groups
 //! map to no role is refused, and told which groups were seen.
@@ -24,6 +27,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokenless_auth::jwt::{self, JwkSet, JwtError};
+use tokenless_auth::sealed::SealKey;
 use tokenless_auth::token;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Role};
@@ -45,9 +49,9 @@ use crate::store::{IdentityStore, SsoStore};
 
 /// How long a sign-in at the provider may take.
 pub const REQUEST_TTL_SECS: u64 = 600;
-/// Sign-ins in progress at once; more are refused until some finish or
-/// expire, so anonymous requests cannot fill the database.
-pub const MAX_PENDING_REQUESTS: u64 = 10_000;
+/// What the flow cookie is sealed for; a value sealed for anything else
+/// does not open as one.
+pub const FLOW_CONTEXT: &[u8] = b"tokenless|oidc-request|v1";
 /// How long a provider's discovery document and keys are reused.
 const METADATA_TTL: StdDuration = StdDuration::from_secs(15 * 60);
 /// The soonest the keys are fetched again for a token signed by an unknown key.
@@ -163,6 +167,7 @@ pub struct SsoSignIn {
 /// Where to send the browser, with the cookie that ties the answer to it.
 pub struct SsoRedirect {
     pub authorization_url: String,
+    /// The sealed sign-in in progress: the flow cookie's value.
     pub browser_token: String,
     pub max_age_secs: u64,
 }
@@ -222,6 +227,8 @@ pub struct SsoService {
     config: ControlConfig,
     transport: Arc<dyn OidcTransport>,
     metadata: Mutex<HashMap<String, Arc<Metadata>>>,
+    /// Seals sign-ins in progress into the flow cookie.
+    flow_key: SealKey,
 }
 
 fn client_secret_aad(id: &OidcProviderId) -> Vec<u8> {
@@ -281,8 +288,9 @@ impl SsoService {
         audit: AuditRecorder,
         config: ControlConfig,
         transport: Arc<dyn OidcTransport>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ControlError> {
+        let flow_key = SealKey::derive(&keys.csrf_key, "oidc-flow-cookie")?;
+        Ok(Self {
             identity,
             sso,
             cipher,
@@ -292,7 +300,8 @@ impl SsoService {
             config,
             transport,
             metadata: Mutex::new(HashMap::new()),
-        }
+            flow_key,
+        })
     }
 
     // ----- administration ------------------------------------------------
@@ -835,7 +844,6 @@ impl SsoService {
         let state = token::random_value();
         let nonce = token::random_value();
         let verifier = token::random_value();
-        let browser_token = token::random_value();
         let scope = std::iter::once("openid")
             .chain(provider.scopes.iter().map(String::as_str))
             .collect::<Vec<_>>()
@@ -858,7 +866,6 @@ impl SsoService {
         let now = Utc::now();
         let request = OidcRequest {
             state_hash: token::hash_token(&state),
-            browser_hash: token::hash_token(&browser_token),
             provider_id: provider.id,
             purpose,
             nonce,
@@ -869,20 +876,11 @@ impl SsoService {
             created_at: now,
             expires_at: now + Duration::seconds(REQUEST_TTL_SECS as i64),
         };
-        if !self
-            .sso
-            .insert_oidc_request(request, MAX_PENDING_REQUESTS)
-            .await?
-        {
-            warn!(
-                limit = MAX_PENDING_REQUESTS,
-                "too many single sign-ons in progress; refusing new ones"
-            );
-            return Err(ControlError::RateLimited {
-                subject: "single sign-on".into(),
-                retry_after_secs: 60,
-            });
-        }
+        let sealed = serde_json::to_vec(&request).map_err(|e| ControlError::Crypto {
+            operation: "seal single sign-on flow cookie".into(),
+            reason: e.to_string(),
+        })?;
+        let browser_token = self.flow_key.seal(FLOW_CONTEXT, &sealed);
         Ok(SsoRedirect {
             authorization_url: url.into(),
             browser_token,
@@ -890,8 +888,8 @@ impl SsoService {
         })
     }
 
-    /// Finishes a sign-in with the provider's answer and the cookie of the
-    /// browser it came back to.
+    /// Finishes a sign-in with the provider's answer and the flow cookie
+    /// of the browser it came back to.
     pub async fn complete(
         &self,
         callback: SsoCallback,
@@ -907,15 +905,12 @@ impl SsoService {
             .as_deref()
             .filter(|s| !s.is_empty() && s.len() <= 256)
             .ok_or_else(|| unknown(validation("the provider's answer has no state")))?;
-        let request = self
-            .sso
-            .take_oidc_request(&token::hash_token(state), Utc::now())
-            .await
-            .map_err(|e| unknown(e.into()))?
+        let request = browser_token
+            .and_then(|t| self.flow_key.open(FLOW_CONTEXT, t))
+            .and_then(|plain| serde_json::from_slice::<OidcRequest>(&plain).ok())
             .ok_or_else(|| {
                 unknown(ControlError::Unauthenticated {
-                    reason: "this sign-in is unknown, has expired or was already used; start again"
-                        .into(),
+                    reason: "this browser has no sign-in in progress: it was started in another browser, has expired or was already used; start again here".into(),
                 })
             })?;
         let fail = |error: ControlError| SsoFailed {
@@ -923,11 +918,14 @@ impl SsoService {
             return_to: request.return_to.clone(),
             error,
         };
-        let same_browser = browser_token
-            .is_some_and(|t| token::hashes_equal(&token::hash_token(t), &request.browser_hash));
-        if !same_browser {
+        if request.expires_at <= Utc::now() {
             return Err(fail(ControlError::Unauthenticated {
-                reason: "this sign-in was started in another browser; start it again here".into(),
+                reason: "this sign-in took too long and has expired; start again".into(),
+            }));
+        }
+        if !token::hashes_equal(&token::hash_token(state), &request.state_hash) {
+            return Err(fail(ControlError::Unauthenticated {
+                reason: "the provider's answer is for another sign-in than the one this browser started; start again".into(),
             }));
         }
         let provider = match self.sso.get_oidc_provider(&request.provider_id).await {
@@ -1260,12 +1258,16 @@ impl SsoService {
             .detail("previous_role", user.role.as_str())
             .detail("role", role.as_str())
             .detail("reason", format!("groups at {}", provider.slug));
-        match self
-            .identity
-            .update_user_access(&user.id, role, None, &[event])
-            .await
-        {
-            Ok(()) => {}
+        // Role only, and only while enabled: an admin disabling the account
+        // during this sign-in is never undone by it.
+        match self.sso.set_sso_role(&user.id, role, &[event]).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(self.refuse(
+                    provider,
+                    format!("the account '{}' has been disabled here", user.username),
+                ))
+            }
             Err(StoreError::Conflict { .. }) => {
                 return Err(self
                     .refuse(

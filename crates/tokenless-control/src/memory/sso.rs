@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
-use tokenless_core::ids::OidcProviderId;
+use tokenless_core::authz::Role;
+use tokenless_core::ids::{OidcProviderId, UserId};
 
 use super::MemoryStore;
 use crate::error::StoreError;
-use crate::model::{OidcProvider, OidcRequest, SignInSettings, User};
+use crate::model::{OidcProvider, SignInSettings, User};
 use crate::store::SsoStore;
 
 fn slug_taken(slug: &str) -> StoreError {
@@ -132,49 +132,38 @@ impl SsoStore for MemoryStore {
             .cloned())
     }
 
-    async fn insert_oidc_request(
+    async fn set_sso_role(
         &self,
-        request: OidcRequest,
-        max_pending: u64,
+        id: &UserId,
+        role: Role,
+        audit: &[AuditEvent],
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
-        let pending = inner
-            .oidc_requests
-            .values()
-            .filter(|r| r.expires_at > request.created_at)
-            .count() as u64;
-        if pending >= max_pending {
+        let Some(user) = inner.users.get(id) else {
+            return Err(StoreError::not_found("user", id));
+        };
+        if user.disabled_at.is_some() {
             return Ok(false);
         }
-        if inner.oidc_requests.contains_key(&request.state_hash) {
+        let admins_left = inner
+            .users
+            .values()
+            .filter(|u| {
+                let r = if u.id == *id { role } else { u.role };
+                r == Role::Admin && u.disabled_at.is_none()
+            })
+            .count();
+        if admins_left == 0 {
             return Err(StoreError::Conflict {
-                entity: "oidc_request",
-                detail: "the state is already in use".into(),
+                entity: "user",
+                detail: format!("changing user {id} would leave no enabled admin"),
             });
         }
-        inner
-            .oidc_requests
-            .insert(request.state_hash.clone(), request);
+        if let Some(user) = inner.users.get_mut(id) {
+            user.role = role;
+        }
+        inner.audit.extend_from_slice(audit);
         Ok(true)
-    }
-
-    async fn take_oidc_request(
-        &self,
-        state_hash: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<OidcRequest>, StoreError> {
-        Ok(self
-            .lock()?
-            .oidc_requests
-            .remove(state_hash)
-            .filter(|r| r.expires_at > now))
-    }
-
-    async fn delete_expired_oidc_requests(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
-        let mut inner = self.lock()?;
-        let before = inner.oidc_requests.len();
-        inner.oidc_requests.retain(|_, r| r.expires_at > now);
-        Ok((before - inner.oidc_requests.len()) as u64)
     }
 
     async fn get_sign_in_settings(&self) -> Result<SignInSettings, StoreError> {

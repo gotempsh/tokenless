@@ -25,8 +25,8 @@ use tokenless_core::variables::CustomHeader;
 use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    OidcRequest, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate,
-    UiSession, User, Variable, Vault, VaultDeletion,
+    Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate, UiSession,
+    User, Variable, Vault, VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -535,22 +535,15 @@ pub trait SsoStore: Send + Sync {
         subject: &str,
     ) -> Result<Option<User>, StoreError>;
 
-    /// Stores a sign-in in progress unless `max_pending` unexpired ones
-    /// (at `request.created_at`) exist already; false, storing nothing,
-    /// when they do. `Conflict` if the state hash exists.
-    async fn insert_oidc_request(
+    /// Sets an account's role from its provider's groups, but only while
+    /// it is enabled: false, changing nothing, when it has been disabled
+    /// meanwhile. `Conflict` when it would leave no enabled admin.
+    async fn set_sso_role(
         &self,
-        request: OidcRequest,
-        max_pending: u64,
+        id: &UserId,
+        role: Role,
+        audit: &[AuditEvent],
     ) -> Result<bool, StoreError>;
-    /// Removes the request with this state hash and returns it if it had
-    /// not expired at `now`. A second call for it finds nothing.
-    async fn take_oidc_request(
-        &self,
-        state_hash: &str,
-        now: DateTime<Utc>,
-    ) -> Result<Option<OidcRequest>, StoreError>;
-    async fn delete_expired_oidc_requests(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
 
     /// The defaults until first written.
     async fn get_sign_in_settings(&self) -> Result<SignInSettings, StoreError>;

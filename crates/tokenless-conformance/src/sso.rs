@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! What an [`SsoStore`] must do: providers with unique slugs, accounts
-//! unique per provider subject, sign-ins in progress used once and capped,
-//! and the sign-in settings.
+//! unique per provider subject, roles from groups that never re-enable a
+//! disabled account, and the sign-in settings.
 
 use tokenless_control::model::{
-    OidcProvider, OidcPurpose, OidcRequest, PasswordSignIn, RoleMapping, SignInSettings,
-    SsoIdentity, User,
+    OidcProvider, PasswordSignIn, RoleMapping, SignInSettings, SsoIdentity, User,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, IdentityStore, NodeStore, SsoStore, StoredCiphertext,
@@ -58,24 +57,20 @@ fn sso_user(username: &str, provider_id: OidcProviderId, subject: &str) -> User 
     }
 }
 
-fn request(state_hash: &str, expires_offset: i64) -> OidcRequest {
-    OidcRequest {
-        state_hash: state_hash.into(),
-        browser_hash: "browser".into(),
-        provider_id: OidcProviderId::new(),
-        purpose: OidcPurpose::StepUp,
-        nonce: "nonce".into(),
-        pkce_verifier: "verifier".into(),
-        ui_session_hash: Some("session".into()),
-        user_id: Some(UserId::new()),
-        return_to: "/settings".into(),
-        created_at: at(0),
-        expires_at: at(expires_offset),
-    }
+async fn account<S: IdentityStore>(store: &S, id: &UserId) -> Result<User, ConformanceFailure> {
+    store
+        .get_user(id)
+        .await
+        .map_err(backend("sso_store", "get_user"))?
+        .ok_or_else(|| ConformanceFailure {
+            suite: "sso_store",
+            check: "sso_role",
+            detail: format!("account {id} vanished"),
+        })
 }
 
-/// Providers, single sign-on accounts, sign-ins in progress and the
-/// sign-in settings. Expects an empty store.
+/// Providers, single sign-on accounts, roles from groups and the sign-in
+/// settings. Expects an empty store.
 pub async fn sso_store_suite<S>(store: &S) -> Result<(), ConformanceFailure>
 where
     S: SsoStore + IdentityStore + NodeStore + AuditSink,
@@ -301,92 +296,54 @@ where
         "replace_ciphertexts replaced {replaced} and left {after:?}"
     );
 
-    // Sign-ins in progress: used once, expiring, capped.
-    let r = request("state-1", 600);
-    let stored = store
-        .insert_oidc_request(r.clone(), 10)
+    // Roles from groups: applied only while the account is enabled, and
+    // never leaving no enabled admin.
+    let changed = store
+        .set_sso_role(&ada.id, Role::Admin, &[])
         .await
-        .map_err(backend(S, "insert_request"))?;
-    ensure!(S, "insert_request", stored, "the request was not stored");
-    let res = store.insert_oidc_request(r.clone(), 10).await;
+        .map_err(backend(S, "set_sso_role"))?;
+    let now = account(store, &ada.id).await?;
     ensure!(
         S,
-        "request_unique",
-        matches!(res, Err(StoreError::Conflict { .. })),
-        "the same state twice must be a Conflict, got {res:?}"
+        "sso_role_set",
+        changed && now.role == Role::Admin,
+        "set_sso_role returned {changed} and left {:?}",
+        now.role
     );
-    let taken = store
-        .take_oidc_request("state-1", at(1))
+    let res = store.set_sso_role(&ada.id, Role::Viewer, &[]).await;
+    ensure!(
+        S,
+        "sso_role_last_admin",
+        matches!(res, Err(StoreError::Conflict { .. }))
+            && account(store, &ada.id).await?.role == Role::Admin,
+        "demoting the last enabled admin must be a Conflict that changes nothing, got {res:?}"
+    );
+    IdentityStore::insert_user(store, crate::person("local-admin", Role::Admin, 0), &[])
         .await
-        .map_err(backend(S, "take"))?;
-    ensure!(
-        S,
-        "take",
-        taken.as_ref() == Some(&r),
-        "took {:?}",
-        taken.map(|t| t.return_to)
-    );
-    ensure!(
-        S,
-        "take_once",
-        store
-            .take_oidc_request("state-1", at(1))
-            .await
-            .map_err(backend(S, "take"))?
-            .is_none(),
-        "a request must be taken once"
-    );
+        .map_err(backend(S, "insert_user"))?;
     store
-        .insert_oidc_request(request("state-2", 600), 10)
+        .update_user_access(&ada.id, Role::Admin, Some(at(5)), &[])
         .await
-        .map_err(backend(S, "insert_request"))?;
+        .map_err(backend(S, "update_user_access"))?;
+    let changed = store
+        .set_sso_role(&ada.id, Role::Editor, &[])
+        .await
+        .map_err(backend(S, "set_sso_role"))?;
+    let now = account(store, &ada.id).await?;
     ensure!(
         S,
-        "take_expired",
-        store
-            .take_oidc_request("state-2", at(600))
-            .await
-            .map_err(backend(S, "take"))?
-            .is_none(),
-        "a request taken at its expiry must be None"
+        "sso_role_keeps_disabled",
+        !changed && now.disabled_at.is_some() && now.role == Role::Admin,
+        "on a disabled account set_sso_role must return false and change nothing; got {changed}, disabled_at {:?}, role {:?}",
+        now.disabled_at,
+        now.role
     );
-    for state in ["state-3", "state-4"] {
-        store
-            .insert_oidc_request(request(state, 600), 10)
-            .await
-            .map_err(backend(S, "insert_request"))?;
-    }
-    let capped = store
-        .insert_oidc_request(request("state-5", 600), 2)
-        .await
-        .map_err(backend(S, "insert_capped"))?;
+    let res = store.set_sso_role(&UserId::new(), Role::Viewer, &[]).await;
     ensure!(
         S,
-        "pending_capped",
-        !capped,
-        "with 2 pending and a cap of 2 the request must not be stored"
-    );
-    let mut later = request("state-6", 1200);
-    later.created_at = at(700);
-    let after_expiry = store
-        .insert_oidc_request(later, 2)
-        .await
-        .map_err(backend(S, "insert_capped"))?;
-    ensure!(
-        S,
-        "expired_not_counted",
-        after_expiry,
-        "requests expired by the new one's creation must not count"
-    );
-    let purged = store
-        .delete_expired_oidc_requests(at(601))
-        .await
-        .map_err(backend(S, "purge"))?;
-    ensure!(
-        S,
-        "purge",
-        purged == 2,
-        "purged {purged}, expected state-3 and state-4"
+        "sso_role_missing",
+        matches!(res, Err(StoreError::NotFound { .. })),
+        "an unknown account must be NotFound, got {res:?}"
     );
 
     // Sign-in settings.

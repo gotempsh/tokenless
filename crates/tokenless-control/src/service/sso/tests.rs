@@ -463,7 +463,7 @@ async fn groups_only_in_userinfo_are_found_there() {
 }
 
 #[tokio::test]
-async fn an_answer_is_used_once_in_the_browser_that_asked() {
+async fn an_answer_counts_once_and_only_in_the_browser_that_asked() {
     let (t, _) = with_provider().await;
     let r =
         t.cp.sso
@@ -471,25 +471,47 @@ async fn an_answer_is_used_once_in_the_browser_that_asked() {
             .await
             .unwrap();
     let (state, code, _) = t.idp.authorize(&r.authorization_url);
-    // Another browser brings the answer back: refused, and used up.
+    // Another browser brings the answer back: it has no sign-in in progress.
     let err = refused(
         t.complete(state.clone(), code.clone(), "another-browser")
             .await,
     );
     assert!(err.to_string().contains("another browser"), "{err}");
-    let err = refused(t.complete(state, code, &r.browser_token).await);
-    assert!(err.to_string().contains("already used"), "{err}");
+    let err =
+        t.cp.sso
+            .complete(
+                SsoCallback {
+                    state: Some(state.clone()),
+                    code: Some(code.clone()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+    assert!(err.error.to_string().contains("another browser"));
+    // An answer for another sign-in than this browser's.
     let err = refused(
-        t.complete("forged".into(), "c".into(), &r.browser_token)
+        t.complete("forged".into(), code.clone(), &r.browser_token)
             .await,
     );
-    assert!(matches!(err, ControlError::Unauthenticated { .. }), "{err}");
+    assert!(err.to_string().contains("another sign-in"), "{err}");
     let err =
         t.cp.sso
             .complete(SsoCallback::default(), Some(&r.browser_token))
             .await
             .unwrap_err();
     assert!(err.error.to_string().contains("no state"));
+    // The browser that asked signs in; the same answer again is refused.
+    assert!(t
+        .complete(state.clone(), code.clone(), &r.browser_token)
+        .await
+        .is_ok());
+    let err = refused(t.complete(state, code, &r.browser_token).await);
+    assert!(
+        matches!(err, ControlError::IdentityProvider { .. }),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -920,32 +942,97 @@ async fn password_sign_in_can_be_kept_for_admins_only() {
 }
 
 #[tokio::test]
-async fn a_full_table_of_sign_ins_in_progress_refuses_more() {
+async fn starting_sign_ins_stores_nothing_so_anonymous_starts_crowd_out_no_one() {
     let (t, _) = with_provider().await;
-    let now = Utc::now();
-    for i in 0..3 {
-        let stored = t
-            .store
-            .insert_oidc_request(
-                OidcRequest {
-                    state_hash: format!("h{i}"),
-                    browser_hash: "b".into(),
-                    provider_id: OidcProviderId::new(),
-                    purpose: OidcPurpose::Login,
-                    nonce: "n".into(),
-                    pkce_verifier: "v".into(),
-                    ui_session_hash: None,
-                    user_id: None,
-                    return_to: "/".into(),
-                    created_at: now,
-                    expires_at: now + Duration::minutes(10),
-                },
-                2,
-            )
+    // More than any table of pending sign-ins would hold.
+    for _ in 0..12_000 {
+        t.cp.sso
+            .begin("corp", OidcPurpose::Login, None, None)
             .await
             .unwrap();
-        assert_eq!(stored, i < 2, "{i}");
     }
+    assert!(t.sign_in().await.is_ok());
+}
+
+#[tokio::test]
+async fn a_changed_or_expired_flow_cookie_is_refused() {
+    let (t, provider) = with_provider().await;
+    let r =
+        t.cp.sso
+            .begin("corp", OidcPurpose::Login, Some("/vaults"), None)
+            .await
+            .unwrap();
+    let (state, code, _) = t.idp.authorize(&r.authorization_url);
+    assert!(!r.browser_token.contains(&state), "the cookie is sealed");
+    let mut changed = r.browser_token.clone().into_bytes();
+    let last = changed.len() - 1;
+    changed[last] = if changed[last] == b'A' { b'B' } else { b'A' };
+    let changed = String::from_utf8(changed).unwrap();
+    let err = refused(t.complete(state.clone(), code.clone(), &changed).await);
+    assert!(err.to_string().contains("no sign-in in progress"), "{err}");
+
+    // A sign-in older than its lifetime, sealed as the server would.
+    let then = Utc::now() - Duration::seconds(REQUEST_TTL_SECS as i64 + 1);
+    let old = OidcRequest {
+        state_hash: token::hash_token(&state),
+        provider_id: provider.id,
+        purpose: OidcPurpose::Login,
+        nonce: "n".into(),
+        pkce_verifier: "v".into(),
+        ui_session_hash: None,
+        user_id: None,
+        return_to: "/vaults".into(),
+        created_at: then,
+        expires_at: then + Duration::seconds(REQUEST_TTL_SECS as i64),
+    };
+    let sealed =
+        t.cp.sso
+            .flow_key
+            .seal(FLOW_CONTEXT, &serde_json::to_vec(&old).unwrap());
+    let failed =
+        t.cp.sso
+            .complete(
+                SsoCallback {
+                    state: Some(state),
+                    code: Some(code),
+                    ..Default::default()
+                },
+                Some(&sealed),
+            )
+            .await
+            .unwrap_err();
+    assert!(
+        failed.error.to_string().contains("expired"),
+        "{}",
+        failed.error
+    );
+    assert_eq!(failed.return_to, "/vaults");
+}
+
+#[tokio::test]
+async fn a_disable_during_a_role_changing_sign_in_is_not_undone() {
+    let (t, view) = with_provider().await;
+    t.cp.auth.create_initial_admin().await.unwrap();
+    let (_, session) = t.signed_in().await;
+    let provider = t.store.get_oidc_provider(&view.id).await.unwrap().unwrap();
+    // The sign-in reads the account while it is still enabled...
+    let stale = t.store.get_user(&session.user.id).await.unwrap().unwrap();
+    assert!(stale.disabled_at.is_none());
+    // ...an admin disables it...
+    t.store
+        .update_user_access(&stale.id, stale.role, Some(Utc::now()), &[])
+        .await
+        .unwrap();
+    // ...and the sign-in then applies a new role from the groups.
+    let err =
+        t.cp.sso
+            .sync_role(&provider, stale.clone(), Role::Admin)
+            .await
+            .unwrap_err();
+    assert!(err.to_string().contains("disabled"), "{err}");
+    let now = t.store.get_user(&stale.id).await.unwrap().unwrap();
+    assert!(now.disabled_at.is_some(), "still disabled");
+    assert_eq!(now.role, stale.role, "role unchanged");
 }
 
 #[tokio::test]

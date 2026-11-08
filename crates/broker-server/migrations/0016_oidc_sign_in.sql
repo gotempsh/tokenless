@@ -26,19 +26,3 @@ CREATE TABLE oidc_providers (
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
 );
-
--- Sign-ins sent to a provider and not yet back; each is used once.
-CREATE TABLE oidc_requests (
-    state_hash       TEXT PRIMARY KEY,
-    browser_hash     TEXT NOT NULL,
-    provider_id      TEXT NOT NULL,
-    purpose          TEXT NOT NULL,
-    nonce            TEXT NOT NULL,
-    pkce_verifier    TEXT NOT NULL,
-    ui_session_hash  TEXT,
-    user_id          TEXT,
-    return_to        TEXT NOT NULL,
-    created_at       TEXT NOT NULL,
-    expires_at       TEXT NOT NULL
-);
-CREATE INDEX oidc_requests_expires_at ON oidc_requests (expires_at);
