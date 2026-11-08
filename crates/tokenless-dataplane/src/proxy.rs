@@ -1573,4 +1573,169 @@ mod tests {
         assert_eq!(received.load(Ordering::SeqCst), 1);
         r.dp.abort();
     }
+
+    /// Git over HTTPS through a rule that names one repository's paths: a
+    /// read rule lets a clone fetch and refuses a push by its path, and a
+    /// pack larger than the substitution limit streams to the upstream.
+    #[tokio::test]
+    async fn git_rules_allow_a_fetch_refuse_a_push_and_stream_a_large_pack() {
+        use rustls::pki_types::CertificateDer;
+        use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+        use tokio_rustls::TlsAcceptor;
+
+        use crate::testing::running;
+        use crate::tls::leaf_server_config;
+
+        async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Option<(String, Vec<u8>)> {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read(&mut byte).await.unwrap_or(0) == 0 {
+                    return None;
+                }
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let length = head
+                .lines()
+                .find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            stream.read_exact(&mut body).await.unwrap();
+            Some((head, body))
+        }
+
+        async fn send(
+            stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
+            head: &str,
+            body: &[u8],
+        ) -> (String, Vec<u8>) {
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            read_message(stream).await.unwrap()
+        }
+
+        // An upstream that answers each request with the size of its body.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let upstream_root = CertificateDer::from(cert.cert.der().to_vec());
+        let server = leaf_server_config(
+            "localhost",
+            vec![upstream_root.clone()],
+            cert.signing_key.serialize_der(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let acceptor = TlsAcceptor::from(server.clone());
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        return;
+                    };
+                    while let Some((_, body)) = read_message(&mut tls).await {
+                        let size = body.len().to_string();
+                        let answer = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{size}",
+                            size.len()
+                        );
+                        if tls.write_all(answer.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+
+        let target = format!("localhost:{port}");
+        let r = running(&target, vec![upstream_root]).await;
+        let install = |version: u64, paths: &[&str]| {
+            let mut body = r.f.snapshot_body(
+                version,
+                vec![(r.rule, Scope::parse("vault:test").unwrap(), &target, "t")],
+            );
+            body.egress = tokenless_core::egress::EgressPolicy {
+                block_private: false,
+                allow: vec![],
+            };
+            body.rules[0].allow.paths = paths
+                .iter()
+                .map(|p| PathPattern::parse(p).unwrap())
+                .collect();
+            body.rules[0].allow.methods = ["GET", "POST"]
+                .iter()
+                .map(|m| HttpMethod::parse(m).unwrap())
+                .collect();
+            r.installer.install(&r.f.sign(&body)).unwrap();
+        };
+        let read = [
+            "/acme/widgets.git/info/refs",
+            "/acme/widgets.git/git-upload-pack",
+        ];
+        install(2, &read);
+
+        let mut tls = r.intercepted(&target, "localhost").await;
+        let (head, _) = send(
+            &mut tls,
+            &format!(
+                "GET /acme/widgets.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: {target}\r\n\r\n"
+            ),
+            b"",
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let (head, _) = send(
+            &mut tls,
+            &format!(
+                "POST /acme/widgets.git/git-upload-pack HTTP/1.1\r\nHost: {target}\r\nContent-Length: 4\r\n\r\n"
+            ),
+            b"0000",
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+
+        // A push is refused by its path, and so is another repository.
+        let mut tls = r.intercepted(&target, "localhost").await;
+        let (head, _) = send(
+            &mut tls,
+            &format!(
+                "POST /acme/widgets.git/git-receive-pack HTTP/1.1\r\nHost: {target}\r\nContent-Length: 4\r\n\r\n"
+            ),
+            b"0000",
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+        let mut tls = r.intercepted(&target, "localhost").await;
+        let (head, _) = send(
+            &mut tls,
+            &format!(
+                "GET /acme/other.git/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: {target}\r\n\r\n"
+            ),
+            b"",
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 403"), "{head}");
+
+        // With the write paths, a pack over the 4 MiB substitution limit
+        // reaches the upstream whole.
+        install(3, &[read[0], read[1], "/acme/widgets.git/git-receive-pack"]);
+        let pack = vec![b'p'; MAX_SUBSTITUTION_BODY as usize + 1024 * 1024];
+        let mut tls = r.intercepted(&target, "localhost").await;
+        let (head, body) = send(
+            &mut tls,
+            &format!(
+                "POST /acme/widgets.git/git-receive-pack HTTP/1.1\r\nHost: {target}\r\nContent-Type: application/x-git-receive-pack-request\r\nContent-Length: {}\r\n\r\n",
+                pack.len()
+            ),
+            &pack,
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(String::from_utf8_lossy(&body), pack.len().to_string());
+        r.dp.abort();
+    }
 }

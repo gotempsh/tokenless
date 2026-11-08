@@ -25,6 +25,8 @@ pub(crate) const BUILTIN_YAML: &[(&str, &str)] = &[
     ("elevenlabs", include_str!("../templates/elevenlabs.yaml")),
     ("github", include_str!("../templates/github.yaml")),
     ("gitlab", include_str!("../templates/gitlab.yaml")),
+    ("github-git", include_str!("../templates/github-git.yaml")),
+    ("gitlab-git", include_str!("../templates/gitlab-git.yaml")),
     ("bitbucket", include_str!("../templates/bitbucket.yaml")),
     ("vercel", include_str!("../templates/vercel.yaml")),
     ("netlify", include_str!("../templates/netlify.yaml")),

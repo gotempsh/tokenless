@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: github-git
+version: 1
+name: "GitHub (Git)"
+description: "Clone, fetch and push GitHub repositories over HTTPS."
+category: developer_tools
+logo: github
+aliases: [git, clone, push]
+hosts:
+  - github.com
+allow:
+  paths: ["/*"]
+  methods: ["GET", "POST"]
+credential_fields:
+  - name: token
+    label: "Token"
+    description: "A personal access token or an installation token with access to the repositories"
+injection:
+  method: basic_token
+  username: "x-access-token"
+  password_field: token

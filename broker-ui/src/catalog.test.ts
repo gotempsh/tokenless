@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { StoredTemplate, TemplateCategory } from "./api";
-import { activeShelf, catalogShelves, shelfItems } from "./catalog";
+import { activeShelf, catalogShelves, injectionSummary, shelfItems } from "./catalog";
 
 function tpl(
   id: string,
@@ -95,5 +95,13 @@ describe("activeShelf", () => {
 
   test("with no match anywhere, all services (and its empty state)", () => {
     expect(activeShelf(shelves([]), "all", true)?.key).toBe("all");
+  });
+});
+
+describe("injectionSummary", () => {
+  test("a Git token shows its fixed username and where the token goes", () => {
+    const t = tpl("github-git", "developer_tools").template;
+    t.injection = { method: "basic_token", username: "x-access-token", password_field: "token" };
+    expect(injectionSummary(t)).toBe("Authorization: Basic x-access-token:<token>");
   });
 });

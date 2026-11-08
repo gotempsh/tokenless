@@ -79,6 +79,7 @@ export interface CredentialField {
 export type Injection =
   | { method: "bearer"; field: string }
   | { method: "basic"; username_field: string; password_field: string }
+  | { method: "basic_token"; username: string; password_field: string }
   | { method: "header"; name: string; field: string; prefix?: string };
 
 export type TemplateCategory =

@@ -53,6 +53,13 @@ pub enum InjectionSpec {
         username_field: String,
         password_field: String,
     },
+    /// `Authorization: Basic base64(<username>:<password_field>)` with a
+    /// fixed username: how Git hosts take a token over HTTPS
+    /// (`x-access-token` on GitHub, `oauth2` on GitLab).
+    BasicToken {
+        username: String,
+        password_field: String,
+    },
     /// `<name>: <prefix><field>`
     Header {
         name: String,
@@ -106,6 +113,22 @@ pub(crate) fn validate_header_value(field: &str, value: &str) -> Result<(), Core
     Ok(())
 }
 
+/// A `basic_token` username is part of the template, so it is checked when
+/// the template is loaded: non-empty, printable, no ':'.
+fn check_basic_token_username(template_id: &str, username: &str) -> Result<(), CoreError> {
+    let printable = username.bytes().all(|b| (0x21..0x7f).contains(&b));
+    if username.is_empty() || username.contains(':') || !printable {
+        return Err(CoreError::InvalidTemplate {
+            template_id: template_id.to_string(),
+            reason: format!(
+                "the basic_token username '{}' must be non-empty printable ASCII with no ':' or space",
+                username.escape_debug()
+            ),
+        });
+    }
+    Ok(())
+}
+
 impl InjectionSpec {
     /// Field names this injection reads.
     pub fn fields(&self) -> Vec<&str> {
@@ -115,6 +138,7 @@ impl InjectionSpec {
                 username_field,
                 password_field,
             } => vec![username_field, password_field],
+            InjectionSpec::BasicToken { password_field, .. } => vec![password_field],
             InjectionSpec::Header { field, .. } => vec![field],
         }
     }
@@ -123,9 +147,9 @@ impl InjectionSpec {
     /// any client-supplied header with one of these names.
     pub fn header_names(&self) -> Vec<String> {
         match self {
-            InjectionSpec::Bearer { .. } | InjectionSpec::Basic { .. } => {
-                vec!["authorization".to_string()]
-            }
+            InjectionSpec::Bearer { .. }
+            | InjectionSpec::Basic { .. }
+            | InjectionSpec::BasicToken { .. } => vec!["authorization".to_string()],
             InjectionSpec::Header { name, .. } => vec![name.to_ascii_lowercase()],
         }
     }
@@ -153,6 +177,9 @@ impl InjectionSpec {
                     }
                 })?;
             }
+        }
+        if let InjectionSpec::BasicToken { username, .. } = self {
+            check_basic_token_username(template_id, username)?;
         }
         Ok(())
     }
@@ -188,6 +215,17 @@ impl InjectionSpec {
                     });
                 }
                 let mut joined = format!("{user}:{pass}");
+                let encoded = STANDARD.encode(joined.as_bytes());
+                joined.zeroize();
+                InjectedHeader::new("authorization", format!("Basic {encoded}"))
+            }
+            InjectionSpec::BasicToken {
+                username,
+                password_field,
+            } => {
+                check_basic_token_username(template_id, username)?;
+                let pass = get(password_field)?;
+                let mut joined = format!("{username}:{pass}");
                 let encoded = STANDARD.encode(joined.as_bytes());
                 joined.zeroize();
                 InjectedHeader::new("authorization", format!("Basic {encoded}"))
@@ -356,6 +394,29 @@ mod tests {
         assert!(spec
             .render("t", &fields(&[("user", "a:b"), ("pass", "p")]))
             .is_err());
+    }
+
+    #[test]
+    fn basic_token_sends_the_fixed_username_and_the_token() {
+        let spec = InjectionSpec::BasicToken {
+            username: "x-access-token".into(),
+            password_field: "token".into(),
+        };
+        let out = spec.render("t", &fields(&[("token", "abc")])).unwrap();
+        assert_eq!(
+            out.headers[0].value,
+            format!("Basic {}", STANDARD.encode("x-access-token:abc"))
+        );
+        assert_eq!(spec.fields(), vec!["token"]);
+        let bad = InjectionSpec::BasicToken {
+            username: "a:b".into(),
+            password_field: "token".into(),
+        };
+        assert!(bad.render("t", &fields(&[("token", "abc")])).is_err());
+        assert!(
+            bad.validate("t").is_err(),
+            "refused when the template loads"
+        );
     }
 
     #[test]

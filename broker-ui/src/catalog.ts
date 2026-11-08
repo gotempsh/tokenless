@@ -54,6 +54,8 @@ export function injectionSummary(t: ServiceTemplate): string {
       return `Authorization: Bearer <${t.injection.field}>`;
     case "basic":
       return `Authorization: Basic <${t.injection.username_field}:${t.injection.password_field}>`;
+    case "basic_token":
+      return `Authorization: Basic ${t.injection.username}:<${t.injection.password_field}>`;
     case "header":
       return `${t.injection.name}: ${t.injection.prefix ?? ""}<${t.injection.field}>`;
   }
