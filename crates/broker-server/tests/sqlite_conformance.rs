@@ -37,6 +37,50 @@ suite!(node_store_suite);
 suite!(audited_writes_suite);
 suite!(vault_deletion_suite);
 
+/// An embedded data plane whose control services run on the SQLite store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_embedded_data_plane_on_sqlite_passes_the_dataplane_suite() {
+    use std::sync::Arc;
+
+    use tokenless_control::cipher::AesGcmCipher;
+    use tokenless_control::envelope::Envelope;
+    use tokenless_control::probe::DisabledProber;
+    use tokenless_control::store::RbacAuthorizer;
+    use tokenless_control::{Caller, ControlConfig, ControlServices, ServiceStores};
+    use tokenless_core::authz::{Principal, Role};
+
+    let (_dir, store) = store().await;
+    let store = Arc::new(store);
+    let cipher = Arc::new(
+        Envelope::open(&AesGcmCipher::generate_key(), store.clone())
+            .await
+            .expect("envelope"),
+    );
+    let control = Arc::new(
+        ControlServices::new(
+            ServiceStores {
+                credentials: store.clone(),
+                policy: store.clone(),
+                audit: store.clone(),
+                nodes: store.clone(),
+            },
+            Arc::new(RbacAuthorizer),
+            cipher,
+            Arc::new(DisabledProber),
+            ControlConfig {
+                lease_secs: 3,
+                ..ControlConfig::default()
+            },
+        )
+        .await
+        .expect("control services"),
+    );
+    let host = Caller::service(Principal::service("conformance-host", Role::Admin, None));
+    if let Err(failure) = tokenless_conformance::dataplane::dataplane_suite(control, &host).await {
+        panic!("{failure}");
+    }
+}
+
 /// If the audit row cannot be written the change it describes must not be
 /// committed either. A reused event id makes the audit insert fail.
 #[tokio::test]

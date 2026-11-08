@@ -37,7 +37,7 @@ depends on Temps.
 | `tokenless-core` | Rules, opaque scopes, host/path/method matching, template schema, injection methods, PASETO session claims, snapshot signing, sealed envelopes, RBAC decisions, wire protocol | none |
 | `tokenless-auth` | argon2id passwords, TOTP, token generation and hashing, CSRF tokens, session cookies | none |
 | `tokenless-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
-| `tokenless-conformance` | Behavioural test suites any trait implementation must pass | none |
+| `tokenless-conformance` | Behavioural test suites any trait implementation must pass, and one for an embedded data plane | none |
 | `tokenless-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
 | `broker-server` | axum binary: management API, node API, SQLite store, root key, CLI | network, disk |
 | `broker-ui` | Vite/React console | browser |

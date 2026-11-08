@@ -141,3 +141,33 @@ Until then it is only in memory, so a crash loses up to
 When the queue is full, the proxy refuses to inject rather than inject
 without a record. A shipper that keeps failing therefore stops
 injection; it never lets the loss grow.
+
+## Check your integration
+
+`tokenless-conformance` has a suite for an embedded data plane. Run it
+against your own control services and stores:
+
+```rust
+#[tokio::test(flavor = "multi_thread")]
+async fn my_platform_passes_the_dataplane_suite() {
+    let control = my_control_services(ControlConfig { lease_secs: 3, ..Default::default() }).await;
+    let host = Caller::service(Principal::service("my-platform", Role::Admin, None));
+    tokenless_conformance::dataplane::dataplane_suite(control, &host).await.unwrap();
+}
+```
+
+It creates a vault of its own, deletes it at the end, and checks that:
+
+- a workload reaches only its own sessions' services, whatever
+  `Proxy-Authorization` it sends;
+- a session minted for an earlier start of a workload doesn't bind to a
+  later one;
+- two sessions covering one host aren't bound together;
+- revoking a session cuts its open connection, and an idle connection
+  closes when its session expires;
+- traffic is refused once the lease runs out;
+- no token or secret shows up in the status, errors, debug output or audit
+  log.
+
+It takes a few seconds more than the lease, which is why the lease must be
+short (10 seconds at most).

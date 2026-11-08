@@ -7,6 +7,13 @@
 //! `PolicyStore`, `AuditSink`, `Authorizer`, `IdentityStore` and `NodeStore`
 //! implementations. Each suite expects an empty store and returns the first
 //! failed check with a description of what was expected.
+//!
+//! [`dataplane::dataplane_suite`] checks an embedded data plane against
+//! the embedder's control services: binding isolation, generation
+//! fencing, cutting open traffic, lease expiry and secrets kept out of
+//! diagnostics.
+
+pub mod dataplane;
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
