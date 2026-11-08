@@ -108,7 +108,7 @@ Or in the console at <http://127.0.0.1:8080/>:
 An agent's credential is a **session**: a token that reaches one bundle's
 services until it expires (up to **Settings → Session lifetime**, 7 days
 by default) or is revoked, optionally capped at a number of requests.
-Create one on the bundle's page (**Run an agent → New session**), give the
+Create one under **Sessions → New session** (or on the bundle's page), give the
 token to the agent's machine, and start the agent:
 
 ```sh

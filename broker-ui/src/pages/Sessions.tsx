@@ -5,8 +5,8 @@
 // page with its requests and history.
 
 import { useMemo, useState } from "react";
-import { Ban, Timer } from "lucide-react";
-import { get, post, type Page, type ProxySession, type UserSummary, type Vault } from "../api";
+import { Ban, Plus, Timer } from "lucide-react";
+import { get, post, type AccessBundle, type Page, type ProxySession, type UserSummary, type Vault } from "../api";
 import { actorName } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -30,6 +30,7 @@ import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useActorNames } from "./Audit";
+import { NewSessionDialog } from "./NewSession";
 import type { LogRow } from "./sessionLogs";
 
 export function outcomeBadge(row: LogRow) {
@@ -70,6 +71,22 @@ export function Sessions({ me }: { me: UserSummary }) {
   );
   const actors = useActorNames(me);
   const canRevoke = me.role === "admin" || me.role === "editor";
+  const [creating, setCreating] = useState(false);
+  const bundles = useLoad(
+    () => (creating ? get<Page<AccessBundle>>("/bundles?page_size=100") : Promise.resolve(undefined)),
+    [creating],
+  );
+  const newButton = (
+    <Button
+      type="button"
+      onClick={() => setCreating(true)}
+      disabled={!canRevoke}
+      title={canRevoke ? undefined : "Only editors and admins can create sessions"}
+    >
+      <Plus />
+      New session
+    </Button>
+  );
   const confirm = useConfirm<ProxySession>();
   const action = useAction();
 
@@ -81,9 +98,7 @@ export function Sessions({ me }: { me: UserSummary }) {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Sessions"
-      />
+      <PageHeader title="Sessions" actions={newButton} />
       <ErrorBanner error={sessions.error ?? action.error} />
       <Panel>
         {sessions.loading && !sessions.data ? (
@@ -92,12 +107,8 @@ export function Sessions({ me }: { me: UserSummary }) {
           <Empty
             icon={Timer}
             title="No sessions yet"
-            description="Create one on an access bundle's page and give its token to an agent."
-            action={
-              <Button type="button" variant="outline" asChild>
-                <a href="#/bundles">Open access bundles</a>
-              </Button>
-            }
+            description="Create one and give its token to an agent. It reaches an access bundle's services until it expires or you revoke it."
+            action={newButton}
           />
         ) : (
           <Table>
@@ -164,6 +175,14 @@ export function Sessions({ me }: { me: UserSummary }) {
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>
+      <NewSessionDialog
+        choices={bundles.data?.items}
+        vaultNames={names}
+        open={creating}
+        onOpenChange={setCreating}
+        onCreated={() => sessions.reload()}
+        isAdmin={me.role === "admin"}
+      />
       <ConfirmDialog
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}

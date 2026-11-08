@@ -27,17 +27,22 @@ interface SessionLimits {
   default_ttl_secs: number;
 }
 
-const EMPTY = { name: "", ttl: "", limit: "" };
+const EMPTY = { bundle: "", name: "", ttl: "", limit: "" };
 
 export function NewSessionDialog({
-  bundle,
+  bundle: fixed,
+  choices,
+  vaultNames = {},
   open,
   onOpenChange,
   onCreated,
   isAdmin,
   agentCommand = "claude",
 }: {
-  bundle: AccessBundle;
+  /** The bundle the session is for; without it the form asks, from `choices`. */
+  bundle?: AccessBundle;
+  choices?: AccessBundle[];
+  vaultNames?: Record<string, string>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (minted: MintedSession) => void;
@@ -45,11 +50,14 @@ export function NewSessionDialog({
   /** The command the result's `tokenless run` line starts. */
   agentCommand?: string;
 }) {
-  const limits = useLoad(
-    () => (open ? get<SessionLimits>(`/vaults/${bundle.vault_id}/sessions/limits`) : Promise.resolve(undefined)),
-    [open, bundle.vault_id],
-  );
   const [form, setForm] = useState(EMPTY);
+  // With a single bundle to choose from, it is chosen.
+  const bundle = fixed ?? choices?.find((b) => b.id === form.bundle) ?? (choices?.length === 1 ? choices[0] : undefined);
+  const vaultId = bundle?.vault_id;
+  const limits = useLoad(
+    () => (open && vaultId ? get<SessionLimits>(`/vaults/${vaultId}/sessions/limits`) : Promise.resolve(undefined)),
+    [open, vaultId],
+  );
   const [minted, setMinted] = useState<MintedSession | null>(null);
   const action = useAction();
   const max = limits.data?.max_ttl_secs;
@@ -69,6 +77,7 @@ export function NewSessionDialog({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!bundle) return;
     const name = form.name.trim();
     const result = await action.run(() =>
       post<MintedSession>(`/vaults/${bundle.vault_id}/sessions`, {
@@ -85,14 +94,18 @@ export function NewSessionDialog({
   };
 
   const commands = minted ? tokenCommands(minted.token, agentCommand) : null;
+  const bundleOptions = (choices ?? []).map((b) => ({
+    value: b.id,
+    label: vaultNames[b.vault_id] ? `${b.name} · ${vaultNames[b.vault_id]}` : b.name,
+  }));
   return (
     <FormDialog
       open={open}
       onOpenChange={close}
       wide={minted !== null}
-      title={minted ? "Session created" : `New session for ${bundle.name}`}
+      title={minted ? "Session created" : fixed ? `New session for ${fixed.name}` : "New session"}
     >
-      {minted && commands ? (
+      {minted && commands && bundle ? (
         <div className="space-y-4">
           <OneTimeSecret
             label="Session token"
@@ -130,6 +143,33 @@ export function NewSessionDialog({
       ) : (
         <form className="space-y-4" onSubmit={submit}>
           <ErrorBanner error={limits.error ?? action.error} />
+          {!fixed && (
+            <Field
+              label="Access bundle"
+              htmlFor="session-bundle"
+              hint={
+                choices && choices.length === 0 ? (
+                  <>
+                    No access bundles yet.{" "}
+                    <a href="#/bundles" className="underline">
+                      Create one
+                    </a>{" "}
+                    first.
+                  </>
+                ) : (
+                  "The services the session reaches."
+                )
+              }
+            >
+              <SelectField
+                id="session-bundle"
+                value={bundle?.id ?? ""}
+                onChange={(v) => setForm({ ...form, bundle: v, ttl: "" })}
+                options={bundleOptions}
+                placeholder={choices ? "Choose a bundle" : "Loading…"}
+              />
+            </Field>
+          )}
           <Field label="Name" htmlFor="session-name" hint="Shown on the Sessions page and in its logs.">
             <Input
               id="session-name"
@@ -163,7 +203,7 @@ export function NewSessionDialog({
               value={ttl}
               onChange={(v) => setForm({ ...form, ttl: v })}
               options={lifetimes.map((l) => ({ value: String(l.secs), label: l.label }))}
-              placeholder={limits.loading ? "Loading…" : undefined}
+              placeholder={!bundle ? "Choose a bundle first" : limits.loading ? "Loading…" : undefined}
             />
           </Field>
           <Field
@@ -184,7 +224,7 @@ export function NewSessionDialog({
             <Button type="button" variant="outline" onClick={() => close(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={action.busy || !ttl || limitProblem !== null}>
+            <Button type="submit" disabled={action.busy || !bundle || !ttl || limitProblem !== null}>
               Create session
             </Button>
           </DialogActions>

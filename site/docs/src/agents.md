@@ -7,8 +7,9 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 An agent's credential is a **session**: a token that reaches one access
 bundle's services until it expires or is revoked, optionally for a set
-number of requests. Create one on the bundle's page (**Run an agent →
-New session**: a name, how long it lasts, a request limit) and copy the
+number of requests. Create one under **Sessions → New session**, or on
+the bundle's page (a bundle, a name, how long it lasts, a request limit)
+and copy the
 token; it is shown once. Then, where the agent runs:
 
 ```sh
