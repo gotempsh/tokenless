@@ -63,6 +63,12 @@ pub enum DataPlaneError {
         reason: String,
     },
 
+    #[error("this data plane (snapshot format {snapshot_format}) does not support {missing}; upgrade it before relying on them")]
+    Unsupported {
+        missing: String,
+        snapshot_format: u32,
+    },
+
     #[error("{target} is not cut yet after {waited_ms}ms: {open} connection(s) still open, the revocation is {}; without new policy the lease ends all traffic within {lease_remaining_secs}s", installed(*.revocation_installed))]
     NotCut {
         target: String,

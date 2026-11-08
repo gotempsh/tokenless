@@ -267,6 +267,14 @@ vault and revokes the node at the end, pass or fail, and checks that:
 - revoking a session cuts its open connection, and an idle connection
   closes when its session expires (it keeps installing fresh policy, so
   the lease running out never passes these checks);
+- `session_cut` and `revoke_and_wait` return once nothing is left open;
+- in a strict session, a rule's own deadline closes that grant's
+  connection while the other grant keeps working;
+- updating a binding cuts only the grant it removes, and an update with
+  an old version is refused;
+- a Git-scoped rule refuses another repository, a push and an extra
+  query at discovery;
+- the data plane reports every capability it enforces;
 - traffic is refused once the lease runs out;
 - no token or secret shows up in the status, errors, debug output, the
   proxy's answers or the audit log, including the record of a request it
@@ -275,3 +283,51 @@ vault and revokes the node at the end, pass or fail, and checks that:
 
 It takes a few seconds more than the lease, which is why the lease must be
 short (10 seconds at most).
+
+The store suites (`credential_store_suite` and the others) check your own
+stores the same way, including that replacing a secret is fenced on its
+generation and that a retried rotation is applied once.
+
+## Compatibility
+
+What you may build on, and what may change under you:
+
+- **Supported:** the `tokenless-control` services (`ControlServices` and
+  its `policy`, `sessions`, `nodes`, `audit` and `variables`), the store
+  traits in `tokenless_control::store`, `CredentialRefresher`, the
+  `tokenless-dataplane` types re-exported at its root (`DataPlane`,
+  `Binding`, `BindingSpec`, `BindingUpdate`, `CutReport`, the status
+  types and `DataPlaneError`), its `capabilities` module, the
+  `tokenless-conformance` suites, and `/api/v1` over HTTP.
+- **Internal:** every other module, even where it is `pub` (`proxy`,
+  `state`, `tls`, `upstream` and the like), and the snapshot's wire
+  format. They change without notice.
+- **Releases:** until 1.0, a minor version (0.x) may change a supported
+  surface; the release notes say how to move. Pin a commit or a tag
+  (`rev = "<commit>"` or `tag = "v0.2.0"`), not a branch, and upgrade the
+  control services and the data plane together.
+
+Snapshots and sessions are where versions meet when the control plane
+and the proxies are deployed separately:
+
+- **Snapshots** carry a format. A proxy tells the control plane the
+  newest format it reads; rules that need a newer one (a secret with an
+  expiry, a Git scope) are left out of its snapshot, so it refuses their
+  requests rather than enforcing them partly. The control plane logs a
+  warning naming the proxy. A snapshot newer than the proxy reads is
+  refused whole.
+- **Session tokens** a proxy does not fully understand (a strict
+  session, rule deadlines) are refused (`407`, or `bind` fails), never
+  accepted with the parts it doesn't know dropped.
+
+An embedded data plane is built into your binary, so check what it
+enforces before attaching workloads that rely on it:
+
+```rust
+use tokenless_dataplane::capabilities::Capability;
+
+dataplane.capabilities().require(&[Capability::StrictExpiry, Capability::RevocationAck])?;
+```
+
+`require` fails with `DataPlaneError::Unsupported`, naming each missing
+capability. `capabilities()` also reports the snapshot formats it reads.

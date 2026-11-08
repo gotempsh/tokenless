@@ -33,6 +33,7 @@ use tokenless_core::authz::{Principal, Role};
 use tokenless_core::protocol::AuditBatch;
 use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
 use tokenless_dataplane::audit::AuditShipper;
+use tokenless_dataplane::capabilities::Capability;
 use tokenless_dataplane::state::NodeKeys;
 use tokenless_dataplane::{BindingSpec, DataPlane, DataPlaneConfig, DataPlaneError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -103,6 +104,7 @@ async fn main() -> Result<(), Error> {
                 paths: None,
                 methods: None,
                 mcp_tools: None,
+                git: None,
             },
         )
         .await?;
@@ -137,6 +139,10 @@ async fn main() -> Result<(), Error> {
         }),
     )
     .await?;
+    // It must enforce what the workloads below are promised.
+    dataplane
+        .capabilities()
+        .require(&[Capability::StrictExpiry, Capability::RevocationAck])?;
 
     // 3. A workload, bound to a session minted for it on this node.
     let minted = control

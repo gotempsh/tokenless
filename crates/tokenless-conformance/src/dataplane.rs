@@ -18,6 +18,16 @@
 //! - **cutting open traffic:** revoking a session cuts its open connection,
 //!   and an idle connection closes when its session expires, while fresh
 //!   policy keeps the lease alive;
+//! - **revocation acknowledged:** `session_cut` and `revoke_and_wait`
+//!   resolve once nothing the session or binding opened is still open;
+//! - **strict rule deadlines:** in a `strict` session, a rule's own
+//!   deadline closes its open connection while the session's other grant
+//!   keeps working;
+//! - **binding updates:** replacing a binding's sessions cuts only the
+//!   grant it removes, and an update with an old version is refused;
+//! - **Git scopes:** a Git-scoped rule refuses another repository and a
+//!   push it does not allow, at discovery;
+//! - **capabilities:** the data plane reports everything it enforces;
 //! - **lease expiry:** with no new policy, traffic is refused once the lease
 //!   runs out;
 //! - **secrets never in diagnostics:** no token or secret appears in the
@@ -38,14 +48,17 @@ use tokenless_control::service::policy::{CreateCredential, CreateRule};
 use tokenless_control::service::sessions::{MintSession, MintedSession, SessionBinding};
 use tokenless_control::{Caller, ControlServices};
 use tokenless_core::audit::AuditEvent;
+use tokenless_core::git::GitScope;
 use tokenless_core::ids::{NodeId, RuleId, VaultId};
 use tokenless_core::protocol::AuditBatch;
 use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
 use tokenless_dataplane::audit::AuditShipper;
+use tokenless_dataplane::capabilities::CAPABILITIES;
 use tokenless_dataplane::state::NodeKeys;
 use tokenless_dataplane::tls::upstream_client_config;
 use tokenless_dataplane::{
-    Binding, BindingSpec, DataPlane, DataPlaneConfig, DataPlaneError, NotReady, SnapshotInstaller,
+    Binding, BindingSpec, BindingUpdate, DataPlane, DataPlaneConfig, DataPlaneError, NotReady,
+    SnapshotInstaller,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::time::timeout;
@@ -140,6 +153,8 @@ struct Harness {
     rule_a: RuleId,
     rule_a2: RuleId,
     rule_b: RuleId,
+    /// Service A, limited to cloning `acme/widgets`.
+    rule_git: RuleId,
     node: Node,
     dataplane: DataPlane,
     installer: SnapshotInstaller,
@@ -201,6 +216,25 @@ impl Harness {
                 .map_err(|e| setup(&e))?;
             ids.push(rule.id);
         }
+        let git = GitScope::new(vec!["acme/widgets".into()], false).map_err(|e| setup(&e))?;
+        let rule_git = control
+            .policy
+            .create_rule(
+                host,
+                &vault,
+                CreateRule {
+                    name: "svc-a-git".into(),
+                    credential_id: rules[0].0,
+                    hosts: None,
+                    paths: None,
+                    methods: Some(vec!["GET".into(), "POST".into()]),
+                    mcp_tools: None,
+                    git: Some(git),
+                },
+            )
+            .await
+            .map_err(|e| setup(&e))?
+            .id;
         let seal_secret = SealSecretKey::random_from_rng(rand::rngs::OsRng);
         let registered = control
             .nodes
@@ -240,6 +274,7 @@ impl Harness {
             rule_a: ids[0],
             rule_a2: ids[1],
             rule_b: ids[2],
+            rule_git,
             node,
             dataplane,
             installer,
@@ -248,11 +283,15 @@ impl Harness {
     }
 
     async fn run(&self) -> Result<(), ConformanceFailure> {
+        self.capabilities_reported()?;
         self.binding_isolation().await?;
         self.generation_fencing().await?;
         self.overlapping_sessions_refused().await?;
         self.revoking_cuts_open_traffic().await?;
         self.expiry_closes_idle_traffic().await?;
+        self.strict_rule_deadlines().await?;
+        self.binding_updates().await?;
+        self.git_scopes().await?;
         self.secrets_never_in_diagnostics().await?;
         // Last: it lets the lease run out.
         self.lease_expiry_refuses_traffic().await
@@ -268,6 +307,27 @@ impl Harness {
         generation: u64,
         ttl_secs: u64,
     ) -> Result<MintedSession, ConformanceFailure> {
+        self.mint_with(
+            check,
+            MintSession {
+                rule_ids: vec![rule],
+                ttl_secs: Some(ttl_secs),
+                binding: Some(SessionBinding {
+                    id: binding.into(),
+                    generation,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Mints `request` on this node.
+    async fn mint_with(
+        &self,
+        check: &'static str,
+        request: MintSession,
+    ) -> Result<MintedSession, ConformanceFailure> {
         let minted = self
             .control
             .sessions
@@ -275,20 +335,8 @@ impl Harness {
                 &self.host,
                 &self.vault,
                 MintSession {
-                    rule_ids: vec![rule],
-                    bundle: None,
-                    ttl_secs: Some(ttl_secs),
-                    longest: false,
-                    request_limit: None,
-                    labels: Default::default(),
                     node_id: Some(self.node.id),
-                    binding: Some(SessionBinding {
-                        id: binding.into(),
-                        generation,
-                    }),
-                    not_after: None,
-                    rule_not_after: Default::default(),
-                    strict: false,
+                    ..request
                 },
             )
             .await
@@ -459,12 +507,156 @@ impl Harness {
             .await
             .map_err(|e| fail(CHECK, format!("revoking the session: {e}")))?;
         self.install(CHECK).await?;
+        let cut = self
+            .dataplane
+            .session_cut(minted.session.id, CUT_BOUND)
+            .await;
+        check!(
+            CHECK,
+            matches!(&cut, Ok(report) if report.connections_closed >= 1),
+            "session_cut did not report the revoked session's open connection cut within {CUT_BOUND:?}: {cut:?}"
+        );
         check!(
             CHECK,
             self.closes_within_fresh_policy(CHECK, tls, CUT_BOUND)
                 .await?,
             "an open connection outlived its session's revocation by more than {CUT_BOUND:?}"
         );
+        binding.revoke();
+        Ok(())
+    }
+
+    fn capabilities_reported(&self) -> Result<(), ConformanceFailure> {
+        const CHECK: &str = "capabilities";
+        let capabilities = self.dataplane.capabilities();
+        check!(
+            CHECK,
+            capabilities.require(CAPABILITIES).is_ok(),
+            "the data plane does not report all it enforces: {capabilities:?}"
+        );
+        Ok(())
+    }
+
+    async fn strict_rule_deadlines(&self) -> Result<(), ConformanceFailure> {
+        const CHECK: &str = "strict_rule_deadlines";
+        let grant = Duration::from_secs(2);
+        let deadline = chrono::Utc::now()
+            + chrono::TimeDelta::from_std(grant).map_err(|e| fail(CHECK, e.to_string()))?;
+        let minted = self
+            .mint_with(
+                CHECK,
+                MintSession {
+                    rule_ids: vec![self.rule_a, self.rule_b],
+                    ttl_secs: Some(600),
+                    binding: Some(SessionBinding {
+                        id: "strict".into(),
+                        generation: 1,
+                    }),
+                    rule_not_after: [(self.rule_a, deadline)].into(),
+                    strict: true,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let binding = self.bound(CHECK, "strict", 1, vec![minted.token]).await?;
+        let a = self.tls_to(CHECK, &binding, HOST_A).await?;
+        let b = self.tls_to(CHECK, &binding, HOST_B).await?;
+        check!(
+            CHECK,
+            self.closes_within_fresh_policy(CHECK, a, grant + CUT_BOUND)
+                .await?,
+            "a strict session's connection under a grant that ended stayed open"
+        );
+        check!(
+            CHECK,
+            !self
+                .closes_within_fresh_policy(CHECK, b, Duration::from_secs(1))
+                .await?,
+            "the strict session's other grant was cut with the one that ended"
+        );
+        binding.revoke();
+        Ok(())
+    }
+
+    async fn binding_updates(&self) -> Result<(), ConformanceFailure> {
+        const CHECK: &str = "binding_updates";
+        let a = self.mint(CHECK, self.rule_a, "update", 1, 600).await?;
+        let b = self.mint(CHECK, self.rule_b, "update", 1, 600).await?;
+        let binding = self.bound(CHECK, "update", 1, vec![a.token]).await?;
+        let open_a = self.intercepted(CHECK, &binding).await?;
+        binding
+            .update(BindingUpdate {
+                version: 1,
+                sessions: vec![b.token.clone()],
+            })
+            .map_err(|e| fail(CHECK, format!("updating the binding to version 1: {e}")))?;
+        check!(
+            CHECK,
+            self.closes_within_fresh_policy(CHECK, open_a, CUT_BOUND)
+                .await?,
+            "a connection under the grant an update removed stayed open"
+        );
+        let stale = binding.update(BindingUpdate {
+            version: 1,
+            sessions: vec![b.token],
+        });
+        check!(
+            CHECK,
+            matches!(stale, Err(DataPlaneError::StaleBindingUpdate { .. })),
+            "a second update with version 1 was not refused as stale: {stale:?}"
+        );
+        let open_b = self.tls_to(CHECK, &binding, HOST_B).await?;
+        let waited = binding.revoke_and_wait(CUT_BOUND).await;
+        check!(
+            CHECK,
+            waited.is_ok(),
+            "revoke_and_wait did not see the binding's traffic stop within {CUT_BOUND:?}: {waited:?}"
+        );
+        check!(
+            CHECK,
+            closes_within(open_b, Duration::from_millis(500)).await,
+            "a connection was still open after revoke_and_wait returned"
+        );
+        Ok(())
+    }
+
+    async fn git_scopes(&self) -> Result<(), ConformanceFailure> {
+        const CHECK: &str = "git_scopes";
+        let minted = self.mint(CHECK, self.rule_git, "git", 1, 600).await?;
+        let binding = self.bound(CHECK, "git", 1, vec![minted.token]).await?;
+        for (path, allowed) in [
+            ("/acme/other.git/info/refs?service=git-upload-pack", false),
+            (
+                "/acme/widgets.git/info/refs?service=git-receive-pack",
+                false,
+            ),
+            (
+                "/acme/widgets.git/info/refs?service=git-upload-pack&x=1",
+                false,
+            ),
+            ("/acme/widgets.git/info/refs?service=git-upload-pack", true),
+        ] {
+            let mut tls = self.tls_to(CHECK, &binding, HOST_A).await?;
+            let status = timeout(Duration::from_secs(15), async {
+                tls.write_all(
+                    format!("GET {path} HTTP/1.1\r\nHost: {HOST_A}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .ok()?;
+                Some(read_head(&mut tls).await)
+            })
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+            let refused = status.starts_with("HTTP/1.1 403");
+            check!(
+                CHECK,
+                status.starts_with("HTTP/1.1 ") && refused != allowed,
+                "GET {path} under a scope cloning acme/widgets only: {status:?}"
+            );
+        }
         binding.revoke();
         Ok(())
     }

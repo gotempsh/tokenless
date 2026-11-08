@@ -16,6 +16,7 @@
 
 pub mod audit;
 pub mod binding;
+pub mod capabilities;
 mod clock;
 pub mod cut;
 pub mod embedded;
@@ -341,6 +342,11 @@ impl DataPlane {
                 }
             }
         }
+    }
+
+    /// What this data plane enforces; see [`capabilities`].
+    pub fn capabilities(&self) -> capabilities::Capabilities {
+        capabilities::Capabilities::current()
     }
 
     /// Version of the snapshot currently in force, if any.
