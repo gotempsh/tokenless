@@ -222,6 +222,10 @@ export interface DiscoveredService {
   template_id: string;
   service: string;
   hosts: string[];
+  /** Path patterns the rule allows, e.g. `/repos/**`. */
+  paths: string[];
+  /** Empty: any method. */
+  methods: string[];
   enabled: boolean;
   kind?: ServiceKind;
   mcp_path?: string;

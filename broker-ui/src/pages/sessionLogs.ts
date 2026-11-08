@@ -26,8 +26,48 @@ export interface LogRow {
   bodySkipped?: string;
   /** The MCP call, e.g. "tools/call search_issues". */
   mcp?: string;
+  /** The rule that matched, from the decision's `rule:` target. */
+  ruleId?: string;
   /** The audit events behind the row: the decision, then the answer. */
   events: AuditEvent[];
+}
+
+/** The rule an event names as its target, if any. */
+function ruleOf(e: AuditEvent | undefined): string | undefined {
+  return e?.target?.startsWith("rule:") ? e.target.slice(5) : undefined;
+}
+
+/** The row's result in words: "Credential added · 200", "Blocked". */
+export function outcomeLabel(row: LogRow): string {
+  const status = row.status !== undefined ? ` · ${row.status}` : "";
+  switch (row.outcome) {
+    case "brokered":
+      return `Credential added${status}`;
+    case "blocked":
+      return "Blocked";
+    case "passthrough":
+      return "No credential";
+    case "error":
+      return `Failed${status}`;
+  }
+}
+
+/** What happened to the request, as a sentence. `rule` names the matching rule. */
+export function outcomeSentence(row: LogRow, rule?: string): string {
+  const by = rule ? `the credential of ${rule}` : "a credential";
+  const took = row.durationMs !== undefined ? ` after ${row.durationMs} ms` : "";
+  switch (row.outcome) {
+    case "brokered":
+      return row.status !== undefined
+        ? `The proxy added ${by} and the API answered ${row.status}${took}.`
+        : `The proxy added ${by} and sent it on.`;
+    case "blocked":
+      return "The proxy refused it, so it never reached the API.";
+    case "passthrough":
+      return "None of the session's rules covers this host, so the proxy sent it on without a credential.";
+    case "error":
+      return `The proxy added ${by}, but the request failed${took}.`;
+  }
 }
 
 function mcpCall(e: AuditEvent | undefined): string | undefined {
@@ -74,6 +114,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         durationMs: number(e.detail.duration_ms),
         request: request(e),
         reason: e.detail.reason,
+        ruleId: ruleOf(e),
         events: [e],
       });
     } else if (e.action === "proxy.inject") {
@@ -89,6 +130,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         substituted: e.detail.substituted,
         bodySkipped: e.detail.body_not_substituted,
         mcp: mcpCall(e),
+        ruleId: ruleOf(e),
         events: response ? [e, response] : [e],
       });
     } else if (BLOCKED.has(e.action)) {
@@ -99,6 +141,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         request: request(e),
         reason: e.detail.reason,
         mcp: mcpCall(e),
+        ruleId: ruleOf(e),
         events: [e],
       });
     } else if (e.action === "proxy.tunnel") {
@@ -127,4 +170,15 @@ export function sessionLog(events: AuditEvent[]): SessionLogEntry[] {
     else if (!shown.has(e.id)) out.push({ kind: "event", event: e });
   }
   return out;
+}
+
+/**
+ * Requests a session has had a credential added to, against its limit.
+ * Proxies count each node separately, so this is the total the broker
+ * recorded, not what any one proxy will refuse at.
+ */
+export function requestUsage(used: number, limit: number | null): { text: string; near: boolean } {
+  const n = used.toLocaleString("en-US");
+  if (limit === null) return { text: `${n} so far, no limit`, near: false };
+  return { text: `${n} of ${limit.toLocaleString("en-US")} used`, near: used >= limit * 0.8 };
 }

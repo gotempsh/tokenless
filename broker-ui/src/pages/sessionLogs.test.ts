@@ -3,10 +3,10 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AuditEvent } from "../api";
-import { logRows, sessionLog } from "./sessionLogs";
+import { logRows, outcomeLabel, outcomeSentence, requestUsage, sessionLog } from "./sessionLogs";
 
-function event(id: string, action: string, outcome: string, detail: Record<string, string>): AuditEvent {
-  return { id, at: "2026-01-01T00:00:00Z", actor: "node:n", action, outcome, detail };
+function event(id: string, action: string, outcome: string, detail: Record<string, string>, target?: string): AuditEvent {
+  return { id, at: "2026-01-01T00:00:00Z", actor: "node:n", action, outcome, detail, target };
 }
 
 const request = { method: "GET", host: "api.example.com:443", path: "/v1/items" };
@@ -75,5 +75,36 @@ describe("sessionLog", () => {
   test("shows a refused MCP call as blocked", () => {
     const log = sessionLog([event("1", "proxy.gateway_denied", "denied", { ...request, mcp_tool: "drop_table" })]);
     expect(log[0]).toMatchObject({ kind: "request", row: { outcome: "blocked", mcp: "tools/call drop_table" } });
+  });
+});
+
+describe("outcome words", () => {
+  const rows = logRows([
+    event("1", "proxy.response", "success", { ...request, request_id: "r1", status: "401", duration_ms: "40" }, "rule:ru1"),
+    event("2", "proxy.inject", "success", { ...request, request_id: "r1" }, "rule:ru1"),
+    event("3", "proxy.deny", "denied", { ...request, reason: "no rule" }),
+    event("4", "proxy.tunnel", "success", { host: "registry.example.org:443" }),
+    event("5", "proxy.response", "failure", { ...request, request_id: "r5", status: "502" }, "rule:ru2"),
+  ]);
+
+  test("say what the proxy did, not its internal name", () => {
+    expect(rows.map(outcomeLabel)).toEqual(["Credential added · 401", "Blocked", "No credential", "Failed · 502"]);
+  });
+
+  test("name the rule that added the credential", () => {
+    expect(rows[0]?.ruleId).toBe("ru1");
+    expect(rows[1]?.ruleId).toBeUndefined();
+    expect(outcomeSentence(rows[0]!, "github-read")).toBe(
+      "The proxy added the credential of github-read and the API answered 401 after 40 ms.",
+    );
+    expect(outcomeSentence(rows[3]!)).toBe("The proxy added a credential, but the request failed.");
+  });
+});
+
+describe("requestUsage", () => {
+  test("counts against the limit and flags the last fifth", () => {
+    expect(requestUsage(12, 100)).toEqual({ text: "12 of 100 used", near: false });
+    expect(requestUsage(80, 100)).toEqual({ text: "80 of 100 used", near: true });
+    expect(requestUsage(1500, null)).toEqual({ text: "1,500 so far, no limit", near: false });
   });
 });

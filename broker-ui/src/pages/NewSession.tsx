@@ -155,7 +155,8 @@ export function NewSessionDialog({
             label="Expires after"
             htmlFor="session-ttl"
             hint={
-              max !== undefined && max < 90 * 86400 ? (
+              // The custom lifetime's own error says the same when it is too long.
+              max !== undefined && max < 90 * 86400 && !(custom && "problem" in custom) ? (
                 <>
                   Settings allow up to {lifetimeLabel(max)}.
                   {isAdmin && (

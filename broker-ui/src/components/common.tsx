@@ -140,7 +140,17 @@ export function Panel({ className, children }: { className?: string; children: R
  * Copies `value`. `iconOnly` is for a value shown right beside it: a small
  * ghost icon that keeps `label` as its accessible name and tooltip.
  */
-export function CopyButton({ value, label = "Copy", iconOnly = false }: { value: string; label?: string; iconOnly?: boolean }) {
+export function CopyButton({
+  value,
+  label = "Copy",
+  iconOnly = false,
+  onCopied,
+}: {
+  value: string;
+  label?: string;
+  iconOnly?: boolean;
+  onCopied?: () => void;
+}) {
   const [copied, setCopied] = useState(false);
   const text = copied ? "Copied" : label;
   return (
@@ -154,6 +164,7 @@ export function CopyButton({ value, label = "Copy", iconOnly = false }: { value:
       onClick={() => {
         void navigator.clipboard.writeText(value).then(() => {
           setCopied(true);
+          onCopied?.();
           window.setTimeout(() => setCopied(false), 2000);
         });
       }}
@@ -168,13 +179,10 @@ export function CopyButton({ value, label = "Copy", iconOnly = false }: { value:
 export function OneTimeSecret({
   label,
   value,
-  display,
   hint,
 }: {
   label: string;
   value: string;
-  /** Shown instead of `value` (a shortened token); Copy still copies `value`. */
-  display?: string;
   hint?: ReactNode;
 }) {
   return (
@@ -185,7 +193,7 @@ export function OneTimeSecret({
         <p>This is the only time it is shown. Store it now.</p>
         <div className="flex items-center gap-2">
           <code className="min-w-0 flex-1 break-all rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground">
-            {display ?? value}
+            {value}
           </code>
           <CopyButton value={value} />
         </div>

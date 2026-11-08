@@ -31,21 +31,20 @@ import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
-import type { LogRow } from "./sessionLogs";
+import { outcomeLabel, type LogRow } from "./sessionLogs";
 
 export function outcomeBadge(row: LogRow) {
-  switch (row.outcome) {
-    case "brokered": {
-      const tone = row.status === undefined || row.status < 400 ? "success" : row.status < 500 ? "warning" : "destructive";
-      return <Status tone={tone}>brokered{row.status !== undefined ? ` · ${row.status}` : ""}</Status>;
-    }
-    case "blocked":
-      return <Status tone="warning">blocked</Status>;
-    case "passthrough":
-      return <Status tone="neutral">passthrough</Status>;
-    case "error":
-      return <Status tone="destructive">error{row.status !== undefined ? ` · ${row.status}` : ""}</Status>;
-  }
+  const tone =
+    row.outcome === "blocked"
+      ? "warning"
+      : row.outcome === "passthrough"
+        ? "neutral"
+        : row.outcome === "error" || (row.status !== undefined && row.status >= 500)
+          ? "destructive"
+          : row.status !== undefined && row.status >= 400
+            ? "warning"
+            : "success";
+  return <Status tone={tone}>{outcomeLabel(row)}</Status>;
 }
 
 /** The label people set when minting, else the first label, else the id. */
