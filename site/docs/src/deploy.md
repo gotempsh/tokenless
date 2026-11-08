@@ -224,6 +224,15 @@ one on its access bundle's page, or with `tokenless session create`, and
 pass the token in `TOKENLESS_SESSION_TOKEN`. A job that needs a fresh
 session per run mints it with an `editor` key.
 
+**Two services on one host.** When a session holds two rules for one host,
+the proxy now uses the one whose path matches most specifically, and
+refuses requests both match equally if their credentials differ (it used
+to take whichever came first). New GitLab and Confluence services are
+scoped so this never happens (`/api/*` and `/wiki/*`), but ones created
+before allow every path: in a session with GitLab (Git), or with Jira on
+the same site using another token, narrow their rule's paths to `/api/*`
+or `/wiki/*`. The proxy's `403` names both rules.
+
 ## Logs and metrics
 
 Logs are JSON lines on stdout. Set `RUST_LOG` to change the level, for

@@ -34,8 +34,9 @@ narrow what the template allows. A service with no rule is never used.
 
 When several rules of a session allow a request, the proxy uses the one
 whose path matches it most specifically: an exact path, then the longest
-prefix. GitLab's API rule (`/api/*`) therefore takes API calls, and the
-GitLab (Git) rule (`/*`) everything else. Two rules that match equally
+prefix. GitLab's API rule (`/api/*`) therefore takes API calls and the
+GitLab (Git) rule (`/*`) everything else; Confluence (`/wiki/*`) and Jira
+(`/*`) share an Atlassian site the same way. Two rules that match equally
 and would send different credentials are refused, never picked at random.
 
 ## Access bundle

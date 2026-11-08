@@ -687,11 +687,13 @@ icon = "simple:jira"
 
 [[service]]
 id = "confluence"
-version = 1
+version = 2
 name = "Confluence"
 description = "Atlassian Confluence pages and spaces."
 category = "productivity"
 hosts = ["*.atlassian.net"]
+# Confluence Cloud lives under /wiki; the rest of the site is Jira's.
+paths = ["/wiki/*"]
 auth = "basic"
 username_label = "Email"
 password_label = "API token"

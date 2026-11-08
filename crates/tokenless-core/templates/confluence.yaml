@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 id: confluence
-version: 1
+version: 2
 name: "Confluence"
 description: "Atlassian Confluence pages and spaces."
 category: productivity
@@ -10,7 +10,7 @@ suggested_variable: CONFLUENCE_API_TOKEN
 hosts:
   - "*.atlassian.net"
 allow:
-  paths: ["/*"]
+  paths: ["/wiki/*"]
   methods: ["*"]
 credential_fields:
   - name: username

@@ -122,7 +122,8 @@ rules of their own.
 
 A **GitLab** service added before GitLab (Git) existed allows every path
 on `gitlab.com`, so in a session with GitLab (Git) the two tie and the
-proxy refuses both. Narrow the GitLab rule's paths to `/api/*`.
+proxy refuses both. Narrow the GitLab rule's paths to `/api/*`
+([Upgrades](deploy.md#upgrades)).
 
 ## The agent skill
 

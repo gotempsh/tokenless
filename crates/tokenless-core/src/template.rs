@@ -455,15 +455,20 @@ mod tests {
     }
 
     /// The proxy uses the rule whose path matches a request most
-    /// specifically and refuses a tie between rules that send differently,
-    /// so two built-in services on one host that inject differently must
-    /// never tie: GitLab's API and Git over HTTPS work in one session.
+    /// specifically and refuses a tie between rules that send different
+    /// credentials. Two services hold two credentials, so two built-in
+    /// services whose hosts overlap must never tie, whatever their
+    /// injection: GitLab's API with GitLab (Git), Jira with Confluence.
     #[test]
-    fn builtins_on_one_host_that_inject_differently_never_tie() {
+    fn builtins_whose_hosts_overlap_never_tie() {
         let builtins = builtin_templates().unwrap();
         for (i, (a, _)) in builtins.iter().enumerate() {
             for (b, _) in &builtins[i + 1..] {
-                if a.injection == b.injection || !a.hosts.iter().any(|h| b.hosts.contains(h)) {
+                if !a
+                    .hosts
+                    .iter()
+                    .any(|h| b.hosts.iter().any(|g| h.overlaps(g)))
+                {
                     continue;
                 }
                 let methods = a.allow.methods.iter().any(|m| {
@@ -475,7 +480,8 @@ mod tests {
                 let shared = a.allow.paths.iter().find(|p| b.allow.paths.contains(p));
                 assert!(
                     !methods || shared.is_none(),
-                    "{} and {} share a host and the path {:?} but inject differently",
+                    "{} and {} overlap on a host and share the path {:?}, so the proxy refuses \
+                     both when one session holds them",
                     a.id,
                     b.id,
                     shared
@@ -491,6 +497,15 @@ mod tests {
         let (api, git) = (find("gitlab"), find("gitlab-git"));
         assert!(rank(&api, "/api/v4/projects") > rank(&git, "/api/v4/projects"));
         assert_eq!(rank(&api, "/acme/widgets.git/info/refs"), None);
+        let site = |t: &ServiceTemplate, path: &str| {
+            t.max_scope(&[])
+                .unwrap()
+                .specificity("acme.atlassian.net", 443, "GET", path)
+        };
+        let (jira, wiki) = (find("jira"), find("confluence"));
+        assert!(site(&wiki, "/wiki/api/v2/pages") > site(&jira, "/wiki/api/v2/pages"));
+        assert_eq!(site(&wiki, "/rest/api/3/issue/ABC-1"), None);
+        assert!(site(&jira, "/rest/api/3/issue/ABC-1").is_some());
     }
 
     #[test]
