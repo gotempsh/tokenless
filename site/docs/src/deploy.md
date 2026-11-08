@@ -217,6 +217,13 @@ control plane keeps working, but it does not use a service that needs a
 newer proxy (for now, one whose secret has an expiry date) until it is
 upgraded; the control plane logs a warning naming that proxy.
 
+**Upgrading past the removal of `session_issuer` keys.** API keys with
+the `session_issuer` role are deleted on upgrade, and whatever used one
+gets `401 API key is unknown`. Give each agent a session instead: create
+one on its access bundle's page, or with `tokenless session create`, and
+pass the token in `TOKENLESS_SESSION_TOKEN`. A job that needs a fresh
+session per run mints it with an `editor` key.
+
 ## Logs and metrics
 
 Logs are JSON lines on stdout. Set `RUST_LOG` to change the level, for

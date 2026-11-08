@@ -92,6 +92,34 @@ tokenless session info --json
 It lists each service's hosts, the allowed methods and paths, and its
 placeholders, never a secret.
 
+## Git over HTTPS
+
+Add the **GitHub (Git)** or **GitLab (Git)** service with a token that
+can reach the repositories. The proxy sends it the way Git hosts expect
+(`x-access-token` or `oauth2` as the username), so the agent clones a
+plain URL with no credential helper:
+
+```sh
+git clone https://github.com/acme/widgets.git
+```
+
+`tokenless run` points Git at the interception CA (`GIT_SSL_CAINFO`).
+Elsewhere, set `http.sslCAInfo` to `broker-ca.pem`.
+
+The template allows every repository the token can reach. To limit an
+agent to one repository, give the rule exact paths:
+
+| Access | Paths (`GET` and `POST`) |
+|---|---|
+| Clone and fetch | `/acme/widgets.git/info/refs`, `/acme/widgets.git/git-upload-pack` |
+| Push as well | the two above and `/acme/widgets.git/git-receive-pack` |
+
+A push under the read rule gets a `403` from the proxy. The paths match
+the URL Git is given, so clone with the `.git` suffix the rule names.
+A prefix such as `/acme/widgets.git/*` would allow pushes too. Packs of
+any size stream through; Git LFS objects come from other hosts and need
+rules of their own.
+
 ## The agent skill
 
 The skill tells an agent how to see what it can reach, hand a tool a

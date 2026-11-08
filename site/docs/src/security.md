@@ -39,6 +39,25 @@ This page is the summary an operator needs.
   `DELETE` lets an agent delete. Use read-only access and narrow paths
   where you can.
 
+## What the proxy doesn't carry
+
+A credential is injected only into HTTP/1.1 over TLS, through
+`HTTPS_PROXY`. To a host a session covers, the proxy doesn't carry:
+
+- **HTTP/2 or gRPC.** Clients that negotiate fall back to HTTP/1.1;
+  gRPC, which needs HTTP/2, fails.
+- **WebSockets** and other upgraded connections.
+- **HTTP/3 (QUIC)** or any UDP traffic.
+- **Plain HTTP.** It is refused, so a credential never travels
+  unencrypted.
+- **Raw TCP** to a covered host, such as SSH or a database protocol.
+  Use the HTTPS form of the service (Git over HTTPS instead of SSH).
+- **Clients that pin certificates** or ignore the trust settings `run`
+  provides. They refuse the interception CA's certificate.
+
+Hosts no session covers are tunnelled untouched, or refused when other
+hosts are blocked; the proxy never reads that traffic.
+
 ## Failing closed
 
 Proxies run from an Ed25519-signed policy snapshot with a lease. When the
