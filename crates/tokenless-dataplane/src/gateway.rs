@@ -38,7 +38,7 @@ use crate::proxy::{
     audit_best_effort, check_session, handle_intercepted, respond, session_rules, tunnel_cut,
     ProxyBody, ProxyShared, TunnelCtx,
 };
-use crate::shutdown::{closed, stopping};
+use crate::shutdown::{closed, stopping, CUT_SETTLE};
 use crate::upstream::UpstreamHandle;
 
 /// Every gateway URL starts with this.
@@ -166,8 +166,19 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>) {
                     tokio::select! {
                         served = connection.as_mut() => served,
                         () = closed(&mut lifecycle) => {
-                            debug!(%peer, "drain deadline reached; dropping MCP gateway connection");
-                            return;
+                            // A streaming response is cut by its own watch,
+                            // which audits the cut and then ends this
+                            // connection. Dropping the connection first would
+                            // drop that watch before it records anything, so
+                            // it gets a moment; a request still waiting on
+                            // its upstream is dropped after that.
+                            match tokio::time::timeout(CUT_SETTLE, connection.as_mut()).await {
+                                Ok(served) => served,
+                                Err(_) => {
+                                    debug!(%peer, "drain deadline reached; dropping MCP gateway connection");
+                                    return;
+                                }
+                            }
                         }
                     }
                 }

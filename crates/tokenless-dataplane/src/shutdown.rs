@@ -27,6 +27,10 @@ use crate::proxy::ProxyShared;
 /// events the cuts recorded.
 pub const FINAL_AUDIT_SHIP: Duration = Duration::from_secs(2);
 
+/// How long traffic cut at the drain deadline gets to record its cut and
+/// close before the drain reads what is left.
+pub(crate) const CUT_SETTLE: Duration = Duration::from_millis(500);
+
 /// Where the data plane is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lifecycle {
@@ -96,8 +100,8 @@ pub(crate) async fn drain(shared: &Arc<ProxyShared>, deadline: Instant) -> Shutd
             cut_connections,
             "drain deadline reached; cutting open connections"
         );
-        // The cut tunnels record their events as they unwind.
-        wait_until(Instant::now() + FINAL_AUDIT_SHIP / 4, || {
+        // The cut tunnels and streams record their events as they unwind.
+        wait_until(Instant::now() + CUT_SETTLE, || {
             open_connections(shared) == 0
         })
         .await;
@@ -391,5 +395,32 @@ mod tests {
         );
         assert_eq!(report.cut_connections, 0);
         assert!(closed(&mut idle).await);
+    }
+
+    /// The stream cut at the deadline is audited as cut every time: the
+    /// connection is not dropped before the stream's own cut records it.
+    #[tokio::test]
+    async fn a_gateway_stream_cut_at_the_deadline_is_always_audited() {
+        let (port, root) = https_stream_upstream(EVENT_STREAM).await;
+        let target = format!("localhost:{port}");
+        let mut unaudited = 0;
+        for _ in 0..10 {
+            let shipped = Arc::new(Collect(Mutex::new(Vec::new())));
+            let r = running_with(&target, vec![root.clone()], 600, shipped.clone()).await;
+            let _stream = gateway_stream(&r, &target).await;
+            let report = r.dp.shutdown(Duration::from_millis(100)).await;
+            assert_eq!(report.cut_connections, 1, "{report:?}");
+            assert_eq!(report.unshipped_audit_events, 0, "{report:?}");
+            let audited = shipped
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|e| e.action == "proxy.tunnel_cut");
+            if !audited {
+                unaudited += 1;
+            }
+        }
+        assert_eq!(unaudited, 0, "cut but not audited in {unaudited}/10 runs");
     }
 }
