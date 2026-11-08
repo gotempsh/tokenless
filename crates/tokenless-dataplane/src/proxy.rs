@@ -100,6 +100,8 @@ pub struct ProxyShared {
     pub status_changed: watch::Sender<u64>,
     /// Running, draining or closed; see [`crate::shutdown`].
     pub lifecycle: watch::Sender<Lifecycle>,
+    /// Open tunnels and gateway streams per session.
+    pub(crate) traffic: Arc<crate::traffic::OpenTraffic>,
 }
 
 impl ProxyShared {
@@ -228,21 +230,34 @@ pub(crate) fn check_session(
 /// Holds a connection's permits until the connection and the tunnel it
 /// opened have both closed, then reports it.
 pub(crate) struct ConnectionGuard {
-    _permits: Vec<OwnedSemaphorePermit>,
+    permits: Vec<OwnedSemaphorePermit>,
     done: Option<oneshot::Sender<()>>,
+    /// Told once the permits are back.
+    released: Option<Arc<BindingState>>,
 }
 
 impl ConnectionGuard {
     pub fn new(permits: Vec<OwnedSemaphorePermit>, done: Option<oneshot::Sender<()>>) -> Self {
         Self {
-            _permits: permits,
+            permits,
             done,
+            released: None,
         }
+    }
+
+    /// Wakes whoever waits for `binding`'s connections to close.
+    pub fn for_binding(mut self, binding: Arc<BindingState>) -> Self {
+        self.released = Some(binding);
+        self
     }
 }
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
+        self.permits.clear();
+        if let Some(binding) = &self.released {
+            binding.connection_closed();
+        }
         if let Some(done) = self.done.take() {
             let _ = done.send(());
         }
@@ -584,10 +599,13 @@ async fn handle_proxy_request(
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
+    let open = shared.traffic.enter(claims.jti);
     let claims = Arc::new(claims);
     tokio::spawn(async move {
-        // The tunnel counts against the connection limits until it closes.
+        // The tunnel counts against the connection limits, and as its
+        // session's open traffic, until it closes.
         let _guard = guard;
+        let _open = open;
         let upgraded = match on_upgrade.await {
             Ok(u) => u,
             Err(e) => {

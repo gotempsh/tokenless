@@ -292,6 +292,7 @@ async fn handle(
 
     let upstream = upstream_for(&slot, &host, port, &shared);
     let watch = shared.session_watch(&claims);
+    let open = shared.traffic.enter(claims.jti);
     let claims = Arc::new(claims);
     let ctx = Arc::new(TunnelCtx {
         host,
@@ -313,8 +314,10 @@ async fn handle(
     // An MCP server may answer with an event stream that stays open; it ends
     // when the session does.
     response.map(|body| {
+        // The stream counts as its session's open traffic until it ends.
         CutBody::wrap(body, watch, move |end| {
             tunnel_cut(&ctx.shared, &claims, &ctx.host, ctx.port, end);
+            drop(open);
         })
     })
 }

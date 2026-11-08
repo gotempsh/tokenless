@@ -63,6 +63,15 @@ pub enum DataPlaneError {
         reason: String,
     },
 
+    #[error("{target} is not cut yet after {waited_ms}ms: {open} connection(s) still open, the revocation is {}; without new policy the lease ends all traffic within {lease_remaining_secs}s", installed(*.revocation_installed))]
+    NotCut {
+        target: String,
+        waited_ms: u64,
+        open: usize,
+        revocation_installed: bool,
+        lease_remaining_secs: u64,
+    },
+
     #[error("binding '{binding_id}' is at version {current}, so the update to version {offered} is stale and was refused")]
     StaleBindingUpdate {
         binding_id: String,
@@ -117,5 +126,13 @@ impl DataPlaneError {
         DataPlaneError::SnapshotRejected {
             reason: reason.into(),
         }
+    }
+}
+
+fn installed(yes: bool) -> &'static str {
+    if yes {
+        "installed"
+    } else {
+        "not installed yet"
     }
 }

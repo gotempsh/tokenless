@@ -28,6 +28,7 @@ pub mod shutdown;
 pub mod state;
 pub mod status;
 pub mod tls;
+mod traffic;
 pub mod upstream;
 
 #[cfg(test)]
@@ -59,6 +60,7 @@ pub use shutdown::{Lifecycle, ShutdownReport};
 pub use status::{
     BindingStatus, NotReady, SessionStatus, Status, UpstreamFailure, UpstreamFailureKind,
 };
+pub use traffic_report::CutReport;
 
 use crate::audit::{run_batcher, AuditPipeline, AuditShipper, BatcherConfig};
 use crate::metrics::Metrics;
@@ -207,6 +209,7 @@ impl DataPlane {
             bindings: std::sync::Mutex::new(Vec::new()),
             status_changed: watch::channel(0).0,
             lifecycle: watch::channel(Lifecycle::Running).0,
+            traffic: Arc::new(traffic::OpenTraffic::default()),
         });
         let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
@@ -283,6 +286,61 @@ impl DataPlane {
         self.mcp_addr
     }
 
+    /// Waits until revoking `session` is enforced here: a snapshot listing
+    /// it as revoked is in force and nothing it opened (tunnels, gateway
+    /// streams) is still open, so this data plane forwards nothing for it.
+    /// Revoke it with the control services first; this only waits. Fails
+    /// with [`DataPlaneError::NotCut`] at `timeout`, saying whether the
+    /// revocation has arrived, what is still open and when the lease would
+    /// end all traffic anyway. It cannot undo what an upstream already
+    /// accepted.
+    pub async fn session_cut(
+        &self,
+        session: tokenless_core::ids::SessionId,
+        timeout: Duration,
+    ) -> Result<CutReport, DataPlaneError> {
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let traffic = &self.shared.traffic;
+        let open_before = traffic.count(&session);
+        let mut snapshots = self.snapshot_changed.subscribe();
+        loop {
+            let closed = traffic.closed();
+            tokio::pin!(closed);
+            closed.as_mut().enable();
+            let snapshot = self.snapshot.load_full();
+            let installed = snapshot
+                .as_ref()
+                .is_some_and(|s| s.revoked.contains(&session));
+            let open = traffic.count(&session);
+            if installed && open == 0 {
+                return Ok(CutReport {
+                    snapshot_version: snapshot.map(|s| s.version),
+                    connections_closed: open_before,
+                    waited: started.elapsed(),
+                });
+            }
+            tokio::select! {
+                () = &mut closed => {}
+                changed = snapshots.changed() => {
+                    if changed.is_err() {
+                        tokio::time::sleep_until(deadline).await;
+                    }
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    return Err(DataPlaneError::NotCut {
+                        target: format!("session {session}"),
+                        waited_ms: millis(started.elapsed()),
+                        open,
+                        revocation_installed: installed,
+                        lease_remaining_secs: snapshot
+                            .map_or(0, |s| lease_remaining(&s).as_secs()),
+                    });
+                }
+            }
+        }
+    }
+
     /// Version of the snapshot currently in force, if any.
     pub fn snapshot_version(&self) -> Option<u64> {
         self.snapshot.load().as_ref().map(|s| s.version)
@@ -335,6 +393,33 @@ impl DataPlane {
         for task in self.accepting.into_iter().chain(self.tasks) {
             task.abort();
         }
+    }
+}
+
+pub(crate) fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+pub(crate) fn lease_remaining(snapshot: &state::ActiveSnapshot) -> Duration {
+    snapshot
+        .lease_deadline
+        .saturating_duration_since(std::time::Instant::now())
+}
+
+mod traffic_report {
+    use std::time::Duration;
+
+    /// Revoked traffic that has stopped: what
+    /// [`Binding::revoke_and_wait`](crate::Binding::revoke_and_wait) and
+    /// [`DataPlane::session_cut`](crate::DataPlane::session_cut) return.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CutReport {
+        /// The snapshot in force once nothing was open any more.
+        pub snapshot_version: Option<u64>,
+        /// Connections, tunnels and streams open when the wait began, all
+        /// closed now.
+        pub connections_closed: usize,
+        pub waited: Duration,
     }
 }
 

@@ -153,6 +153,33 @@ Read the data plane's state instead of its logs:
 
 Nothing in the status holds a token or a secret.
 
+## Know when a revocation is enforced
+
+Revoking returns once the decision is stored; it does not mean every
+data plane has stopped forwarding. Wait for that on each data plane
+that served the workload:
+
+```rust
+control.sessions.revoke(&host, &session_id).await?;
+installer.install(&control.nodes.build_snapshot(&node).await?)?;
+let report = dataplane.session_cut(session_id, Duration::from_secs(5)).await?;
+// or, for a whole workload:
+let report = binding.revoke_and_wait(Duration::from_secs(5)).await?;
+```
+
+- `session_cut` resolves once a snapshot revoking the session is in
+  force here and nothing the session opened (tunnels, MCP gateway
+  streams) is still open. `revoke_and_wait` revokes the binding and
+  resolves once its last connection has closed. Upstream connections
+  close with their tunnels.
+- The report gives the snapshot version in force and how many
+  connections were closed.
+- At the timeout both fail with `NotCut`: how many connections are
+  still open, whether the revocation has been installed, and how long
+  until the lease ends all traffic anyway, which bounds a data plane you
+  can no longer reach. `ControlConfig::lease_secs` sets that bound.
+- Neither can undo a request an upstream already accepted.
+
 ## Stop it
 
 ```rust

@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Strict deadlines and binding updates with real traffic: streaming
-//! responses, slow uploads and idle tunnels through the proxy to a local
-//! upstream, while fresh snapshots keep arriving so the lease is never what
-//! ends them.
+//! Strict deadlines, binding updates and waiting for a revocation to be
+//! enforced, with real traffic: streaming responses, slow uploads and idle
+//! tunnels through the proxy to a local upstream, while fresh snapshots
+//! keep arriving so the lease is never what ends them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -615,4 +615,154 @@ async fn updating_a_binding_cuts_only_the_grant_it_removes() {
     assert!(get(&mut b2, "/b/next", up.port).await.contains("Bearer tb"));
     assert_eq!(binding.version(), 3);
     refresh.abort();
+}
+
+/// Is `stream` at its end already (EOF or error within 100ms)?
+async fn is_closed(stream: &mut (impl AsyncRead + Unpin)) -> bool {
+    ends_by(stream, Instant::now() + Duration::from_millis(100))
+        .await
+        .is_some()
+}
+
+/// Revoking a binding and waiting returns only once its stream and its
+/// idle tunnel are closed, and says how many there were.
+#[tokio::test]
+async fn revoke_and_wait_returns_once_the_bindings_traffic_has_stopped() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    let refresh = p.refresh();
+    let claims = p
+        .claims(vec![p.rule_a, p.rule_b], 600)
+        .for_node(p.f.keys.node_id)
+        .for_binding("sandbox-2", 1)
+        .unwrap();
+    let binding = Arc::new(
+        p.dp.bind(BindingSpec {
+            binding_id: "sandbox-2".into(),
+            generation: 1,
+            sessions: vec![p.sign(&claims)],
+            version: 1,
+            max_connections: 8,
+        })
+        .unwrap(),
+    );
+    let mut streaming = p.bound_tunnel(&binding, up.port).await;
+    assert!(get(&mut streaming, "/a/stream", up.port)
+        .await
+        .contains("Bearer ta"));
+    let mut idle = p.bound_tunnel(&binding, up.port).await;
+
+    let report = binding
+        .revoke_and_wait(Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(report.connections_closed, 2, "{report:?}");
+    assert_eq!(
+        binding.status().open_connections,
+        0,
+        "returned with traffic open"
+    );
+    assert!(report.snapshot_version.is_some());
+    assert!(is_closed(&mut streaming).await, "the stream is still open");
+    assert!(is_closed(&mut idle).await, "the idle tunnel is still open");
+    // Nothing left: it returns at once.
+    let again = binding
+        .revoke_and_wait(Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert_eq!(again.connections_closed, 0);
+    refresh.abort();
+}
+
+/// Waiting for a session's revocation fails, saying why, while the
+/// revocation has not arrived, and succeeds only once it is installed and
+/// the session's open traffic is gone.
+#[tokio::test]
+async fn session_cut_waits_for_the_revocation_and_the_traffic() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    let claims = p.claims(vec![p.rule_a, p.rule_b], 600);
+    let token = p.sign(&claims);
+    let mut streaming = p.tunnel(up.port, &token).await;
+    assert!(get(&mut streaming, "/b/stream", up.port)
+        .await
+        .contains("Bearer tb"));
+    let mut idle = p.tunnel(up.port, &token).await;
+
+    // Not delivered yet, as when the control plane cannot reach the node.
+    let err =
+        p.dp.session_cut(claims.jti, Duration::from_millis(300))
+            .await
+            .unwrap_err();
+    match &err {
+        DataPlaneError::NotCut {
+            open,
+            revocation_installed,
+            lease_remaining_secs,
+            ..
+        } => {
+            assert_eq!(*open, 2, "{err}");
+            assert!(!revocation_installed, "{err}");
+            assert!(*lease_remaining_secs > 0, "{err}");
+        }
+        other => panic!("{other}"),
+    }
+    assert!(err.to_string().contains("not installed yet"), "{err}");
+    // No traffic is not enough: until the revocation is in force, a new
+    // connection could still use the session.
+    let unused = p.claims(vec![p.rule_a], 600);
+    let err =
+        p.dp.session_cut(unused.jti, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DataPlaneError::NotCut {
+                open: 0,
+                revocation_installed: false,
+                ..
+            }
+        ),
+        "{err}"
+    );
+
+    // Delivered late: the wait resolves once it is in force and the
+    // traffic is gone, not before. `slow` stands for a connection still
+    // being torn down after the revocation arrived.
+    let slow = p.dp.shared.traffic.enter(claims.jti);
+    let waiting = {
+        let dp_session = claims.jti;
+        let p = p.clone();
+        tokio::spawn(async move { p.dp.session_cut(dp_session, Duration::from_secs(5)).await })
+    };
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        !waiting.is_finished(),
+        "resolved before the revocation arrived"
+    );
+    let version = p.version.fetch_add(1, Ordering::SeqCst) + 1;
+    let mut body = p.body(version);
+    body.revoked_sessions = vec![claims.jti];
+    p.installer.install(&p.f.sign(&body)).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !waiting.is_finished(),
+        "resolved while the session still had traffic open"
+    );
+    drop(slow);
+    let report = timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.snapshot_version, Some(version));
+    assert_eq!(report.connections_closed, 3);
+    assert_eq!(
+        p.dp.shared.traffic.count(&claims.jti),
+        0,
+        "returned with traffic open"
+    );
+    assert!(is_closed(&mut streaming).await, "the stream is still open");
+    assert!(is_closed(&mut idle).await, "the idle tunnel is still open");
 }

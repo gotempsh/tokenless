@@ -41,6 +41,7 @@ use crate::status::{
     binding_status, session_problem, BindingStatus, NotReady, SessionStatus, UpstreamFailure,
     UpstreamFailureKind,
 };
+use crate::CutReport;
 
 /// Sessions one binding may hold. Grants on one host share a session,
 /// each with its own deadline if it needs one.
@@ -151,6 +152,8 @@ pub(crate) struct BindingState {
     sessions_changed: watch::Sender<u64>,
     /// Serialises updates, so two cannot both pass the version check.
     updating: Mutex<()>,
+    /// Notified each time one of its connections closes.
+    released: tokio::sync::Notify,
     revoked: watch::Sender<bool>,
     connections: Arc<Semaphore>,
     pub max_connections: usize,
@@ -226,6 +229,10 @@ impl BindingState {
 
     pub fn open_connections(&self) -> usize {
         self.max_connections - self.connections.available_permits()
+    }
+
+    pub(crate) fn connection_closed(&self) {
+        self.released.notify_waiters();
     }
 
     pub fn last_failure(&self) -> Option<UpstreamFailure> {
@@ -439,6 +446,7 @@ impl Binding {
             sessions: ArcSwap::from_pointee(SessionSet::new(spec.version, spec.sessions, claims)),
             sessions_changed: watch::channel(spec.version).0,
             updating: Mutex::new(()),
+            released: tokio::sync::Notify::new(),
             revoked,
             connections: Arc::new(Semaphore::new(spec.max_connections)),
             max_connections: spec.max_connections,
@@ -490,7 +498,9 @@ impl Binding {
         };
         Metrics::inc(&self.shared.metrics.connections_total);
         let (done_tx, done) = oneshot::channel();
-        let guard = Arc::new(ConnectionGuard::new(vec![own, global], Some(done_tx)));
+        let guard = Arc::new(
+            ConnectionGuard::new(vec![own, global], Some(done_tx)).for_binding(self.state.clone()),
+        );
         let connection =
             proxy::serve_stream(stream, self.shared.clone(), Some(self.state.clone()), guard);
         let mut revoked = state.revoked.subscribe();
@@ -558,6 +568,42 @@ impl Binding {
     pub fn revoke(&self) {
         if !self.state.revoked.send_replace(true) {
             self.shared.status_bump();
+        }
+    }
+
+    /// Revokes the binding and waits until nothing it opened is still
+    /// open: every connection and tunnel closed, their upstream connections
+    /// with them, so nothing forwards for the workload any more. Fails with
+    /// [`DataPlaneError::NotCut`] if something is still open at `timeout`.
+    /// It cannot undo what an upstream already accepted.
+    pub async fn revoke_and_wait(&self, timeout: Duration) -> Result<CutReport, DataPlaneError> {
+        let started = tokio::time::Instant::now();
+        let deadline = started + timeout;
+        let open_before = self.state.open_connections();
+        self.revoke();
+        loop {
+            let released = self.state.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            let open = self.state.open_connections();
+            let snapshot = self.shared.snapshot.load_full();
+            if open == 0 {
+                return Ok(CutReport {
+                    snapshot_version: snapshot.map(|s| s.version),
+                    connections_closed: open_before,
+                    waited: started.elapsed(),
+                });
+            }
+            if tokio::time::timeout_at(deadline, released).await.is_err() {
+                return Err(DataPlaneError::NotCut {
+                    target: format!("binding '{}'", self.state.id),
+                    waited_ms: crate::millis(started.elapsed()),
+                    open,
+                    revocation_installed: true,
+                    lease_remaining_secs: snapshot
+                        .map_or(0, |s| crate::lease_remaining(&s).as_secs()),
+                });
+            }
         }
     }
 

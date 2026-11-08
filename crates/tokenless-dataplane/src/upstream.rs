@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! One upstream connection per intercepted tunnel, owned by a small task so
-//! the request path never shares a lock.
+//! the request path never shares a lock. The connection goes when the
+//! tunnel does: nothing keeps forwarding to the upstream after its tunnel
+//! was cut.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -58,12 +60,34 @@ impl UpstreamHandle {
     }
 }
 
+/// Aborts the connection's task when dropped, unless detached.
+struct Connection {
+    sender: SendRequest<ProxyBody>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Connection {
+    /// Lets a connection that takes no more requests finish the response
+    /// it is streaming on its own; it ends when the tunnel drops the body.
+    fn detach(mut self) {
+        self.task = None;
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
 async fn connect(
     host: &str,
     port: u16,
     tls: Arc<ClientConfig>,
     connect_timeout: Duration,
-) -> Result<SendRequest<ProxyBody>, DataPlaneError> {
+) -> Result<Connection, DataPlaneError> {
     let err = |reason: String| DataPlaneError::Upstream {
         host: host.to_string(),
         port,
@@ -89,12 +113,15 @@ async fn connect(
         .await
         .map_err(|e| err(format!("HTTP handshake failed: {e}")))?;
     let label = format!("{host}:{port}");
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(e) = conn.await {
             debug!(upstream = %label, error = %e, "upstream connection closed");
         }
     });
-    Ok(sender)
+    Ok(Connection {
+        sender,
+        task: Some(task),
+    })
 }
 
 async fn run(
@@ -104,35 +131,42 @@ async fn run(
     tls: Arc<ClientConfig>,
     connect_timeout: Duration,
 ) {
-    let mut sender: Option<SendRequest<ProxyBody>> = None;
+    let mut open: Option<Connection> = None;
     while let Some((req, reply)) = rx.recv().await {
-        let mut current = match sender.take() {
-            Some(s) if !s.is_closed() => s,
+        let mut current = match open.take() {
+            Some(c) if !c.sender.is_closed() => c,
             _ => match connect(&host, port, tls.clone(), connect_timeout).await {
-                Ok(s) => s,
+                Ok(c) => c,
                 Err(e) => {
                     let _ = reply.send(Err(e));
                     continue;
                 }
             },
         };
-        let result = match current.ready().await {
-            Ok(()) => current
-                .send_request(req)
-                .await
-                .map_err(|e| DataPlaneError::Upstream {
-                    host: host.clone(),
-                    port,
-                    reason: format!("request failed: {e}"),
-                }),
+        let result = match current.sender.ready().await {
+            Ok(()) => {
+                current
+                    .sender
+                    .send_request(req)
+                    .await
+                    .map_err(|e| DataPlaneError::Upstream {
+                        host: host.clone(),
+                        port,
+                        reason: format!("request failed: {e}"),
+                    })
+            }
             Err(e) => Err(DataPlaneError::Upstream {
                 host: host.clone(),
                 port,
                 reason: format!("connection not ready: {e}"),
             }),
         };
-        if !current.is_closed() {
-            sender = Some(current);
+        // A response still streaming keeps its connection busy, so the next
+        // request opens another; this one closes when its body is done.
+        if !current.sender.is_closed() {
+            open = Some(current);
+        } else {
+            current.detach();
         }
         let _ = reply.send(result);
     }
