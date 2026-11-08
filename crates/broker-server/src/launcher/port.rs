@@ -299,7 +299,9 @@ async fn probe(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 }
 
 /// Reads what answered the probe: a tokenless proxy, one that refuses all
-/// traffic, or something that isn't a proxy.
+/// traffic, or something that isn't one. A tokenless proxy answers a
+/// CONNECT without a session with 407, or 503 when it refuses everything;
+/// anything else is something else on that address.
 fn proxy_answer(address: &str, answer: &[u8]) -> Result<(), LauncherError> {
     let text = String::from_utf8_lossy(answer);
     let status = text
@@ -318,7 +320,19 @@ fn proxy_answer(address: &str, answer: &[u8]) -> Result<(), LauncherError> {
                 reason: reason.to_string(),
             })
         }
-        Some(_) => Ok(()),
+        Some(407) => Ok(()),
+        Some(status @ (502 | 504)) => Err(LauncherError::ProxyUnreachable {
+            address: address.to_string(),
+            reason: format!(
+                "something in front of it answered {status}: it could not reach a proxy behind it"
+            ),
+        }),
+        Some(status) => Err(LauncherError::ProxyUnreachable {
+            address: address.to_string(),
+            reason: format!(
+                "an HTTP server answered {status}, not a tokenless proxy; is this the broker's address instead of the proxy's?"
+            ),
+        }),
         None => Err(LauncherError::ProxyUnreachable {
             address: address.to_string(),
             reason: "something answered, but not an HTTP proxy".into(),
@@ -463,6 +477,33 @@ mod tests {
             "{shown}"
         );
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_front_with_nothing_behind_it_or_another_server_is_reported() {
+        for (reply, expected) in [
+            (
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                "answered 502: it could not reach a proxy",
+            ),
+            (
+                b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                "answered 504",
+            ),
+            (
+                b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                "answered 405, not a tokenless proxy",
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".as_slice(),
+                "answered 200, not a tokenless proxy",
+            ),
+        ] {
+            let (up, task) = fake_proxy(Some(reply)).await;
+            let shown = check_proxy(&up).await.unwrap_err().to_string();
+            assert!(shown.contains(expected), "{shown}");
+            task.abort();
+        }
     }
 
     #[tokio::test]
