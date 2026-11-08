@@ -2193,6 +2193,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(events.items[0].actor, "service:host");
+
+        // An embedded data plane: registered without a join token, fed
+        // snapshots signed with the key it is given, audited as itself.
+        let seal_secret = SealSecretKey::random_from_rng(OsRng);
+        let public = encode_public_key(&SealPublicKey::from(&seal_secret));
+        let denied = cs
+            .nodes
+            .register_embedded(&scoped, "embedded", &public)
+            .await
+            .unwrap_err();
+        assert!(matches!(denied, ControlError::Forbidden { .. }), "{denied}");
+        let registered = cs
+            .nodes
+            .register_embedded(&host, "embedded", &public)
+            .await
+            .unwrap();
+        assert!(registered.node.cert_serial.is_empty());
+        let signed = cs.nodes.build_snapshot(&registered.node).await.unwrap();
+        let body = signed.verify(&registered.snapshot_verify_key).unwrap();
+        assert_eq!(body.node_id, registered.node.id);
+        assert_eq!(body.rules.len(), 1);
+        let shipped = AuditEvent::new(
+            "forged",
+            "proxy.request",
+            broker_core::audit::AuditOutcome::Success,
+        )
+        .detail(
+            "scope",
+            broker_core::scope::Scope::for_vault(&mine.id).to_string(),
+        );
+        cs.nodes
+            .ingest_audit(
+                &registered.node,
+                AuditBatch {
+                    events: vec![shipped],
+                },
+            )
+            .await
+            .unwrap();
+        let events = cs
+            .audit
+            .query(
+                &host,
+                Some(mine.id),
+                Some("proxy.".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            events.items[0].actor,
+            format!("node:{}", registered.node.id)
+        );
     }
 
     #[tokio::test]

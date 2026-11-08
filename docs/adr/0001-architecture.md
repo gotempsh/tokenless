@@ -257,6 +257,11 @@ node protocol and the snapshot format are unchanged.
   lists the session as revoked, when the session expires, or when the lease
   runs out. A revocation therefore reaches open traffic within one snapshot
   push while the node is connected, and within the lease otherwise.
+- Snapshot bodies and session claims reject unknown fields. A new field
+  that changes a security decision raises the snapshot `format` (claims
+  rely on the unknown-field refusal), so a node too old to enforce it
+  refuses the snapshot or session instead of ignoring the field: it fails
+  closed. Upgrade nodes first, then the control plane.
 - Credentials and the interception CA key are sealed to the node's X25519
   key: ephemeral X25519, then HKDF-SHA256, then AES-256-GCM, with AAD
   binding node, rule and credential. Nodes hold them in memory only;

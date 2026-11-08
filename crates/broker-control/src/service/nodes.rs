@@ -38,6 +38,13 @@ use crate::notify::{Generation, PolicyNotifier};
 use crate::pki::{self, pem_encode};
 use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore};
 
+/// A registered embedded data plane: see [`NodeService::register_embedded`].
+#[derive(Debug, Clone)]
+pub struct EmbeddedNode {
+    pub node: Node,
+    pub snapshot_verify_key: ed25519_dalek::VerifyingKey,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct JoinTokenIssued {
     /// Returned exactly once.
@@ -233,6 +240,53 @@ impl NodeService {
             ca_cert_pem: self.node_ca_pem(),
             snapshot_verify_key: STANDARD.encode(self.keys.snapshot_key.verifying_key().as_bytes()),
             cert_not_after: signed.not_after,
+        })
+    }
+
+    /// Registers a data plane embedded in the calling program, which hands
+    /// it snapshots from [`NodeService::build_snapshot`] and its audit
+    /// batches to [`NodeService::ingest_audit`] in-process. No join token
+    /// and no client certificate: the node never calls the node API, so its
+    /// record holds no certificate (`cert_serial` is empty and
+    /// `cert_not_after` is the moment of registration). Returns the node and
+    /// the key its snapshots are signed with.
+    pub async fn register_embedded(
+        &self,
+        caller: &Caller,
+        name: &str,
+        seal_public_key: &str,
+    ) -> Result<EmbeddedNode, ControlError> {
+        self.guard.check(caller, Action::NodeManage, None).await?;
+        let name = name.trim();
+        if name.is_empty() || name.len() > 100 || name.chars().any(char::is_control) {
+            return Err(ControlError::validation(
+                "node name must be 1-100 printable characters",
+            ));
+        }
+        decode_public_key(seal_public_key)?;
+        let now = Utc::now();
+        let node = Node {
+            id: NodeId::new(),
+            name: name.to_string(),
+            seal_public_key: seal_public_key.to_string(),
+            cert_serial: String::new(),
+            cert_not_after: now,
+            enrolled_at: now,
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let event = AuditEvent::new(
+            caller.actor(),
+            "node.register_embedded",
+            AuditOutcome::Success,
+        )
+        .target(format!("node:{}", node.id))
+        .detail("name", node.name.clone());
+        self.nodes.insert_node(node.clone(), &[event]).await?;
+        info!(node_id = %node.id, node_name = %node.name, "embedded data plane registered");
+        Ok(EmbeddedNode {
+            node,
+            snapshot_verify_key: self.keys.snapshot_key.verifying_key(),
         })
     }
 
