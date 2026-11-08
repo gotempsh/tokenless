@@ -773,6 +773,24 @@ async fn session_cut_accepts_a_long_expired_session_with_nothing_open() {
 }
 
 #[tokio::test]
+async fn session_cut_resolves_when_the_session_expires_during_the_wait() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    let session = tokenless_core::ids::SessionId::new();
+    let soon = Utc::now() + TimeDelta::milliseconds(300);
+    let report =
+        p.dp.session_cut(session, soon, Duration::from_secs(5))
+            .await
+            .unwrap();
+    assert!(
+        report.waited < Duration::from_secs(2),
+        "woke at the expiry, not the timeout: {:?}",
+        report.waited
+    );
+    assert!(Utc::now() >= soon);
+}
+
+#[tokio::test]
 async fn session_cut_waits_for_the_revocation_and_the_traffic() {
     let up = upstream().await;
     let p = Plane::start(&up).await;

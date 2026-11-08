@@ -478,6 +478,15 @@ async fn handle_proxy_request(
         Ok(session) => session,
         Err(refusal) => return *refusal,
     };
+    // Counted as the session's open traffic from the check on, so a wait
+    // for its cut sees a tunnel still being set up (resolving its host).
+    // Expiry is checked again once counted: a cut that ran in between saw
+    // nothing open only if the session had already expired.
+    let open = shared.traffic.enter(claims.jti);
+    if clock::now(&snapshot) >= claims.exp {
+        Metrics::inc(&shared.metrics.proxy_auth_failures_total);
+        return proxy_auth_required("proxy session has expired");
+    }
     if req.method() != Method::CONNECT {
         return respond(
             StatusCode::FORBIDDEN,
@@ -603,7 +612,6 @@ async fn handle_proxy_request(
     drop(snapshot);
 
     let on_upgrade = hyper::upgrade::on(&mut req);
-    let open = shared.traffic.enter(claims.jti);
     let claims = Arc::new(claims);
     tokio::spawn(async move {
         // The tunnel counts against the connection limits, and as its

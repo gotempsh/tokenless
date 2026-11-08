@@ -243,6 +243,12 @@ async fn handle(
         Metrics::inc(&shared.metrics.gateway_auth_failures_total);
         return unauthorized(reason);
     }
+    // Counted before expiry is checked again, as for a CONNECT.
+    let open = shared.traffic.enter(claims.jti);
+    if crate::clock::now(&snapshot) >= claims.exp {
+        Metrics::inc(&shared.metrics.gateway_auth_failures_total);
+        return unauthorized("session rejected: proxy session has expired");
+    }
     if !session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port)) {
         Metrics::inc(&shared.metrics.connect_denied_total);
         audit_best_effort(
@@ -292,7 +298,6 @@ async fn handle(
 
     let upstream = upstream_for(&slot, &host, port, &shared);
     let watch = shared.session_watch(&claims);
-    let open = shared.traffic.enter(claims.jti);
     let claims = Arc::new(claims);
     let ctx = Arc::new(TunnelCtx {
         host,

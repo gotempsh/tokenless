@@ -329,13 +329,22 @@ impl DataPlane {
                     waited: started.elapsed(),
                 });
             }
+            // The session expiring is a cut too, with no snapshot to say so.
+            let expiry = snapshot
+                .as_ref()
+                .filter(|_| !expired)
+                .and_then(|s| (expires_at - clock::now(s)).to_std().ok())
+                .map_or(deadline, |left| {
+                    deadline.min(tokio::time::Instant::now() + left)
+                });
             tokio::select! {
                 () = &mut closed => {}
                 changed = snapshots.changed() => {
                     if changed.is_err() {
-                        tokio::time::sleep_until(deadline).await;
+                        tokio::time::sleep_until(deadline.min(expiry)).await;
                     }
                 }
+                () = tokio::time::sleep_until(expiry), if expiry < deadline => {}
                 () = tokio::time::sleep_until(deadline) => {
                     return Err(DataPlaneError::NotCut {
                         target: format!("session {session}"),
