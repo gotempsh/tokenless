@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 id: gitlab
-version: 2
+version: 3
 name: "GitLab"
 description: "Repos and pipelines on GitLab."
 category: developer_tools
@@ -9,7 +9,7 @@ suggested_variable: GITLAB_TOKEN
 hosts:
   - gitlab.com
 allow:
-  paths: ["/*"]
+  paths: ["/api/*"]
   methods: ["*"]
 credential_fields:
   - name: token

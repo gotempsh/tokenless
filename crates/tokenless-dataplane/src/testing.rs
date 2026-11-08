@@ -204,12 +204,16 @@ impl Running {
 
     /// Opens a CONNECT tunnel with the session and checks it was accepted.
     pub async fn tunnel(&self, target: &str) -> TcpStream {
+        self.tunnel_with(target, &self.token).await
+    }
+
+    /// [`Running::tunnel`] with another session token.
+    pub async fn tunnel_with(&self, target: &str, token: &str) -> TcpStream {
         let mut stream = TcpStream::connect(self.dp.local_addr()).await.unwrap();
         stream
             .write_all(
                 format!(
-                    "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Bearer {}\r\n\r\n",
-                    self.token
+                    "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Bearer {token}\r\n\r\n"
                 )
                 .as_bytes(),
             )
@@ -233,7 +237,17 @@ impl Running {
     /// Opens an intercepted tunnel to `target` and completes TLS with the
     /// proxy, trusting the interception CA as an agent would.
     pub async fn intercepted(&self, target: &str, name: &str) -> TlsStream<TcpStream> {
-        let stream = self.tunnel(target).await;
+        self.intercepted_with(target, name, &self.token).await
+    }
+
+    /// [`Running::intercepted`] with another session token.
+    pub async fn intercepted_with(
+        &self,
+        target: &str,
+        name: &str,
+        token: &str,
+    ) -> TlsStream<TcpStream> {
+        let stream = self.tunnel_with(target, token).await;
         let client =
             upstream_client_config(false, &[CertificateDer::from(self.f.ca_cert_der.clone())])
                 .unwrap();
@@ -290,7 +304,44 @@ pub async fn https_stream_upstream(answer: &'static str) -> (u16, CertificateDer
     https_upstream_with(answer, true).await
 }
 
-async fn https_upstream_with(answer: &'static str, hold: bool) -> (u16, CertificateDer<'static>) {
+/// A local HTTPS upstream for `localhost` that answers each request with
+/// the `Authorization` header it received as the body.
+pub async fn https_echo_authorization_upstream() -> (u16, CertificateDer<'static>) {
+    let (listener, server, root) = https_listener().await;
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = TlsAcceptor::from(server.clone());
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let head = read_head(&mut tls).await;
+                let auth = head
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().to_string())
+                    })
+                    .unwrap_or_default();
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{auth}",
+                    auth.len()
+                );
+                let _ = tls.write_all(answer.as_bytes()).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    (port, root)
+}
+
+async fn https_listener() -> (
+    TcpListener,
+    Arc<rustls::ServerConfig>,
+    CertificateDer<'static>,
+) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let root = CertificateDer::from(cert.cert.der().to_vec());
     let server = leaf_server_config(
@@ -300,6 +351,11 @@ async fn https_upstream_with(answer: &'static str, hold: bool) -> (u16, Certific
     )
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    (listener, server, root)
+}
+
+async fn https_upstream_with(answer: &'static str, hold: bool) -> (u16, CertificateDer<'static>) {
+    let (listener, server, root) = https_listener().await;
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {

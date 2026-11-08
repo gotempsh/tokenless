@@ -454,6 +454,45 @@ mod tests {
         );
     }
 
+    /// The proxy uses the rule whose path matches a request most
+    /// specifically and refuses a tie between rules that send differently,
+    /// so two built-in services on one host that inject differently must
+    /// never tie: GitLab's API and Git over HTTPS work in one session.
+    #[test]
+    fn builtins_on_one_host_that_inject_differently_never_tie() {
+        let builtins = builtin_templates().unwrap();
+        for (i, (a, _)) in builtins.iter().enumerate() {
+            for (b, _) in &builtins[i + 1..] {
+                if a.injection == b.injection || !a.hosts.iter().any(|h| b.hosts.contains(h)) {
+                    continue;
+                }
+                let methods = a.allow.methods.iter().any(|m| {
+                    b.allow
+                        .methods
+                        .iter()
+                        .any(|n| m.matches(n.as_str()) || n.matches(m.as_str()))
+                });
+                let shared = a.allow.paths.iter().find(|p| b.allow.paths.contains(p));
+                assert!(
+                    !methods || shared.is_none(),
+                    "{} and {} share a host and the path {:?} but inject differently",
+                    a.id,
+                    b.id,
+                    shared
+                );
+            }
+        }
+        let find = |id: &str| builtins.iter().find(|(t, _)| t.id == id).unwrap().0.clone();
+        let rank = |t: &ServiceTemplate, path: &str| {
+            t.max_scope(&[])
+                .unwrap()
+                .specificity("gitlab.com", 443, "GET", path)
+        };
+        let (api, git) = (find("gitlab"), find("gitlab-git"));
+        assert!(rank(&api, "/api/v4/projects") > rank(&git, "/api/v4/projects"));
+        assert_eq!(rank(&api, "/acme/widgets.git/info/refs"), None);
+    }
+
     #[test]
     fn gitlab_allows_base_url_override_but_github_does_not() {
         let builtins = builtin_templates().unwrap();

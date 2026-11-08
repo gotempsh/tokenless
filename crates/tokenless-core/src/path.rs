@@ -63,6 +63,17 @@ impl PathPattern {
         }
     }
 
+    /// How specifically this pattern matches `path`, if it does: an exact
+    /// path ranks above every prefix, and a longer prefix above a shorter
+    /// one. Two patterns matching one path rank equal only when they are
+    /// the same pattern.
+    pub fn specificity(&self, path: &str) -> Option<usize> {
+        if !self.matches(path) {
+            return None;
+        }
+        Some(self.prefix().map_or(usize::MAX, str::len))
+    }
+
     /// Is every path matched by `other` also matched by `self`?
     pub fn covers(&self, other: &PathPattern) -> bool {
         match (self.prefix(), other.prefix()) {

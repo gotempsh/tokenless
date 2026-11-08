@@ -258,6 +258,52 @@ pub(crate) fn session_rules<'a>(
         .filter(move |r| r.scope == claims.scope && claims.rules.contains(&r.id))
 }
 
+/// Which of a session's rules a request uses.
+pub(crate) enum RuleChoice<'a> {
+    None,
+    One(&'a ActiveRule),
+    /// The most specific rules allowing it tie and would send different
+    /// credentials, so neither is used.
+    Ambiguous(&'a ActiveRule, &'a ActiveRule),
+}
+
+/// The rule whose path matches the request most specifically
+/// ([`RuleScope::specificity`]), so a service scoped to `/api/*` takes its
+/// requests from one allowing `/*` on the same host. Rules that tie are
+/// interchangeable only when they send the same thing.
+pub(crate) fn choose_rule<'a>(
+    rules: impl Iterator<Item = &'a ActiveRule>,
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+) -> RuleChoice<'a> {
+    let mut best: Option<(&ActiveRule, usize)> = None;
+    let mut rival: Option<&ActiveRule> = None;
+    for rule in rules {
+        let Some(rank) = rule.allow.specificity(host, port, method, path) else {
+            continue;
+        };
+        match best {
+            Some((_, top)) if rank < top => {}
+            Some((chosen, top)) if rank == top => {
+                if rival.is_none() && !chosen.sends_same_as(rule) {
+                    rival = Some(rule);
+                }
+            }
+            _ => {
+                best = Some((rule, rank));
+                rival = None;
+            }
+        }
+    }
+    match (best, rival) {
+        (None, _) => RuleChoice::None,
+        (Some((chosen, _)), None) => RuleChoice::One(chosen),
+        (Some((chosen, _)), Some(other)) => RuleChoice::Ambiguous(chosen, other),
+    }
+}
+
 pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>) {
     loop {
         let (stream, peer) = match listener.accept().await {
@@ -1047,9 +1093,35 @@ pub(crate) async fn handle_intercepted(
         Metrics::inc(&shared.metrics.requests_denied_total);
         return respond(StatusCode::BAD_REQUEST, rejection.as_str());
     }
-    let Some(rule) = session_rules(&snapshot, claims)
-        .find(|r| r.allow.allows(&ctx.host, ctx.port, &method, &path))
-    else {
+    let rule = match choose_rule(
+        session_rules(&snapshot, claims),
+        &ctx.host,
+        ctx.port,
+        &method,
+        &path,
+    ) {
+        RuleChoice::One(rule) => Some(rule),
+        RuleChoice::None => None,
+        RuleChoice::Ambiguous(first, second) => {
+            Metrics::inc(&shared.metrics.requests_denied_total);
+            let reason = format!(
+                "rules {} and {} in this session both allow {method} {path} on {} and send different credentials; narrow one rule's paths",
+                first.id, second.id, ctx.host
+            );
+            audit_best_effort(
+                shared,
+                claims,
+                "proxy.deny",
+                AuditOutcome::Denied,
+                &ctx.host,
+                ctx.port,
+                Some((&method, &path)),
+                &format!("ambiguous_rules: {reason}"),
+            );
+            return respond(StatusCode::FORBIDDEN, &reason);
+        }
+    };
+    let Some(rule) = rule else {
         Metrics::inc(&shared.metrics.requests_denied_total);
         audit_best_effort(
             shared,
@@ -1376,6 +1448,73 @@ mod tests {
             "api.example.com",
             443
         ));
+    }
+
+    fn rule_for(paths: &[&str], token: &'static str) -> ActiveRule {
+        ActiveRule {
+            id: RuleId::new(),
+            scope: Scope::parse("vault:x").unwrap(),
+            credential_id: CredentialId::new(),
+            allow: RuleScope {
+                hosts: vec![HostPattern::parse("gitlab.com").unwrap()],
+                paths: paths
+                    .iter()
+                    .map(|p| PathPattern::parse(p).unwrap())
+                    .collect(),
+                methods: vec![HttpMethod::parse("*").unwrap()],
+                mcp_tools: None,
+            },
+            strip: vec![HeaderName::from_static("authorization")],
+            inject: vec![(
+                HeaderName::from_static("authorization"),
+                HeaderValue::from_static(token),
+            )],
+            substitutions: vec![],
+            not_after: None,
+        }
+    }
+
+    fn chosen(rules: &[&ActiveRule], path: &str) -> Result<Option<RuleId>, (RuleId, RuleId)> {
+        match choose_rule(rules.iter().copied(), "gitlab.com", 443, "GET", path) {
+            RuleChoice::None => Ok(None),
+            RuleChoice::One(rule) => Ok(Some(rule.id)),
+            RuleChoice::Ambiguous(a, b) => Err((a.id, b.id)),
+        }
+    }
+
+    #[test]
+    fn a_request_uses_the_rule_whose_path_matches_it_most_specifically() {
+        let git = rule_for(&["/*"], "Basic git");
+        let api = rule_for(&["/api/*"], "Bearer api");
+        // Whatever order the session lists them in.
+        for rules in [vec![&git, &api], vec![&api, &git]] {
+            assert_eq!(chosen(&rules, "/api/v4/projects"), Ok(Some(api.id)));
+            assert_eq!(
+                chosen(&rules, "/acme/widgets.git/info/refs"),
+                Ok(Some(git.id))
+            );
+        }
+        assert_eq!(chosen(&[&api], "/acme/widgets.git/info/refs"), Ok(None));
+    }
+
+    #[test]
+    fn rules_that_tie_are_refused_only_when_they_send_different_credentials() {
+        let first = rule_for(&["/*"], "Bearer one");
+        let other = rule_for(&["/*"], "Basic two");
+        assert_eq!(
+            chosen(&[&first, &other], "/api/v4/projects"),
+            Err((first.id, other.id))
+        );
+        // A more specific rule settles it.
+        let api = rule_for(&["/api/*"], "Bearer api");
+        assert_eq!(
+            chosen(&[&first, &other, &api], "/api/v4/projects"),
+            Ok(Some(api.id))
+        );
+        // Two services holding the same token in the same form are
+        // interchangeable.
+        let same = rule_for(&["/*"], "Bearer one");
+        assert_eq!(chosen(&[&first, &same], "/x"), Ok(Some(first.id)));
     }
 
     #[test]
@@ -1736,6 +1875,88 @@ mod tests {
         .await;
         assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         assert_eq!(String::from_utf8_lossy(&body), pack.len().to_string());
+        r.dp.abort();
+    }
+
+    /// Two services on one host in one session: each request goes to the
+    /// rule matching its path most specifically, and rules that tie with
+    /// different credentials are refused instead of picked by order.
+    #[tokio::test]
+    async fn a_session_with_two_services_on_one_host_sends_each_its_own_credential() {
+        use std::collections::BTreeMap;
+
+        use tokenless_core::session::{SessionClaims, SessionSigner};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        use crate::testing::{https_echo_authorization_upstream, running};
+
+        let (port, root) = https_echo_authorization_upstream().await;
+        let target = format!("localhost:{port}");
+        let r = running(&target, vec![root]).await;
+        let git = r.rule;
+        let api = RuleId::new();
+        let install = |version: u64, api_paths: &[&str]| {
+            let scope = Scope::parse("vault:test").unwrap();
+            let mut body = r.f.snapshot_body(
+                version,
+                vec![
+                    (git, scope.clone(), &target, "git"),
+                    (api, scope, &target, "api"),
+                ],
+            );
+            body.egress = tokenless_core::egress::EgressPolicy {
+                block_private: false,
+                allow: vec![],
+            };
+            body.rules[1].allow.paths = api_paths
+                .iter()
+                .map(|p| PathPattern::parse(p).unwrap())
+                .collect();
+            r.installer.install(&r.f.sign(&body)).unwrap();
+        };
+        let claims = SessionClaims::new(
+            Scope::parse("vault:test").unwrap(),
+            vec![git, api],
+            600,
+            None,
+            BTreeMap::new(),
+            Utc::now(),
+            3600,
+        )
+        .unwrap();
+        let token = SessionSigner::new(r.f.session_signer.clone())
+            .sign(&claims)
+            .unwrap();
+        let get = |path: &'static str| {
+            let target = target.clone();
+            let token = token.clone();
+            let r = &r;
+            async move {
+                let mut tls = r.intercepted_with(&target, "localhost", &token).await;
+                tls.write_all(
+                    format!("GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+                let mut answer = Vec::new();
+                let _ = tls.read_to_end(&mut answer).await;
+                String::from_utf8_lossy(&answer).into_owned()
+            }
+        };
+
+        install(2, &["/*"]);
+        let answer = get("/api/v4/projects").await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+        assert!(answer.contains("send different credentials"), "{answer}");
+
+        install(3, &["/api/*"]);
+        let answer = get("/api/v4/projects").await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.ends_with("Bearer api"), "{answer}");
+        let answer = get("/acme/widgets.git/info/refs").await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(answer.ends_with("Bearer git"), "{answer}");
         r.dp.abort();
     }
 }

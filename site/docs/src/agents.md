@@ -120,6 +120,10 @@ A prefix such as `/acme/widgets.git/*` would allow pushes too. Packs of
 any size stream through; Git LFS objects come from other hosts and need
 rules of their own.
 
+A **GitLab** service added before GitLab (Git) existed allows every path
+on `gitlab.com`, so in a session with GitLab (Git) the two tie and the
+proxy refuses both. Narrow the GitLab rule's paths to `/api/*`.
+
 ## The agent skill
 
 The skill tells an agent how to see what it can reach, hand a tool a
@@ -158,6 +162,7 @@ plain-text reason.
 | Status | Meaning |
 |---|---|
 | 403 `no rule in this session allows ...` | The host is in the session, but not this method or path. Widen the rule or the bundle. |
+| 403 `rules <a> and <b> in this session both allow ...` | Two services on this host match the request equally and send different credentials. Narrow one rule's paths. |
 | 403 `no rule in this session covers <host>` | Other hosts are blocked and this one isn't in the session. |
 | 403 `<host> resolves to <ip>, which is ...` | Connections to that address range are blocked (see [Settings](settings.md#private-addresses)). |
 | 407 `proxy session rejected: ...` | The session expired or was revoked. |

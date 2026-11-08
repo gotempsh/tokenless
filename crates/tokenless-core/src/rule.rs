@@ -128,9 +128,17 @@ impl RuleScope {
 
     /// `path` must already have passed [`crate::path::check_request_path`].
     pub fn allows(&self, host: &str, port: u16, method: &str, path: &str) -> bool {
-        self.matches_host(host, port)
-            && self.methods.iter().any(|m| m.matches(method))
-            && self.paths.iter().any(|p| p.matches(path))
+        self.specificity(host, port, method, path).is_some()
+    }
+
+    /// How specifically this scope allows a request, if it does: the
+    /// [`PathPattern::specificity`] of its most specific path matching it.
+    /// When several rules allow a request, the most specific one is used.
+    pub fn specificity(&self, host: &str, port: u16, method: &str, path: &str) -> Option<usize> {
+        if !self.matches_host(host, port) || !self.methods.iter().any(|m| m.matches(method)) {
+            return None;
+        }
+        self.paths.iter().filter_map(|p| p.specificity(path)).max()
     }
 }
 
@@ -179,6 +187,33 @@ mod tests {
         assert!(scope(&["api.example.com"], &["/v1/*"], &["DELETE"])
             .ensure_within(&max, "t")
             .is_err());
+    }
+
+    #[test]
+    fn the_most_specific_path_ranks_highest() {
+        let s = |paths: &[&str]| RuleScope {
+            hosts: vec![HostPattern::parse("gitlab.com").unwrap()],
+            paths: paths
+                .iter()
+                .map(|p| PathPattern::parse(p).unwrap())
+                .collect(),
+            methods: vec![HttpMethod::parse("*").unwrap()],
+            mcp_tools: None,
+        };
+        let any = s(&["/*"]);
+        let api = s(&["/api/*"]);
+        let exact = s(&["/api/*", "/api/v4/user"]);
+        let rank = |r: &RuleScope, path| r.specificity("gitlab.com", 443, "GET", path);
+        assert!(rank(&api, "/api/v4/projects") > rank(&any, "/api/v4/projects"));
+        assert!(rank(&exact, "/api/v4/user") > rank(&api, "/api/v4/user"));
+        assert_eq!(
+            rank(&exact, "/api/v4/projects"),
+            rank(&api, "/api/v4/projects")
+        );
+        assert_eq!(rank(&api, "/acme/widgets.git/info/refs"), None);
+        assert!(rank(&any, "/acme/widgets.git/info/refs").is_some());
+        assert_eq!(any.specificity("gitlab.com", 443, "GET", "/x"), Some(1));
+        assert_eq!(any.specificity("example.com", 443, "GET", "/x"), None);
     }
 
     #[test]

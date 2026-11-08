@@ -253,11 +253,13 @@ icon = "svgl:GitHub"
 
 [[service]]
 id = "gitlab"
-version = 2
+version = 3
 name = "GitLab"
 description = "Repos and pipelines on GitLab."
 category = "developer_tools"
 hosts = ["gitlab.com"]
+# The REST and GraphQL APIs; Git over HTTPS is gitlab-git.
+paths = ["/api/*"]
 auth = "bearer"
 label = "Personal access token"
 variable = "GITLAB_TOKEN"

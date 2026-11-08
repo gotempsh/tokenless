@@ -32,6 +32,12 @@ A rule lets a service's credential be used. It says for which hosts,
 paths and methods, and, for an MCP server, which tools. It can only
 narrow what the template allows. A service with no rule is never used.
 
+When several rules of a session allow a request, the proxy uses the one
+whose path matches it most specifically: an exact path, then the longest
+prefix. GitLab's API rule (`/api/*`) therefore takes API calls, and the
+GitLab (Git) rule (`/*`) everything else. Two rules that match equally
+and would send different credentials are refused, never picked at random.
+
 ## Access bundle
 
 A bundle is a named list of rules for one kind of job, for example

@@ -65,6 +65,18 @@ pub struct ActiveRule {
     pub not_after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+impl ActiveRule {
+    /// Whether a request sent under `other` would leave the proxy exactly as
+    /// under this rule.
+    pub fn sends_same_as(&self, other: &ActiveRule) -> bool {
+        self.credential_id == other.credential_id
+            || (self.inject == other.inject
+                && self.substitutions == other.substitutions
+                && self.strip == other.strip
+                && self.not_after == other.not_after)
+    }
+}
+
 /// Interception certificates, one server config per rule host.
 pub struct InterceptionTls {
     ca_fingerprint: String,
