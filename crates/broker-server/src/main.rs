@@ -1255,20 +1255,16 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
             let live = open_session(&client, &mint, given, &[]).await?;
-            let session_port = match SessionPort::start(
-                listen,
-                &port.proxy,
-                live.auth.clone(),
-                live.services_json(),
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    live.end().await;
-                    return Err(e.into());
-                }
-            };
+            let session_port =
+                match SessionPort::start(listen, &port.proxy, live.auth.clone(), live.listing())
+                    .await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        live.end().await;
+                        return Err(e.into());
+                    }
+                };
             let exports: String = agent_env(session_port.addr, &trust)
                 .into_iter()
                 .chain(placeholder_env(&live.services))
@@ -1535,7 +1531,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
         args.listen,
         &args.port.proxy,
         live.auth.clone(),
-        live.services_json(),
+        live.listing(),
     )
     .await
     {

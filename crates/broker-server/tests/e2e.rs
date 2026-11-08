@@ -820,7 +820,7 @@ async fn end_to_end() {
             "127.0.0.1:0".parse().unwrap(),
             &proxy.to_string(),
             live.auth.clone(),
-            live.services_json(),
+            live.listing(),
         )
         .await
         .unwrap();
@@ -852,8 +852,58 @@ async fn end_to_end() {
         );
         assert_eq!(echo.proxy_authorization, None);
 
-        // Ending the session (with the token alone) cuts the port off.
-        assert_eq!(live.end().await, 1);
+        // A service added to the bundle while the agent runs: the next
+        // renewal mints a session that reaches it, and what the agent can
+        // ask the session port about follows.
+        let read_only = api
+            .post(
+                &format!("/vaults/{vault_id}/rules"),
+                json!({ "name": "local-upstream-read", "credential_id": credential_id, "methods": ["GET"] }),
+            )
+            .await;
+        let read_only_id = read_only["id"].as_str().unwrap().to_string();
+        let (status, _, widened) = api
+            .call(
+                reqwest::Method::PATCH,
+                &format!("/bundles/{}", bundle["id"].as_str().unwrap()),
+                Some(json!({ "rule_ids": [rule_id, read_only_id] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{widened}");
+        let listed = |body: Value| -> Vec<String> {
+            body["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["rule"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let ask_port = || async {
+            reqwest::get(format!("http://{}/services", port.addr))
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        };
+        assert_eq!(listed(ask_port().await), ["local-upstream"]);
+        live.renew_now().await.unwrap();
+        assert_eq!(live.current.load().rule_ids.len(), 2);
+        let mut after = listed(ask_port().await);
+        after.sort();
+        assert_eq!(after, ["local-upstream", "local-upstream-read"]);
+
+        // Ending (with the tokens alone) ends both sessions it minted and
+        // cuts the port off.
+        assert_eq!(live.end().await, 2);
+        let (status, _, _) = api
+            .call(
+                reqwest::Method::DELETE,
+                &format!("/rules/{read_only_id}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         let record = api.get(&format!("/vaults/{vault_id}/sessions")).await;
         let ended = record["items"]
             .as_array()

@@ -132,7 +132,7 @@ async fn handle(
     mut client: TcpStream,
     upstream: Arc<str>,
     auth: Arc<ArcSwap<String>>,
-    services: Arc<str>,
+    services: Arc<ArcSwap<String>>,
 ) {
     let (head, rest) = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut client)).await {
         Ok(Ok(parts)) => parts,
@@ -149,7 +149,8 @@ async fn handle(
         Err(_) => return,
     };
     if asks_for_services(&head) {
-        reply_json(&mut client, &services).await;
+        let listing = services.load_full();
+        reply_json(&mut client, &listing).await;
         return;
     }
     let rewritten = match rewrite_head(&head, auth.load().as_str()) {
@@ -334,13 +335,14 @@ pub struct SessionPort {
 impl SessionPort {
     /// Binds `listen` (loopback only) and relays to the proxy at
     /// `upstream` (`host:port`), adding whatever `auth` holds at the time
-    /// each connection arrives. `services` is the JSON served at
-    /// [`SERVICES_PATH`]: what the session reaches, never a secret.
+    /// each connection arrives. `services` holds the JSON served at
+    /// [`SERVICES_PATH`]: what the session reaches, never a secret; like
+    /// `auth`, it changes when a renewal brings a session with other rules.
     pub async fn start(
         listen: SocketAddr,
         upstream: &str,
         auth: Arc<ArcSwap<String>>,
-        services: String,
+        services: Arc<ArcSwap<String>>,
     ) -> Result<Self, LauncherError> {
         check_listen(listen)?;
         let listener = TcpListener::bind(listen)
@@ -352,7 +354,6 @@ impl SessionPort {
             .local_addr()
             .map_err(LauncherError::io("reading the session port address"))?;
         let upstream: Arc<str> = Arc::from(upstream);
-        let services: Arc<str> = Arc::from(services);
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let task = tokio::spawn(async move {
             loop {
@@ -534,7 +535,7 @@ mod tests {
             "0.0.0.0:0".parse().unwrap(),
             "127.0.0.1:1",
             auth,
-            String::new(),
+            Arc::new(ArcSwap::from_pointee(String::new())),
         )
         .await
         .err()
@@ -566,7 +567,7 @@ mod tests {
             "127.0.0.1:0".parse().unwrap(),
             &upstream_addr,
             auth.clone(),
-            String::new(),
+            Arc::new(ArcSwap::from_pointee(String::new())),
         )
         .await
         .unwrap();
@@ -588,6 +589,41 @@ mod tests {
         assert!(heads[1].contains(&proxy_authorization("v4.public.two")));
     }
 
+    /// `/services` answers with what the session reaches now, so a renewal
+    /// that brings other rules shows in `session info` at once.
+    #[tokio::test]
+    async fn serves_the_current_services() {
+        let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization("t")));
+        let services = Arc::new(ArcSwap::from_pointee(
+            r#"{"bundle":"b","services":[]}"#.to_string(),
+        ));
+        let port = SessionPort::start(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:1",
+            auth,
+            services.clone(),
+        )
+        .await
+        .unwrap();
+        let ask = || async {
+            let mut client = TcpStream::connect(port.addr).await.unwrap();
+            client
+                .write_all(b"GET /services HTTP/1.1\r\nHost: x\r\n\r\n")
+                .await
+                .unwrap();
+            let mut got = String::new();
+            client.read_to_string(&mut got).await.unwrap();
+            got
+        };
+        assert!(ask().await.ends_with(r#"{"bundle":"b","services":[]}"#));
+        services.store(Arc::new(
+            r#"{"bundle":"b","services":[{"new":true}]}"#.to_string(),
+        ));
+        assert!(ask()
+            .await
+            .ends_with(r#"{"bundle":"b","services":[{"new":true}]}"#));
+    }
+
     #[tokio::test]
     async fn explains_an_unreachable_proxy() {
         // Bind then drop to get a port nothing listens on.
@@ -601,7 +637,7 @@ mod tests {
             "127.0.0.1:0".parse().unwrap(),
             &free.to_string(),
             auth,
-            String::new(),
+            Arc::new(ArcSwap::from_pointee(String::new())),
         )
         .await
         .unwrap();
