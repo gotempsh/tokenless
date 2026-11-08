@@ -462,10 +462,22 @@ async fn end_to_end() {
     let session_id = minted["session"]["id"].as_str().unwrap().to_string();
     assert!(session_token.starts_with("v4.public."));
 
+    // Agents get sessions; the old key-for-agents role is gone.
+    let (status, _, _) = api
+        .call(
+            reqwest::Method::POST,
+            "/api-keys",
+            Some(json!({ "name": "ci", "vault_id": vault_id, "role": "session_issuer", "expires_in_days": 1 })),
+        )
+        .await;
+    assert!(
+        status.is_client_error(),
+        "session_issuer keys are refused, got {status}"
+    );
     let created_key = api
         .post(
             "/api-keys",
-            json!({ "name": "ci", "vault_id": vault_id, "role": "session_issuer", "expires_in_days": 1 }),
+            json!({ "name": "ci", "vault_id": vault_id, "role": "editor", "expires_in_days": 1 }),
         )
         .await;
     let raw_key = created_key["api_key"].as_str().unwrap().to_string();
@@ -484,7 +496,7 @@ async fn end_to_end() {
         .as_str()
         .unwrap()
         .starts_with("v4.public."));
-    // A session issuer cannot add credentials.
+    // An editor key cannot add credentials.
     let (status, _, _) = automation
         .call(
             reqwest::Method::POST,

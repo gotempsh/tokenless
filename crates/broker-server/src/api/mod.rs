@@ -52,6 +52,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/vaults/{vault_id}/sessions",
             get(list_sessions).post(mint_session),
         )
+        .route("/vaults/{vault_id}/sessions/limits", get(session_limits))
         .route(
             "/vaults/{vault_id}/bundles",
             get(list_bundles).post(create_bundle),
@@ -103,7 +104,7 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/sessions/self", get(discover_own_session))
         .route(
             "/sessions/{session_id}",
-            axum::routing::patch(update_session),
+            get(get_session).patch(update_session),
         )
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/api-keys", get(list_api_keys).post(create_api_key))

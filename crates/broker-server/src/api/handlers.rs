@@ -661,6 +661,16 @@ pub async fn mint_session(
     Ok((StatusCode::CREATED, Json(minted)))
 }
 
+/// `GET /vaults/{id}/sessions/limits`: the lifetimes a new session may have.
+pub async fn session_limits(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(s.control.sessions.limits(&authed.caller, &id).await?))
+}
+
 pub async fn list_sessions(
     State(s): St,
     authed: Authed,
@@ -704,6 +714,15 @@ pub async fn list_bundle_sessions(
             .list_for_bundle(&authed.caller, &id, q.request())
             .await?,
     ))
+}
+
+pub async fn get_session(
+    State(s): St,
+    authed: Authed,
+    Path(session_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: SessionId = parse_id("session", &session_id)?;
+    Ok(Json(s.control.sessions.get(&authed.caller, &id).await?))
 }
 
 pub async fn revoke_session(

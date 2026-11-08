@@ -19,8 +19,6 @@ pub enum Role {
     Editor,
     /// Read-only access to one vault.
     Viewer,
-    /// Mint proxy sessions in one vault, nothing else.
-    SessionIssuer,
 }
 
 impl Role {
@@ -29,7 +27,6 @@ impl Role {
             Role::Admin => "admin",
             Role::Editor => "editor",
             Role::Viewer => "viewer",
-            Role::SessionIssuer => "session_issuer",
         }
     }
 
@@ -38,7 +35,6 @@ impl Role {
             "admin" => Some(Role::Admin),
             "editor" => Some(Role::Editor),
             "viewer" => Some(Role::Viewer),
-            "session_issuer" => Some(Role::SessionIssuer),
             _ => None,
         }
     }
@@ -206,10 +202,6 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 | Action::SessionRead
                 | Action::AuditRead
         ),
-        Role::SessionIssuer => matches!(
-            action,
-            Action::VaultRead | Action::TemplateRead | Action::RuleRead | Action::SessionMint
-        ),
     };
     if allowed {
         Decision::Allow
@@ -251,17 +243,17 @@ mod tests {
     #[test]
     fn api_keys_are_vault_bound() {
         let vault = VaultId::new();
-        let issuer = key(Role::SessionIssuer, vault);
+        let editor = key(Role::Editor, vault);
         assert_eq!(
-            rbac_decide(&issuer, Action::SessionMint, Some(&vault)),
+            rbac_decide(&editor, Action::SessionMint, Some(&vault)),
             Decision::Allow
         );
         assert!(matches!(
-            rbac_decide(&issuer, Action::SessionMint, Some(&VaultId::new())),
+            rbac_decide(&editor, Action::SessionMint, Some(&VaultId::new())),
             Decision::Deny { .. }
         ));
         assert!(matches!(
-            rbac_decide(&issuer, Action::SessionRevoke, Some(&vault)),
+            rbac_decide(&key(Role::Viewer, vault), Action::SessionMint, Some(&vault)),
             Decision::Deny { .. }
         ));
         assert!(matches!(

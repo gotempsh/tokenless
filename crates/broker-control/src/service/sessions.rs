@@ -53,6 +53,15 @@ pub struct MintedSession {
     pub session: ProxySession,
 }
 
+/// How long a new session in a vault may last, for the forms that mint one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SessionLimits {
+    /// The longest session Settings allow.
+    pub max_ttl_secs: u64,
+    /// What a session lasts when the request names no lifetime.
+    pub default_ttl_secs: u64,
+}
+
 /// A placeholder the agent can send, without its value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPlaceholder {
@@ -227,6 +236,23 @@ impl SessionService {
         Ok(MintedSession { token, session })
     }
 
+    /// The lifetimes a caller allowed to mint in the vault may choose from.
+    /// Settings themselves stay admin-only.
+    pub async fn limits(
+        &self,
+        caller: &Caller,
+        vault_id: &VaultId,
+    ) -> Result<SessionLimits, ControlError> {
+        self.guard
+            .check(caller, Action::SessionMint, Some(vault_id))
+            .await?;
+        let max_ttl_secs = self.policy.get_settings().await?.max_session_ttl_secs;
+        Ok(SessionLimits {
+            max_ttl_secs,
+            default_ttl_secs: DEFAULT_SESSION_TTL_SECS.min(max_ttl_secs),
+        })
+    }
+
     /// `reference` is a bundle id or, failing that, a name in the vault.
     async fn find_bundle(
         &self,
@@ -304,6 +330,20 @@ impl SessionService {
             .get_session(id)
             .await?
             .ok_or_else(|| ControlError::not_found("session", id))
+    }
+
+    /// One session record, for its page. Never the token: only its
+    /// holder has that.
+    pub async fn get(&self, caller: &Caller, id: &SessionId) -> Result<ProxySession, ControlError> {
+        let session = self
+            .policy
+            .get_session(id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("session", id))?;
+        self.guard
+            .check(caller, Action::SessionRead, Some(&session.vault_id))
+            .await?;
+        Ok(session)
     }
 
     pub async fn revoke(

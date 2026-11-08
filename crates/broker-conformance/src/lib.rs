@@ -1203,6 +1203,7 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
     }
     let session = SessionId::new();
     events[2] = events[2].clone().detail("session_id", session.to_string());
+    events[3] = events[3].clone().target(format!("session:{session}"));
     sink.record(&events).await.map_err(backend(S, "record"))?;
     let by_session = sink
         .query(&AuditQuery {
@@ -1214,8 +1215,10 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
     ensure!(
         S,
         "query_session",
-        by_session.total == 1 && by_session.items[0].id == events[2].id,
-        "expected only the event tagged with the session, got {:?}",
+        by_session.total == 2
+            && by_session.items[0].id == events[3].id
+            && by_session.items[1].id == events[2].id,
+        "expected the session's traffic and its own history, newest first, got {:?}",
         by_session.items
     );
     let all = sink
@@ -1360,7 +1363,7 @@ where
         prefix: "cbk_vaultdel".into(),
         secret_hash: "hash".into(),
         vault_id: doomed.id,
-        role: Role::SessionIssuer,
+        role: Role::Editor,
         created_by: "user:conformance".into(),
         created_at: at(0),
         expires_at: at(3600),
@@ -1574,7 +1577,7 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
         role,
         vault: Some(vault_a),
     };
-    for role in [Role::Editor, Role::Viewer, Role::SessionIssuer] {
+    for role in [Role::Editor, Role::Viewer] {
         let d = authz
             .authorize(&key(role), Action::RuleRead, Some(&vault_b))
             .await;
@@ -1612,17 +1615,13 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
         "an API key holding the admin role must be refused"
     );
     let d = authz
-        .authorize(
-            &key(Role::SessionIssuer),
-            Action::SessionMint,
-            Some(&vault_a),
-        )
+        .authorize(&key(Role::Editor), Action::SessionMint, Some(&vault_a))
         .await;
     ensure!(
         S,
-        "issuer_can_mint",
+        "editor_can_mint",
         d == Decision::Allow,
-        "a session issuer must be able to mint in its vault, got {d:?}"
+        "an editor key must be able to mint in its vault, got {d:?}"
     );
     let admin = Principal {
         kind: PrincipalKind::User,
@@ -2162,7 +2161,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         prefix: "cbk_conformance".into(),
         secret_hash: "hash".into(),
         vault_id: VaultId::new(),
-        role: Role::SessionIssuer,
+        role: Role::Editor,
         created_by: "user:conformance".into(),
         created_at: at(0),
         expires_at: at(3600),

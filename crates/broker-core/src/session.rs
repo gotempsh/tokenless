@@ -20,11 +20,12 @@ use crate::ids::{RuleId, SessionId};
 use crate::scope::Scope;
 
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 15 * 60;
-/// The instance's session lifetime cap until an admin changes it.
-pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 60 * 60;
+/// The instance's session lifetime cap until an admin changes it. Long
+/// enough for a session handed to an agent for a week of work.
+pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 /// The highest cap an admin may set: revoked sessions stay in every
 /// snapshot until they expire, so the cap bounds that list's lifetime.
-pub const SESSION_TTL_CEILING_SECS: u64 = 7 * 24 * 60 * 60;
+pub const SESSION_TTL_CEILING_SECS: u64 = 90 * 24 * 60 * 60;
 pub const MAX_RULES_PER_SESSION: usize = 64;
 pub const MAX_LABELS: usize = 16;
 // Predates the rename to tokenless and is kept: changing it invalidates

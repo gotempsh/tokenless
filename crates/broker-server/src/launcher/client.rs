@@ -62,7 +62,7 @@ struct Problem {
 
 /// How the launcher proves who it is to the management API.
 pub enum Credentials {
-    /// An API key (`cbk_...`), usually a session issuer.
+    /// An API key (`cbk_...`), an editor's when it mints sessions.
     ApiKey(Zeroizing<String>),
     /// The person's console session from `tokenless login`.
     Session {

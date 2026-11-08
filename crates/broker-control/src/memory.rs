@@ -774,7 +774,9 @@ impl AuditSink for MemoryStore {
             })
             .filter(|e| {
                 query.session_id.is_none_or(|id| {
-                    e.detail.get("session_id").map(String::as_str) == Some(id.to_string().as_str())
+                    let id = id.to_string();
+                    e.detail.get("session_id") == Some(&id)
+                        || e.target.as_deref() == Some(format!("session:{id}").as_str())
                 })
             })
             .cloned()

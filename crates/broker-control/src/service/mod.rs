@@ -703,12 +703,6 @@ mod tests {
         ));
         assert!(matches!(
             cp.users
-                .create_invite(&admin, invite(Role::SessionIssuer))
-                .await,
-            Err(ControlError::Validation { .. })
-        ));
-        assert!(matches!(
-            cp.users
                 .create_invite(
                     &admin,
                     CreateInvite {
@@ -1245,7 +1239,7 @@ mod tests {
         expected.sort();
         assert_eq!(bundle.rule_ids, expected, "sorted and deduplicated");
 
-        // A session_issuer key mints by name without reading the bundle.
+        // An editor key mints by name.
         let (plaintext, _) = cp
             .auth
             .create_api_key(
@@ -1253,7 +1247,7 @@ mod tests {
                 CreateApiKey {
                     name: "launcher".into(),
                     vault_id: vault.id,
-                    role: Role::SessionIssuer,
+                    role: Role::Editor,
                     expires_in_days: 30,
                 },
             )
@@ -1375,10 +1369,69 @@ mod tests {
         ));
 
         // Only editors and admins manage bundles.
+        let (viewer_key, _) = cp
+            .auth
+            .create_api_key(
+                &a,
+                CreateApiKey {
+                    name: "dashboard".into(),
+                    vault_id: vault.id,
+                    role: Role::Viewer,
+                    expires_in_days: 30,
+                },
+            )
+            .await
+            .unwrap();
+        let viewer = cp.auth.authenticate_api_key(&viewer_key).await.unwrap();
+        // Whoever may mint learns the lifetimes; a viewer does not.
+        assert_eq!(
+            cp.sessions.limits(&key, &vault.id).await.unwrap(),
+            sessions::SessionLimits {
+                max_ttl_secs: broker_core::session::DEFAULT_MAX_SESSION_TTL_SECS,
+                default_ttl_secs: broker_core::session::DEFAULT_SESSION_TTL_SECS,
+            }
+        );
+        assert!(matches!(
+            cp.sessions.limits(&viewer, &vault.id).await,
+            Err(ControlError::Forbidden { .. })
+        ));
+        // A session's record is readable in its vault, and only there.
+        assert_eq!(
+            cp.sessions
+                .get(&viewer, &minted.session.id)
+                .await
+                .unwrap()
+                .id,
+            minted.session.id
+        );
+        assert!(matches!(
+            cp.sessions
+                .get(&viewer, &broker_core::ids::SessionId::new())
+                .await,
+            Err(ControlError::NotFound { .. })
+        ));
+        let (outsider_key, _) = cp
+            .auth
+            .create_api_key(
+                &a,
+                CreateApiKey {
+                    name: "outsider".into(),
+                    vault_id: other.id,
+                    role: Role::Viewer,
+                    expires_in_days: 30,
+                },
+            )
+            .await
+            .unwrap();
+        let outsider = cp.auth.authenticate_api_key(&outsider_key).await.unwrap();
+        assert!(matches!(
+            cp.sessions.get(&outsider, &minted.session.id).await,
+            Err(ControlError::Forbidden { .. })
+        ));
         assert!(matches!(
             cp.bundles
                 .create(
-                    &key,
+                    &viewer,
                     &vault.id,
                     CreateBundle {
                         name: "mine".into(),
@@ -1537,7 +1590,7 @@ mod tests {
                 CreateApiKey {
                     name: "ci".into(),
                     vault_id: vault.id,
-                    role: Role::SessionIssuer,
+                    role: Role::Editor,
                     expires_in_days: 30,
                 },
             )
@@ -1961,13 +2014,13 @@ mod tests {
         };
         let err = cp
             .sessions
-            .mint(&a, &vault.id, mint(8 * 3600))
+            .mint(&a, &vault.id, mint(30 * 86_400))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("3600"), "{err}");
+        assert!(err.to_string().contains("604800"), "{err}");
 
         let mut settings = cp.policy.get_settings(&a).await.unwrap();
-        settings.max_session_ttl_secs = 8 * 3600;
+        settings.max_session_ttl_secs = 30 * 86_400;
         let stale = cp.policy.put_settings(&admin(3600), settings.clone()).await;
         assert!(
             matches!(stale, Err(ControlError::StepUpRequired { .. })),
@@ -1976,12 +2029,12 @@ mod tests {
         cp.policy.put_settings(&a, settings.clone()).await.unwrap();
         let long = cp
             .sessions
-            .mint(&a, &vault.id, mint(8 * 3600))
+            .mint(&a, &vault.id, mint(30 * 86_400))
             .await
             .unwrap();
         assert_eq!(
             (long.session.expires_at - long.session.created_at).num_seconds(),
-            8 * 3600
+            30 * 86_400
         );
         // `longest` takes the cap, whatever ttl_secs says.
         let longest = cp
@@ -1998,7 +2051,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             (longest.session.expires_at - longest.session.created_at).num_seconds(),
-            8 * 3600
+            30 * 86_400
         );
         settings.max_session_ttl_secs = 30;
         assert!(cp.policy.put_settings(&a, settings).await.is_err());

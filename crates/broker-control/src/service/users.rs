@@ -66,15 +66,6 @@ pub struct UpdateUser {
     pub disabled: Option<bool>,
 }
 
-fn person_role(role: Role) -> Result<Role, ControlError> {
-    match role {
-        Role::Admin | Role::Editor | Role::Viewer => Ok(role),
-        Role::SessionIssuer => Err(ControlError::validation(
-            "the session_issuer role is for API keys; people are admin, editor or viewer",
-        )),
-    }
-}
-
 fn invalid_invite() -> ControlError {
     ControlError::Unauthenticated {
         reason: "invite is invalid, expired, revoked or already used".into(),
@@ -134,7 +125,7 @@ impl UserService {
             .get_user(id)
             .await?
             .ok_or_else(|| ControlError::not_found("user", id))?;
-        let role = req.role.map(person_role).transpose()?.unwrap_or(user.role);
+        let role = req.role.unwrap_or(user.role);
         let disabled_at = match req.disabled {
             Some(true) => user.disabled_at.or_else(|| Some(Utc::now())),
             Some(false) => None,
@@ -191,7 +182,7 @@ impl UserService {
         req: CreateInvite,
     ) -> Result<InviteIssued, ControlError> {
         self.guard.check(caller, Action::UserManage, None).await?;
-        let role = person_role(req.role)?;
+        let role = req.role;
         let hours = req.expires_in_hours.unwrap_or(DEFAULT_INVITE_HOURS);
         if hours == 0 || hours > MAX_INVITE_HOURS {
             return Err(ControlError::validation(format!(

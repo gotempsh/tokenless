@@ -97,9 +97,10 @@ enum Command {
         #[command(subcommand)]
         command: SessionCommand,
     },
-    /// Run a command behind a session port. Mints a session from an access
-    /// bundle, points the command at the proxy with the broker CA trusted,
-    /// renews the session while it runs and ends it when it exits.
+    /// Run a command behind a session port. Uses the session whose token is
+    /// in TOKENLESS_SESSION_TOKEN (create one on the bundle's page), or mints
+    /// one from --bundle, renews it while the command runs and ends it when
+    /// it exits. Points the command at the proxy with the broker CA trusted.
     ///
     /// Variables can be filled by reference, as `NAME=cb://<service>/<field>`
     /// arguments or lines of an `--env-file`: each becomes the placeholder
@@ -107,6 +108,7 @@ enum Command {
     /// values are passed through as written.
     ///
     /// Examples:
+    ///   TOKENLESS_SESSION_TOKEN=v4.public... tokenless run -- claude
     ///   tokenless run --bundle code-review -- claude
     ///   tokenless exec --bundle deploy GITHUB_TOKEN=cb://github/token -- ./release.sh
     #[command(visible_alias = "exec", verbatim_doc_comment)]
@@ -145,7 +147,7 @@ struct BrokerArgs {
     #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
     server: String,
     /// File holding the API key (`cbk_...`). Without it the key is read
-    /// from TOKENLESS_API_KEY. A session_issuer key is enough.
+    /// from TOKENLESS_API_KEY, or the `tokenless login` session is used.
     #[arg(long)]
     api_key_file: Option<PathBuf>,
 }
@@ -159,9 +161,10 @@ struct MintArgs {
     vault: Option<String>,
     /// Access bundle to mint the session from, by name or id.
     #[arg(long, env = "TOKENLESS_BUNDLE")]
-    bundle: String,
-    /// Lifetime of each session, at most 1h (e.g. 90s, 15m, 1h). The
-    /// session port renews the session before it runs out.
+    bundle: Option<String>,
+    /// Lifetime of each session (e.g. 90s, 15m, 1h), within the longest
+    /// Settings allow. The session port renews the session before it runs
+    /// out.
     #[arg(long, default_value = "15m")]
     ttl: String,
     /// Requests each session may make through the proxy.
@@ -170,6 +173,9 @@ struct MintArgs {
     /// Label shown on the Sessions page, as key=value (repeatable).
     #[arg(long = "label")]
     labels: Vec<String>,
+    /// The session's name on the Sessions page (the `name` label).
+    #[arg(long)]
+    name: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -227,10 +233,22 @@ struct PortArgs {
     trust_base: Option<PathBuf>,
 }
 
+/// Where an existing session's token comes from, instead of minting one.
+#[derive(clap::Args)]
+struct GivenSessionArgs {
+    /// File holding a session token (`v4.public...`) to use instead of
+    /// minting one. Without it the token is read from
+    /// TOKENLESS_SESSION_TOKEN. It is used as is: not renewed, not ended.
+    #[arg(long, conflicts_with = "bundle")]
+    session_token_file: Option<PathBuf>,
+}
+
 #[derive(clap::Args)]
 struct RunArgs {
     #[command(flatten)]
     mint: MintArgs,
+    #[command(flatten)]
+    given: GivenSessionArgs,
     #[command(flatten)]
     port: PortArgs,
     /// Session port address; loopback only. Default: a free port.
@@ -285,6 +303,8 @@ enum SessionCommand {
     Start {
         #[command(flatten)]
         mint: MintArgs,
+        #[command(flatten)]
+        given: GivenSessionArgs,
         #[command(flatten)]
         port: PortArgs,
         /// Session port address; loopback only.
@@ -942,6 +962,12 @@ fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
 }
 
 fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
+    let Some(bundle) = args.bundle.clone() else {
+        return Err(LauncherError::config(
+            "say which access bundle to mint the session from with --bundle (or TOKENLESS_BUNDLE), or set TOKENLESS_SESSION_TOKEN to a session you already have",
+        )
+        .into());
+    };
     // The broker enforces its own cap (Settings → Session lifetime) and
     // names it in the error; the session port renews, so short is fine.
     let ttl_secs = parse_duration_secs(&args.ttl)?;
@@ -950,16 +976,62 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
         let (k, v) = parse_label(raw)?;
         labels.insert(k, v);
     }
+    if let Some(name) = &args.name {
+        labels.insert("name".to_string(), name.trim().to_string());
+    }
     for (k, v) in extra {
         labels.entry((*k).to_string()).or_insert_with(|| v.clone());
     }
     Ok(MintRequest {
-        bundle: args.bundle.clone(),
+        bundle,
         ttl_secs,
         longest: false,
         request_limit: args.request_limit,
         labels,
     })
+}
+
+/// A session token handed over (`--session-token-file`, or
+/// TOKENLESS_SESSION_TOKEN when no bundle is given), or `None` to mint one.
+/// A bundle and a token together are refused rather than guessed between.
+fn given_session(
+    mint: &MintArgs,
+    given: &GivenSessionArgs,
+    from_env: Option<Zeroizing<String>>,
+) -> Result<Option<Zeroizing<String>>, CliError> {
+    if let Some(path) = &given.session_token_file {
+        let token = std::fs::read_to_string(path).map_err(|e| CliError::Io {
+            context: format!("reading the session token file {}", path.display()),
+            source: e,
+        })?;
+        return Ok(Some(Zeroizing::new(token.trim().to_string())));
+    }
+    let Some(token) = from_env else {
+        return Ok(None);
+    };
+    match &mint.bundle {
+        Some(bundle) => Err(LauncherError::config(format!(
+            "both a bundle to mint a session from ('{bundle}') and TOKENLESS_SESSION_TOKEN are set; unset one"
+        ))
+        .into()),
+        None => Ok(Some(Zeroizing::new(token.trim().to_string()))),
+    }
+}
+
+/// The session behind a session port: the one handed over, or a new one
+/// minted from the bundle and renewed.
+async fn open_session(
+    client: &Arc<ApiClient>,
+    mint: &MintArgs,
+    given: Option<Zeroizing<String>>,
+    labels: &[(&str, String)],
+) -> Result<LiveSession, CliError> {
+    if let Some(token) = given {
+        return Ok(LiveSession::adopt(client.clone(), &token).await?);
+    }
+    let request = mint_request(mint, labels)?;
+    let vault = client.resolve_vault(mint.vault.as_deref()).await?;
+    Ok(LiveSession::start(client.clone(), vault, request).await?)
 }
 
 /// Downloads the interception CA, checks a pinned fingerprint and writes
@@ -1090,17 +1162,21 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
         }
         SessionCommand::Start {
             mint,
+            given,
             port,
             listen,
             env_file,
         } => {
+            let given = given_session(&mint, &given, session_token_from_env().ok())?;
+            if given.is_none() {
+                mint_request(&mint, &[])?;
+            }
             check_listen(listen)?;
             check_proxy(&port.proxy).await?;
             let client = client(&mint.broker)?;
-            let vault = client.resolve_vault(mint.vault.as_deref()).await?;
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
-            let live = LiveSession::start(client.clone(), vault, mint_request(&mint, &[])?).await?;
+            let live = open_session(&client, &mint, given, &[]).await?;
             let session_port = match SessionPort::start(
                 listen,
                 &port.proxy,
@@ -1141,7 +1217,7 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             // it ends. The exports themselves go to standard output.
             say(format_args!(
                 "session port open for bundle '{}'; point agents at it with these exports{}. Ctrl-C ends it",
-                mint.bundle,
+                bundle_name(&live),
                 env_file
                     .as_ref()
                     .map(|p| format!(" (also in {})", p.display()))
@@ -1158,6 +1234,16 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// The bundle a session was minted from, for messages.
+fn bundle_name(live: &LiveSession) -> String {
+    live.current
+        .load()
+        .bundle
+        .as_ref()
+        .map(|b| b.name.clone())
+        .unwrap_or_else(|| "(chosen rules)".to_string())
 }
 
 fn session_token_from_env() -> Result<Zeroizing<String>, CliError> {
@@ -1356,14 +1442,17 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| program.clone());
+    let given = given_session(&args.mint, &args.given, session_token_from_env().ok())?;
+    if given.is_none() {
+        // Fail on a missing bundle before touching the network.
+        mint_request(&args.mint, &[])?;
+    }
     check_listen(args.listen)?;
     check_proxy(&args.port.proxy).await?;
     let client = client(&args.mint.broker)?;
-    let vault = client.resolve_vault(args.mint.vault.as_deref()).await?;
     let dir = private_dir()?;
     let (trust, _) = prepare_trust(&client, &args.port, dir.path()).await?;
-    let request = mint_request(&args.mint, &[("command", name.clone())])?;
-    let live = LiveSession::start(client.clone(), vault, request).await?;
+    let live = open_session(&client, &args.mint, given, &[("command", name.clone())]).await?;
     let session_port = match SessionPort::start(
         args.listen,
         &args.port.proxy,
@@ -1398,7 +1487,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     detail(verbose, || {
         format!(
             "running '{name}' with bundle '{}' (session {}) through {} -> {}",
-            args.mint.bundle,
+            bundle_name(&live),
             live.current.load().id,
             session_port.addr,
             args.port.proxy
@@ -1523,5 +1612,84 @@ mod tests {
         assert_eq!(at("0.0.0.0:8080"), "127.0.0.1:8080");
         assert_eq!(at("[::]:8080"), "[::1]:8080");
         assert_eq!(at("192.0.2.10:8080"), "192.0.2.10:8080");
+    }
+
+    fn run_args(args: &[&str]) -> RunArgs {
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            run: RunArgs,
+        }
+        let argv = ["tokenless"].iter().chain(args).chain(&["--", "claude"]);
+        Wrapper::try_parse_from(argv).unwrap().run
+    }
+
+    fn token(value: &str) -> Option<Zeroizing<String>> {
+        Some(Zeroizing::new(value.to_string()))
+    }
+
+    #[test]
+    fn run_uses_a_given_session_or_mints_from_a_bundle_never_both() {
+        let given = |args: &[&str], env: Option<Zeroizing<String>>| {
+            let a = run_args(args);
+            given_session(&a.mint, &a.given, env).map(|t| t.map(|t| t.to_string()))
+        };
+        // A token in the environment and no bundle: use it as is.
+        assert_eq!(
+            given(&[], token(" v4.public.abc\n")).unwrap().as_deref(),
+            Some("v4.public.abc")
+        );
+        // A bundle and no token: mint.
+        assert_eq!(given(&["--bundle", "code-review"], None).unwrap(), None);
+        // Both: refuse rather than guess.
+        let err = given(&["--bundle", "code-review"], token("v4.public.abc"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unset one"), "{err}");
+        // Neither: minting then asks for a bundle.
+        let none = run_args(&[]);
+        assert_eq!(given(&[], None).unwrap(), None);
+        let err = mint_request(&none.mint, &[]).unwrap_err().to_string();
+        assert!(err.contains("TOKENLESS_SESSION_TOKEN"), "{err}");
+        // A token file wins over the environment, and conflicts with --bundle.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "v4.public.file\n").unwrap();
+        let path = file.to_str().unwrap();
+        assert_eq!(
+            given(&["--session-token-file", path], token("v4.public.env"))
+                .unwrap()
+                .as_deref(),
+            Some("v4.public.file")
+        );
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(flatten)]
+            run: RunArgs,
+        }
+        assert!(Wrapper::try_parse_from([
+            "tokenless",
+            "--session-token-file",
+            path,
+            "--bundle",
+            "x",
+            "--",
+            "claude"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn a_session_name_is_its_name_label() {
+        let a = run_args(&["--bundle", "code-review", "--name", " laptop "]);
+        let request = mint_request(&a.mint, &[("command", "claude".into())]).unwrap();
+        assert_eq!(
+            request.labels.get("name").map(String::as_str),
+            Some("laptop")
+        );
+        assert_eq!(
+            request.labels.get("command").map(String::as_str),
+            Some("claude")
+        );
     }
 }

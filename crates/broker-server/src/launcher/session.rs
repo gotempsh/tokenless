@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A session that outlives the session lifetime cap: it is minted from a
-//! bundle, renewed before it expires, and every token it minted is ended
-//! when it stops.
+//! The session behind a session port. Either minted from a bundle, renewed
+//! before it expires and ended when it stops, or a token someone handed
+//! over, used as is until it expires.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -51,6 +51,7 @@ pub struct LiveSession {
     /// the broker could not be asked (the agent then gets no placeholders).
     pub services: Vec<DiscoveredService>,
     minted: Minted,
+    /// Renews a minted session, or reports when a given one runs out.
     renewer: JoinHandle<()>,
 }
 
@@ -86,6 +87,32 @@ impl LiveSession {
             current,
             services,
             minted,
+            renewer,
+        })
+    }
+
+    /// Uses a session token minted elsewhere (the console's New session,
+    /// `session create`). It is checked before anything starts, never
+    /// renewed and never ended here: it lasts until it expires or is
+    /// revoked, like any token handed to an agent.
+    pub async fn adopt(client: Arc<ApiClient>, token: &str) -> Result<Self, LauncherError> {
+        let discovery = client.discover(token).await?;
+        let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization(token)));
+        let expires_at = discovery.session.expires_at;
+        let current = Arc::new(ArcSwap::from_pointee(discovery.session));
+        let renewer = tokio::spawn(async move {
+            let left = (expires_at - Utc::now()).to_std().unwrap_or_default();
+            tokio::time::sleep(left).await;
+            eprintln!(
+                "tokenless: the session expired at {expires_at}, so the proxy now refuses requests; create a new one"
+            );
+        });
+        Ok(Self {
+            client,
+            auth,
+            current,
+            services: discovery.services,
+            minted: Arc::new(Mutex::new(Vec::new())),
             renewer,
         })
     }
