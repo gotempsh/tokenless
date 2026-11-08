@@ -55,11 +55,14 @@ impl From<&User> for UserSummary {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TotpEnrollment {
     pub secret: String,
     pub otpauth_url: String,
 }
+
+// The otpauth URL carries the secret too.
+tokenless_core::redacted_debug!(TotpEnrollment { ; secret, otpauth_url });
 
 /// The username of the admin created on first start.
 pub const INITIAL_ADMIN: &str = "admin";
@@ -79,28 +82,34 @@ impl std::fmt::Debug for GeneratedCredentials {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ChangePassword {
     pub current_password: String,
     pub new_password: String,
 }
 
+tokenless_core::redacted_debug!(ChangePassword { ; current_password, new_password });
+
 /// Turns on an authenticator: the secret from `new_totp_enrollment`, the
 /// first code it shows, and the password to prove it is the account owner.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct EnableAuthenticator {
     pub secret: String,
     pub code: String,
     pub password: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+tokenless_core::redacted_debug!(EnableAuthenticator { ; secret, code, password });
+
+#[derive(Clone, Deserialize)]
 pub struct DisableAuthenticator {
     pub code: String,
     pub password: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+tokenless_core::redacted_debug!(DisableAuthenticator { ; code, password });
+
+#[derive(Clone, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
@@ -109,15 +118,19 @@ pub struct LoginRequest {
     pub totp_code: Option<String>,
 }
 
+tokenless_core::redacted_debug!(LoginRequest { username; password, totp_code });
+
 /// Proof for a step-up: the authenticator code, or the password for an
 /// account without an authenticator.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct StepUpProof {
     #[serde(default)]
     pub code: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
 }
+
+tokenless_core::redacted_debug!(StepUpProof { ; code, password });
 
 pub struct LoginOutcome {
     pub token: String,
@@ -127,14 +140,18 @@ pub struct LoginOutcome {
     pub max_age_secs: u64,
 }
 
+tokenless_core::redacted_debug!(LoginOutcome { user, expires_at, max_age_secs; token, csrf_token });
+
 /// A verified UI session.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionAuth {
     pub caller: Caller,
     pub token_hash: String,
     pub user: UserSummary,
     pub expires_at: DateTime<Utc>,
 }
+
+tokenless_core::redacted_debug!(SessionAuth { caller, user, expires_at; token_hash });
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateApiKey {

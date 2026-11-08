@@ -261,7 +261,7 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct User {
     pub id: UserId,
     pub username: String,
@@ -276,8 +276,13 @@ pub struct User {
     pub disabled_at: Option<DateTime<Utc>>,
 }
 
+tokenless_core::redacted_debug!(User {
+    id, username, totp_last_step, role, created_at, disabled_at;
+    password_hash, totp_secret_enc
+});
+
 /// A single-use invitation for a person to create an account with a role.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invite {
     pub id: InviteId,
     #[serde(skip)]
@@ -291,6 +296,11 @@ pub struct Invite {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+tokenless_core::redacted_debug!(Invite {
+    id, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at;
+    token_hash
+});
+
 impl Invite {
     /// Neither accepted, revoked nor expired at `now`.
     pub fn is_pending(&self, now: DateTime<Utc>) -> bool {
@@ -298,7 +308,7 @@ impl Invite {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UiSession {
     pub token_hash: String,
     pub user_id: UserId,
@@ -307,7 +317,9 @@ pub struct UiSession {
     pub step_up_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+tokenless_core::redacted_debug!(UiSession { user_id, created_at, expires_at, step_up_at; token_hash });
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: ApiKeyId,
     pub name: String,
@@ -324,7 +336,12 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+tokenless_core::redacted_debug!(ApiKey {
+    id, name, prefix, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at;
+    secret_hash
+});
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct JoinTokenRecord {
     pub id: String,
     pub secret_hash: String,
@@ -333,6 +350,8 @@ pub struct JoinTokenRecord {
     pub expires_at: DateTime<Utc>,
     pub consumed_at: Option<DateTime<Utc>>,
 }
+
+tokenless_core::redacted_debug!(JoinTokenRecord { id, created_by, created_at, expires_at, consumed_at; secret_hash });
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
@@ -368,6 +387,216 @@ pub struct AuditQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every public type holding a secret prints `***` for it under `{:?}`,
+    /// whatever reaches a log line, an error or a panic. A freshly minted
+    /// session still serializes its token: that is how it is returned, once.
+    #[test]
+    fn secret_holding_types_never_debug_their_secrets() {
+        use crate::service::auth::{
+            ChangePassword, DisableAuthenticator, EnableAuthenticator, LoginOutcome, LoginRequest,
+            SessionAuth, StepUpProof, TotpEnrollment, UserSummary,
+        };
+        use crate::service::nodes::JoinTokenIssued;
+        use crate::service::sessions::MintedSession;
+        use crate::service::users::{AcceptInviteRequest, InviteIssued};
+        use crate::service::Caller;
+
+        const SECRET: &str = "SEKRET-do-not-print";
+        let s = || SECRET.to_string();
+        let now = Utc::now();
+        let summary = UserSummary {
+            id: UserId::new(),
+            username: "ada".into(),
+            role: Role::Admin,
+            created_at: now,
+            disabled_at: None,
+            totp_enrolled: true,
+        };
+        let invite = Invite {
+            id: InviteId::new(),
+            token_hash: s(),
+            role: Role::Editor,
+            created_by: "admin".into(),
+            created_at: now,
+            expires_at: now,
+            accepted_at: None,
+            accepted_by: None,
+            revoked_at: None,
+        };
+        let session = ProxySession {
+            id: SessionId::new(),
+            vault_id: VaultId::new(),
+            rule_ids: vec![RuleId::new()],
+            bundle: None,
+            labels: BTreeMap::new(),
+            request_limit: None,
+            node_id: None,
+            created_by: "admin".into(),
+            created_at: now,
+            expires_at: now,
+            revoked_at: None,
+        };
+        let minted = MintedSession {
+            token: s(),
+            session,
+        };
+        let debugged = [
+            format!(
+                "{:?}",
+                User {
+                    id: UserId::new(),
+                    username: "ada".into(),
+                    password_hash: s(),
+                    totp_secret_enc: Some(SECRET.as_bytes().to_vec()),
+                    totp_last_step: None,
+                    role: Role::Admin,
+                    created_at: now,
+                    disabled_at: None,
+                }
+            ),
+            format!("{invite:?}"),
+            format!(
+                "{:?}",
+                UiSession {
+                    token_hash: s(),
+                    user_id: UserId::new(),
+                    created_at: now,
+                    expires_at: now,
+                    step_up_at: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                ApiKey {
+                    id: ApiKeyId::new(),
+                    name: "ci".into(),
+                    prefix: "cbk_x".into(),
+                    secret_hash: s(),
+                    vault_id: VaultId::new(),
+                    role: Role::Editor,
+                    created_by: "admin".into(),
+                    created_at: now,
+                    expires_at: now,
+                    revoked_at: None,
+                    last_used_at: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                JoinTokenRecord {
+                    id: "j".into(),
+                    secret_hash: s(),
+                    created_by: "admin".into(),
+                    created_at: now,
+                    expires_at: now,
+                    consumed_at: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                TotpEnrollment {
+                    secret: s(),
+                    otpauth_url: format!("otpauth://totp/x?secret={SECRET}"),
+                }
+            ),
+            format!(
+                "{:?}",
+                ChangePassword {
+                    current_password: s(),
+                    new_password: s(),
+                }
+            ),
+            format!(
+                "{:?}",
+                EnableAuthenticator {
+                    secret: s(),
+                    code: s(),
+                    password: s(),
+                }
+            ),
+            format!(
+                "{:?}",
+                DisableAuthenticator {
+                    code: s(),
+                    password: s(),
+                }
+            ),
+            format!(
+                "{:?}",
+                LoginRequest {
+                    username: "ada".into(),
+                    password: s(),
+                    totp_code: Some(s()),
+                }
+            ),
+            format!(
+                "{:?}",
+                StepUpProof {
+                    code: Some(s()),
+                    password: Some(s()),
+                }
+            ),
+            format!(
+                "{:?}",
+                LoginOutcome {
+                    token: s(),
+                    csrf_token: s(),
+                    user: summary.clone(),
+                    expires_at: now,
+                    max_age_secs: 60,
+                }
+            ),
+            format!(
+                "{:?}",
+                SessionAuth {
+                    caller: Caller::service(tokenless_core::authz::Principal::service(
+                        "test",
+                        Role::Admin,
+                        None,
+                    )),
+                    token_hash: s(),
+                    user: summary.clone(),
+                    expires_at: now,
+                }
+            ),
+            format!(
+                "{:?}",
+                InviteIssued {
+                    token: s(),
+                    invite: invite.clone(),
+                }
+            ),
+            format!(
+                "{:?}",
+                AcceptInviteRequest {
+                    invite_token: s(),
+                    username: "ada".into(),
+                    password: s(),
+                    totp_secret: Some(s()),
+                    totp_code: Some(s()),
+                }
+            ),
+            format!(
+                "{:?}",
+                JoinTokenIssued {
+                    token: s(),
+                    token_id: "j".into(),
+                    expires_at: now,
+                }
+            ),
+            format!("{minted:?}"),
+        ];
+        for text in &debugged {
+            assert!(!text.contains(SECRET), "a secret in Debug output: {text}");
+            assert!(text.contains("***"), "{text}");
+        }
+        let json = serde_json::to_string(&minted).unwrap();
+        assert!(
+            json.contains(SECRET),
+            "the minted token is returned: {json}"
+        );
+    }
 
     #[test]
     fn page_request_clamps() {

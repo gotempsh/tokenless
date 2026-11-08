@@ -19,6 +19,7 @@ pub mod injection;
 pub mod mcp;
 pub mod path;
 pub mod protocol;
+pub mod redact;
 pub mod rule;
 pub mod scope;
 pub mod seal;

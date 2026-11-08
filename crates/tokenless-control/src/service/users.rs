@@ -35,11 +35,13 @@ pub struct CreateInvite {
 }
 
 /// The invitation and its token, which is shown exactly once.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct InviteIssued {
     pub token: String,
     pub invite: Invite,
 }
+
+tokenless_core::redacted_debug!(InviteIssued { invite; token });
 
 /// What the person holding an invite token is being offered.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,7 +50,7 @@ pub struct InviteInfo {
     pub expires_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct AcceptInviteRequest {
     pub invite_token: String,
     pub username: String,
@@ -59,6 +61,11 @@ pub struct AcceptInviteRequest {
     #[serde(default)]
     pub totp_code: Option<String>,
 }
+
+tokenless_core::redacted_debug!(AcceptInviteRequest {
+    username;
+    invite_token, password, totp_secret, totp_code
+});
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct UpdateUser {

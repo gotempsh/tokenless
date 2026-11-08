@@ -68,12 +68,14 @@ pub struct SessionBinding {
     pub generation: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct MintedSession {
     /// Returned exactly once. The broker keeps only the session record.
     pub token: String,
     pub session: ProxySession,
 }
+
+tokenless_core::redacted_debug!(MintedSession { session; token });
 
 /// How long a new session in a vault may last, for the forms that mint one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

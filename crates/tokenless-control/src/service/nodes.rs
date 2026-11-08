@@ -46,13 +46,15 @@ pub struct EmbeddedNode {
     pub snapshot_verify_key: ed25519_dalek::VerifyingKey,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct JoinTokenIssued {
     /// Returned exactly once.
     pub token: String,
     pub token_id: String,
     pub expires_at: DateTime<Utc>,
 }
+
+tokenless_core::redacted_debug!(JoinTokenIssued { token_id, expires_at; token });
 
 /// A node's snapshot, and how many rules it could not be sent because they
 /// need a newer snapshot format than it reads.

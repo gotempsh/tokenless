@@ -16,12 +16,14 @@ pub const MAX_AUDIT_BATCH: usize = 1000;
 /// A one-time join token: `cbj1.<token id>.<secret>.<CA SHA-256 hex>`.
 /// The CA fingerprint lets a new node authenticate the control plane before
 /// it has any other trust anchor.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct JoinToken {
     pub token_id: String,
     pub secret: String,
     pub ca_fingerprint: String,
 }
+
+crate::redacted_debug!(JoinToken { token_id, ca_fingerprint; secret });
 
 impl JoinToken {
     pub fn encode(&self) -> String {
@@ -59,7 +61,7 @@ impl JoinToken {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnrollRequest {
     pub join_token: String,
@@ -69,6 +71,8 @@ pub struct EnrollRequest {
     /// The node's X25519 public key (base64) credentials are sealed to.
     pub seal_public_key: String,
 }
+
+crate::redacted_debug!(EnrollRequest { node_name, csr_pem, seal_public_key; join_token });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrollResponse {
@@ -110,6 +114,26 @@ mod tests {
             ca_fingerprint: "a".repeat(64),
         };
         assert_eq!(JoinToken::parse(&token.encode()).unwrap(), token);
+    }
+
+    #[test]
+    fn join_secrets_never_reach_debug_output() {
+        let token = JoinToken {
+            token_id: "abc".into(),
+            secret: "SEKRET".repeat(8),
+            ca_fingerprint: "a".repeat(64),
+        };
+        let request = EnrollRequest {
+            join_token: token.encode(),
+            node_name: "build-1".into(),
+            csr_pem: "csr".into(),
+            seal_public_key: "key".into(),
+        };
+        for text in [format!("{token:?}"), format!("{request:?}")] {
+            assert!(!text.contains("SEKRET"), "{text}");
+            assert!(text.contains("***"), "{text}");
+        }
+        assert!(format!("{request:?}").contains("build-1"));
     }
 
     #[test]
