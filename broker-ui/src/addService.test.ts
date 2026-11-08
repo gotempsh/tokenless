@@ -6,7 +6,9 @@ import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
 import {
   sessionsWithout,
   bundlesToJoin,
+  chosenBundlesProblem,
   newBundleProblem,
+  unlistedBundles,
   addService,
   freeName,
   nameTaken,
@@ -337,6 +339,23 @@ describe("bundles a service joins", () => {
       { id: "b2", name: "triage" },
     ]);
     expect(bundlesToJoin([], [b("b2", "triage")])).toEqual([]);
+  });
+
+  test("a chosen bundle the list doesn't show can be seen and unchecked", () => {
+    expect(unlistedBundles(["b1"], undefined)).toEqual([]);
+    expect(unlistedBundles(["b1", "b2"], [b("b2", "triage")])).toEqual(["b1"]);
+    expect(unlistedBundles(["b2"], [b("b2", "triage")])).toEqual([]);
+  });
+
+  test("a chosen bundle missing from the vault's whole list stops the add before anything is created", () => {
+    // Deleted since the link was made, or of another vault.
+    expect(chosenBundlesProblem(["gone"], [b("b2", "triage")], true)).toContain("Uncheck it to continue");
+    // The list is only a first page: it may be further on, so it joins.
+    expect(chosenBundlesProblem(["gone"], [b("b2", "triage")], false)).toBeNull();
+    // Still loading.
+    expect(chosenBundlesProblem(["b1"], undefined, false)).toBeNull();
+    expect(chosenBundlesProblem(["b2"], [b("b2", "triage")], true)).toBeNull();
+    expect(chosenBundlesProblem([], [], true)).toBeNull();
   });
 
   test("a new bundle's name waits for the list it must not repeat", () => {

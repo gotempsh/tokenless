@@ -41,6 +41,30 @@ export function bundlesToJoin(
 }
 
 /**
+ * Chosen bundles the vault's loaded list does not show, such as one a link
+ * named that was deleted since. None until the list has loaded.
+ */
+export function unlistedBundles(chosen: readonly string[], loaded: readonly AccessBundle[] | undefined): string[] {
+  if (loaded === undefined) return [];
+  return chosen.filter((id) => !loaded.some((b) => b.id === id));
+}
+
+/**
+ * What is wrong with the chosen bundles, if anything. When the list is
+ * `complete` (it holds every bundle of the vault), a chosen one missing
+ * from it was deleted or belongs to another vault, and joining it would
+ * fail after the credential and rule were created.
+ */
+export function chosenBundlesProblem(
+  chosen: readonly string[],
+  loaded: readonly AccessBundle[] | undefined,
+  complete: boolean,
+): string | null {
+  if (!complete || unlistedBundles(chosen, loaded).length === 0) return null;
+  return "An access bundle from the link isn't in this vault any more. Uncheck it to continue.";
+}
+
+/**
  * What is wrong with the name of a bundle to create, if anything. Until the
  * vault's bundles have loaded (`loaded` undefined) a name cannot be checked
  * against them, so it waits.

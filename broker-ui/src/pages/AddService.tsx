@@ -28,7 +28,9 @@ import {
   addServiceHref,
   BUNDLE_NAME,
   bundlesToJoin,
+  chosenBundlesProblem,
   newBundleProblem,
+  unlistedBundles,
   READ_ONLY_METHODS,
   sessionsWithout,
   type AccessPreset,
@@ -96,11 +98,16 @@ function initialWhere(ctx: AddServiceContext): Where {
   };
 }
 
-/** What still has to be chosen before the service can be added, if anything. */
-/** `bundles` is undefined until the chosen vault's bundles have loaded. */
-function whereProblem(where: Where, bundles: readonly AccessBundle[] | undefined): string | null {
+/**
+ * What still has to be chosen before the service can be added, if anything.
+ * `bundles` is undefined until the chosen vault's bundles have loaded, and
+ * `complete` once they are all of the vault's bundles.
+ */
+function whereProblem(where: Where, bundles: readonly AccessBundle[] | undefined, complete: boolean): string | null {
   if (where.vaultId === "") return "Choose a vault first.";
   if (where.vaultId === NEW_VAULT && where.newVaultName.trim() === "") return "Name the new vault first.";
+  const chosen = chosenBundlesProblem(where.bundleIds, bundles, complete);
+  if (chosen) return chosen;
   return where.newBundle ? newBundleProblem(where.newBundleName, bundles) : null;
 }
 
@@ -264,6 +271,8 @@ function ServicePage({
   const bundleItems = useMemo(() => bundles.data?.items ?? [], [bundles.data]);
   // The vault's bundles once loaded; a new vault has none.
   const loadedBundles = where.vaultId === NEW_VAULT ? [] : bundles.data?.items;
+  const bundlesComplete =
+    where.vaultId === NEW_VAULT || (bundles.data !== undefined && bundles.data.items.length >= bundles.data.total);
   // Names already used in the vault, so the form can suggest a free one
   // instead of failing on save. A service this page already saved (before
   // a later step failed) is the user's own, not a clash.
@@ -301,7 +310,7 @@ function ServicePage({
     ...(where.newBundle ? [{ name: where.newBundleName.trim(), isNew: true }] : []),
   ];
   const onlyBundle = bundleNames.length === 1 && bundleNames[0]?.name ? bundleNames[0].name : undefined;
-  const problem = whereProblem(where, loadedBundles);
+  const problem = whereProblem(where, loadedBundles, bundlesComplete);
 
   if (result) {
     return (
@@ -437,6 +446,7 @@ function ServicePage({
                     where={where}
                     set={set}
                     bundles={where.vaultId === NEW_VAULT ? [] : chosenVault && bundles.data ? bundleItems : undefined}
+                    complete={bundlesComplete}
                     vaultChosen={where.vaultId !== ""}
                   />
                   <Field label="Agents may" htmlFor="add-access-full" hint={accessChoices.find((c) => c.value === where.access)?.description}>
@@ -472,12 +482,15 @@ function BundleChoices({
   where,
   set,
   bundles,
+  complete,
   vaultChosen,
 }: {
   where: Where;
   set: (patch: Partial<Where>) => void;
   /** The vault's bundles, or `undefined` while they load. */
   bundles: AccessBundle[] | undefined;
+  /** `bundles` holds every bundle of the vault. */
+  complete: boolean;
   vaultChosen: boolean;
 }) {
   const toggle = (id: string, checked: boolean) =>
@@ -505,6 +518,18 @@ function BundleChoices({
                 hint={`${b.rule_ids.length} service${b.rule_ids.length === 1 ? "" : "s"}${b.description ? ` · ${b.description}` : ""}`}
               >
                 <span className="font-mono">{b.name}</span>
+              </CheckField>
+            </div>
+          ))}
+          {unlistedBundles(where.bundleIds, bundles).map((id) => (
+            <div key={id} className="px-3 py-3">
+              <CheckField
+                id={`add-bundle-${id}`}
+                checked
+                onChange={(checked) => toggle(id, checked)}
+                hint={complete ? "Not in this vault any more." : "Not among the bundles listed here."}
+              >
+                An access bundle from the link
               </CheckField>
             </div>
           ))}
