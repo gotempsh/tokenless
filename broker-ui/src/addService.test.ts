@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
 import {
+  sessionsWithout,
   addService,
   freeName,
   nameTaken,
@@ -253,6 +254,36 @@ describe("addService", () => {
       api,
     );
     expect(calls).not.toContain("setBundleRules");
+  });
+});
+
+describe("sessionsWithout", () => {
+  const session = (id: string, rules: string[], expires: string, revoked: string | null = null) => ({
+    id,
+    vault_id: "v1",
+    rule_ids: rules,
+    bundle: { id: "b1", name: "code-review" },
+    labels: {},
+    request_limit: null,
+    created_by: "u",
+    created_at: at,
+    expires_at: expires,
+    revoked_at: revoked,
+  });
+  const now = new Date("2026-01-01T12:00:00Z");
+
+  test("counts running sessions minted before the service joined", () => {
+    const sessions = [
+      session("old", ["r0"], "2026-01-01T13:00:00Z"),
+      session("new", ["r0", "r1"], "2026-01-01T13:00:00Z"),
+      session("ended", ["r0"], "2026-01-01T13:00:00Z", "2026-01-01T11:00:00Z"),
+      session("expired", ["r0"], "2026-01-01T11:59:59Z"),
+    ];
+    expect(sessionsWithout(sessions, "r1", now)).toBe(1);
+  });
+
+  test("is zero when nothing is running", () => {
+    expect(sessionsWithout([], "r1", now)).toBe(0);
   });
 });
 

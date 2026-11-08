@@ -7,7 +7,7 @@
 // failure continues from the step that failed instead of creating a second
 // credential.
 
-import type { AccessBundle, CredentialMeta, CustomHeader, Rule, Vault } from "./api";
+import type { AccessBundle, CredentialMeta, CustomHeader, ProxySession, Rule, Vault } from "./api";
 
 export interface CredentialBody {
   name: string;
@@ -175,6 +175,17 @@ export async function addService(
     p.bundles = [...(p.bundles ?? []), created];
   }
   return p;
+}
+
+/**
+ * How many of a bundle's sessions are still running without `ruleId`: a
+ * session keeps the rules it was minted with, so a service added to the
+ * bundle reaches only sessions minted afterwards.
+ */
+export function sessionsWithout(sessions: readonly ProxySession[], ruleId: string, now: Date): number {
+  return sessions.filter(
+    (s) => s.revoked_at === null && new Date(s.expires_at) > now && !s.rule_ids.includes(ruleId),
+  ).length;
 }
 
 // ----- the page's address ------------------------------------------------

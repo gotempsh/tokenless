@@ -15,6 +15,7 @@ import {
   type AccessBundle,
   type CredentialMeta,
   type Page,
+  type ProxySession,
   type Rule,
   type ServiceTemplate,
   type StoredTemplate,
@@ -26,6 +27,7 @@ import {
   AddServiceError,
   addServiceHref,
   READ_ONLY_METHODS,
+  sessionsWithout,
   type AccessPreset,
   type AddServiceApi,
   type AddServiceContext,
@@ -640,6 +642,47 @@ function Summary({
   );
 }
 
+/**
+ * Sessions already running from the bundles keep the services they were
+ * minted with, so they do not reach the new one: say so, and what to do.
+ */
+function RunningWithout({
+  bundles,
+  ruleId,
+  service,
+}: {
+  bundles: AccessBundle[];
+  ruleId: string | undefined;
+  service: string;
+}) {
+  const ids = bundles.map((b) => b.id).join(",");
+  const counts = useLoad(
+    () =>
+      ruleId
+        ? Promise.all(
+            bundles.map(async (bundle) => {
+              const sessions = await get<Page<ProxySession>>(`/bundles/${bundle.id}/sessions?page_size=100`);
+              return { bundle, running: sessionsWithout(sessions.items, ruleId, new Date()) };
+            }),
+          )
+        : Promise.resolve([]),
+    [ids, ruleId],
+  );
+  const stale = (counts.data ?? []).filter((c) => c.running > 0);
+  if (stale.length === 0) return null;
+  return (
+    <div role="status" className="space-y-1 text-warning-strong">
+      {stale.map(({ bundle, running }) => (
+        <p key={bundle.id}>
+          {running === 1 ? "A session" : `${running} sessions`} running from{" "}
+          <span className="font-mono">{bundle.name}</span> {running === 1 ? "doesn't" : "don't"} reach {service}: a
+          session keeps the services it started with. Start the agent again with a new session.
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function Done({
   template,
   result,
@@ -692,6 +735,7 @@ function Done({
           </li>
         ))}
       </ul>
+      <RunningWithout bundles={bundles} ruleId={result.rule?.id} service={result.credential?.name ?? template.name} />
       {bundles.length > 0 ? (
         <div className="space-y-2 rounded-md border bg-muted/40 p-4">
           <p className="font-medium">Run an agent with it</p>
