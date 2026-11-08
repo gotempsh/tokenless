@@ -11,9 +11,10 @@ is shown once.
 
 | Role | Use it for |
 |---|---|
-| Session issuer | Launchers and CI jobs that start agents. Mints sessions in its vault and nothing else. |
 | Editor | Tools that manage rules, bundles and sessions in one vault. |
 | Viewer | Read-only integrations. |
+
+Agents don't get API keys: give them a session (below).
 
 ## Mint a session over the API
 
@@ -42,19 +43,25 @@ curl -s -X POST "$TOKENLESS_URL/api/v1/sessions/revoke-self" \
   -H "Authorization: Bearer <session token>"
 ```
 
-That is how `tokenless run` cleans up with only a session issuer key. A
-key allowed to manage sessions can also revoke any session in its vault
-by id.
+A key allowed to manage sessions can also revoke any session in its
+vault by id.
 
 ## In CI
 
-Store a session issuer key as a CI secret and start the job's agent with
-`tokenless run`. The job never holds a service credential, and when it
-finishes, its session ends:
+Create a session for the job on the bundle's page (as long as the job
+should keep working, with a request limit if you like), store its token
+as a CI secret named `TOKENLESS_SESSION_TOKEN`, and start the job's
+agent with `tokenless run`. The job never holds a service credential,
+and revoking the session cuts it off:
 
 ```sh
-tokenless run --server https://tokenless.internal --bundle release -- ./scripts/release.sh
+tokenless run --server https://tokenless.internal -- ./scripts/release.sh
 ```
+
+For a fresh short session per run, store an editor key as
+`TOKENLESS_API_KEY` instead and add `--bundle release`: `run` mints the
+session and ends it when the job finishes. An editor key can do more than
+mint, so prefer the session token where it fits.
 
 The proxy has to be reachable from the runner: run `tokenless node run` on
 it, or point `--proxy` at a proxy on a private address.

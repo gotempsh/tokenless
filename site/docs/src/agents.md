@@ -5,13 +5,29 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Run an agent
 
-Every client command needs the management API's address and an API key
-that may mint sessions (a **session issuer** key is enough):
+An agent's credential is a **session**: a token that reaches one access
+bundle's services until it expires or is revoked, optionally for a set
+number of requests. Create one on the bundle's page (**Run an agent →
+New session**: a name, how long it lasts, a request limit) and copy the
+token; it is shown once. Then, where the agent runs:
+
+```sh
+export TOKENLESS_SESSION_TOKEN=v4.public...
+tokenless run -- claude
+```
+
+Each session has a page under **Sessions** with every request it made and
+its history: who created it, relabelled it or revoked it.
+
+Signed in with `tokenless login` (or with an editor API key), `run` can
+also mint a session itself from `--bundle`, renew it while the agent runs
+and end it when the agent exits.
 
 | Setting | Flag | Environment |
 |---|---|---|
 | Management API | `--server` | `TOKENLESS_URL` (default `http://127.0.0.1:8080`) |
-| API key | `--api-key-file` | `TOKENLESS_API_KEY` |
+| Session token | `--session-token-file` | `TOKENLESS_SESSION_TOKEN` |
+| API key, to mint | `--api-key-file` | `TOKENLESS_API_KEY` (or the `tokenless login` session) |
 | Vault | `--vault <name or id>` | `TOKENLESS_VAULT` (not needed with a vault-bound key) |
 | Bundle | `--bundle <name or id>` | `TOKENLESS_BUNDLE` |
 | Proxy | `--proxy host:port` | `TOKENLESS_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
@@ -19,10 +35,11 @@ that may mint sessions (a **session issuer** key is enough):
 ## `tokenless run`
 
 ```sh
-tokenless run --bundle code-review -- claude
+tokenless run -- claude                          # the session in TOKENLESS_SESSION_TOKEN
+tokenless run --bundle code-review -- claude     # mint one for this run
 ```
 
-`run` mints a session from the bundle and opens a **session port**: a
+`run` opens a **session port**: a
 loopback proxy address that adds the session to every request and relays
 it to the proxy. It starts the command with:
 
@@ -32,8 +49,9 @@ it to the proxy. It starts the command with:
 - `NODE_USE_ENV_PROXY=1`, so Node's built-in `fetch` uses the proxy;
 - no session token and no API key anywhere in its environment.
 
-It renews the session while the command runs, ends it when the command
-exits, and exits with the command's code.
+A session it minted is renewed while the command runs and ended when the
+command exits; a session it was given is used as is, and `run` says so if
+it expires mid-run. `run` exits with the command's code.
 
 Pass `--ca-fingerprint` with the SHA-256 shown on the **Proxies** page to
 refuse to start if the proxy presents a different CA.
@@ -47,8 +65,9 @@ tokenless session start --bundle code-review \
 . ./agent.env && curl https://api.github.com/user
 ```
 
-It prints the same exports, keeps the session renewed and ends it on
-Ctrl-C or SIGTERM. The session port only listens on loopback, because
+It prints the same exports and runs until Ctrl-C or SIGTERM. With
+`--bundle` it mints the session, keeps it renewed and ends it on exit;
+with `TOKENLESS_SESSION_TOKEN` it uses that session. The session port only listens on loopback, because
 anything that reaches it uses the session; on a shared machine, other
 local users can too.
 

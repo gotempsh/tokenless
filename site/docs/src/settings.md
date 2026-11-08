@@ -20,10 +20,12 @@ happens to hosts that aren't one of their services:
 
 ## Session lifetime
 
-The longest session anyone may mint, from 1 hour (the default) up to
-7 days. `tokenless run` and `session start` renew their sessions, so
-agents can work for longer either way; a short lifetime limits how long a
-leaked session token is useful.
+The longest session anyone may create, from 15 minutes up to 90 days;
+7 days by default (an instance created before this default keeps the
+1 hour it had). Sessions you hand an agent last at most this long; ones
+`tokenless run --bundle` mints are renewed while the agent runs, so they
+can stay short. A short lifetime limits how long a leaked session token
+is useful.
 
 ## Always reachable
 

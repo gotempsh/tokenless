@@ -109,18 +109,17 @@ Host: api.github.com
   <div class="wrap">
     <div class="section-head">
       <h2 id="session-title">A session, from the terminal</h2>
-      <p>In the console you create a vault, paste a GitHub token, add a rule for it and put the rule in an access bundle called <code>code-review</code>. Here the rule allows <code>GET</code> and <code>POST</code> on <code>/repos/*</code>, and the token has the placeholder <code>__GITHUB_TOKEN__</code>. Then you start the agent with the bundle.</p>
+      <p>In the console you create a vault, paste a GitHub token, add a rule for it and put the rule in an access bundle called <code>code-review</code>. Here the rule allows <code>GET</code> and <code>POST</code> on <code>/repos/*</code>, and the token has the placeholder <code>__GITHUB_TOKEN__</code>. Then you create a session from the bundle and start the agent with its token.</p>
     </div>
 
     <div class="exhibit">
       <figure class="term">
         <figcaption id="t1">Your shell</figcaption>
-<pre tabindex="0" aria-labelledby="t1"><code><span class="ps">$ </span>export TOKENLESS_API_KEY=cbk_...
-<span class="ps">$ </span><span class="bin">tokenless</span> run --bundle code-review -- claude
-<span class="out"><span class="bin">tokenless</span>: running 'claude' with bundle 'code-review' (session 6f1c2d4e-8a3b-4c5d-9e7f-0a1b2c3d4e5f) through 127.0.0.1:52144 -&gt; 127.0.0.1:3128</span></code></pre>
+<pre tabindex="0" aria-labelledby="t1"><code><span class="ps">$ </span>export TOKENLESS_SESSION_TOKEN=v4.public...
+<span class="ps">$ </span><span class="bin">tokenless</span> run -- claude</code></pre>
       </figure>
       <div class="notes">
-        <p>The API key has the <strong>session_issuer</strong> role: it can mint sessions in one vault and do nothing else. The agent doesn't inherit it.</p>
+        <p>The session token comes from the bundle's page: it reaches the bundle's services until it expires or you revoke it. The agent doesn't inherit it; it gets a local proxy address.</p>
       </div>
     </div>
 

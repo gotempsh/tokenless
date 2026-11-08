@@ -221,8 +221,11 @@ node protocol and the snapshot format are unchanged.
 
 - API keys have the form `cbk_<12-char prefix>_<secret>`. The prefix is
   the lookup key and the secret is stored only as a hash.
-- Each key is bound to one vault and one role (`editor`, `viewer` or
-  `session_issuer`; never admin) and has an expiry.
+- Each key is bound to one vault and one role (`editor` or `viewer`;
+  never admin) and has an expiry. Agents are not given API keys: their
+  credential is a session token (see Sessions). An earlier
+  `session_issuer` role for agents' launchers was removed, and its keys
+  deleted, when sessions became something people create and hand over.
 - A key is returned once, with `Cache-Control: no-store`. Every API
   response is `no-store`.
 - API keys can never satisfy step-up.

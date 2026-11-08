@@ -59,7 +59,7 @@ pull a signed policy snapshot from the control plane.
 | Admin | Everything. Only people can be admins. |
 | Editor | Manage rules, bundles and sessions in one vault. |
 | Viewer | Read one vault. |
-| Session issuer | Mint sessions in one vault, nothing else. API keys only. |
 
 Invite people under **People**. Create API keys for automation under
-**API keys**; give agents' launchers a session issuer key.
+**API keys**. Agents get a session, not an API key: create one on an
+access bundle's page and give the agent its token.
