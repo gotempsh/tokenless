@@ -94,7 +94,10 @@ function isLoopback(hostname: string): boolean {
  */
 export function suggestedProxy(hostname: string, remembered?: string | null): string {
   if (remembered?.trim()) return remembered.trim();
-  return isLoopback(hostname) ? "127.0.0.1:3128" : `${hostname.includes(":") ? `[${hostname}]` : hostname}:3128`;
+  if (isLoopback(hostname)) return "127.0.0.1:3128";
+  // location.hostname keeps an IPv6 address's brackets; add them only when missing.
+  const host = hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname;
+  return `${host}:3128`;
 }
 
 /**

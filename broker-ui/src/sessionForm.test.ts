@@ -69,6 +69,11 @@ describe("new session form", () => {
     expect(suggestedProxy("127.0.0.1")).toBe("127.0.0.1:3128");
     expect(suggestedProxy("broker.example.test")).toBe("broker.example.test:3128");
     expect(suggestedProxy("broker.example.test", " 10.0.0.5:13128 ")).toBe("10.0.0.5:13128");
+    // An IPv6 console address: location.hostname already has the brackets.
+    const v6 = new URL("http://[2001:db8::1]:8080/").hostname;
+    expect(suggestedProxy(v6)).toBe("[2001:db8::1]:3128");
+    expect(suggestedProxy("2001:db8::1")).toBe("[2001:db8::1]:3128");
+    expect(gatewayFor(suggestedProxy(v6))).toBe("http://[2001:db8::1]:3129");
   });
 
   test("finds the MCP gateway one port above the proxy", () => {

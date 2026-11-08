@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Braces, SquareTerminal } from "lucide-react";
 import type { DiscoveredService, MintedSession } from "../api";
 import { AGENTS } from "../bundleConnect";
-import { CopyButton, DialogActions, Exact, Mono, OneTimeSecret } from "../components/common";
+import { CopyButton, DialogActions, ErrorBanner, Exact, Mono, OneTimeSecret } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
@@ -62,11 +62,13 @@ export function SessionHandoff({
   const [other, setOther] = useState("");
   const [proxy, setProxy] = useState(() => suggestedProxy(window.location.hostname, rememberedProxy()));
   const [services, setServices] = useState<DiscoveredService[] | null>(null);
+  const [lookupError, setLookupError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    tokenServices(minted.token)
-      .catch(() => [])
-      .then((s) => live && setServices(s));
+    tokenServices(minted.token).then(
+      (s) => live && setServices(s),
+      (e: unknown) => live && setLookupError(e instanceof Error ? e.message : String(e)),
+    );
     return () => {
       live = false;
     };
@@ -99,7 +101,7 @@ export function SessionHandoff({
         <Tabs defaultValue="terminal">
           <TabsList>
             <TabsTrigger value="terminal">Terminal</TabsTrigger>
-            <TabsTrigger value="mcp" count={services ? endpoints.length : undefined}>
+            <TabsTrigger value="mcp" count={services && !lookupError ? endpoints.length : undefined}>
               MCP client
             </TabsTrigger>
             <TabsTrigger value="env">CI or container</TabsTrigger>
@@ -137,7 +139,9 @@ export function SessionHandoff({
           </TabsContent>
 
           <TabsContent value="mcp" className="space-y-3 pt-4">
-            {services === null ? (
+            {lookupError ? (
+              <ErrorBanner error={lookupError} title="Couldn't look up the session's MCP servers" />
+            ) : services === null ? (
               <p className="text-sm text-muted-foreground">Looking up the session's MCP servers…</p>
             ) : endpoints.length === 0 ? (
               <p className="text-sm text-muted-foreground">
