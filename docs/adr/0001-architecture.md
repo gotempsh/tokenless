@@ -255,15 +255,20 @@ node protocol and the snapshot format are unchanged.
   passthrough tunnel, an intercepted connection (idle or mid-response) and
   an MCP gateway response that is still streaming are closed when a
   snapshot lists the session as revoked, when the binding it came through
-  is revoked, or when the lease runs out. A revocation therefore reaches
-  open traffic within one snapshot push while the node is connected, and
-  within the lease otherwise.
-- Expiry only stops new traffic, because the holder has usually renewed
-  (`tokenless run` mints the next session before the current one ends and
-  keeps relaying tunnels opened under the old one). An intercepted
-  connection closes gracefully at expiry once its requests in flight have
-  finished, and the client reconnects with its current session. To end
-  open traffic at a deadline, revoke the session then.
+  is revoked, when the lease runs out, or one hour
+  (`OPEN_TRAFFIC_GRACE_SECS`) after the session expired. A revocation
+  therefore reaches open traffic within one snapshot push while the node
+  is connected, and within the lease otherwise.
+- Expiry itself stops only new traffic, because the holder has usually
+  renewed (`tokenless run` mints the next session before the current one
+  ends and keeps relaying tunnels opened under the old one). An
+  intercepted connection closes gracefully at expiry once its requests in
+  flight have finished, and the client reconnects with its current
+  session; a passthrough tunnel or a streaming response runs on for up to
+  the grace hour. So that a revocation still reaches that traffic, a
+  revoked session stays in snapshots until an hour after it expires,
+  deleting a vault or bundle revokes its sessions that expired within the
+  hour, and a holder can revoke its own session with an expired token.
 - Snapshot bodies and session claims reject unknown fields. A new field
   that changes a security decision raises the snapshot `format` (claims
   rely on the unknown-field refusal), so a node too old to enforce it

@@ -35,6 +35,7 @@ use tokenless_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
@@ -790,7 +791,7 @@ impl PolicyStore for SqliteStore {
         )
         .bind(ts(&at))
         .bind(&vault)
-        .bind(ts(&at))
+        .bind(ts(&open_traffic_horizon(at)))
         .execute(&mut *tx)
         .await
         .map_err(db("revoke vault sessions", "vault"))?
@@ -1165,7 +1166,7 @@ impl PolicyStore for SqliteStore {
         )
         .bind(ts(&at))
         .bind(id.to_string())
-        .bind(ts(&at))
+        .bind(ts(&open_traffic_horizon(at)))
         .execute(&mut *tx)
         .await
         .map_err(db("revoke access bundle sessions", "session"))?

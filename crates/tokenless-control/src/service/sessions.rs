@@ -402,10 +402,6 @@ impl SessionService {
             .ok_or_else(|| ControlError::not_found("session", id))
     }
 
-    /// Ends the session the token belongs to. Holding a session's token is
-    /// enough to end it, so a launcher can clean up after its agent with no
-    /// more than what it handed the agent. An already expired session is
-    /// left alone: there is nothing to end.
     /// The services a live session can reach, for the agent holding its
     /// token. Hosts, paths, methods and placeholder names only: no secret,
     /// and nothing about rules outside the session.
@@ -504,18 +500,19 @@ impl SessionService {
         Ok(services)
     }
 
+    /// Ends the session the token belongs to. Holding a session's token is
+    /// enough to end it, so a launcher can clean up after its agent with no
+    /// more than what it handed the agent. An expired session is revoked
+    /// too: traffic it opened may still be running (see
+    /// [`open_traffic_horizon`](tokenless_core::session::open_traffic_horizon)).
+    /// The signature is checked before expiry, so the caller still proves
+    /// it holds the token.
     pub async fn revoke_self(&self, token: &str) -> Result<ProxySession, ControlError> {
         let verifying = self.keys.session_signer.verifying_key();
         let keys = std::collections::HashMap::from([(key_id(&verifying), verifying)]);
         let id = match verify_session(token.trim(), &keys, Utc::now()) {
             Ok(claims) => claims.jti,
-            Err(SessionError::Expired { session_id, .. }) => {
-                return self
-                    .policy
-                    .get_session(&session_id)
-                    .await?
-                    .ok_or_else(|| ControlError::not_found("session", session_id));
-            }
+            Err(SessionError::Expired { session_id, .. }) => session_id,
             Err(e) => {
                 return Err(ControlError::Unauthenticated {
                     reason: format!("not a valid proxy session token: {e}"),
@@ -598,5 +595,136 @@ impl SessionService {
             .policy
             .list_sessions(Some(&bundle.vault_id), Some(bundle_id), page)
             .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::{DateTime, TimeDelta};
+    use rand::rngs::OsRng;
+    use tokenless_core::authz::{Principal, Role};
+    use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
+    use tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS;
+
+    use super::*;
+    use crate::cipher::AesGcmCipher;
+    use crate::envelope::Envelope;
+    use crate::memory::MemoryStore;
+    use crate::probe::DisabledProber;
+    use crate::store::RbacAuthorizer;
+    use crate::{ControlConfig, ControlServices, ServiceStores};
+
+    async fn services() -> (Arc<MemoryStore>, ControlServices) {
+        let store = Arc::new(MemoryStore::new());
+        let cipher = Arc::new(
+            Envelope::open(&AesGcmCipher::generate_key(), store.clone())
+                .await
+                .unwrap(),
+        );
+        let cs = ControlServices::new(
+            ServiceStores {
+                credentials: store.clone(),
+                policy: store.clone(),
+                audit: store.clone(),
+                nodes: store.clone(),
+            },
+            Arc::new(RbacAuthorizer),
+            cipher,
+            Arc::new(DisabledProber),
+            ControlConfig::default(),
+        )
+        .await
+        .unwrap();
+        (store, cs)
+    }
+
+    /// A stored session of `vault` that expires at `expires_at`.
+    async fn stored(
+        store: &MemoryStore,
+        vault: VaultId,
+        expires_at: DateTime<Utc>,
+    ) -> ProxySession {
+        let session = ProxySession {
+            id: SessionId::new(),
+            vault_id: vault,
+            rule_ids: vec![RuleId::new()],
+            bundle: None,
+            labels: BTreeMap::new(),
+            request_limit: None,
+            created_by: "test".into(),
+            created_at: expires_at - TimeDelta::minutes(15),
+            expires_at,
+            revoked_at: None,
+        };
+        store.insert_session(session.clone(), &[]).await.unwrap();
+        session
+    }
+
+    /// Traffic outlives its session by the grace period, so revoking a
+    /// session that expired within it must still reach the data planes.
+    #[tokio::test]
+    async fn revoking_an_expired_session_reaches_snapshots_within_the_grace_period() {
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let vault = cs.policy.create_vault(&host, "v").await.unwrap();
+        let grace = TimeDelta::seconds(OPEN_TRAFFIC_GRACE_SECS);
+        let recent = stored(&store, vault.id, Utc::now() - TimeDelta::minutes(10)).await;
+        let old = stored(&store, vault.id, Utc::now() - grace - TimeDelta::minutes(1)).await;
+        for s in [&recent, &old] {
+            let revoked = cs.sessions.revoke(&host, &s.id).await.unwrap();
+            assert!(revoked.revoked_at.is_some());
+        }
+
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "n",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        let body = cs
+            .nodes
+            .build_snapshot(&node.node)
+            .await
+            .unwrap()
+            .verify(&node.snapshot_verify_key)
+            .unwrap();
+        assert_eq!(body.revoked_sessions, vec![recent.id]);
+    }
+
+    /// `tokenless run` ends its session with the token when it exits, which
+    /// may be after the session expired; that still revokes it.
+    #[tokio::test]
+    async fn an_expired_token_still_revokes_its_session() {
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let vault = cs.policy.create_vault(&host, "v").await.unwrap();
+        let session = stored(&store, vault.id, Utc::now() - TimeDelta::minutes(5)).await;
+        let mut claims = SessionClaims::new(
+            Scope::for_vault(&vault.id),
+            session.rule_ids.clone(),
+            900,
+            None,
+            BTreeMap::new(),
+            session.created_at,
+            DEFAULT_SESSION_TTL_SECS,
+        )
+        .unwrap();
+        claims.jti = session.id;
+        let token = cs.keys.session_signer.sign(&claims).unwrap();
+
+        let ended = cs.sessions.revoke_self(&token).await.unwrap();
+        assert_eq!(ended.id, session.id);
+        assert!(ended.revoked_at.is_some());
+        let forged = cs.sessions.revoke_self("v4.public.forged").await;
+        assert!(
+            matches!(forged, Err(ControlError::Unauthenticated { .. })),
+            "{forged:?}"
+        );
     }
 }

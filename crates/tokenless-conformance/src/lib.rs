@@ -31,6 +31,7 @@ use tokenless_core::ids::{
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
+use tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS;
 use tokenless_core::snapshot::UnmatchedHostPolicy;
 use tokenless_core::substitution::{Substitution, SubstitutionLocation};
 use tokenless_core::template::builtin_templates;
@@ -1101,12 +1102,18 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         got.as_ref() == Some(&minted),
         "expected {minted:?}, got {got:?}"
     );
-    let mut expired = session(v1.id, -5, None);
+    // Expired, but traffic it opened may still run: deleting the bundle
+    // revokes it. One that expired before that window is left alone.
+    let mut recently_expired = session(v1.id, -5, None);
+    recently_expired.bundle = minted.bundle.clone();
+    let mut expired = session(v1.id, -OPEN_TRAFFIC_GRACE_SECS - 5, None);
     expired.bundle = minted.bundle.clone();
-    store
-        .insert_session(expired.clone(), &[])
-        .await
-        .map_err(backend(S, "expired_insert"))?;
+    for s in [&recently_expired, &expired] {
+        store
+            .insert_session(s.clone(), &[])
+            .await
+            .map_err(backend(S, "expired_insert"))?;
+    }
 
     // Labels can be replaced after minting.
     let relabelled = BTreeMap::from([("ticket".to_string(), "T-1".to_string())]);
@@ -1141,8 +1148,8 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     ensure!(
         S,
         "delete_revokes_live_sessions",
-        revoked == 1,
-        "only the live session minted from the bundle is revoked, got {revoked}"
+        revoked == 2,
+        "the bundle's sessions that may still carry traffic are revoked (2), got {revoked}"
     );
     let gone = store
         .get_bundle(&review.id)
@@ -1170,6 +1177,16 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             && got.as_ref().and_then(|s| s.revoked_at) == Some(at(1)),
         "a session keeps the bundle name it was minted with and is revoked: {got:?}"
     );
+    let recent = store
+        .get_session(&recently_expired.id)
+        .await
+        .map_err(backend(S, "recently_expired_after_delete"))?;
+    ensure!(
+        S,
+        "recently_expired_session_revoked",
+        recent.and_then(|s| s.revoked_at) == Some(at(1)),
+        "a session that expired within the open-traffic grace period is revoked"
+    );
     let untouched = store
         .get_session(&expired.id)
         .await
@@ -1178,7 +1195,7 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         S,
         "expired_session_untouched",
         untouched.and_then(|s| s.revoked_at).is_none(),
-        "an expired session is not revoked"
+        "a session that expired before the open-traffic grace period is not revoked"
     );
     Ok(())
 }
@@ -1374,9 +1391,11 @@ where
         creds.push(c);
     }
     let live = session(doomed.id, 600, None);
-    let expired = session(doomed.id, -5, None);
+    // Expired within the open-traffic grace period: revoked with the vault.
+    let recently_expired = session(doomed.id, -5, None);
+    let expired = session(doomed.id, -OPEN_TRAFFIC_GRACE_SECS - 5, None);
     let elsewhere = session(kept.id, 600, None);
-    for s in [&live, &expired, &elsewhere] {
+    for s in [&live, &recently_expired, &expired, &elsewhere] {
         store
             .insert_session(s.clone(), &[])
             .await
@@ -1418,7 +1437,7 @@ where
         credentials: 1,
         rules: 1,
         bundles: 1,
-        sessions_revoked: 1,
+        sessions_revoked: 2,
         api_keys_revoked: 1,
     };
     ensure!(

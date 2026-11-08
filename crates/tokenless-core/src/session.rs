@@ -26,6 +26,13 @@ pub const DEFAULT_MAX_SESSION_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 /// The highest cap an admin may set: revoked sessions stay in every
 /// snapshot until they expire, so the cap bounds that list's lifetime.
 pub const SESSION_TTL_CEILING_SECS: u64 = 90 * 24 * 60 * 60;
+/// How long traffic opened under a session may run past its expiry. A
+/// session's holder usually renews before it runs out (`tokenless run`
+/// does), and a tunnel or stream it opened must not break at every
+/// renewal; but open traffic stays bounded, and a revocation must still
+/// reach it, so a revoked session stays in snapshots for this long after
+/// it expires.
+pub const OPEN_TRAFFIC_GRACE_SECS: i64 = 60 * 60;
 pub const MAX_RULES_PER_SESSION: usize = 64;
 pub const MAX_LABELS: usize = 16;
 // Predates the rename to tokenless and is kept: changing it invalidates
@@ -337,6 +344,17 @@ impl SessionSigner {
             IMPLICIT_ASSERTION,
         ))
     }
+}
+
+/// When traffic opened under a session that expires at `exp` is cut.
+pub fn open_traffic_deadline(exp: DateTime<Utc>) -> DateTime<Utc> {
+    exp + Duration::seconds(OPEN_TRAFFIC_GRACE_SECS)
+}
+
+/// Sessions that expired after this instant may still have open traffic,
+/// so a revocation of one must still reach the data planes.
+pub fn open_traffic_horizon(now: DateTime<Utc>) -> DateTime<Utc> {
+    now - Duration::seconds(OPEN_TRAFFIC_GRACE_SECS)
 }
 
 /// Verifies a token against a set of published keys (by key ID) and the

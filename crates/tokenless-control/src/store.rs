@@ -149,8 +149,10 @@ pub trait PolicyStore: Send + Sync {
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
     /// Deletes the vault, its credentials, rules and bundles, and revokes
-    /// at `at` its live sessions and the API keys bound to it, all at once.
-    /// `NotFound` if missing.
+    /// at `at` the API keys bound to it and its unrevoked sessions that may
+    /// still carry traffic (expiring after
+    /// [`open_traffic_horizon(at)`](tokenless_core::session::open_traffic_horizon)),
+    /// all at once. `NotFound` if missing.
     async fn delete_vault(
         &self,
         id: &VaultId,
@@ -225,8 +227,9 @@ pub trait PolicyStore: Send + Sync {
         bundle: AccessBundle,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    /// Deletes the bundle and revokes, at `at`, its sessions that are still
-    /// live. Returns how many were revoked; `NotFound` if missing.
+    /// Deletes the bundle and revokes, at `at`, its unrevoked sessions that
+    /// may still carry traffic (as in `delete_vault`). Returns how many were
+    /// revoked; `NotFound` if missing.
     async fn delete_bundle(
         &self,
         id: &BundleId,
@@ -262,7 +265,9 @@ pub trait PolicyStore: Send + Sync {
         labels: BTreeMap<String, String>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    /// Revoked sessions that have not yet expired (the set nodes must know).
+    /// Revoked sessions that expire after `now`. Snapshots pass
+    /// [`tokenless_core::session::open_traffic_horizon`], so a session's
+    /// revocation reaches the traffic it opened even after it expired.
     async fn list_revoked_unexpired(
         &self,
         now: DateTime<Utc>,

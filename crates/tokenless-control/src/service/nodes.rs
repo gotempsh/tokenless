@@ -20,6 +20,7 @@ use tokenless_core::protocol::{
     MAX_AUDIT_BATCH,
 };
 use tokenless_core::seal::{decode_public_key, seal};
+use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
     ca_aad, rule_aad, InterceptionCa, PublishedKey, SessionLimit, SignedSnapshot, SnapshotBody,
     SnapshotRule, SNAPSHOT_FORMAT,
@@ -451,7 +452,10 @@ impl NodeService {
             session_keys: vec![PublishedKey::from_key(
                 &self.keys.session_signer.verifying_key(),
             )],
-            revoked_sessions: self.policy.list_revoked_unexpired(now).await?,
+            revoked_sessions: self
+                .policy
+                .list_revoked_unexpired(open_traffic_horizon(now))
+                .await?,
             limited_sessions: self
                 .policy
                 .list_limited_active(now)

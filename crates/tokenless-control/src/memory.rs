@@ -16,6 +16,7 @@ use tokenless_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
+use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
@@ -366,7 +367,10 @@ impl PolicyStore for MemoryStore {
         inner.bundles.retain(|_, bundle| &bundle.vault_id != id);
         done.bundles = count(before, inner.bundles.len());
         for session in inner.sessions.values_mut() {
-            if &session.vault_id == id && session.revoked_at.is_none() && session.expires_at > at {
+            if &session.vault_id == id
+                && session.revoked_at.is_none()
+                && session.expires_at > open_traffic_horizon(at)
+            {
                 session.revoked_at = Some(at);
                 done.sessions_revoked += 1;
             }
@@ -629,7 +633,8 @@ impl PolicyStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("access_bundle", id))?;
         let mut revoked = 0;
         for session in inner.sessions.values_mut() {
-            let live = session.revoked_at.is_none() && session.expires_at > at;
+            let live =
+                session.revoked_at.is_none() && session.expires_at > open_traffic_horizon(at);
             if live && session.bundle.as_ref().is_some_and(|b| &b.id == id) {
                 session.revoked_at = Some(at);
                 revoked += 1;

@@ -696,7 +696,9 @@ async fn intercepted_connection(
         served = connection.as_mut() => served,
         () = session_expiry(exp) => {
             // The session may start nothing new, but what is in flight
-            // finishes; the client reconnects with its current session.
+            // finishes, within the open-traffic grace period that
+            // `session_end` enforces around this connection; the client
+            // reconnects with its current session.
             connection.as_mut().graceful_shutdown();
             connection.await
         }

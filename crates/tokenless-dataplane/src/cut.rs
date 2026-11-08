@@ -8,18 +8,20 @@
 //! or a streaming body can outlive those checks. Each of them waits on
 //! [`session_end`] next to its I/O and is dropped when it resolves: when a
 //! snapshot lists the session as revoked, when the binding it came through
-//! is revoked, or when the snapshot lease runs out (revocations can no
-//! longer arrive).
+//! is revoked, when the snapshot lease runs out (revocations can no longer
+//! arrive), or a grace period after the session expired
+//! ([`OPEN_TRAFFIC_GRACE_SECS`](tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS)).
 //!
-//! Expiry is not a cut. A session that expires is not taken back: its
-//! holder usually renews it (`tokenless run` mints the next one before the
-//! current one runs out) and keeps using connections it opened under the
-//! old one. So expiry only stops new traffic: no new tunnel, no new request
-//! inside an intercepted one. An intercepted connection is closed
-//! gracefully at expiry, once its requests in flight have finished, so the
-//! client reconnects with its current session; a passthrough tunnel, which
-//! carries no credential, and a streaming response run until they end.
-//! To end a session's open traffic at a deadline, revoke it then.
+//! Expiry itself stops only new traffic: no new tunnel, no new request
+//! inside an intercepted one. Its holder usually renews before it runs out
+//! (`tokenless run` mints the next session first) and keeps using
+//! connections it opened under the old one, which must not break at every
+//! renewal. An intercepted connection is closed gracefully at expiry, once
+//! its requests in flight have finished, so the client reconnects with its
+//! current session; a passthrough tunnel and a streaming response run on
+//! for up to the grace period. The control plane keeps a revoked session
+//! in snapshots for that long after it expires, so revoking it still cuts
+//! that traffic.
 //!
 //! Nothing is registered per session: every open tunnel holds a receiver of
 //! the snapshot-change signal and its own deadline, so a new snapshot wakes
@@ -33,7 +35,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use hyper::body::{Body, Frame, SizeHint};
 use tokenless_core::ids::SessionId;
-use tokenless_core::session::SessionClaims;
+use tokenless_core::session::{open_traffic_deadline, SessionClaims};
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, Instant};
@@ -50,6 +52,8 @@ pub enum SessionEnd {
     BindingRevoked,
     /// The snapshot lease ran out, so a revocation could no longer arrive.
     LeaseExpired,
+    /// The session expired longer ago than open traffic may outlive it.
+    Expired,
 }
 
 impl SessionEnd {
@@ -59,6 +63,9 @@ impl SessionEnd {
             Self::BindingRevoked => "the binding it came through was revoked",
             Self::LeaseExpired => {
                 "the policy lease expired (control plane unreachable), so revocations cannot arrive"
+            }
+            Self::Expired => {
+                "the session it was opened under expired longer ago than open traffic may outlive it"
             }
         }
     }
@@ -70,6 +77,8 @@ pub(crate) struct SessionWatch {
     pub changes: watch::Receiver<u64>,
     pub snapshot: SnapshotHandle,
     pub jti: SessionId,
+    /// When the traffic is cut even if nothing revokes it.
+    pub deadline: DateTime<Utc>,
     pub binding: Option<BindingWatch>,
 }
 
@@ -83,6 +92,7 @@ impl SessionWatch {
             changes,
             snapshot,
             jti: claims.jti,
+            deadline: open_traffic_deadline(claims.exp),
             binding: None,
         }
     }
@@ -112,7 +122,7 @@ pub(crate) async fn session_expiry(exp: DateTime<Utc>) {
 }
 
 /// Resolves when the session's open traffic must be cut; see the module
-/// docs for why expiry is not one of those moments.
+/// docs for why that is not its expiry.
 pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
     loop {
         if watch.binding.as_ref().is_some_and(|b| *b.revoked.borrow()) {
@@ -128,7 +138,13 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
             if !current.lease_valid() {
                 return SessionEnd::LeaseExpired;
             }
-            Instant::from_std(current.lease_deadline)
+            let Ok(left) = (watch.deadline - Utc::now()).to_std() else {
+                return SessionEnd::Expired;
+            };
+            if left.is_zero() {
+                return SessionEnd::Expired;
+            }
+            (Instant::now() + left).min(Instant::from_std(current.lease_deadline))
         };
         tokio::select! {
             changed = watch.changes.changed() => {
@@ -233,6 +249,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tokenless_core::ids::RuleId;
     use tokenless_core::scope::Scope;
+    use tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS;
     use tokio::time::timeout;
 
     use super::*;
@@ -312,9 +329,9 @@ mod tests {
         assert_eq!(end, SessionEnd::Revoked);
     }
 
-    /// Expiry is not a cut: the holder has usually renewed by then.
+    /// Expiry alone cuts nothing at once: the holder has usually renewed.
     #[tokio::test]
-    async fn expiry_alone_cuts_nothing() {
+    async fn open_traffic_outlives_expiry() {
         let s = setup();
         let mine = claims(1);
         let end = timeout(
@@ -327,6 +344,62 @@ mod tests {
         )
         .await;
         assert!(end.is_err(), "{end:?}");
+    }
+
+    /// Claims that expired `ago` before now.
+    fn expired(ago: chrono::TimeDelta) -> SessionClaims {
+        let mut c = claims(600);
+        c.exp = Utc::now() - ago;
+        c
+    }
+
+    #[tokio::test]
+    async fn open_traffic_is_cut_a_grace_period_after_expiry() {
+        let s = setup();
+        let grace = chrono::TimeDelta::seconds(OPEN_TRAFFIC_GRACE_SECS);
+        let watch = |c: &SessionClaims| {
+            session_end(SessionWatch::new(
+                s.changed.subscribe(),
+                s.handle.clone(),
+                c,
+            ))
+        };
+
+        let long_gone = expired(grace + chrono::TimeDelta::seconds(1));
+        let end = timeout(Duration::from_millis(100), watch(&long_gone)).await;
+        assert_eq!(end.unwrap(), SessionEnd::Expired);
+
+        let nearly = expired(grace - chrono::TimeDelta::seconds(1));
+        let end = timeout(Duration::from_secs(3), watch(&nearly)).await;
+        assert_eq!(end.unwrap(), SessionEnd::Expired);
+    }
+
+    /// The control plane keeps a revoked session in snapshots for the grace
+    /// period after it expires, and the data plane acts on it.
+    #[tokio::test]
+    async fn a_session_revoked_after_it_expired_still_cuts_its_traffic() {
+        let s = setup();
+        let mine = expired(chrono::TimeDelta::minutes(10));
+        let end = tokio::spawn(session_end(SessionWatch::new(
+            s.changed.subscribe(),
+            s.handle.clone(),
+            &mine,
+        )));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!end.is_finished());
+
+        let mut body = s.f.snapshot_body(2, vec![]);
+        body.revoked_sessions = vec![mine.jti];
+        apply(
+            &s.f.sign(&body),
+            &s.f.keys,
+            &s.handle,
+            &s.changed,
+            &s.metrics,
+        )
+        .unwrap();
+        let end = timeout(Duration::from_secs(1), end).await.unwrap().unwrap();
+        assert_eq!(end, SessionEnd::Revoked);
     }
 
     #[tokio::test]
