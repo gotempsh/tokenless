@@ -165,7 +165,7 @@ export function SessionHandoff({
           <div className="flex items-center gap-3">
             <Input
               id="handoff-proxy"
-              className="h-8 max-w-64 font-mono text-xs"
+              className="h-8 max-w-sm font-mono text-xs"
               value={proxy}
               onChange={(e) => setProxy(e.target.value)}
               onBlur={() => rememberProxy(proxy)}
