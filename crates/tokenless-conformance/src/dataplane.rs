@@ -6,9 +6,8 @@
 //!
 //! [`dataplane_suite`] starts an embedded data plane registered with
 //! `control`, binds workloads to sessions minted the way an embedder mints
-//! them, and drives their proxy connections over in-memory streams. Nothing
-//! reaches an upstream: every check is decided by the proxy before a
-//! request would leave it. It checks
+//! them, and drives their proxy connections over in-memory streams. Its
+//! services' hosts don't resolve, so nothing reaches an upstream. It checks
 //!
 //! - **binding isolation:** a workload reaches only its own sessions'
 //!   services, whatever `Proxy-Authorization` it sends;
@@ -17,11 +16,13 @@
 //! - **overlapping sessions refused:** two sessions covering one host are
 //!   not bound together;
 //! - **cutting open traffic:** revoking a session cuts its open connection,
-//!   and an idle connection closes when its session expires;
+//!   and an idle connection closes when its session expires, while fresh
+//!   policy keeps the lease alive;
 //! - **lease expiry:** with no new policy, traffic is refused once the lease
 //!   runs out;
 //! - **secrets never in diagnostics:** no token or secret appears in the
-//!   status, errors, debug output or audit log.
+//!   status, errors, debug output, proxy answers or audit log, including
+//!   the record of a request the credential was injected into.
 //!
 //! It uses real time, with sessions of a few seconds and the embedder's
 //! lease, so `control` must be configured with `lease_secs` of at most
@@ -37,7 +38,7 @@ use tokenless_control::service::policy::{CreateCredential, CreateRule};
 use tokenless_control::service::sessions::{MintSession, MintedSession, SessionBinding};
 use tokenless_control::{Caller, ControlServices};
 use tokenless_core::audit::AuditEvent;
-use tokenless_core::ids::{RuleId, VaultId};
+use tokenless_core::ids::{NodeId, RuleId, VaultId};
 use tokenless_core::protocol::AuditBatch;
 use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
 use tokenless_dataplane::audit::AuditShipper;
@@ -84,7 +85,9 @@ fn fail(check: &'static str, detail: impl Into<String>) -> ConformanceFailure {
 
 /// Runs every data-plane check against `control`, acting as `host`: the
 /// embedder's service principal, an admin not bound to a vault. It
-/// creates one vault of its own and deletes it at the end.
+/// creates one vault and registers one embedded node of its own, and at
+/// the end, whether the checks pass or not, deletes the vault and revokes
+/// the node.
 pub async fn dataplane_suite(
     control: Arc<ControlServices>,
     host: &Caller,
@@ -96,11 +99,38 @@ pub async fn dataplane_suite(
         "the suite waits out the lease: configure lease_secs of at most {MAX_SUITE_LEASE_SECS}, not {lease}"
     );
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let h = Harness::start(control.clone(), host).await?;
-    let result = h.run().await;
-    h.dataplane.abort();
-    let _ = control.policy.delete_vault(host, &h.vault, true).await;
-    result
+    let vault = control
+        .policy
+        .create_vault(host, &format!("conformance-dataplane-{}", VaultId::new()))
+        .await
+        .map_err(|e| fail("setup", format!("creating the suite's vault: {e}")))?
+        .id;
+    let mut node = None;
+    let result = match Harness::start(control.clone(), host, vault, &mut node).await {
+        Ok(h) => {
+            let result = h.run().await;
+            h.dataplane.abort();
+            result
+        }
+        Err(e) => Err(e),
+    };
+    let mut cleanup = Vec::new();
+    if let Some(node) = node {
+        if let Err(e) = control.nodes.revoke_node(host, &node).await {
+            cleanup.push(format!("revoking node {node}: {e}"));
+        }
+    }
+    if let Err(e) = control.policy.delete_vault(host, &vault, true).await {
+        cleanup.push(format!("deleting vault {vault}: {e}"));
+    }
+    result?;
+    check!(
+        "cleanup",
+        cleanup.is_empty(),
+        "the suite could not remove what it created: {}",
+        cleanup.join("; ")
+    );
+    Ok(())
 }
 
 struct Harness {
@@ -119,17 +149,15 @@ struct Harness {
 }
 
 impl Harness {
+    /// Sets up in `vault`, recording in `registered_node` the node it
+    /// registers so the caller can revoke it even when a later step fails.
     async fn start(
         control: Arc<ControlServices>,
         host: &Caller,
+        vault: VaultId,
+        registered_node: &mut Option<NodeId>,
     ) -> Result<Self, ConformanceFailure> {
         let setup = |e: &dyn std::fmt::Display| fail("setup", e.to_string());
-        let vault = control
-            .policy
-            .create_vault(host, &format!("conformance-dataplane-{}", VaultId::new()))
-            .await
-            .map_err(|e| setup(&e))?
-            .id;
         let mut rules = Vec::new();
         for (name, target, secret) in [("svc-a", HOST_A, SECRET_A), ("svc-b", HOST_B, SECRET_B)] {
             let credential = control
@@ -182,6 +210,7 @@ impl Harness {
             )
             .await
             .map_err(|e| setup(&e))?;
+        *registered_node = Some(registered.node.id);
         let node = registered.node.clone();
         let (dataplane, installer) = DataPlane::start_embedded(
             DataPlaneConfig {
@@ -279,6 +308,27 @@ impl Harness {
         self.installer
             .install(&snapshot)
             .map_err(|e| fail(check, format!("installing the snapshot: {e}")))
+    }
+
+    /// Whether `stream` is closed within `bound` while fresh policy is
+    /// installed every half second, so a lease running out can't be what
+    /// closes it.
+    async fn closes_within_fresh_policy(
+        &self,
+        check: &'static str,
+        stream: impl AsyncRead + AsyncWrite + Unpin,
+        bound: Duration,
+    ) -> Result<bool, ConformanceFailure> {
+        let closed = closes_within(stream, bound);
+        tokio::pin!(closed);
+        loop {
+            tokio::select! {
+                closed = &mut closed => return Ok(closed),
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    self.install(check).await?;
+                }
+            }
+        }
     }
 
     fn bind(
@@ -407,7 +457,8 @@ impl Harness {
         self.install(CHECK).await?;
         check!(
             CHECK,
-            closes_within(tls, CUT_BOUND).await,
+            self.closes_within_fresh_policy(CHECK, tls, CUT_BOUND)
+                .await?,
             "an open connection outlived its session's revocation by more than {CUT_BOUND:?}"
         );
         binding.revoke();
@@ -422,14 +473,17 @@ impl Harness {
         let tls = self.intercepted(CHECK, &binding).await?;
         check!(
             CHECK,
-            closes_within(tls, Duration::from_secs(ttl) + CUT_BOUND).await,
+            self.closes_within_fresh_policy(CHECK, tls, Duration::from_secs(ttl) + CUT_BOUND)
+                .await?,
             "an idle connection stayed open after its session expired"
         );
+        // With policy in force, the refusal is the session's, not the lease's.
+        self.install(CHECK).await?;
         let (status, _) = connect(&binding, HOST_A, None).await;
         check!(
             CHECK,
-            !status.contains(" 200 "),
-            "a new connection opened after the session expired: {status}"
+            !status.contains(" 200 ") && !status.contains(" 503 "),
+            "a new connection after the session expired, with fresh policy: {status}"
         );
         binding.revoke();
         Ok(())
@@ -441,11 +495,28 @@ impl Harness {
         let binding = self
             .bound(CHECK, "diag", 1, vec![minted.token.clone()])
             .await?;
-        let (status, _) = connect(&binding, HOST_B, None).await;
+        // A request the credential is injected into, so the audit log holds
+        // its record. The host doesn't resolve, so the proxy answers it.
+        let mut tls = self.tls_to(CHECK, &binding, HOST_B).await?;
+        let answer = timeout(Duration::from_secs(15), async {
+            tls.write_all(
+                format!("GET /conformance HTTP/1.1\r\nHost: {HOST_B}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .ok()?;
+            let mut answer = Vec::new();
+            let _ = tls.read_to_end(&mut answer).await;
+            Some(String::from_utf8_lossy(&answer).into_owned())
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
         check!(
             CHECK,
-            status.contains(" 200 "),
-            "the diagnostics workload: {status}"
+            answer.starts_with("HTTP/1.1 "),
+            "no answer to a request through the diagnostics workload: {answer:?}"
         );
         let refused = self
             .bind("diag", 1, vec![minted.token.clone(), minted.token])
@@ -453,14 +524,25 @@ impl Harness {
             .map(|e| format!("{e} {e:?}"))
             .unwrap_or_default();
         // Let the audit batches reach the control services.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let audit = self
-            .control
-            .audit
-            .query(&self.host, Some(self.vault), None, PageRequest::default())
-            .await
-            .map_err(|e| fail(CHECK, format!("reading the audit log: {e}")))?
-            .items;
+        let mut audit = Vec::new();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            audit = self
+                .control
+                .audit
+                .query(&self.host, Some(self.vault), None, PageRequest::default())
+                .await
+                .map_err(|e| fail(CHECK, format!("reading the audit log: {e}")))?
+                .items;
+            if audit.iter().any(|e| e.action == "proxy.inject") {
+                break;
+            }
+        }
+        check!(
+            CHECK,
+            audit.iter().any(|e| e.action == "proxy.inject"),
+            "the request injected into never reached the vault's audit log"
+        );
         let surfaces = [
             (
                 "the data plane status",
@@ -469,6 +551,7 @@ impl Harness {
             ("the binding status", format!("{:?}", binding.status())),
             ("the binding", format!("{binding:?}")),
             ("a bind error", refused),
+            ("the proxy's answer", answer),
             ("the audit log", format!("{audit:?}")),
         ];
         let tokens = self.tokens.lock().map(|t| t.clone()).unwrap_or_default();
@@ -551,7 +634,17 @@ impl Harness {
         check: &'static str,
         binding: &Arc<Binding>,
     ) -> Result<TlsStream<DuplexStream>, ConformanceFailure> {
-        let (status, stream) = connect(binding, HOST_A, None).await;
+        self.tls_to(check, binding, HOST_A).await
+    }
+
+    /// [`Harness::intercepted`] to `host`.
+    async fn tls_to(
+        &self,
+        check: &'static str,
+        binding: &Arc<Binding>,
+        host: &str,
+    ) -> Result<TlsStream<DuplexStream>, ConformanceFailure> {
+        let (status, stream) = connect(binding, host, None).await;
         check!(
             check,
             status.contains(" 200 "),
@@ -559,7 +652,7 @@ impl Harness {
         );
         let config = upstream_client_config(false, std::slice::from_ref(&self.interception_ca))
             .map_err(|e| fail(check, format!("client TLS: {e}")))?;
-        let name = ServerName::try_from(HOST_A.to_string())
+        let name = ServerName::try_from(host.to_string())
             .map_err(|e| fail(check, format!("server name: {e}")))?;
         timeout(
             Duration::from_secs(5),

@@ -98,7 +98,22 @@ async fn an_embedded_data_plane_on_the_memory_store_passes_the_dataplane_suite()
         .unwrap(),
     );
     let host = Caller::service(Principal::service("conformance-host", Role::Admin, None));
-    if let Err(failure) = dataplane::dataplane_suite(control, &host).await {
+    if let Err(failure) = dataplane::dataplane_suite(control.clone(), &host).await {
         panic!("{failure}");
     }
+    // It leaves nothing behind in the embedder's stores.
+    let page = tokenless_control::model::PageRequest::new(None, Some(100));
+    let nodes = control.nodes.list_nodes(&host, page).await.unwrap().items;
+    assert!(!nodes.is_empty());
+    assert!(
+        nodes.iter().all(|n| n.revoked_at.is_some()),
+        "a node left enrolled"
+    );
+    let vaults = control.policy.list_vaults(&host, page).await.unwrap().items;
+    assert!(
+        vaults
+            .iter()
+            .all(|v| !v.name.starts_with("conformance-dataplane")),
+        "a vault left behind"
+    );
 }

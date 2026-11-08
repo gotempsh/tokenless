@@ -156,7 +156,8 @@ async fn my_platform_passes_the_dataplane_suite() {
 }
 ```
 
-It creates a vault of its own, deletes it at the end, and checks that:
+It creates a vault and registers an embedded node of its own, deletes the
+vault and revokes the node at the end, pass or fail, and checks that:
 
 - a workload reaches only its own sessions' services, whatever
   `Proxy-Authorization` it sends;
@@ -164,10 +165,13 @@ It creates a vault of its own, deletes it at the end, and checks that:
   later one;
 - two sessions covering one host aren't bound together;
 - revoking a session cuts its open connection, and an idle connection
-  closes when its session expires;
+  closes when its session expires (it keeps installing fresh policy, so
+  the lease running out never passes these checks);
 - traffic is refused once the lease runs out;
-- no token or secret shows up in the status, errors, debug output or audit
-  log.
+- no token or secret shows up in the status, errors, debug output, the
+  proxy's answers or the audit log, including the record of a request it
+  injected into. That request's host doesn't resolve, so nothing reaches
+  a real service.
 
 It takes a few seconds more than the lease, which is why the lease must be
 short (10 seconds at most).
