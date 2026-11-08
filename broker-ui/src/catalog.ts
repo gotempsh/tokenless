@@ -64,3 +64,40 @@ export function targetHosts(t: ServiceTemplate | undefined, hostOverride: string
   if (hostOverride.length) return hostOverride;
   return t?.hosts ?? [];
 }
+
+/** A shelf of the catalogue's rail: popular picks, everything, one category, or imports awaiting approval. */
+export type Shelf = "popular" | "all" | "pending" | TemplateCategory;
+
+export interface ShelfEntry {
+  key: Shelf;
+  label: string;
+  count: number;
+}
+
+/** The custom bearer template leads "Popular" as the any-API starting point. */
+const CUSTOM_FIRST = "generic-bearer";
+
+/** The templates on one shelf, in the order the catalogue shows them. */
+export function shelfItems(list: StoredTemplate[], shelf: Shelf): StoredTemplate[] {
+  if (shelf === "pending") return list.filter((t) => t.status !== "approved");
+  const approved = list.filter((t) => t.status === "approved");
+  if (shelf === "all") return approved;
+  if (shelf === "popular") {
+    const popular = popularTemplates(approved);
+    const custom = approved.find((t) => t.template.id === CUSTOM_FIRST);
+    return custom ? [custom, ...popular.filter((t) => t !== custom)] : popular;
+  }
+  return approved.filter((t) => t.template.category === shelf);
+}
+
+/**
+ * The rail's entries with their counts. Empty categories are left out;
+ * "pending" shows only while something waits for approval, and "popular"
+ * only when the list has popular picks (a search for one service may not).
+ */
+export function catalogShelves(list: StoredTemplate[]): ShelfEntry[] {
+  const entry = (key: Shelf, label: string): ShelfEntry => ({ key, label, count: shelfItems(list, key).length });
+  const head = [entry("pending", "Waiting for approval"), entry("popular", "Popular")].filter((e) => e.count > 0);
+  const categories = CATEGORIES.map((c) => entry(c.value, c.label)).filter((e) => e.count > 0);
+  return [...head, entry("all", "All services"), ...categories];
+}
