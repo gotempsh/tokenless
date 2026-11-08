@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { FolderLock as VaultIcon, Plus } from "lucide-react";
 import { get, post, type StoredTemplate, type Page, type Vault, type VaultOverview } from "../api";
+import { fallbackPage, hasPager } from "../paging";
 import { addServiceHref } from "../addService";
 import { targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
@@ -15,7 +16,6 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { templateOf } from "./Services";
-
 
 export function Vaults({ canCreate }: { canCreate: boolean }) {
   const [page, setPage] = useState(1);
@@ -48,6 +48,12 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
     </Button>
   );
 
+  // A page emptied under the list (its vaults deleted elsewhere): go back a page.
+  const back = vaults.data ? fallbackPage(vaults.data) : null;
+  useEffect(() => {
+    if (back !== null) setPage(back);
+  }, [back]);
+
   return (
     <PageContainer>
       <PageHeader title="Vaults" actions={createButton} />
@@ -58,7 +64,7 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
             <Skeleton key={i} className="h-56 rounded-lg" />
           ))}
         </div>
-      ) : vaults.data && vaults.data.items.length === 0 ? (
+      ) : vaults.data && vaults.data.items.length === 0 && back === null ? (
         <Panel>
           <Empty
             icon={VaultIcon}
@@ -78,7 +84,7 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
           ))}
         </div>
       )}
-      {vaults.data && vaults.data.total > vaults.data.page_size && (
+      {vaults.data && hasPager(vaults.data) && (
         <Panel>
           <Pager page={vaults.data} onPage={setPage} />
         </Panel>

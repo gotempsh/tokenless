@@ -9,6 +9,7 @@ import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHori
 import type { Page } from "../api";
 import { compactTime, exactTime, relativeTime } from "../time";
 import { cn } from "../lib/utils";
+import { hasPager } from "../paging";
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button-components";
@@ -231,7 +232,7 @@ export function OneTimeSecret({
 
 export function Pager<T>({ page, onPage }: { page: Page<T> | undefined; onPage: (p: number) => void }) {
   // No pager until there is a second page.
-  if (!page || (page.page === 1 && page.total <= page.page_size)) return null;
+  if (!page || !hasPager(page)) return null;
   const pages = Math.max(1, Math.ceil(page.total / page.page_size));
   const first = (page.page - 1) * page.page_size + 1;
   const last = Math.min(page.total, page.page * page.page_size);

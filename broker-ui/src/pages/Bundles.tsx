@@ -6,7 +6,7 @@
 // Mint session dialog. Shown for one vault (its tab) or for every vault
 // (the sidebar page).
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Boxes, Pencil, Plus, Terminal, Trash2 } from "lucide-react";
 import {
   api,
@@ -19,6 +19,7 @@ import {
   type UserSummary,
   type Vault,
 } from "../api";
+import { fallbackPage, hasPager } from "../paging";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import { bundleFormHref } from "../bundleForm";
@@ -105,6 +106,12 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   const noVaults = !scoped && vaults.data?.items.length === 0;
 
   const [removed, setRemoved] = useState<{ name: string; sessions: number } | null>(null);
+  // Deleting the last bundle on a later page empties it: go back a page.
+  const back = bundles.data ? fallbackPage(bundles.data) : null;
+  useEffect(() => {
+    if (back !== null) setPage(back);
+  }, [back]);
+
   const remove = async (b: AccessBundle) => {
     const result = await action.run(() => api<{ sessions_revoked: number }>("DELETE", `/bundles/${b.id}`));
     confirm.close();
@@ -157,7 +164,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
           <Panel>
             <Loading />
           </Panel>
-        ) : bundles.data?.items.length === 0 ? (
+        ) : bundles.data?.items.length === 0 && back === null ? (
           <Panel>
           <Empty
             icon={Boxes}
@@ -208,7 +215,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
             ))}
           </div>
         )}
-        {bundles.data && bundles.data.total > bundles.data.page_size && (
+        {bundles.data && hasPager(bundles.data) && (
           <Panel>
             <Pager page={bundles.data} onPage={setPage} />
           </Panel>
