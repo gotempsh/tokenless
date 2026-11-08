@@ -211,7 +211,7 @@ async fn handle(
             return unauthorized(&format!("session rejected: {e}"));
         }
     };
-    if let Err(reason) = check_session(&snapshot, &claims) {
+    if let Err(reason) = check_session(&snapshot, &claims, &shared.node, None) {
         Metrics::inc(&shared.metrics.gateway_auth_failures_total);
         return unauthorized(reason);
     }
@@ -275,6 +275,7 @@ async fn handle(
         claims: claims.clone(),
         shared: shared.clone(),
         upstream,
+        binding: None,
     });
     let mut response = handle_intercepted(req, ctx.clone()).await;
     // The client authenticated to the gateway, not to the upstream. An

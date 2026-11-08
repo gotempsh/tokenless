@@ -27,6 +27,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep_until, Instant};
 
+use crate::binding::{BindingState, BindingWatch};
 use crate::proxy::{BodyError, ProxyBody};
 use crate::state::SnapshotHandle;
 
@@ -35,6 +36,8 @@ use crate::state::SnapshotHandle;
 pub enum SessionEnd {
     Revoked,
     Expired,
+    /// The binding the traffic came through was revoked.
+    BindingRevoked,
     /// The snapshot lease ran out, so a revocation could no longer arrive.
     LeaseExpired,
 }
@@ -44,6 +47,7 @@ impl SessionEnd {
         match self {
             Self::Revoked => "the session was revoked",
             Self::Expired => "the session expired",
+            Self::BindingRevoked => "the binding it came through was revoked",
             Self::LeaseExpired => {
                 "the policy lease expired (control plane unreachable), so revocations cannot arrive"
             }
@@ -58,6 +62,7 @@ pub(crate) struct SessionWatch {
     pub snapshot: SnapshotHandle,
     pub jti: SessionId,
     pub exp: DateTime<Utc>,
+    pub binding: Option<BindingWatch>,
 }
 
 impl SessionWatch {
@@ -71,13 +76,33 @@ impl SessionWatch {
             snapshot,
             jti: claims.jti,
             exp: claims.exp,
+            binding: None,
         }
+    }
+
+    /// Also ends when `binding`, the one the traffic came through, is revoked.
+    pub fn through(mut self, binding: Option<&BindingState>) -> Self {
+        self.binding = binding.map(BindingState::watch);
+        self
+    }
+}
+
+/// Resolves when the binding is revoked or gone; never without one.
+async fn binding_revoked(binding: &mut Option<BindingWatch>) {
+    match binding {
+        Some(b) => {
+            let _ = b.revoked.wait_for(|revoked| *revoked).await;
+        }
+        None => std::future::pending().await,
     }
 }
 
 /// Resolves when the session can no longer carry traffic.
 pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
     loop {
+        if watch.binding.as_ref().is_some_and(|b| *b.revoked.borrow()) {
+            return SessionEnd::BindingRevoked;
+        }
         let deadline = {
             let Some(current) = watch.snapshot.load_full() else {
                 return SessionEnd::LeaseExpired;
@@ -103,6 +128,7 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
                 }
             }
             () = sleep_until(deadline) => {}
+            () = binding_revoked(&mut watch.binding) => return SessionEnd::BindingRevoked,
         }
     }
 }

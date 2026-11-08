@@ -131,6 +131,7 @@ fn map_core(e: &CoreError) -> Mapped {
         | CoreError::InvalidFieldValue { .. }
         | CoreError::InvalidHeaderName { .. }
         | CoreError::InvalidLabel { .. }
+        | CoreError::InvalidBinding { .. }
         | CoreError::InvalidTtl { .. }
         | CoreError::InvalidVariableKey { .. }
         | CoreError::InvalidVariableReference { .. }

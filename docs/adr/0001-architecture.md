@@ -282,6 +282,15 @@ checks every read endpoint and the raw database files for the plaintext.
 - Claims: `jti`, the vault scope (opaque), rule ids (a subset of the
   vault's rules), `iat` and `exp` (TTL default 15 min, max 1 h), an
   optional request limit, and audit labels.
+- Two optional claims restrict where a session works. `aud` names the
+  only node that accepts it. `sub` names a binding,
+  `<binding id>/<generation>`: a host that embeds the data plane binds
+  each workload it does not trust to that workload's sessions and serves
+  its connections through the binding. Such a session works only through
+  its binding, never from a `Proxy-Authorization` header, and a binding
+  ignores that header and takes no other session. A workload restarted
+  under the same id gets a new generation, so its old sessions stop
+  working. Revoking a binding cuts every connection it opened.
 - The data plane verifies sessions locally. Revocations arrive in the next
   snapshot; with the stream, that takes about one round trip.
 - Clients use `HTTPS_PROXY=http://<token>@host:port`. Both the Basic form
@@ -295,6 +304,7 @@ checks every read endpoint and the raw database files for the plaintext.
   | No snapshot yet, lease expired, audit queue full, or a limited session not yet provisioned | 503 |
   | Session missing, malformed, badly signed, expired, or revoked | 407 |
   | Plain HTTP, no rule for the method or path, or unmatched host with policy `deny` | 403 |
+  | Through a binding: no valid session, or two sessions cover the host | 403 |
   | `Host` header does not match the CONNECT target | 421 |
   | Path with dot segments or encoded separators | 400 |
   | Request limit reached | 429 |

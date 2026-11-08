@@ -22,6 +22,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::host::parse_authority;
+use broker_core::ids::NodeId;
 use broker_core::mcp::{self, McpMessage, NotJsonRpc};
 use broker_core::path::check_request_path;
 use broker_core::rule::RuleScope;
@@ -43,12 +44,13 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use rustls::ClientConfig;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{oneshot, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tokio_rustls::LazyConfigAcceptor;
 use tracing::{debug, info, warn};
 
 use crate::audit::AuditPipeline;
+use crate::binding::BindingState;
 use crate::cut::{session_end, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
@@ -71,6 +73,11 @@ const HOP_BY_HOP: &[&str] = &[
 ];
 
 pub struct ProxyShared {
+    /// This node: sessions minted for another are refused.
+    pub node: NodeId,
+    /// Open client connections and their tunnels, bound or not.
+    pub connections: Arc<Semaphore>,
+    pub max_connections: usize,
     pub snapshot: SnapshotHandle,
     /// Bumped to each applied snapshot's version; open tunnels watch it to
     /// notice their session being revoked.
@@ -134,10 +141,13 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Session-level checks that must hold at CONNECT and again on every
-/// request inside a tunnel.
+/// request inside a tunnel. `binding` is the subject of the binding the
+/// traffic came through, `None` when the client presented the token.
 pub(crate) fn check_session(
     snapshot: &ActiveSnapshot,
     claims: &SessionClaims,
+    node: &NodeId,
+    binding: Option<&str>,
 ) -> Result<(), &'static str> {
     if Utc::now() >= claims.exp {
         return Err("proxy session has expired");
@@ -145,7 +155,44 @@ pub(crate) fn check_session(
     if snapshot.revoked.contains(&claims.jti) {
         return Err("proxy session has been revoked");
     }
-    Ok(())
+    if claims.aud.is_some_and(|aud| aud != *node) {
+        return Err("proxy session is for another data plane node");
+    }
+    match (claims.sub.as_deref(), binding) {
+        (None, None) => Ok(()),
+        (Some(sub), Some(binding)) if sub == binding => Ok(()),
+        (Some(_), Some(_)) => {
+            Err("proxy session belongs to another binding, or an earlier start of this one")
+        }
+        (Some(_), None) => {
+            Err("proxy session belongs to a binding and works only through it, not from a header")
+        }
+        (None, Some(_)) => Err("a binding uses only sessions minted for it"),
+    }
+}
+
+/// Holds a connection's permits until the connection and the tunnel it
+/// opened have both closed, then reports it.
+pub(crate) struct ConnectionGuard {
+    _permits: Vec<OwnedSemaphorePermit>,
+    done: Option<oneshot::Sender<()>>,
+}
+
+impl ConnectionGuard {
+    pub fn new(permits: Vec<OwnedSemaphorePermit>, done: Option<oneshot::Sender<()>>) -> Self {
+        Self {
+            _permits: permits,
+            done,
+        }
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        if let Some(done) = self.done.take() {
+            let _ = done.send(());
+        }
+    }
 }
 
 pub(crate) fn session_rules<'a>(
@@ -158,8 +205,7 @@ pub(crate) fn session_rules<'a>(
         .filter(move |r| r.scope == claims.scope && claims.rules.contains(&r.id))
 }
 
-pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connections: usize) {
-    let limit = Arc::new(Semaphore::new(max_connections.max(1)));
+pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(conn) => conn,
@@ -169,38 +215,105 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connecti
                 continue;
             }
         };
-        let Ok(permit) = limit.clone().try_acquire_owned() else {
+        let Ok(permit) = shared.connections.clone().try_acquire_owned() else {
             Metrics::inc(&shared.metrics.connections_rejected);
             debug!(%peer, "connection limit reached; dropping connection");
             continue;
         };
         Metrics::inc(&shared.metrics.connections_total);
         let _ = stream.set_nodelay(true);
-        let shared = shared.clone();
-        tokio::spawn(async move {
-            let service = service_fn(move |req| {
-                let shared = shared.clone();
-                async move { Ok::<_, Infallible>(handle_proxy_request(req, shared).await) }
-            });
-            let mut builder = http1::Builder::new();
-            builder
-                .timer(TokioTimer::new())
-                .header_read_timeout(Duration::from_secs(30));
-            if let Err(e) = builder
-                .serve_connection(TokioIo::new(stream), service)
-                .with_upgrades()
-                .await
-            {
-                debug!(%peer, error = %e, "proxy connection ended with error");
-            }
-            drop(permit);
-        });
+        let guard = Arc::new(ConnectionGuard::new(vec![permit], None));
+        tokio::spawn(serve_stream(stream, shared.clone(), None, guard));
     }
+}
+
+/// Serves one client connection. With `binding`, sessions come from it and
+/// the client's `Proxy-Authorization` is ignored; without, the client
+/// presents its token. `guard` is held until the connection and its tunnel
+/// have closed, so open tunnels count against the connection limits.
+pub(crate) async fn serve_stream<S>(
+    stream: S,
+    shared: Arc<ProxyShared>,
+    binding: Option<Arc<BindingState>>,
+    guard: Arc<ConnectionGuard>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let service = service_fn(move |req| {
+        let shared = shared.clone();
+        let binding = binding.clone();
+        let guard = guard.clone();
+        async move { Ok::<_, Infallible>(handle_proxy_request(req, shared, binding, guard).await) }
+    });
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(Duration::from_secs(30));
+    if let Err(e) = builder
+        .serve_connection(TokioIo::new(stream), service)
+        .with_upgrades()
+        .await
+    {
+        debug!(error = %e, "proxy connection ended with error");
+    }
+}
+
+/// A refusal answered before a tunnel opens. Boxed: a response is large.
+type Refused = Box<Response<ProxyBody>>;
+
+/// The session a client presents in `Proxy-Authorization`.
+fn header_session(
+    req: &Request<Incoming>,
+    snapshot: &ActiveSnapshot,
+    shared: &ProxyShared,
+) -> Result<SessionClaims, Refused> {
+    let refuse = |message: &str| {
+        Metrics::inc(&shared.metrics.proxy_auth_failures_total);
+        Box::new(proxy_auth_required(message))
+    };
+    let Some(token) = session_token(req.headers()) else {
+        return Err(refuse(
+            "a proxy session token is required (HTTPS_PROXY=http://<token>@host:port)",
+        ));
+    };
+    let claims = verify_session(&token, &snapshot.session_keys, Utc::now()).map_err(|e| {
+        debug!(error = %e, "proxy session rejected");
+        refuse(&format!("proxy session rejected: {e}"))
+    })?;
+    check_session(snapshot, &claims, &shared.node, None).map_err(refuse)?;
+    Ok(claims)
+}
+
+/// The session a bound CONNECT uses, chosen by its target.
+fn bound_session(
+    req: &Request<Incoming>,
+    snapshot: &ActiveSnapshot,
+    shared: &ProxyShared,
+    binding: &BindingState,
+) -> Result<SessionClaims, Refused> {
+    let Some((host, port)) = req
+        .uri()
+        .authority()
+        .and_then(|a| parse_authority(a.as_str()))
+    else {
+        return Err(Box::new(respond(
+            StatusCode::BAD_REQUEST,
+            "CONNECT target must be host:port",
+        )));
+    };
+    binding
+        .session_for(snapshot, &host, port, &shared.node)
+        .map_err(|reason| {
+            Metrics::inc(&shared.metrics.proxy_auth_failures_total);
+            Box::new(respond(StatusCode::FORBIDDEN, reason))
+        })
 }
 
 async fn handle_proxy_request(
     mut req: Request<Incoming>,
     shared: Arc<ProxyShared>,
+    binding: Option<Arc<BindingState>>,
+    guard: Arc<ConnectionGuard>,
 ) -> Response<ProxyBody> {
     let Some(snapshot) = shared.snapshot.load_full() else {
         Metrics::inc(&shared.metrics.lease_refusals_total);
@@ -216,24 +329,20 @@ async fn handle_proxy_request(
             "data plane policy lease expired (control plane unreachable); refusing all traffic",
         );
     }
-    let Some(token) = session_token(req.headers()) else {
-        Metrics::inc(&shared.metrics.proxy_auth_failures_total);
-        return proxy_auth_required(
-            "a proxy session token is required (HTTPS_PROXY=http://<token>@host:port)",
+    if binding.is_some() && req.method() != Method::CONNECT {
+        return respond(
+            StatusCode::FORBIDDEN,
+            "only CONNECT (HTTPS) is supported; credentials are never injected on plain HTTP",
         );
-    };
-    let claims = match verify_session(&token, &snapshot.session_keys, Utc::now()) {
-        Ok(claims) => claims,
-        Err(e) => {
-            Metrics::inc(&shared.metrics.proxy_auth_failures_total);
-            debug!(error = %e, "proxy session rejected");
-            return proxy_auth_required(&format!("proxy session rejected: {e}"));
-        }
-    };
-    if let Err(reason) = check_session(&snapshot, &claims) {
-        Metrics::inc(&shared.metrics.proxy_auth_failures_total);
-        return proxy_auth_required(reason);
     }
+    let session = match &binding {
+        None => header_session(&req, &snapshot, &shared),
+        Some(binding) => bound_session(&req, &snapshot, &shared, binding),
+    };
+    let claims = match session {
+        Ok(claims) => claims,
+        Err(refusal) => return *refusal,
+    };
     if req.method() != Method::CONNECT {
         return respond(
             StatusCode::FORBIDDEN,
@@ -351,9 +460,12 @@ async fn handle_proxy_request(
         shared.snapshot_changed.subscribe(),
         shared.snapshot.clone(),
         &claims,
-    );
+    )
+    .through(binding.as_deref());
     let claims = Arc::new(claims);
     tokio::spawn(async move {
+        // The tunnel counts against the connection limits until it closes.
+        let _guard = guard;
         let upgraded = match on_upgrade.await {
             Ok(u) => u,
             Err(e) => {
@@ -509,8 +621,9 @@ async fn intercept_tunnel(
 ) {
     // The handshake is bounded by its own timeouts; the session is watched
     // from the moment requests can flow.
+    let binding = watch.binding.as_ref().map(|b| b.subject.clone());
     tokio::select! {
-        () = intercepted_connection(io, config, host.clone(), port, claims.clone(), shared.clone()) => {}
+        () = intercepted_connection(io, config, host.clone(), port, claims.clone(), shared.clone(), binding) => {}
         end = session_end(watch) => tunnel_cut(&shared, &claims, &host, port, end),
     }
 }
@@ -522,6 +635,7 @@ async fn intercepted_connection(
     port: u16,
     claims: Arc<SessionClaims>,
     shared: Arc<ProxyShared>,
+    binding: Option<Arc<str>>,
 ) {
     let start = match timeout(
         Duration::from_secs(10),
@@ -565,6 +679,7 @@ async fn intercepted_connection(
         claims,
         shared,
         upstream,
+        binding,
     });
     let service = service_fn(move |req| {
         let ctx = ctx.clone();
@@ -587,6 +702,8 @@ pub(crate) struct TunnelCtx {
     pub(crate) claims: Arc<SessionClaims>,
     pub(crate) shared: Arc<ProxyShared>,
     pub(crate) upstream: UpstreamHandle,
+    /// Subject of the binding the tunnel came through, if any.
+    pub(crate) binding: Option<Arc<str>>,
 }
 
 /// Does the request's own Host (or absolute authority) name the CONNECT target?
@@ -825,7 +942,7 @@ pub(crate) async fn handle_intercepted(
         );
     }
     let claims = &ctx.claims;
-    if let Err(reason) = check_session(&snapshot, claims) {
+    if let Err(reason) = check_session(&snapshot, claims, &shared.node, ctx.binding.as_deref()) {
         Metrics::inc(&shared.metrics.proxy_auth_failures_total);
         return proxy_auth_required(reason);
     }

@@ -50,6 +50,21 @@ pub enum DataPlaneError {
     #[error("node identity error: {reason}")]
     Identity { reason: String },
 
+    #[error("binding '{binding_id}' was not created: {reason}")]
+    InvalidBinding { binding_id: String, reason: String },
+
+    #[error("binding '{binding_id}' has been revoked; bind the workload again")]
+    BindingRevoked { binding_id: String },
+
+    #[error("binding '{binding_id}' already has its {max_connections} connections open")]
+    BindingFull {
+        binding_id: String,
+        max_connections: usize,
+    },
+
+    #[error("the data plane already has its {max_connections} connections open")]
+    ConnectionLimit { max_connections: usize },
+
     #[error(transparent)]
     Core(#[from] CoreError),
 }

@@ -1262,6 +1262,8 @@ mod tests {
             longest: false,
             request_limit: None,
             labels: BTreeMap::new(),
+            node_id: None,
+            binding: None,
         };
         let minted = cp
             .sessions
@@ -1292,6 +1294,8 @@ mod tests {
                     longest: false,
                     request_limit: None,
                     labels: BTreeMap::new(),
+                    node_id: None,
+                    binding: None,
                 },
             )
             .await
@@ -1626,6 +1630,8 @@ mod tests {
                     longest: false,
                     request_limit: None,
                     labels: BTreeMap::new(),
+                    node_id: None,
+                    binding: None,
                 },
             )
             .await
@@ -1643,6 +1649,8 @@ mod tests {
                         longest: false,
                         request_limit: None,
                         labels: BTreeMap::new(),
+                        node_id: None,
+                        binding: None,
                     },
                 )
                 .await,
@@ -1758,6 +1766,8 @@ mod tests {
                     longest: false,
                     request_limit: Some(3),
                     labels: BTreeMap::new(),
+                    node_id: None,
+                    binding: None,
                 },
             )
             .await
@@ -1926,6 +1936,8 @@ mod tests {
                     longest: false,
                     request_limit: None,
                     labels: Default::default(),
+                    node_id: None,
+                    binding: None,
                 },
             )
             .await
@@ -1990,6 +2002,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_can_be_minted_for_one_node_and_binding() {
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let cred = cp
+            .policy
+            .create_credential(
+                &a,
+                &vault.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let rule = cp
+            .policy
+            .create_rule(
+                &a,
+                &vault.id,
+                CreateRule {
+                    name: "r".into(),
+                    credential_id: cred.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        let node = broker_core::ids::NodeId::new();
+        let mint = |id: &str| MintSession {
+            rule_ids: vec![rule.id],
+            bundle: None,
+            ttl_secs: Some(600),
+            longest: false,
+            request_limit: None,
+            labels: BTreeMap::new(),
+            node_id: Some(node),
+            binding: Some(sessions::SessionBinding {
+                id: id.into(),
+                generation: 4,
+            }),
+        };
+        let minted = cp
+            .sessions
+            .mint(&a, &vault.id, mint("sbx-7"))
+            .await
+            .unwrap();
+        let keys = std::collections::HashMap::from([(
+            cp.keys.session_signer.kid().to_string(),
+            cp.keys.session_signer.verifying_key(),
+        )]);
+        let claims =
+            broker_core::session::verify_session(&minted.token, &keys, chrono::Utc::now()).unwrap();
+        assert_eq!(claims.aud, Some(node));
+        assert_eq!(claims.sub.as_deref(), Some("sbx-7/4"));
+
+        let events = cp
+            .audit
+            .query(
+                &a,
+                Some(vault.id),
+                Some("session.mint".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        let detail = &events.items[0].detail;
+        assert_eq!(detail.get("binding").map(String::as_str), Some("sbx-7/4"));
+        assert_eq!(detail.get("node_id"), Some(&node.to_string()));
+
+        let err = cp
+            .sessions
+            .mint(&a, &vault.id, mint("sbx/7"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ControlError::Core(broker_core::CoreError::InvalidBinding { .. })
+            ),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_lifetime_cap_is_a_setting_and_labels_are_editable() {
         let cp = plane().await;
         let a = admin(0);
@@ -2026,6 +2124,8 @@ mod tests {
             longest: false,
             request_limit: None,
             labels: [("agent".to_string(), "reviewer".to_string())].into(),
+            node_id: None,
+            binding: None,
         };
         let err = cp
             .sessions
@@ -2492,6 +2592,8 @@ mod tests {
             longest: false,
             request_limit: None,
             labels: BTreeMap::new(),
+            node_id: None,
+            binding: None,
         };
         cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
         let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();

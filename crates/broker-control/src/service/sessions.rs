@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use broker_core::audit::{AuditEvent, AuditOutcome};
 use broker_core::authz::Action;
-use broker_core::ids::{BundleId, RuleId, SessionId, VaultId};
+use broker_core::ids::{BundleId, NodeId, RuleId, SessionId, VaultId};
 use broker_core::scope::Scope;
 use broker_core::session::{
     key_id, validate_labels, verify_session, SessionClaims, SessionError, DEFAULT_SESSION_TTL_SECS,
@@ -44,6 +44,22 @@ pub struct MintSession {
     pub request_limit: Option<u64>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Only this data plane node accepts the session.
+    #[serde(default)]
+    pub node_id: Option<NodeId>,
+    /// The binding the session is for. It then works only through that
+    /// binding (one start of one sandbox), never from a header.
+    #[serde(default)]
+    pub binding: Option<SessionBinding>,
+}
+
+/// Which binding a session is minted for: the workload's id and which start
+/// of it. A new start takes a new generation, so its old sessions stop
+/// working there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionBinding {
+    pub id: String,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,6 +216,14 @@ impl SessionService {
             Utc::now(),
             max_ttl,
         )?;
+        let claims = match req.node_id {
+            Some(node) => claims.for_node(node),
+            None => claims,
+        };
+        let claims = match &req.binding {
+            Some(binding) => claims.for_binding(&binding.id, binding.generation)?,
+            None => claims,
+        };
         let token = self.keys.session_signer.sign(&claims)?;
         let session = ProxySession {
             id: claims.jti,
@@ -226,6 +250,12 @@ impl SessionService {
         }
         for (k, v) in &session.labels {
             event = event.detail(&format!("label.{k}"), v.clone());
+        }
+        if let Some(node) = claims.aud {
+            event = event.detail("node_id", node.to_string());
+        }
+        if let Some(sub) = &claims.sub {
+            event = event.detail("binding", sub.clone());
         }
         self.policy
             .insert_session(session.clone(), &[event])

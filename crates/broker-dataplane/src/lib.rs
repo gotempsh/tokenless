@@ -15,6 +15,7 @@
 //! [`AuditShipper`](audit::AuditShipper). Verification is the same either way.
 
 pub mod audit;
+pub mod binding;
 pub mod cut;
 pub mod embedded;
 pub mod error;
@@ -43,10 +44,11 @@ use hyper::Response;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::CertificateDer;
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+pub use binding::{Binding, BindingSpec};
 pub use embedded::SnapshotInstaller;
 pub use error::DataPlaneError;
 pub use node::{enroll, NodeIdentity};
@@ -104,6 +106,7 @@ pub struct DataPlane {
     snapshot: SnapshotHandle,
     snapshot_changed: watch::Sender<u64>,
     metrics: Arc<Metrics>,
+    shared: Arc<ProxyShared>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -174,7 +177,11 @@ impl DataPlane {
         if !local_addr.ip().is_loopback() {
             warn!(%local_addr, "proxy listener is not on loopback; make sure it is only reachable on a private network");
         }
+        let max_connections = config.max_connections.max(1);
         let shared = Arc::new(ProxyShared {
+            node: node_id,
+            connections: Arc::new(Semaphore::new(max_connections)),
+            max_connections,
             snapshot: snapshot.clone(),
             snapshot_changed: snapshot_changed.clone(),
             audit,
@@ -207,7 +214,7 @@ impl DataPlane {
             )));
         }
         let mut tasks = vec![
-            tokio::spawn(proxy::serve(listener, shared, config.max_connections)),
+            tokio::spawn(proxy::serve(listener, shared.clone())),
             tokio::spawn(run_batcher(
                 audit_rx,
                 shipper,
@@ -235,8 +242,16 @@ impl DataPlane {
             snapshot,
             snapshot_changed,
             metrics,
+            shared,
             tasks,
         })
+    }
+
+    /// Binds a workload to its sessions; see [`binding`]. Its connections
+    /// are served with [`Binding::serve`] instead of through the listener,
+    /// and count against `max_connections` like the listener's.
+    pub fn bind(&self, spec: BindingSpec) -> Result<Binding, DataPlaneError> {
+        Binding::new(spec, self.shared.clone())
     }
 
     pub fn local_addr(&self) -> SocketAddr {

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::error::CoreError;
-use crate::ids::{RuleId, SessionId};
+use crate::ids::{NodeId, RuleId, SessionId};
 use crate::scope::Scope;
 
 pub const DEFAULT_SESSION_TTL_SECS: u64 = 15 * 60;
@@ -53,6 +53,33 @@ pub struct SessionClaims {
     pub request_limit: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub labels: BTreeMap<String, String>,
+    /// The only data plane node that accepts the session. `None`: any node
+    /// holding the signing key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aud: Option<NodeId>,
+    /// The binding the session belongs to, `<binding id>/<generation>`. A
+    /// session with a subject is used only through that binding, never
+    /// from a `Proxy-Authorization` header; see [`binding_subject`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
+}
+
+/// The `sub` of a session for a binding: the workload's id and which start
+/// of it, so a recycled id with a new generation cannot use an old session.
+/// Ids are 1-128 characters of a-z, A-Z, 0-9, '_', '-', '.' or ':'.
+pub fn binding_subject(binding_id: &str, generation: u64) -> Result<String, CoreError> {
+    let valid = !binding_id.is_empty()
+        && binding_id.len() <= 128
+        && binding_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+    if !valid {
+        return Err(CoreError::InvalidBinding {
+            binding_id: binding_id.chars().take(128).collect(),
+            reason: "ids are 1-128 characters of a-z, A-Z, 0-9, '_', '-', '.' or ':'".into(),
+        });
+    }
+    Ok(format!("{binding_id}/{generation}"))
 }
 
 pub fn validate_labels(labels: &BTreeMap<String, String>) -> Result<(), CoreError> {
@@ -125,7 +152,21 @@ impl SessionClaims {
             exp: now + ttl,
             request_limit,
             labels,
+            aud: None,
+            sub: None,
         })
+    }
+
+    /// Restricts the session to one data plane node.
+    pub fn for_node(mut self, node: NodeId) -> Self {
+        self.aud = Some(node);
+        self
+    }
+
+    /// Restricts the session to one binding: one start of one workload.
+    pub fn for_binding(mut self, binding_id: &str, generation: u64) -> Result<Self, CoreError> {
+        self.sub = Some(binding_subject(binding_id, generation)?);
+        Ok(self)
     }
 }
 
@@ -368,6 +409,35 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')));
         assert_eq!(verify_session(&token, &keys, Utc::now()).unwrap(), claims);
+    }
+
+    #[test]
+    fn bound_sessions_carry_node_and_binding() {
+        let (signer, keys, claims) = setup();
+        // Unbound tokens carry neither claim, so nodes that predate them
+        // keep accepting them.
+        let plain = serde_json::to_string(&claims).unwrap();
+        assert!(!plain.contains("\"aud\"") && !plain.contains("\"sub\""));
+
+        let node = NodeId::new();
+        let bound = claims
+            .for_node(node)
+            .for_binding("sbx_01.run:a-b", 3)
+            .unwrap();
+        assert_eq!(bound.sub.as_deref(), Some("sbx_01.run:a-b/3"));
+        let token = signer.sign(&bound).unwrap();
+        let verified = verify_session(&token, &keys, Utc::now()).unwrap();
+        assert_eq!(verified.aud, Some(node));
+        assert_eq!(verified, bound);
+    }
+
+    #[test]
+    fn binding_ids_are_bounded_and_cannot_fake_a_generation() {
+        assert_eq!(binding_subject("sbx-1", 0).unwrap(), "sbx-1/0");
+        for bad in ["", "sbx/1", "sbx 1", "sbx\n", &"x".repeat(129)] {
+            let err = binding_subject(bad, 1).unwrap_err();
+            assert!(matches!(err, CoreError::InvalidBinding { .. }), "{bad:?}");
+        }
     }
 
     #[test]
