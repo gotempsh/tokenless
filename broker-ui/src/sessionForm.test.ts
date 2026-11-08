@@ -66,6 +66,15 @@ describe("new session form", () => {
     );
   });
 
+  test("quotes an IPv6 address for the shell but never in the env block", () => {
+    const token = `v4.public.${"x".repeat(60)}`;
+    const v6 = { url: "http://[2001:db8::1]:8080", proxy: "[2001:db8::1]:3128", token };
+    expect(agentScript(v6, "claude").copy).toContain("export TOKENLESS_PROXY_ADDRESS='[2001:db8::1]:3128'");
+    expect(agentEnv(v6).copy).toBe(
+      `TOKENLESS_URL=http://[2001:db8::1]:8080\nTOKENLESS_PROXY_ADDRESS=[2001:db8::1]:3128\nTOKENLESS_SESSION_TOKEN=${token}\n`,
+    );
+  });
+
   test("suggests the proxy on the console's host unless one was used before", () => {
     expect(suggestedProxy("localhost")).toBe("127.0.0.1:3128");
     expect(suggestedProxy("127.0.0.1")).toBe("127.0.0.1:3128");

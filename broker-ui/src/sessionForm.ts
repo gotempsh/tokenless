@@ -136,11 +136,11 @@ export function shortToken(token: string): string {
   return token.length > 28 ? `${token.slice(0, 24)}…` : token;
 }
 
-function envLines(t: AgentTarget, token: string, prefix: string): string[] {
+function envLines(t: AgentTarget, token: string, prefix: string, quote: (value: string) => string): string[] {
   return [
-    `${prefix}TOKENLESS_URL=${shellQuote(t.url)}`,
-    `${prefix}TOKENLESS_PROXY_ADDRESS=${shellQuote(t.proxy)}`,
-    `${prefix}TOKENLESS_SESSION_TOKEN=${token === t.token ? shellQuote(token) : token}`,
+    `${prefix}TOKENLESS_URL=${quote(t.url)}`,
+    `${prefix}TOKENLESS_PROXY_ADDRESS=${quote(t.proxy)}`,
+    `${prefix}TOKENLESS_SESSION_TOKEN=${token === t.token ? quote(token) : token}`,
   ];
 }
 
@@ -150,13 +150,16 @@ function envLines(t: AgentTarget, token: string, prefix: string): string[] {
  * the token.
  */
 export function agentScript(t: AgentTarget, command: string): { copy: string; display: string } {
-  const build = (token: string) => [...envLines(t, token, "export "), `tokenless run -- ${command}`].join("\n");
+  const build = (token: string) => [...envLines(t, token, "export ", shellQuote), `tokenless run -- ${command}`].join("\n");
   return { copy: build(t.token), display: build(shortToken(t.token)) };
 }
 
-/** The same settings as environment variables for a CI job or a container. */
+/**
+ * The same settings as environment variables for a CI job or a container.
+ * Unquoted: env files and secret stores keep quotes as part of the value.
+ */
 export function agentEnv(t: AgentTarget): { copy: string; display: string } {
-  const build = (token: string) => envLines(t, token, "").join("\n");
+  const build = (token: string) => envLines(t, token, "", (value) => value).join("\n");
   return { copy: `${build(t.token)}\n`, display: build(shortToken(t.token)) };
 }
 
