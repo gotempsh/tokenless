@@ -964,10 +964,22 @@ fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
 /// How long each session `run` mints lasts when --ttl is not given.
 const DEFAULT_RUN_TTL: &str = "15m";
 
+/// `run` and `session start` either mint a session or adopt one, so with
+/// neither a bundle nor a session they name both ways.
+fn bundle_or_session(args: &MintArgs) -> Result<(), CliError> {
+    if args.bundle.is_none() {
+        return Err(LauncherError::config(
+            "say which access bundle to mint the session from with --bundle (or TOKENLESS_BUNDLE), or set TOKENLESS_SESSION_TOKEN to a session you already have",
+        )
+        .into());
+    }
+    mint_request(args, &[]).map(|_| ())
+}
+
 fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
     let Some(bundle) = args.bundle.clone() else {
         return Err(LauncherError::config(
-            "say which access bundle to mint the session from with --bundle (or TOKENLESS_BUNDLE), or set TOKENLESS_SESSION_TOKEN to a session you already have",
+            "say which access bundle to mint the session from with --bundle (or TOKENLESS_BUNDLE)",
         )
         .into());
     };
@@ -1123,9 +1135,11 @@ struct CreatedSession<'a> {
 async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, CliError> {
     match command {
         SessionCommand::Create { mint, json } => {
+            // A missing bundle fails before any network call.
+            let request = mint_request(&mint, &[])?;
             let client = client(&mint.broker)?;
             let vault = client.resolve_vault(mint.vault.as_deref()).await?;
-            let minted = client.mint(&vault, &mint_request(&mint, &[])?).await?;
+            let minted = client.mint(&vault, &request).await?;
             if json {
                 let out = serde_json::to_string_pretty(&CreatedSession {
                     token: &minted.token,
@@ -1192,7 +1206,7 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
         } => {
             let given = given_session(&mint, &given, session_token_from_env().ok())?;
             if given.is_none() {
-                mint_request(&mint, &[])?;
+                bundle_or_session(&mint)?;
             }
             check_listen(listen)?;
             check_proxy(&port.proxy).await?;
@@ -1468,7 +1482,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     let given = given_session(&args.mint, &args.given, session_token_from_env().ok())?;
     if given.is_none() {
         // Fail on a missing bundle before touching the network.
-        mint_request(&args.mint, &[])?;
+        bundle_or_session(&args.mint)?;
     }
     check_listen(args.listen)?;
     check_proxy(&args.port.proxy).await?;
@@ -1686,8 +1700,13 @@ mod tests {
         // Neither: minting then asks for a bundle.
         let none = run_args(&[]);
         assert_eq!(given(&[], None).unwrap(), None);
-        let err = mint_request(&none.mint, &[]).unwrap_err().to_string();
+        let err = bundle_or_session(&none.mint).unwrap_err().to_string();
         assert!(err.contains("TOKENLESS_SESSION_TOKEN"), "{err}");
+        // `session create` only mints, so it doesn't suggest a session token
+        // it would never read.
+        let err = mint_request(&none.mint, &[]).unwrap_err().to_string();
+        assert!(err.contains("--bundle"), "{err}");
+        assert!(!err.contains("TOKENLESS_SESSION_TOKEN"), "{err}");
         // A token file wins over the environment, and conflicts with --bundle.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("token");
