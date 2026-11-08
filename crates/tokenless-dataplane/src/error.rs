@@ -62,6 +62,12 @@ pub enum DataPlaneError {
         max_connections: usize,
     },
 
+    #[error("binding '{binding_id}' is not ready: {}", reason.reason())]
+    NotReady {
+        binding_id: String,
+        reason: crate::status::NotReady,
+    },
+
     #[error("the data plane already has its {max_connections} connections open")]
     ConnectionLimit { max_connections: usize },
 

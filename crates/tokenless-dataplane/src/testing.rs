@@ -16,17 +16,17 @@ use tokenless_core::ids::{RuleId, SessionId};
 use tokenless_core::scope::Scope;
 use tokenless_core::session::{SessionClaims, SessionSigner};
 use tokenless_core::snapshot::SignedSnapshot;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::TlsConnector;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::audit::AuditShipper;
 use crate::error::DataPlaneError;
 use crate::state::tests::Fixture;
 use crate::state::NodeKeys;
-use crate::tls::upstream_client_config;
-use crate::{DataPlane, DataPlaneConfig, SnapshotInstaller};
+use crate::tls::{leaf_server_config, upstream_client_config};
+use crate::{Binding, BindingSpec, DataPlane, DataPlaneConfig, SnapshotInstaller};
 
 struct Discard;
 
@@ -104,6 +104,74 @@ pub async fn running_for(
 }
 
 impl Running {
+    /// A session for the rule, minted for one start of binding `id` on
+    /// this node.
+    pub fn bound_token(&self, id: &str, generation: u64, ttl_secs: u64) -> (String, SessionId) {
+        let claims = SessionClaims::new(
+            scope(),
+            vec![self.rule],
+            ttl_secs,
+            None,
+            BTreeMap::new(),
+            Utc::now(),
+            3600,
+        )
+        .unwrap()
+        .for_node(self.f.keys.node_id)
+        .for_binding(id, generation)
+        .unwrap();
+        let token = SessionSigner::new(self.f.session_signer.clone())
+            .sign(&claims)
+            .unwrap();
+        (token, claims.jti)
+    }
+
+    /// Binds `id` (generation 1) to `sessions`.
+    pub fn bind(&self, id: &str, sessions: Vec<String>) -> Arc<Binding> {
+        Arc::new(
+            self.dp
+                .bind(BindingSpec {
+                    binding_id: id.into(),
+                    generation: 1,
+                    sessions,
+                    max_connections: 8,
+                })
+                .unwrap(),
+        )
+    }
+
+    /// One request from a workload through `binding`: CONNECT, TLS with
+    /// the interception CA, `GET /`. Returns the response's status line.
+    pub async fn request_through(&self, binding: &Arc<Binding>, target: &str) -> String {
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let serving = binding.clone();
+        tokio::spawn(async move { serving.serve(server).await });
+        client
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let head = read_head(&mut client).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let config =
+            upstream_client_config(false, &[CertificateDer::from(self.f.ca_cert_der.clone())])
+                .unwrap();
+        let mut tls = TlsConnector::from(config)
+            .connect(ServerName::try_from("localhost").unwrap(), client)
+            .await
+            .unwrap();
+        tls.write_all(
+            format!("GET / HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+        read_head(&mut tls)
+            .await
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// The next snapshot: the same rule, revoking `revoked`.
     pub fn snapshot(&self, version: u64, revoked: Vec<SessionId>) -> SignedSnapshot {
         snapshot(&self.f, version, self.rule, &self.host, revoked)
@@ -171,4 +239,45 @@ fn snapshot(
     };
     body.revoked_sessions = revoked;
     f.sign(&body)
+}
+
+async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> String {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if stream.read(&mut byte).await.unwrap_or(0) == 0 {
+            break;
+        }
+        head.push(byte[0]);
+    }
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// A local HTTPS upstream for `localhost` that answers every request with
+/// `answer` (a whole response). Returns its port and certificate.
+pub async fn https_upstream(answer: &'static str) -> (u16, CertificateDer<'static>) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let root = CertificateDer::from(cert.cert.der().to_vec());
+    let server = leaf_server_config(
+        "localhost",
+        vec![root.clone()],
+        cert.signing_key.serialize_der(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = TlsAcceptor::from(server.clone());
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                read_head(&mut tls).await;
+                let _ = tls.write_all(answer.as_bytes()).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    (port, root)
 }

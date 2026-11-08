@@ -13,11 +13,13 @@
 //! work only through it, and a binding takes no other session.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use chrono::Utc;
+use arc_swap::ArcSwapOption;
+use chrono::{DateTime, Utc};
 use tokenless_core::ids::NodeId;
-use tokenless_core::session::{binding_subject, verify_session, SessionClaims};
+use tokenless_core::session::{binding_subject, verify_session, SessionClaims, SessionError};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch, Semaphore};
 use zeroize::Zeroizing;
@@ -26,6 +28,10 @@ use crate::error::DataPlaneError;
 use crate::metrics::Metrics;
 use crate::proxy::{self, check_session, session_rules, ConnectionGuard, ProxyShared};
 use crate::state::ActiveSnapshot;
+use crate::status::{
+    binding_status, session_problem, BindingStatus, NotReady, SessionStatus, UpstreamFailure,
+    UpstreamFailureKind,
+};
 
 /// Sessions one binding may hold: one per group of services that share a
 /// deadline.
@@ -57,32 +63,123 @@ impl fmt::Debug for BindingSpec {
 
 pub(crate) struct BindingState {
     pub id: String,
+    pub generation: u64,
     /// `<binding id>/<generation>`: the `sub` its sessions carry.
     pub subject: Arc<str>,
     tokens: Vec<Zeroizing<String>>,
+    /// The sessions' claims, once every token has verified: what the
+    /// status reads instead of verifying each token again.
+    claims: OnceLock<Vec<SessionClaims>>,
     revoked: watch::Sender<bool>,
     connections: Arc<Semaphore>,
-    max_connections: usize,
+    pub max_connections: usize,
+    /// Written only when a request fails upstream, never per request.
+    last_failure: ArcSwapOption<UpstreamFailure>,
+    status_changed: watch::Sender<u64>,
+}
+
+/// The binding is gone from the status once its last holder lets go.
+impl Drop for BindingState {
+    fn drop(&mut self) {
+        self.status_changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
 }
 
 /// What a tunnel opened through a binding watches: the binding being
 /// revoked cuts it.
 #[derive(Clone)]
 pub(crate) struct BindingWatch {
-    pub subject: Arc<str>,
+    pub state: Arc<BindingState>,
     pub revoked: watch::Receiver<bool>,
 }
 
 impl BindingState {
-    pub fn watch(&self) -> BindingWatch {
+    pub fn watch(self: &Arc<Self>) -> BindingWatch {
         BindingWatch {
-            subject: self.subject.clone(),
+            state: self.clone(),
             revoked: self.revoked.subscribe(),
         }
     }
 
-    fn is_revoked(&self) -> bool {
+    pub fn is_revoked(&self) -> bool {
         *self.revoked.borrow()
+    }
+
+    pub fn open_connections(&self) -> usize {
+        self.max_connections - self.connections.available_permits()
+    }
+
+    pub fn last_failure(&self) -> Option<UpstreamFailure> {
+        self.last_failure.load_full().map(|f| (*f).clone())
+    }
+
+    /// Notes a request through this binding that failed upstream, for its
+    /// status.
+    pub fn record_failure(&self, kind: UpstreamFailureKind, host: &str, port: u16) {
+        self.last_failure.store(Some(Arc::new(UpstreamFailure {
+            kind,
+            host: host.to_string(),
+            port,
+            at: Utc::now(),
+        })));
+        self.status_changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    fn claims(&self, snapshot: Option<&ActiveSnapshot>) -> Option<&[SessionClaims]> {
+        if let Some(claims) = self.claims.get() {
+            return Some(claims);
+        }
+        let snapshot = snapshot?;
+        let verified: Vec<_> = self
+            .tokens
+            .iter()
+            .map(|t| verify_session(t, &snapshot.session_keys, Utc::now()).ok())
+            .collect::<Option<_>>()?;
+        Some(self.claims.get_or_init(|| verified))
+    }
+
+    pub fn session_statuses(
+        &self,
+        snapshot: Option<&ActiveSnapshot>,
+        node: &NodeId,
+        now: DateTime<Utc>,
+    ) -> Vec<SessionStatus> {
+        let of = |c: &SessionClaims| SessionStatus {
+            session_id: Some(c.jti),
+            expires_at: Some(c.exp),
+            problem: session_problem(snapshot, c, node, &self.subject, now),
+        };
+        if let Some(claims) = self.claims(snapshot) {
+            return claims.iter().map(of).collect();
+        }
+        self.tokens
+            .iter()
+            .map(|token| {
+                let Some(s) = snapshot else {
+                    return SessionStatus {
+                        session_id: None,
+                        expires_at: None,
+                        problem: Some(NotReady::Provisioning),
+                    };
+                };
+                match verify_session(token, &s.session_keys, now) {
+                    Ok(c) => of(&c),
+                    Err(SessionError::Expired {
+                        session_id,
+                        expired_at,
+                    }) => SessionStatus {
+                        session_id: Some(session_id),
+                        expires_at: Some(expired_at),
+                        problem: Some(NotReady::Expired),
+                    },
+                    Err(_) => SessionStatus {
+                        session_id: None,
+                        expires_at: None,
+                        problem: Some(NotReady::InvalidSession),
+                    },
+                }
+            })
+            .collect()
     }
 
     /// The session a CONNECT to `host:port` uses: the one valid session
@@ -173,8 +270,9 @@ impl Binding {
         }
         // With a snapshot in force, a session that can never work here is
         // refused now rather than on the workload's first request.
+        let mut claims = OnceLock::new();
         if let Some(snapshot) = shared.snapshot.load_full() {
-            let mut verified = Vec::with_capacity(spec.sessions.len());
+            let mut verified: Vec<SessionClaims> = Vec::with_capacity(spec.sessions.len());
             for token in &spec.sessions {
                 let claims = verify_session(token, &snapshot.session_keys, Utc::now())
                     .map_err(|e| invalid(format!("a session is not usable: {e}")))?;
@@ -196,20 +294,23 @@ impl Binding {
             if let Some(reason) = overlap(&snapshot, &verified) {
                 return Err(invalid(reason));
             }
+            claims = OnceLock::from(verified);
         }
         let (revoked, _) = watch::channel(false);
-        let state = BindingState {
+        let state = Arc::new(BindingState {
             id: spec.binding_id,
+            generation: spec.generation,
             subject: subject.into(),
             tokens: spec.sessions.into_iter().map(Zeroizing::new).collect(),
+            claims,
             revoked,
             connections: Arc::new(Semaphore::new(spec.max_connections)),
             max_connections: spec.max_connections,
-        };
-        Ok(Self {
-            state: Arc::new(state),
-            shared,
-        })
+            last_failure: ArcSwapOption::empty(),
+            status_changed: shared.status_changed.clone(),
+        });
+        shared.register_binding(&state);
+        Ok(Self { state, shared })
     }
 
     pub fn id(&self) -> &str {
@@ -268,7 +369,52 @@ impl Binding {
     /// Cuts every connection and tunnel of this binding and refuses new
     /// ones. Idempotent.
     pub fn revoke(&self) {
-        self.state.revoked.send_replace(true);
+        if !self.state.revoked.send_replace(true) {
+            self.shared.status_bump();
+        }
+    }
+
+    /// What its sessions can do now; see [`crate::status`].
+    pub fn status(&self) -> BindingStatus {
+        let snapshot = self.shared.snapshot.load_full();
+        binding_status(
+            &self.state,
+            snapshot.as_deref(),
+            &self.shared.node,
+            Utc::now(),
+        )
+    }
+
+    /// Resolves once a snapshot at least `min_version` is in force and
+    /// every session of the binding can be used, so the workload can start.
+    /// Fails at once on what waiting cannot fix (an expired or revoked
+    /// session, a revoked binding), and with the last reason at `timeout`.
+    pub async fn ready(&self, min_version: u64, timeout: Duration) -> Result<(), DataPlaneError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut snapshots = self.shared.snapshot_changed.subscribe();
+        let mut revoked = self.state.revoked.subscribe();
+        loop {
+            let installed = self.shared.snapshot.load().as_ref().map(|s| s.version);
+            let problem = match installed {
+                Some(v) if v >= min_version => self.status().problem(),
+                _ => Some(NotReady::Provisioning),
+            };
+            let Some(problem) = problem else {
+                return Ok(());
+            };
+            let not_ready = || DataPlaneError::NotReady {
+                binding_id: self.state.id.clone(),
+                reason: problem,
+            };
+            if !problem.can_recover() {
+                return Err(not_ready());
+            }
+            tokio::select! {
+                _ = snapshots.changed() => {}
+                _ = revoked.changed() => {}
+                () = tokio::time::sleep_until(deadline) => return Err(not_ready()),
+            }
+        }
     }
 }
 

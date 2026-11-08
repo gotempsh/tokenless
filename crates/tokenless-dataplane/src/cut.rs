@@ -29,6 +29,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
@@ -98,7 +99,7 @@ impl SessionWatch {
     }
 
     /// Also ends when `binding`, the one the traffic came through, is revoked.
-    pub fn through(mut self, binding: Option<&BindingState>) -> Self {
+    pub fn through(mut self, binding: Option<&Arc<BindingState>>) -> Self {
         self.binding = binding.map(BindingState::watch);
         self
     }

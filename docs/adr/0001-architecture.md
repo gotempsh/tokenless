@@ -316,6 +316,17 @@ checks every read endpoint and the raw database files for the plaintext.
   absolute: a mint's `not_after` caps the session's `exp`, and no session
   is minted once it has passed, so the embedder that owns a grant passes
   its deadline on every renewal and a renewal never extends it.
+- An embedder reads the data plane's state rather than its logs:
+  `DataPlane::status()` gives the snapshot version, the lease and, for
+  each binding, its connections, each session's expiry and the last
+  upstream failure (unreachable, or a 401 to the injected credential).
+  Every "cannot carry traffic" has a typed reason (provisioning, stale
+  policy, not configured, expired, revoked, binding revoked, invalid
+  session) taken from the proxy's own checks. `DataPlane::events()` is a
+  `watch` of the latest status, updated on each change, including a
+  lease or session running out, so nobody polls; `Binding::ready`
+  resolves once a given snapshot is in force and every session of the
+  binding can be used. None of it holds a token or a secret.
 - The data plane verifies sessions locally. Revocations arrive in the next
   snapshot; with the stream, that takes about one round trip.
 - Clients use `HTTPS_PROXY=http://<token>@host:port`. Both the Basic form

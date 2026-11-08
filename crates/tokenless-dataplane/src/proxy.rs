@@ -54,6 +54,7 @@ use crate::binding::BindingState;
 use crate::cut::{session_end, session_expiry, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
+use crate::status::UpstreamFailureKind;
 use crate::upstream::UpstreamHandle;
 
 /// A body error: the upstream connection's, or a [`StreamCut`](crate::cut::StreamCut).
@@ -87,6 +88,38 @@ pub struct ProxyShared {
     pub upstream_tls: Arc<ClientConfig>,
     pub connect_timeout: Duration,
     pub node_id: String,
+    /// Bindings made on this data plane, for [`crate::DataPlane::status`].
+    /// Locked only to bind and to read the status, never per request.
+    pub(crate) bindings: std::sync::Mutex<Vec<std::sync::Weak<BindingState>>>,
+    /// Bumped when a binding is made or revoked or records a failure.
+    pub status_changed: watch::Sender<u64>,
+}
+
+impl ProxyShared {
+    pub(crate) fn register_binding(&self, binding: &Arc<BindingState>) {
+        let mut all = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.retain(|b| b.strong_count() > 0);
+        all.push(Arc::downgrade(binding));
+        drop(all);
+        self.status_bump();
+    }
+
+    /// Bindings still held by their owner, oldest first.
+    pub(crate) fn live_bindings(&self) -> Vec<Arc<BindingState>> {
+        let mut all = self
+            .bindings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.retain(|b| b.strong_count() > 0);
+        all.iter().filter_map(std::sync::Weak::upgrade).collect()
+    }
+
+    pub(crate) fn status_bump(&self) {
+        self.status_changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
 }
 
 pub(crate) fn body(text: impl Into<Bytes>) -> ProxyBody {
@@ -461,7 +494,7 @@ async fn handle_proxy_request(
         shared.snapshot.clone(),
         &claims,
     )
-    .through(binding.as_deref());
+    .through(binding.as_ref());
     let claims = Arc::new(claims);
     tokio::spawn(async move {
         // The tunnel counts against the connection limits until it closes.
@@ -621,7 +654,7 @@ async fn intercept_tunnel(
 ) {
     // The handshake is bounded by its own timeouts; the session is watched
     // from the moment requests can flow.
-    let binding = watch.binding.as_ref().map(|b| b.subject.clone());
+    let binding = watch.binding.as_ref().map(|b| b.state.clone());
     tokio::select! {
         () = intercepted_connection(io, config, host.clone(), port, claims.clone(), shared.clone(), binding) => {}
         end = session_end(watch) => tunnel_cut(&shared, &claims, &host, port, end),
@@ -635,7 +668,7 @@ async fn intercepted_connection(
     port: u16,
     claims: Arc<SessionClaims>,
     shared: Arc<ProxyShared>,
-    binding: Option<Arc<str>>,
+    binding: Option<Arc<BindingState>>,
 ) {
     let start = match timeout(
         Duration::from_secs(10),
@@ -716,8 +749,8 @@ pub(crate) struct TunnelCtx {
     pub(crate) claims: Arc<SessionClaims>,
     pub(crate) shared: Arc<ProxyShared>,
     pub(crate) upstream: UpstreamHandle,
-    /// Subject of the binding the tunnel came through, if any.
-    pub(crate) binding: Option<Arc<str>>,
+    /// The binding the tunnel came through, if any.
+    pub(crate) binding: Option<Arc<BindingState>>,
 }
 
 /// Does the request's own Host (or absolute authority) name the CONNECT target?
@@ -956,7 +989,12 @@ pub(crate) async fn handle_intercepted(
         );
     }
     let claims = &ctx.claims;
-    if let Err(reason) = check_session(&snapshot, claims, &shared.node, ctx.binding.as_deref()) {
+    if let Err(reason) = check_session(
+        &snapshot,
+        claims,
+        &shared.node,
+        ctx.binding.as_ref().map(|b| &*b.subject),
+    ) {
         Metrics::inc(&shared.metrics.proxy_auth_failures_total);
         return proxy_auth_required(reason);
     }
@@ -1176,6 +1214,15 @@ pub(crate) async fn handle_intercepted(
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
             let _ = shared.audit.try_record(outcome);
+            if status == StatusCode::UNAUTHORIZED.as_u16() {
+                if let Some(binding) = &ctx.binding {
+                    binding.record_failure(
+                        UpstreamFailureKind::CredentialRejected,
+                        &ctx.host,
+                        ctx.port,
+                    );
+                }
+            }
             response.map(|b| b.map_err(BodyError::from).boxed())
         }
         Err(e) => {
@@ -1186,6 +1233,9 @@ pub(crate) async fn handle_intercepted(
                 .detail("status", "502")
                 .detail("reason", format!("upstream request failed: {e}"));
             let _ = shared.audit.try_record(outcome);
+            if let Some(binding) = &ctx.binding {
+                binding.record_failure(UpstreamFailureKind::Unreachable, &ctx.host, ctx.port);
+            }
             respond(
                 StatusCode::BAD_GATEWAY,
                 &format!("upstream request failed: {e}"),

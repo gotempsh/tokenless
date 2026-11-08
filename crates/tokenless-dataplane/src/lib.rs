@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod node;
 pub mod proxy;
 pub mod state;
+pub mod status;
 pub mod tls;
 pub mod upstream;
 
@@ -52,6 +53,9 @@ pub use binding::{Binding, BindingSpec};
 pub use embedded::SnapshotInstaller;
 pub use error::DataPlaneError;
 pub use node::{enroll, NodeIdentity};
+pub use status::{
+    BindingStatus, NotReady, SessionStatus, Status, UpstreamFailure, UpstreamFailureKind,
+};
 
 use crate::audit::{run_batcher, AuditPipeline, AuditShipper, BatcherConfig};
 use crate::metrics::Metrics;
@@ -107,6 +111,7 @@ pub struct DataPlane {
     snapshot_changed: watch::Sender<u64>,
     metrics: Arc<Metrics>,
     shared: Arc<ProxyShared>,
+    status: watch::Receiver<Status>,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -192,7 +197,10 @@ impl DataPlane {
             )?,
             connect_timeout: config.connect_timeout,
             node_id: node_id.to_string(),
+            bindings: std::sync::Mutex::new(Vec::new()),
+            status_changed: watch::channel(0).0,
         });
+        let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
         let mut gateway_task = None;
         if let Some(addr) = config.mcp_listen {
@@ -226,6 +234,10 @@ impl DataPlane {
             )),
         ];
         tasks.extend(gateway_task);
+        tasks.push(tokio::spawn(status::run_status_loop(
+            shared.clone(),
+            status_tx,
+        )));
         let mut metrics_addr = None;
         if let Some(addr) = config.metrics_listen {
             let listener = TcpListener::bind(addr)
@@ -243,6 +255,7 @@ impl DataPlane {
             snapshot_changed,
             metrics,
             shared,
+            status,
             tasks,
         })
     }
@@ -281,6 +294,19 @@ impl DataPlane {
 
     pub fn metrics(&self) -> Arc<Metrics> {
         self.metrics.clone()
+    }
+
+    /// The snapshot in force, its lease and every binding's sessions and
+    /// last upstream failure; see [`status`].
+    pub fn status(&self) -> Status {
+        status::status(&self.shared)
+    }
+
+    /// The latest [`Status`], updated when anything in it changes, so an
+    /// embedder can follow it without polling. A `watch`: a slow reader
+    /// skips to the newest status, nothing queues up.
+    pub fn events(&self) -> watch::Receiver<Status> {
+        self.status.clone()
     }
 
     pub fn shutdown(self) {
