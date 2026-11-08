@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Role};
+use tokenless_core::git::GitScope;
 use tokenless_core::host::HostPattern;
 use tokenless_core::ids::{CredentialId, RuleId, VaultId};
 use tokenless_core::injection::SecretFields;
@@ -69,6 +70,10 @@ pub struct CreateRule {
     /// MCP tools a `tools/call` may name; omit to allow every tool.
     #[serde(default)]
     pub mcp_tools: Option<Vec<String>>,
+    /// Limits the rule to Git smart HTTP for these repositories; see
+    /// [`tokenless_core::git`]. Omit for any request the rule's paths allow.
+    #[serde(default)]
+    pub git: Option<GitScope>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -89,6 +94,27 @@ pub struct UpdateRule {
     pub mcp_tools: Option<Vec<String>>,
     #[serde(default)]
     pub allow_all_tools: bool,
+    /// Replaces the Git scope; send `"remove_git": true` to drop it.
+    #[serde(default)]
+    pub git: Option<GitScope>,
+    #[serde(default)]
+    pub remove_git: bool,
+}
+
+/// A Git scope as sent, normalised and checked.
+fn normalise_git(git: GitScope) -> Result<GitScope, ControlError> {
+    Ok(GitScope::new(git.repositories, git.push)?)
+}
+
+fn git_string(git: &Option<GitScope>) -> String {
+    match git {
+        None => "any".into(),
+        Some(g) => format!(
+            "{}{}",
+            g.repositories.join(","),
+            if g.push { " (push)" } else { "" }
+        ),
+    }
 }
 
 /// Always-reachable hosts are matched on every CONNECT, so keep the list short.
@@ -998,6 +1024,7 @@ impl PolicyService {
                 None => max.methods.clone(),
             },
             mcp_tools: req.mcp_tools.clone().map(validate_mcp_tools).transpose()?,
+            git: req.git.clone().map(normalise_git).transpose()?,
         };
         allow.validate(&template.id)?;
         allow.ensure_within(&max, &template.id)?;
@@ -1018,7 +1045,8 @@ impl PolicyService {
             .target(format!("rule:{}", rule.id))
             .detail("credential_id", meta.id.to_string())
             .detail("hosts", hosts_string(&rule.allow.hosts))
-            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools));
+            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools))
+            .detail("git", git_string(&rule.allow.git));
         self.policy.insert_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)
@@ -1067,6 +1095,16 @@ impl PolicyService {
         } else if let Some(tools) = &req.mcp_tools {
             rule.allow.mcp_tools = Some(validate_mcp_tools(tools.clone())?);
         }
+        if req.remove_git && req.git.is_some() {
+            return Err(ControlError::validation(
+                "send either git or remove_git, not both",
+            ));
+        }
+        if req.remove_git {
+            rule.allow.git = None;
+        } else if let Some(git) = &req.git {
+            rule.allow.git = Some(normalise_git(git.clone())?);
+        }
         rule.allow.validate(&template.id)?;
         rule.allow.ensure_within(&max, &template.id)?;
         let widened = rule.allow.widens(&previous.allow) || (rule.enabled && !previous.enabled);
@@ -1081,7 +1119,8 @@ impl PolicyService {
             .detail("widened", widened.to_string())
             .detail("enabled", rule.enabled.to_string())
             .detail("hosts", hosts_string(&rule.allow.hosts))
-            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools));
+            .detail("mcp_tools", tools_string(&rule.allow.mcp_tools))
+            .detail("git", git_string(&rule.allow.git));
         self.policy.update_rule(rule.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(rule)

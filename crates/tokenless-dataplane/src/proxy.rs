@@ -293,11 +293,15 @@ pub(crate) fn choose_rule<'a>(
     port: u16,
     method: &str,
     path: &str,
+    query: Option<&str>,
 ) -> RuleChoice<'a> {
     let mut best: Option<(&ActiveRule, usize)> = None;
     let mut rival: Option<&ActiveRule> = None;
     for rule in rules {
-        let Some(rank) = rule.allow.specificity(host, port, method, path) else {
+        let Some(rank) = rule
+            .allow
+            .request_specificity(host, port, method, path, query)
+        else {
             continue;
         };
         match best {
@@ -1150,6 +1154,7 @@ pub(crate) async fn handle_intercepted(
     }
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
+    let query = req.uri().query().map(str::to_string);
     if let Err(rejection) = check_request_path(&path) {
         Metrics::inc(&shared.metrics.requests_denied_total);
         return respond(StatusCode::BAD_REQUEST, rejection.as_str());
@@ -1160,6 +1165,7 @@ pub(crate) async fn handle_intercepted(
         ctx.port,
         &method,
         &path,
+        query.as_deref(),
     ) {
         RuleChoice::One(rule) => Some(rule),
         RuleChoice::None => None,
@@ -1604,6 +1610,7 @@ mod tests {
                     .collect(),
                 methods: vec![HttpMethod::parse("*").unwrap()],
                 mcp_tools: None,
+                git: None,
             },
             strip: vec![HeaderName::from_static("authorization")],
             inject: vec![(
@@ -1616,7 +1623,7 @@ mod tests {
     }
 
     fn chosen(rules: &[&ActiveRule], path: &str) -> Result<Option<RuleId>, (RuleId, RuleId)> {
-        match choose_rule(rules.iter().copied(), "gitlab.com", 443, "GET", path) {
+        match choose_rule(rules.iter().copied(), "gitlab.com", 443, "GET", path, None) {
             RuleChoice::None => Ok(None),
             RuleChoice::One(rule) => Ok(Some(rule.id)),
             RuleChoice::Ambiguous(a, b) => Err((a.id, b.id)),
@@ -1669,6 +1676,7 @@ mod tests {
                 paths: vec![PathPattern::parse("/*").unwrap()],
                 methods: vec![HttpMethod::parse("*").unwrap()],
                 mcp_tools: None,
+                git: None,
             },
             strip: vec![
                 HeaderName::from_static("authorization"),

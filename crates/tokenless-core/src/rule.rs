@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
+use crate::git::GitScope;
 use crate::host::HostPattern;
 use crate::path::{HttpMethod, PathPattern};
 
@@ -20,6 +21,10 @@ pub struct RuleScope {
     /// empty list allows none (other MCP methods still work).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_tools: Option<Vec<String>>,
+    /// Only Git smart HTTP to these repositories, on top of the hosts,
+    /// paths and methods. `None`: any request they allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitScope>,
 }
 
 pub const MAX_MCP_TOOLS: usize = 200;
@@ -71,6 +76,9 @@ impl RuleScope {
         if self.methods.is_empty() {
             return Err(empty("method"));
         }
+        if let Some(git) = &self.git {
+            git.validate()?;
+        }
         Ok(())
     }
 
@@ -112,7 +120,12 @@ impl RuleScope {
             (None, Some(_)) => true,
             (Some(now), Some(before)) => now.iter().any(|t| !before.contains(t)),
         };
-        more_tools || self.ensure_within(previous, "").is_err()
+        let more_git = match (&self.git, &previous.git) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(now), Some(before)) => now.widens(before),
+        };
+        more_tools || more_git || self.ensure_within(previous, "").is_err()
     }
 
     /// May a `tools/call` name `tool`?
@@ -131,14 +144,37 @@ impl RuleScope {
         self.specificity(host, port, method, path).is_some()
     }
 
-    /// How specifically this scope allows a request, if it does: the
-    /// [`PathPattern::specificity`] of its most specific path matching it.
-    /// When several rules allow a request, the most specific one is used.
+    /// How specifically this scope allows a request without a query, if
+    /// it does; see [`RuleScope::request_specificity`].
     pub fn specificity(&self, host: &str, port: u16, method: &str, path: &str) -> Option<usize> {
+        self.request_specificity(host, port, method, path, None)
+    }
+
+    /// How specifically this scope allows a request, if it does: the
+    /// [`PathPattern::specificity`] of its most specific path matching it,
+    /// or, with a Git scope that allows it, just below an exact path (it
+    /// names the repository). When several rules allow a request, the most
+    /// specific one is used. `query` is the raw query, `None` without `?`.
+    pub fn request_specificity(
+        &self,
+        host: &str,
+        port: u16,
+        method: &str,
+        path: &str,
+        query: Option<&str>,
+    ) -> Option<usize> {
         if !self.matches_host(host, port) || !self.methods.iter().any(|m| m.matches(method)) {
             return None;
         }
-        self.paths.iter().filter_map(|p| p.specificity(path)).max()
+        let rank = self
+            .paths
+            .iter()
+            .filter_map(|p| p.specificity(path))
+            .max()?;
+        match &self.git {
+            None => Some(rank),
+            Some(git) => git.allows(method, path, query).then_some(usize::MAX - 1),
+        }
     }
 }
 
@@ -161,6 +197,7 @@ mod tests {
                 .map(|m| HttpMethod::parse(m).unwrap())
                 .collect(),
             mcp_tools: None,
+            git: None,
         }
     }
 
@@ -199,6 +236,7 @@ mod tests {
                 .collect(),
             methods: vec![HttpMethod::parse("*").unwrap()],
             mcp_tools: None,
+            git: None,
         };
         let any = s(&["/*"]);
         let api = s(&["/api/*"]);
@@ -214,6 +252,47 @@ mod tests {
         assert!(rank(&any, "/acme/widgets.git/info/refs").is_some());
         assert_eq!(any.specificity("gitlab.com", 443, "GET", "/x"), Some(1));
         assert_eq!(any.specificity("example.com", 443, "GET", "/x"), None);
+    }
+
+    #[test]
+    fn a_git_scope_narrows_its_rule_and_outranks_a_broad_one() {
+        let broad = scope(&["gitlab.com"], &["/*"], &["GET", "POST"]);
+        let mut git = broad.clone();
+        git.git = Some(GitScope::new(vec!["acme/widgets".into()], false).unwrap());
+        let discovery = |r: &RuleScope, query| {
+            r.request_specificity(
+                "gitlab.com",
+                443,
+                "GET",
+                "/acme/widgets.git/info/refs",
+                query,
+            )
+        };
+        let upload = Some("service=git-upload-pack");
+        assert!(discovery(&git, upload) > discovery(&broad, upload));
+        assert_eq!(discovery(&git, None), None);
+        assert_eq!(discovery(&git, Some("service=git-receive-pack")), None);
+        assert_eq!(
+            git.specificity("gitlab.com", 443, "GET", "/api/v4/user"),
+            None
+        );
+        assert!(broad
+            .specificity("gitlab.com", 443, "GET", "/api/v4/user")
+            .is_some());
+        // Hosts and methods still apply.
+        assert_eq!(
+            git.request_specificity("example.com", 443, "GET", "/acme/widgets/info/refs", upload),
+            None
+        );
+        let mut no_post = git.clone();
+        no_post.methods = vec![HttpMethod::parse("GET").unwrap()];
+        assert_eq!(
+            no_post.specificity("gitlab.com", 443, "POST", "/acme/widgets/git-upload-pack"),
+            None
+        );
+        // Adding a Git scope narrows; dropping it widens.
+        assert!(!git.widens(&broad));
+        assert!(broad.widens(&git));
     }
 
     #[test]

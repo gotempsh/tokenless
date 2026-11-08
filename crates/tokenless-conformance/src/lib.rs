@@ -123,6 +123,7 @@ fn scope() -> Result<RuleScope, ConformanceFailure> {
         paths: vec![tokenless_core::path::PathPattern::parse("/*").map_err(parse_err)?],
         methods: vec![tokenless_core::path::HttpMethod::parse("GET").map_err(parse_err)?],
         mcp_tools: Some(vec!["search".to_string()]),
+        git: None,
     })
 }
 

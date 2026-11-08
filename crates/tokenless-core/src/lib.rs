@@ -13,6 +13,7 @@ pub mod authz;
 mod builtin_catalog;
 pub mod egress;
 pub mod error;
+pub mod git;
 pub mod host;
 pub mod ids;
 pub mod injection;

@@ -32,6 +32,8 @@ mod traffic;
 pub mod upstream;
 
 #[cfg(test)]
+mod git_tests;
+#[cfg(test)]
 pub(crate) mod testing;
 
 use std::convert::Infallible;

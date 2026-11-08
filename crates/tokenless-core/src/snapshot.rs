@@ -22,12 +22,12 @@ use crate::seal::Sealed;
 use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
-/// `not_after`. A snapshot is written in the oldest format that carries
+/// `not_after`, format 3 a rule's Git scope. A snapshot is written in the oldest format that carries
 /// everything in it, and a node says which format it reads when it opens
 /// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
 /// enforce is left out of its snapshot, so an older node stops using that
 /// one service instead of refusing every snapshot.
-pub const SNAPSHOT_FORMAT: u32 = 2;
+pub const SNAPSHOT_FORMAT: u32 = 3;
 /// The snapshot stream's query parameter with the newest format the node
 /// reads. A node that sends none reads format 1.
 pub const READS_FORMAT_PARAM: &str = "reads_format";
@@ -109,7 +109,9 @@ pub struct SnapshotRule {
 
 /// The oldest format that carries `rule`.
 pub fn rule_format(rule: &SnapshotRule) -> u32 {
-    if rule.not_after.is_some() {
+    if rule.allow.git.is_some() {
+        3
+    } else if rule.not_after.is_some() {
         2
     } else {
         MIN_SNAPSHOT_FORMAT
@@ -228,12 +230,17 @@ impl SignedSnapshot {
                 ),
             ));
         }
-        if body.format < format_for(&body.rules) {
+        if let Some(rule) = body.rules.iter().find(|r| rule_format(r) > body.format) {
+            let what = if rule.allow.git.is_some() {
+                "a Git scope"
+            } else {
+                "a credential deadline"
+            };
             return Err(CoreError::encoding(
                 "snapshot body",
                 format!(
-                    "format {} cannot carry a credential deadline, but a rule has one",
-                    body.format
+                    "format {} cannot carry {what}, but rule {} has one",
+                    body.format, rule.rule_id
                 ),
             ));
         }
@@ -314,6 +321,7 @@ mod tests {
                 paths: vec![],
                 methods: vec![],
                 mcp_tools: None,
+                git: None,
             },
             strip_headers: vec![],
             headers: seal(
@@ -341,6 +349,19 @@ mod tests {
             "{err}"
         );
         b.format = 2;
+        assert!(signed(&b).verify(&key.verifying_key()).is_ok());
+
+        // A Git scope needs format 3; a node reading 2 is not sent it.
+        b.rules[0].allow.git =
+            Some(crate::git::GitScope::new(vec!["acme/widgets".into()], false).unwrap());
+        assert_eq!(format_for(&b.rules), 3);
+        assert_eq!(rules_readable_by(&b.rules, 2), (vec![], 1));
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot carry a Git scope"),
+            "{err}"
+        );
+        b.format = 3;
         assert!(signed(&b).verify(&key.verifying_key()).is_ok());
 
         b.format = SNAPSHOT_FORMAT + 1;

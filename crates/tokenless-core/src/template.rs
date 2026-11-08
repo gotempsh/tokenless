@@ -301,6 +301,7 @@ impl ServiceTemplate {
             paths: self.allow.paths.clone(),
             methods: self.allow.methods.clone(),
             mcp_tools: None,
+            git: None,
         };
         scope.validate(&self.id)?;
         Ok(scope)

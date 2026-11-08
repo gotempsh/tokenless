@@ -107,18 +107,37 @@ git clone https://github.com/acme/widgets.git
 Elsewhere, set `http.sslCAInfo` to `broker-ca.pem`.
 
 The template allows every repository the token can reach. To limit an
-agent to one repository, give the rule exact paths:
+agent to some repositories, give the rule a Git scope when you create or
+update it over the API:
 
-| Access | Paths (`GET` and `POST`) |
+```json
+{ "git": { "repositories": ["acme/widgets", "acme/docs"], "push": false } }
+```
+
+The rule then allows only Git's smart HTTP requests for those
+repositories:
+
+| Request | Allowed |
 |---|---|
-| Clone and fetch | `/acme/widgets.git/info/refs`, `/acme/widgets.git/git-upload-pack` |
-| Push as well | the two above and `/acme/widgets.git/git-receive-pack` |
+| `GET /<repo>/info/refs?service=git-upload-pack` | clone, fetch |
+| `POST /<repo>/git-upload-pack` | clone, fetch |
+| `GET /<repo>/info/refs?service=git-receive-pack` | with `"push": true` |
+| `POST /<repo>/git-receive-pack` | with `"push": true` |
 
-A push under the read rule gets a `403` from the proxy. The paths match
-the URL Git is given, so clone with the `.git` suffix the rule names.
-A prefix such as `/acme/widgets.git/*` would allow pushes too. Packs of
-any size stream through; Git LFS objects come from other hosts and need
-rules of their own.
+`<repo>` may end in `.git` or not, and case does not matter, as on GitHub
+and GitLab. Everything else under the rule gets a `403`: another
+repository, any other query (a repeated or encoded `service` included), a
+query on the two `POST`s, percent-encoding in the path, the dumb HTTP
+protocol and Git LFS, whose objects come from other hosts and need rules
+of their own. A push without `"push": true` is refused at discovery,
+before Git sends a pack. The proxy never follows a redirect; Git
+follows it and the request it then makes is checked like any other.
+Packs of any size stream through.
+
+Send `"remove_git": true` to drop the scope. Adding repositories or
+`"push": true`, or dropping the scope, widens the rule and needs a recent
+second factor. A node older than this release does not receive
+Git-scoped rules, so it refuses their requests until it is upgraded.
 
 A **GitLab** service added before GitLab (Git) existed allows every path
 on `gitlab.com`, so in a session with GitLab (Git) the two tie and the

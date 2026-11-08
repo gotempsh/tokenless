@@ -63,6 +63,9 @@ pub enum CoreError {
     #[error("invalid binding '{binding_id}': {reason}")]
     InvalidBinding { binding_id: String, reason: String },
 
+    #[error("invalid Git repository '{repository}': {reason}")]
+    InvalidGitScope { repository: String, reason: String },
+
     #[error("invalid deadline for rule {rule_id} in a session: {reason}")]
     InvalidRuleDeadline { rule_id: String, reason: String },
 

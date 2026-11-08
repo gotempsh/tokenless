@@ -452,6 +452,7 @@ pub(crate) mod tests {
                                 paths: vec![PathPattern::parse("/*").unwrap()],
                                 methods: vec![HttpMethod::parse("*").unwrap()],
                                 mcp_tools: None,
+                                git: None,
                             },
                             strip_headers: vec![
                                 "authorization".into(),

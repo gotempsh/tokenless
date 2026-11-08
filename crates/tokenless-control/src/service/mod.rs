@@ -1232,6 +1232,7 @@ mod tests {
             paths,
             methods: Some(vec!["GET".into()]),
             mcp_tools: None,
+            git: None,
         };
         assert!(cp
             .policy
@@ -1282,6 +1283,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_scopes_are_normalised_and_widening_them_needs_step_up() {
+        use tokenless_core::git::GitScope;
+
+        let cp = plane().await;
+        let a = admin(0);
+        let vault = cp.policy.create_vault(&a, "main").await.unwrap();
+        let cred = cp
+            .policy
+            .create_credential(
+                &a,
+                &vault.id,
+                bearer(&[("token", "t")], &["git.example.com"]),
+            )
+            .await
+            .unwrap();
+        let git = |repositories: &[&str], push| GitScope {
+            repositories: repositories.iter().map(|r| r.to_string()).collect(),
+            push,
+        };
+        let rule = |scope| CreateRule {
+            name: "clone".into(),
+            credential_id: cred.id,
+            hosts: None,
+            paths: None,
+            methods: None,
+            mcp_tools: None,
+            git: Some(scope),
+        };
+        assert!(matches!(
+            cp.policy
+                .create_rule(&a, &vault.id, rule(git(&["acme/../widgets"], false)))
+                .await,
+            Err(ControlError::Core(
+                tokenless_core::CoreError::InvalidGitScope { .. }
+            ))
+        ));
+        let created = cp
+            .policy
+            .create_rule(
+                &a,
+                &vault.id,
+                rule(git(&[" /Acme/Widgets.git", "acme/other"], false)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created.allow.git,
+            Some(git(&["acme/other", "acme/widgets"], false))
+        );
+
+        let stale = admin(3600);
+        let update = |git: Option<GitScope>, remove_git| UpdateRule {
+            git,
+            remove_git,
+            ..Default::default()
+        };
+        // Fewer repositories narrow; pushing, another repository or no Git
+        // scope at all widen.
+        let narrowed = cp
+            .policy
+            .update_rule(
+                &stale,
+                &created.id,
+                update(Some(git(&["acme/widgets"], false)), false),
+            )
+            .await
+            .unwrap();
+        assert_eq!(narrowed.allow.git, Some(git(&["acme/widgets"], false)));
+        for widen in [
+            update(Some(git(&["acme/widgets"], true)), false),
+            update(Some(git(&["acme/widgets", "acme/third"], false)), false),
+            update(None, true),
+        ] {
+            assert!(matches!(
+                cp.policy.update_rule(&stale, &created.id, widen).await,
+                Err(ControlError::StepUpRequired { .. })
+            ));
+        }
+        assert!(matches!(
+            cp.policy
+                .update_rule(
+                    &a,
+                    &created.id,
+                    update(Some(git(&["acme/widgets"], true)), true)
+                )
+                .await,
+            Err(ControlError::Validation { .. })
+        ));
+        let removed = cp
+            .policy
+            .update_rule(&a, &created.id, update(None, true))
+            .await
+            .unwrap();
+        assert_eq!(removed.allow.git, None);
+    }
+
+    #[tokio::test]
     async fn sessions_mint_from_an_access_bundle_by_name() {
         use crate::service::bundles::{CreateBundle, UpdateBundle};
 
@@ -1312,6 +1410,7 @@ mod tests {
                         paths: None,
                         methods: None,
                         mcp_tools: None,
+                        git: None,
                     },
                 )
                 .await
@@ -1699,6 +1798,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -1799,6 +1899,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -2032,6 +2133,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -2166,6 +2268,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -2305,6 +2408,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -2444,6 +2548,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await
@@ -2919,6 +3024,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await

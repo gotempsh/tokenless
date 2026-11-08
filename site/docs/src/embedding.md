@@ -53,7 +53,9 @@ and once its lease lapses, every request is refused.
 ## Bind each workload
 
 Mint the workload's sessions for this node and this workload, then bind
-them:
+them. A rule for a Git host can name the repositories a workload may
+clone or push (`CreateRule { git: Some(GitScope::new(repos, push)?), .. }`;
+see [Git over HTTPS](agents.md#git-over-https)):
 
 ```rust
 let minted = control.sessions.mint(&host, &vault.id, MintSession {

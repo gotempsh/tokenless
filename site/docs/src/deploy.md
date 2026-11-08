@@ -214,8 +214,8 @@ Replace the binary (or the image tag) and restart. Database migrations run
 on start. The console is part of the binary, so it upgrades with it.
 Upgrade the control plane before the proxies. A proxy older than the
 control plane keeps working, but it does not use a service that needs a
-newer proxy (for now, one whose secret has an expiry date) until it is
-upgraded; the control plane logs a warning naming that proxy.
+newer proxy (for now, one whose secret has an expiry date, or a rule
+with a Git scope) until it is upgraded; the control plane logs a warning naming that proxy.
 
 **Upgrading past the removal of `session_issuer` keys.** API keys with
 the `session_issuer` role are deleted on upgrade, and whatever used one

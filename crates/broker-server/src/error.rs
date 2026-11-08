@@ -134,6 +134,7 @@ fn map_core(e: &CoreError) -> Mapped {
         | CoreError::InvalidBinding { .. }
         | CoreError::InvalidTtl { .. }
         | CoreError::InvalidRuleDeadline { .. }
+        | CoreError::InvalidGitScope { .. }
         | CoreError::InvalidVariableKey { .. }
         | CoreError::InvalidVariableReference { .. }
         | CoreError::UnknownVariable { .. }

@@ -338,7 +338,7 @@ pub async fn https_echo_authorization_upstream() -> (u16, CertificateDer<'static
     (port, root)
 }
 
-async fn https_listener() -> (
+pub(crate) async fn https_listener() -> (
     TcpListener,
     Arc<rustls::ServerConfig>,
     CertificateDer<'static>,

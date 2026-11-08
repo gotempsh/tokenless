@@ -847,6 +847,7 @@ mod tests {
                     paths: None,
                     methods: None,
                     mcp_tools: None,
+                    git: None,
                 },
             )
             .await

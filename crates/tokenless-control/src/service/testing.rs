@@ -73,6 +73,7 @@ pub async fn vault_with_rule(cs: &ControlServices, host: &Caller) -> (VaultId, R
                 paths: None,
                 methods: None,
                 mcp_tools: None,
+                git: None,
             },
         )
         .await
