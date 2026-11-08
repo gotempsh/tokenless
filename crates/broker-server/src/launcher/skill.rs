@@ -61,9 +61,134 @@ pub fn install(skills_dir: &Path, force: bool) -> Result<(PathBuf, Installed), L
     Ok((path, outcome))
 }
 
+/// Programs whose agent reads skills from `.claude/skills`.
+const CLAUDE_CODE: &[&str] = &["claude"];
+
+/// Whether `program` (its file name) is an agent that reads skills where
+/// [`install`] puts them.
+pub fn reads_claude_skills(program: &str) -> bool {
+    CLAUDE_CODE.contains(&program)
+}
+
+/// The skills directories Claude Code reads from `cwd`: `.claude/skills`
+/// in it and each folder above it, then `~/.claude/skills`.
+pub fn claude_dirs(cwd: &Path, home: Option<&Path>) -> Vec<PathBuf> {
+    cwd.ancestors()
+        .map(|dir| dir.join(".claude").join("skills"))
+        .chain(home.map(|h| h.join(".claude").join("skills")))
+        .collect()
+}
+
+/// Whether any of `dirs` holds the skill: this version's or another (an
+/// older one, a newer one from `npx skills`, or a copy with local edits,
+/// all of which work).
+pub fn installed_in(dirs: &[PathBuf]) -> bool {
+    dirs.iter()
+        .any(|dir| dir.join(SKILL_NAME).join("SKILL.md").is_file())
+}
+
+/// What to say before running `program` when it is an agent that would
+/// read the skill and none is installed where it looks.
+pub fn missing_hint(program: &str, cwd: &Path, home: Option<&Path>) -> Option<&'static str> {
+    (reads_claude_skills(program) && !installed_in(&claude_dirs(cwd, home))).then_some(
+        "the tokenless skill isn't installed for Claude Code, so it won't know how to use placeholders or read the proxy's errors. Install it with: tokenless skill --install",
+    )
+}
+
+/// Where `tokenless login` offers to install the skill: `~/.claude/skills`,
+/// when Claude Code is set up on this machine (`~/.claude` exists) and no
+/// copy is installed where it would look from `cwd`.
+pub fn install_offer(cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let home = home?;
+    let claude = home.join(".claude");
+    (claude.is_dir() && !installed_in(&claude_dirs(cwd, Some(home)))).then(|| claude.join("skills"))
+}
+
+/// Reads a yes/no answer to `question` from `input`, writing the question
+/// to `output`. An empty answer is yes.
+pub fn ask_yes(
+    question: &str,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> std::io::Result<bool> {
+    loop {
+        write!(output, "{question} [Y/n] ")?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0 {
+            return Ok(false);
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hint_shows_only_for_claude_code_without_the_skill() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let project = root.path().join("work").join("repo");
+        let nested = project.join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert!(missing_hint("claude", &nested, Some(&home)).is_some());
+        // Other programs never get it, so `run -- curl` stays quiet.
+        assert!(missing_hint("curl", &nested, Some(&home)).is_none());
+
+        // In the project, from a folder inside it.
+        install(&project.join(".claude").join("skills"), false).unwrap();
+        assert!(missing_hint("claude", &nested, Some(&home)).is_none());
+        assert!(missing_hint("claude", &root.path().join("work"), Some(&home)).is_some());
+
+        // Personal skills, in any version.
+        let personal = home.join(".claude").join("skills").join(SKILL_NAME);
+        std::fs::create_dir_all(&personal).unwrap();
+        std::fs::write(personal.join("SKILL.md"), "an older version").unwrap();
+        assert!(missing_hint("claude", &root.path().join("work"), Some(&home)).is_none());
+    }
+
+    #[test]
+    fn login_offers_the_install_only_to_claude_code_users_without_it() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let cwd = root.path().join("work");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        assert_eq!(
+            install_offer(&cwd, Some(&home)),
+            None,
+            "no Claude Code here"
+        );
+        assert_eq!(install_offer(&cwd, None), None);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let offered = install_offer(&cwd, Some(&home)).unwrap();
+        assert_eq!(offered, home.join(".claude").join("skills"));
+        install(&offered, false).unwrap();
+        assert_eq!(install_offer(&cwd, Some(&home)), None);
+    }
+
+    #[test]
+    fn ask_yes_defaults_to_yes_and_asks_again_on_anything_else() {
+        let ask = |typed: &str| {
+            let mut out = Vec::new();
+            let yes = ask_yes("Install?", &mut typed.as_bytes(), &mut out).unwrap();
+            (yes, String::from_utf8(out).unwrap())
+        };
+        assert!(ask("\n").0);
+        assert!(ask("Y\n").0);
+        assert!(!ask("no\n").0);
+        let (yes, out) = ask("maybe\nn\n");
+        assert!(!yes);
+        assert_eq!(out.matches("Install? [Y/n] ").count(), 2);
+        // End of input is no.
+        assert!(!ask("").0);
+    }
 
     #[test]
     fn the_skill_has_frontmatter_naming_it() {

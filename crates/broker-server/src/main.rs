@@ -263,6 +263,10 @@ struct RunArgs {
     /// Variables to set, as `NAME=cb://<service>/<field>` or `NAME=value`.
     #[arg(value_name = "NAME=VALUE")]
     assignments: Vec<String>,
+    /// Don't say so when the command is Claude Code and the tokenless
+    /// skill isn't installed.
+    #[arg(long, env = "TOKENLESS_NO_SKILL_HINT")]
+    no_skill_hint: bool,
     /// The command to run, after `--`.
     #[arg(last = true, required = true)]
     command: Vec<String>,
@@ -687,7 +691,53 @@ async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
         &until,
         file.as_ref().map(|(p, r)| (p.as_str(), r.as_str())),
     ));
+    offer_skill();
     Ok(ExitCode::SUCCESS)
+}
+
+/// [`skill::missing_hint`] from where `run` was started.
+fn skill_hint(program: &str) -> Option<&'static str> {
+    let cwd = std::env::current_dir().ok()?;
+    let home = home_dir();
+    skill::missing_hint(program, &cwd, home.as_deref())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+}
+
+/// After signing in at a terminal, offers to install the skill for Claude
+/// Code when it is set up here and has no copy. Declining changes nothing,
+/// and a failed install doesn't undo the sign-in.
+fn offer_skill() {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return;
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    let Some(dir) = skill::install_offer(&cwd, home_dir().as_deref()) else {
+        return;
+    };
+    let question = format!(
+        "tokenless: install the agent skill for Claude Code in {}?",
+        dir.display()
+    );
+    match skill::ask_yes(
+        &question,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr(),
+    ) {
+        Ok(true) => match skill::install(&dir, false) {
+            Ok((path, _)) => say(format_args!("installed {}", path.display())),
+            Err(e) => say(format_args!("the skill was not installed: {e}")),
+        },
+        Ok(false) => say("skipped; install it later with: tokenless skill --install"),
+        Err(e) => say(format_args!("the skill was not installed: {e}")),
+    }
 }
 
 async fn logout(server: String) -> Result<ExitCode, CliError> {
@@ -1586,6 +1636,11 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
             args.port.proxy
         )
     });
+    if !args.no_skill_hint && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        if let Some(hint) = skill_hint(&name) {
+            say(hint);
+        }
+    }
     let spawned = inject::agent_command(&program, &args.command[1..], &env).spawn();
     let mut child = match spawned {
         Ok(c) => c,
@@ -1715,6 +1770,12 @@ mod tests {
         }
         let argv = ["tokenless"].iter().chain(args).chain(&["--", "claude"]);
         Wrapper::try_parse_from(argv).unwrap().run
+    }
+
+    #[test]
+    fn run_can_be_told_not_to_mention_the_skill() {
+        assert!(run_args(&["--no-skill-hint"]).no_skill_hint);
+        assert!(!run_args(&[]).no_skill_hint);
     }
 
     fn token(value: &str) -> Option<Zeroizing<String>> {

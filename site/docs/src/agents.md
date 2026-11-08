@@ -155,6 +155,12 @@ tokenless skill --install --dir .claude/skills   # for one project
 tokenless skill                                  # print it
 ```
 
+`tokenless login` offers to install it when Claude Code is set up and
+has no copy, and `tokenless run -- claude` says so in one line when the
+skill is missing, then starts Claude Code anyway. Neither installs
+anything unless you say yes. Turn the line off with `--no-skill-hint` or
+`TOKENLESS_NO_SKILL_HINT=1`.
+
 ## When the proxy says no
 
 Answers from the proxy itself carry the header `x-broker-error: 1` and a
