@@ -57,17 +57,12 @@ import { Textarea } from "../components/ui/textarea";
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** The command that runs an agent behind a session port for `bundle`. */
-export function runCommand(bundle: string, vault?: string): string {
-  const vaultFlag = vault ? ` --vault ${vault}` : "";
-  return `tokenless run${vaultFlag} --bundle ${bundle} -- <agent-command>`;
-}
-
-export function CommandSnippet({ command }: { command: string }) {
+/** A command with a copy button. `display` shortens what is shown; the copy is always `command`. */
+export function CommandSnippet({ command, display }: { command: string; display?: string }) {
   return (
     <div className="flex items-center gap-2">
       <code className="min-w-0 flex-1 break-all rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground">
-        {command}
+        {display ?? command}
       </code>
       <CopyButton value={command} label="Copy command" />
     </div>
@@ -119,7 +114,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   );
   const services = useVaultServices(vaultIds);
   const [editing, setEditing] = useState<AccessBundle | "new" | null>(null);
-  const [running, setRunning] = useState<AccessBundle | null>(null);
   const here = vaultId ? `vaults/${vaultId}/bundles` : "bundles";
   const goAdd = (vault?: string, bundle?: string) => {
     window.location.hash = addServiceHref({ vault, bundle, back: here });
@@ -190,7 +184,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
             description={
               <>
                 Pick a service from the catalogue and it is stored, given a rule and put in a new bundle in one step.
-                Then start an agent with <Mono>{runCommand("code-review").replace(" -- <agent-command>", " -- claude")}</Mono>.
+                Then create a session on the bundle's page and start an agent with its token.
               </>
             }
             action={
@@ -274,7 +268,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                               window.location.hash = `#/bundles/${b.id}`;
                             },
                           },
-                          { label: "Run an agent", icon: Terminal, onSelect: () => setRunning(b) },
+                          { label: "Run an agent", icon: Terminal, onSelect: () => (window.location.hash = `#/bundles/${b.id}/connect`) },
                           { label: "Edit bundle", icon: Pencil, onSelect: () => setEditing(b) },
                           { label: "Delete bundle", icon: Trash2, onSelect: () => confirm.ask(b), destructive: true },
                         ]}
@@ -309,17 +303,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
             }}
           />
         )}
-      </FormDialog>
-      <FormDialog
-        open={running !== null}
-        onOpenChange={(o) => {
-          if (!o) setRunning(null);
-        }}
-        wide
-        title={running ? `Run an agent with ${running.name}` : "Run an agent"}
-        description="The CLI mints a session from the bundle, opens a local session port in front of the proxy, starts the agent pointed at it with the broker CA trusted, renews the session while the agent runs and ends it when the agent exits."
-      >
-        {running && <RunInstructions bundle={running} onClose={() => setRunning(null)} />}
       </FormDialog>
       <ConfirmDialog
         open={confirm.open}
@@ -516,52 +499,5 @@ function BundleForm({
         </Button>
       </DialogActions>
     </form>
-  );
-}
-
-function RunInstructions({ bundle, onClose }: { bundle: AccessBundle; onClose: () => void }) {
-  return (
-    <div className="space-y-5 text-sm">
-      <ol className="list-decimal space-y-4 pl-5">
-        <li className="space-y-2">
-          <p>
-            Create a <span className="font-medium">session_issuer</span> API key for this vault under{" "}
-            <a href="#/api-keys" className="underline" onClick={onClose}>
-              API keys
-            </a>{" "}
-            and give it to the agent's machine:
-          </p>
-          <CommandSnippet command="export TOKENLESS_API_KEY=cbk_..." />
-          <p className="text-xs text-muted-foreground">
-            Off this machine, also set <Mono>TOKENLESS_URL</Mono> to the console's address and{" "}
-            <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a proxy's <Mono>host:port</Mono>.
-          </p>
-        </li>
-        <li className="space-y-2">
-          <p>Start the agent behind a session port:</p>
-          <CommandSnippet command={runCommand(bundle.name)} />
-          <p className="text-xs text-muted-foreground">
-            The agent sees a plain <Mono>HTTPS_PROXY=http://127.0.0.1:&lt;port&gt;</Mono> and never the session token.
-            Add <Mono>--ca-fingerprint</Mono> with the fingerprint from the{" "}
-            <a href="#/proxies" className="underline" onClick={onClose}>
-              Proxies
-            </a>{" "}
-            page to refuse an unexpected CA.
-          </p>
-        </li>
-        <li className="space-y-2">
-          <p>Or keep a session port open for agents you start yourself:</p>
-          <CommandSnippet command={`tokenless session start --bundle ${bundle.name} --env-file ./agent.env`} />
-          <p className="text-xs text-muted-foreground">
-            Then <Mono>source ./agent.env</Mono> in the agent's shell. Ctrl-C ends the session.
-          </p>
-        </li>
-      </ol>
-      <DialogActions>
-        <Button type="button" onClick={onClose}>
-          Done
-        </Button>
-      </DialogActions>
-    </div>
   );
 }

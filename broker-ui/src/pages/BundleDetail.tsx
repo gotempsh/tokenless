@@ -14,7 +14,6 @@ import {
   ListPlus,
   Pencil,
   Plus,
-  ScrollText,
   SquareTerminal,
   Terminal,
   Timer,
@@ -39,7 +38,7 @@ import {
 } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
-import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "../bundleConnect";
+import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote, signedInRunCommand } from "../bundleConnect";
 import { claudeMcpCommand, DEFAULT_GATEWAY, mcpClientJson, mcpCredentials, mcpEndpoints, type McpEndpoint } from "../mcpConnect";
 import {
   fromWidth,
@@ -60,7 +59,7 @@ import {
   Relative,
   RowActions,
   RowMenu,
-  rowOpener,
+  rowLink,
   Section,
   Status,
   Tags,
@@ -78,7 +77,10 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { CommandSnippet } from "./Bundles";
-import { SessionDetail, sessionLabel, sessionStatus } from "./Sessions";
+import { useActorNames } from "./Audit";
+import { NewSessionDialog } from "./NewSession";
+import { isActive, sessionLabel, sessionStatus } from "./Sessions";
+import { actorName, type ActorNames } from "../audit";
 
 export type BundleTab = "services" | "sessions" | "connect";
 
@@ -136,6 +138,9 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
   );
   const [editing, setEditing] = useState(false);
   const [including, setIncluding] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const actors = useActorNames(user);
+  const [created, setCreated] = useState(0);
   const confirmDelete = useConfirm<AccessBundle>();
   const deleteAction = useAction();
 
@@ -232,7 +237,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
               <span className="text-muted-foreground"> ({members.filter((r) => !r.enabled).length} disabled)</span>
             )}
           </Fact>
-          <Fact label="Created by">{b.created_by}</Fact>
+          <Fact label="Created by">{actorName(b.created_by, actors)}</Fact>
           <Fact label="Updated">
             <When at={b.updated_at} />
           </Fact>
@@ -260,7 +265,13 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
         />
       )}
       {b && tab === "sessions" && (
-        <BundleSessions bundle={b} vaultName={vault.data?.name} canRevoke={canEdit} onConnect={() => goTab("connect")} />
+        <BundleSessions
+          bundle={b}
+          actors={actors}
+          canChange={canEdit}
+          refresh={created}
+          onCreate={() => setCreating(true)}
+        />
       )}
       {b && tab === "connect" && (
         <div className="space-y-10">
@@ -271,10 +282,26 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
             canAdd={canAdd}
             onAdd={goAdd}
           />
-          <Connect bundle={b} vaultName={vault.data?.name} credentials={memberCredentials} empty={members.length === 0} />
+          <Connect
+            bundle={b}
+            vaultName={vault.data?.name}
+            credentials={memberCredentials}
+            empty={members.length === 0}
+            canCreate={canEdit}
+            onCreate={() => setCreating(true)}
+          />
         </div>
       )}
       {!b && bundle.loading && <Loading />}
+      {b && (
+        <NewSessionDialog
+          bundle={b}
+          open={creating}
+          onOpenChange={setCreating}
+          onCreated={() => setCreated((n) => n + 1)}
+          isAdmin={user.role === "admin"}
+        />
+      )}
       <FormDialog open={editing} onOpenChange={setEditing} title={b ? `Edit ${b.name}` : "Edit bundle"}>
         {b && editing && (
           <DetailsForm
@@ -644,37 +671,45 @@ function DetailsForm({ bundle, onCancel, onSaved }: { bundle: AccessBundle; onCa
 
 // ----- sessions ---------------------------------------------------------------
 
-const isActive = (s: ProxySession) => !s.revoked_at && new Date(s.expires_at) > new Date();
-
 function BundleSessions({
   bundle,
-  vaultName,
-  canRevoke,
-  onConnect,
+  actors,
+  canChange,
+  refresh,
+  onCreate,
 }: {
   bundle: AccessBundle;
-  vaultName?: string;
-  canRevoke: boolean;
-  onConnect: () => void;
+  actors: ActorNames;
+  canChange: boolean;
+  /** Changes when a session was created elsewhere on the page. */
+  refresh: number;
+  onCreate: () => void;
 }) {
   const [page, setPage] = useState(1);
   const sessions = useLoad(
     () => get<Page<ProxySession>>(`/bundles/${bundle.id}/sessions?page=${page}`),
-    [bundle.id, page],
+    [bundle.id, page, refresh],
   );
-  const [viewing, setViewing] = useState<ProxySession | null>(null);
   const confirm = useConfirm<ProxySession>();
   const action = useAction();
   const revoke = async (s: ProxySession) => {
     await action.run(() => post<ProxySession>(`/sessions/${s.id}/revoke`));
     confirm.close();
-    setViewing(null);
     sessions.reload();
   };
-  return (
-    <Section
-      title="Sessions"
+  const newButton = (
+    <Button
+      type="button"
+      onClick={onCreate}
+      disabled={!canChange}
+      title={canChange ? undefined : "Only editors and admins can create sessions"}
     >
+      <Plus />
+      New session
+    </Button>
+  );
+  return (
+    <Section title="Sessions" actions={newButton}>
       <ErrorBanner error={sessions.error ?? action.error} />
       <Panel>
         {sessions.loading && !sessions.data ? (
@@ -682,26 +717,17 @@ function BundleSessions({
         ) : sessions.data?.items.length === 0 ? (
           <Empty
             icon={Timer}
-            title="No agent has started with this bundle yet"
-            description={
-              <>
-                Sessions appear here when an agent starts with <Mono>--bundle {bundle.name}</Mono>.
-              </>
-            }
-            action={
-              <Button type="button" variant="outline" onClick={onConnect}>
-                <Terminal />
-                Run an agent
-              </Button>
-            }
+            title="No sessions yet"
+            description="Create a session and give its token to an agent. It reaches this bundle's services until it expires or you revoke it."
+            action={newButton}
           />
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Label</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Started by</TableHead>
-                <TableHead className={fromWidth.xl}>Started</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead className={fromWidth["3xl"]}>Created by</TableHead>
+                <TableHead className={fromWidth.xl}>Created</TableHead>
                 <TableHead className={fromWidth.lg}>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -709,9 +735,11 @@ function BundleSessions({
             </TableHeader>
             <TableBody>
               {sessions.data?.items.map((s) => (
-                <TableRow key={s.id} title="Open this session's logs" {...rowOpener(() => setViewing(s))}>
+                <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
                   <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
-                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>{s.created_by}</TableCell>
+                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>
+                    {actorName(s.created_by, actors)}
+                  </TableCell>
                   <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
                     <Relative at={s.created_at} />
                   </TableCell>
@@ -721,24 +749,21 @@ function BundleSessions({
                   <TableCell>{sessionStatus(s)}</TableCell>
                   <TableCell>
                     <RowActions>
-                      <RowMenu
-                        label={sessionLabel(s)}
-                        items={[
-                          { label: "View logs", icon: ScrollText, onSelect: () => setViewing(s) },
-                          ...(isActive(s)
-                            ? [
-                                {
-                                  label: "Revoke session",
-                                  icon: Ban,
-                                  onSelect: () => confirm.ask(s),
-                                  destructive: true,
-                                  disabled: !canRevoke,
-                                  reason: "Only editors and admins can revoke sessions",
-                                },
-                              ]
-                            : []),
-                        ]}
-                      />
+                      {isActive(s) && (
+                        <RowMenu
+                          label={sessionLabel(s)}
+                          items={[
+                            {
+                              label: "Revoke session",
+                              icon: Ban,
+                              onSelect: () => confirm.ask(s),
+                              destructive: true,
+                              disabled: !canChange,
+                              reason: "Only editors and admins can revoke sessions",
+                            },
+                          ]}
+                        />
+                      )}
                     </RowActions>
                   </TableCell>
                 </TableRow>
@@ -748,32 +773,11 @@ function BundleSessions({
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>
-      <FormDialog
-        open={viewing !== null}
-        onOpenChange={(o) => {
-          if (!o) setViewing(null);
-        }}
-        wide
-        title={viewing ? sessionLabel(viewing) : "Session"}
-      >
-        {viewing && (
-          <SessionDetail
-            session={viewing}
-            vaultName={vaultName}
-            onRevoke={() => confirm.ask(viewing)}
-            onClose={() => setViewing(null)}
-            onChanged={(s) => {
-              setViewing(s);
-              sessions.reload();
-            }}
-          />
-        )}
-      </FormDialog>
       <ConfirmDialog
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}
         title={`Revoke "${confirm.target ? sessionLabel(confirm.target) : ""}"?`}
-        description="Proxies refuse the session at their next policy refresh. The agent using it loses access immediately after."
+        description="Proxies refuse the session at their next policy refresh, so whoever holds its token loses access within seconds."
         confirmLabel="Revoke session"
         busy={action.busy}
         onConfirm={() => {
@@ -953,11 +957,15 @@ function Connect({
   vaultName,
   credentials,
   empty,
+  canCreate,
+  onCreate,
 }: {
   bundle: AccessBundle;
   vaultName?: string;
   credentials: CredentialMeta[];
   empty: boolean;
+  canCreate: boolean;
+  onCreate: () => void;
 }) {
   const [agent, setAgent] = useState(AGENTS[0]?.id ?? "claude");
   const command = AGENTS.find((a) => a.id === agent)?.command ?? "<agent-command>";
@@ -975,15 +983,20 @@ function Connect({
       )}
       <Panel className="p-5">
         <ol className="space-y-6">
-          <Step n={1} title="Give the agent's machine a key that can start sessions">
+          <Step n={1} title="Create a session for the agent">
             <p className="text-sm text-muted-foreground">
-              Create a <span className="font-medium text-foreground">session_issuer</span> key for this vault under{" "}
-              <a href="#/api-keys" className="underline">
-                API keys
-              </a>
-              . It can start sessions from the vault's bundles and nothing else.
+              The session's token is all the agent's machine needs. It reaches this bundle's services until it expires
+              or you revoke it, and every request it makes is logged on the session's page.
             </p>
-            <CommandSnippet command="export TOKENLESS_API_KEY=cbk_..." />
+            <Button
+              type="button"
+              onClick={onCreate}
+              disabled={!canCreate}
+              title={canCreate ? undefined : "Only editors and admins can create sessions"}
+            >
+              <Plus />
+              New session
+            </Button>
             <p className="text-xs text-muted-foreground">
               Off this machine, also set <Mono>TOKENLESS_URL</Mono> to this console's address and{" "}
               <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a{" "}
@@ -1006,7 +1019,13 @@ function Connect({
                 icon: <LogoTile logo={a.logo} fallback={SquareTerminal} />,
               }))}
             />
-            <CommandSnippet command={runAgentCommand(bundle.name, command, vaultName)} />
+            <CommandSnippet command="export TOKENLESS_SESSION_TOKEN=v4.public..." />
+            <CommandSnippet command={runAgentCommand(command)} />
+            <p className="text-xs text-muted-foreground">
+              Signed in with <Mono>tokenless login</Mono> on this machine? Skip the token:{" "}
+              <Mono>{signedInRunCommand(bundle.name, command, vaultName)}</Mono> creates a session and ends it when the
+              agent exits.
+            </p>
           </Step>
           <Step n={3} title="Teach the agent how the broker works">
             <p className="text-sm text-muted-foreground">
@@ -1030,23 +1049,20 @@ function Connect({
                   Each <Mono>cb://</Mono> reference becomes the service's placeholder, which the proxy swaps for the
                   secret on the service's hosts. The script never holds the secret.
                 </p>
-                <CommandSnippet command={execCommand(bundle.name, refs, vaultName)} />
+                <CommandSnippet command={execCommand(refs)} />
                 <p className="text-sm text-muted-foreground">
                   Or keep the references in a file next to the script and commit it:
                 </p>
                 <FileSnippet name=".env.broker" contents={envFile(refs)} />
-                <CommandSnippet
-                  command={`tokenless exec${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file .env.broker -- ./script.sh`}
-                />
+                <CommandSnippet command="tokenless exec --env-file .env.broker -- ./script.sh" />
               </>
             )}
           </Step>
           <Step n={5} title="Or keep a session open for agents you start yourself">
-            <CommandSnippet
-              command={`tokenless session start${vaultName ? ` --vault ${shellQuote(vaultName)}` : ""} --bundle ${shellQuote(bundle.name)} --env-file ./agent.env`}
-            />
+            <CommandSnippet command="tokenless session start --env-file ./agent.env" />
             <p className="text-xs text-muted-foreground">
-              Then <Mono>. ./agent.env</Mono> in the agent's shell. Ctrl-C ends the session.
+              With the session's token in <Mono>TOKENLESS_SESSION_TOKEN</Mono>. Then <Mono>. ./agent.env</Mono> in the
+              agent's shell; the agents never see the token. Ctrl-C closes the port.
             </p>
           </Step>
         </ol>

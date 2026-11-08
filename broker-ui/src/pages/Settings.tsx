@@ -16,10 +16,12 @@ type Unmatched = SettingsModel["unmatched_host_policy"];
 
 const LIFETIMES = [
   { value: String(15 * 60), label: "15 minutes" },
-  { value: String(60 * 60), label: "1 hour (default)" },
+  { value: String(60 * 60), label: "1 hour" },
   { value: String(8 * 3600), label: "8 hours" },
   { value: String(24 * 3600), label: "1 day" },
-  { value: String(7 * 24 * 3600), label: "7 days" },
+  { value: String(7 * 24 * 3600), label: "7 days (default)" },
+  { value: String(30 * 24 * 3600), label: "30 days" },
+  { value: String(90 * 24 * 3600), label: "90 days" },
 ];
 
 function lifetimeOptions(current: number) {
@@ -81,7 +83,7 @@ export function Settings() {
           </Section>
           <Section
             title="Session lifetime"
-            description="The longest session anyone may mint. Running agents renew theirs."
+            description="The longest session anyone may create. Sessions minted by tokenless run are renewed while the command runs."
           >
             <Panel>
               <div className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between">

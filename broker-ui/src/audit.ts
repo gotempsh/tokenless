@@ -40,11 +40,16 @@ const short = (id: string) => id.slice(0, 8);
 
 /** Who did it, in words: "You", a username, "API key ci-runner", "Proxy edge-1". */
 export function actorLabel(event: AuditEvent, names: ActorNames): string {
-  const [kind, id = ""] = splitOnce(event.actor, ":");
+  return actorName(event.actor, names, event.detail.username);
+}
+
+/** {@link actorLabel} for an actor recorded outside an event, such as a session's creator. */
+export function actorName(actor: string, names: ActorNames, username?: string): string {
+  const [kind, id = ""] = splitOnce(actor, ":");
   switch (kind) {
     case "user":
       if (id === names.meId) return "You";
-      return names.users?.get(id) ?? event.detail.username ?? `Person ${short(id)}`;
+      return names.users?.get(id) ?? username ?? `Person ${short(id)}`;
     case "api_key":
       return `API key ${names.apiKeys?.get(id) ?? id}`;
     case "node":
@@ -56,7 +61,7 @@ export function actorLabel(event: AuditEvent, names: ActorNames): string {
     case "system":
       return "tokenless";
     default:
-      return event.actor;
+      return actor;
   }
 }
 
@@ -154,6 +159,25 @@ export function actionPhrase(event: AuditEvent): string {
       return `passed a connection to ${hostOnly(d.host)} through untouched`;
     default:
       return event.action;
+  }
+}
+
+/** {@link actionPhrase}, said of "the session" since the page is about one. */
+export function sessionHistoryPhrase(e: AuditEvent): string {
+  const labels = Object.entries(e.detail)
+    .filter(([k]) => k.startsWith("label."))
+    .map(([k, v]) => `${k.slice(6)}=${v}`)
+    .join(", ");
+  switch (e.action) {
+    case "session.mint":
+      return e.detail.bundle ? `created the session from ${e.detail.bundle}` : "created the session";
+    case "session.revoke":
+      if (e.detail.already_revoked === "true") return "revoked the session again";
+      return e.detail.by === "session token" ? "ended the session with its own token" : "revoked the session";
+    case "session.update_labels":
+      return labels ? `set the labels to ${labels}` : "removed the labels";
+    default:
+      return actionPhrase(e);
   }
 }
 

@@ -61,16 +61,23 @@ function vaultFlag(vault?: string): string {
   return vault ? ` --vault ${shellQuote(vault)}` : "";
 }
 
-/** `tokenless run --bundle <name> -- <command>`. */
-export function runAgentCommand(bundle: string, command: string, vault?: string): string {
+/** `tokenless run -- <command>`, with the session in TOKENLESS_SESSION_TOKEN. */
+export function runAgentCommand(command: string): string {
+  return `tokenless run -- ${command}`;
+}
+
+/**
+ * `tokenless run --bundle <name> -- <command>`: for someone signed in with
+ * `tokenless login`, who can mint a session that ends with the command.
+ */
+export function signedInRunCommand(bundle: string, command: string, vault?: string): string {
   return `tokenless run${vaultFlag(vault)} --bundle ${shellQuote(bundle)} -- ${command}`;
 }
 
 /** `tokenless exec` with each reference as an argument. */
-export function execCommand(bundle: string, refs: EnvReference[], vault?: string): string {
-  const head = `tokenless exec${vaultFlag(vault)} --bundle ${shellQuote(bundle)}`;
+export function execCommand(refs: EnvReference[]): string {
   const args = refs.map((r) => `${r.name}=${shellQuote(r.reference)}`);
-  return [head, ...args, "-- ./script.sh"].join(" \\\n  ");
+  return ["tokenless exec", ...args, "-- ./script.sh"].join(" \\\n  ");
 }
 
 /** A committable `.env.broker`: references only. */

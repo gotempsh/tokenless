@@ -22,7 +22,7 @@ describe("logRows", () => {
       outcome: "brokered",
       status: 404,
       durationMs: 12,
-      request: "GET api.example.com:443 /v1/items",
+      request: "GET api.example.com/v1/items",
       substituted: "__KEY__1",
     });
   });

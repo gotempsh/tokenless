@@ -38,9 +38,8 @@ import { latestTemplates } from "../catalog";
 import { useLoad } from "../hooks";
 import { backCrumbs, useBreadcrumbs } from "../breadcrumbs";
 import { cn } from "../lib/utils";
-import { CommandSnippet, runCommand } from "./Bundles";
+
 import {
-  CopyButton,
   DialogActions,
   ErrorBanner,
   Field,
@@ -598,13 +597,10 @@ function Summary({
       </dl>
       {bundleName && (
         <div className="space-y-2 border-t pt-4">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">Agents then start with</p>
-            <CopyButton value={runCommand(bundleName)} label="Copy" />
-          </div>
-          <code className="block rounded-md border bg-background px-3 py-2 font-mono text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]">
-            {runCommand(bundleName)}
-          </code>
+          <p className="text-xs text-muted-foreground">
+            Agents then get a session from <span className="font-mono text-foreground">{bundleName}</span>: its token
+            reaches the service, never the secret.
+          </p>
         </div>
       )}
     </Panel>
@@ -665,15 +661,13 @@ function Done({
       {result.bundle ? (
         <div className="space-y-2 rounded-md border bg-muted/40 p-4">
           <p className="font-medium">Run an agent with it</p>
-          <CommandSnippet command={runCommand(result.bundle.name)} />
           <p className="text-xs text-muted-foreground">
-            The agent gets a local proxy address, never the secret or a session token. It needs a{" "}
-            <Mono>session_issuer</Mono> API key for this vault, from{" "}
-            <a href="#/api-keys" className="underline underline-offset-4">
-              API keys
-            </a>
-            .
+            Create a session from {result.bundle.name} and give its token to the agent. The agent never sees the
+            secret.
           </p>
+          <Button type="button" variant="outline" size="sm" asChild>
+            <a href={`#/bundles/${result.bundle.id}/connect`}>Run an agent</a>
+          </Button>
         </div>
       ) : (
         <p className="text-muted-foreground">

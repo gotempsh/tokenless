@@ -5,7 +5,7 @@
 // add the CSRF token. A `step_up_required` problem triggers the step-up
 // prompt and the request is retried once.
 
-export type Role = "admin" | "editor" | "viewer" | "session_issuer";
+export type Role = "admin" | "editor" | "viewer";
 
 export interface Problem {
   title: string;

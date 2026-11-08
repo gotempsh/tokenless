@@ -18,7 +18,8 @@ import {
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { Bundles, CommandSnippet, runCommand } from "./Bundles";
+import { tokenCommands } from "../sessionForm";
+import { Bundles, CommandSnippet } from "./Bundles";
 import { Services } from "./Services";
 import {
   fromWidth,
@@ -38,6 +39,7 @@ import {
   Panel,
   RowActions,
   RowMenu,
+  rowLink,
   Section,
   SelectField,
   Status,
@@ -558,7 +560,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
   const mintButton = (
     <Button type="button" onClick={() => setOpen(true)}>
       <Plus />
-      Mint session
+      New session
     </Button>
   );
 
@@ -575,7 +577,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
           <Empty
             icon={Timer}
             title="No sessions yet"
-            description="Mint a short-lived session and hand its token to an agent as its HTTPS proxy."
+            description="Create a session and give its token to an agent."
             action={mintButton}
           />
         ) : (
@@ -594,7 +596,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
             </TableHeader>
             <TableBody>
               {sessions.data?.items.map((s) => (
-                <TableRow key={s.id}>
+                <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
                   <TableCell>
                     <Mono>{s.id.slice(0, 8)}</Mono>
                     {s.bundle && <div className="text-xs text-muted-foreground @xl:hidden">{s.bundle.name}</div>}
@@ -633,7 +635,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
         open={open}
         onOpenChange={closeMint}
         wide
-        title={minted ? "Session minted" : "Mint a proxy session"}
+        title={minted ? "Session created" : "New session"}
         description={minted ? undefined : "Choose the rules the agent may use and how long the session lives."}
       >
         {minted ? (
@@ -654,12 +656,9 @@ function Sessions({ vaultId }: { vaultId: string }) {
                     </a>
                     .
                   </p>
-                  {minted.session.bundle && (
-                    <>
-                      <p>Or let the CLI mint, renew and end sessions from this bundle for each run:</p>
-                      <CommandSnippet command={runCommand(minted.session.bundle.name)} />
-                    </>
-                  )}
+                  <p>Or, with the tokenless CLI, in the agent's shell:</p>
+                  <CommandSnippet command={tokenCommands(minted.token, "<agent-command>").exportLine} />
+                  <CommandSnippet command={tokenCommands(minted.token, "<agent-command>").run} />
                 </div>
               }
             />

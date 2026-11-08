@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AuditEvent } from "./api";
-import { actionPhrase, actorLabel, hostOnly } from "./audit";
+import { actionPhrase, actorLabel, actorName, hostOnly, sessionHistoryPhrase } from "./audit";
 
 const event = (over: Partial<AuditEvent>): AuditEvent => ({
   id: "e1",
@@ -62,4 +62,27 @@ describe("actionPhrase", () => {
 test("hostOnly drops only the default HTTPS port", () => {
   expect(hostOnly("api.example.com:443")).toBe("api.example.com");
   expect(hostOnly("api.example.com:8443")).toBe("api.example.com:8443");
+});
+
+describe("a session's history", () => {
+  test("names who created a session the way events name their actor", () => {
+    expect(actorName("user:me", { meId: "me" })).toBe("You");
+    expect(actorName("api_key:cbk_ci", { apiKeys: new Map([["cbk_ci", "ci"]]) })).toBe("API key ci");
+  });
+
+  test("says what was done to the session", () => {
+    expect(sessionHistoryPhrase(event({ action: "session.mint", detail: { bundle: "code-review" } }))).toBe(
+      "created the session from code-review",
+    );
+    expect(sessionHistoryPhrase(event({ action: "session.revoke", detail: { already_revoked: "false" } }))).toBe(
+      "revoked the session",
+    );
+    expect(
+      sessionHistoryPhrase(event({ action: "session.revoke", detail: { by: "session token", already_revoked: "false" } })),
+    ).toBe("ended the session with its own token");
+    expect(
+      sessionHistoryPhrase(event({ action: "session.update_labels", detail: { "label.name": "laptop", "label.ticket": "T-1" } })),
+    ).toBe("set the labels to name=laptop, ticket=T-1");
+    expect(sessionHistoryPhrase(event({ action: "session.update_labels" }))).toBe("removed the labels");
+  });
 });

@@ -30,7 +30,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 const OUTCOME_LABEL: Record<string, string> = { denied: "Denied", failure: "Failed" };
 
 /** Names for the users, API keys and proxies events refer to; admins only. */
-function useActorNames(me: UserSummary): ActorNames {
+export function useActorNames(me: UserSummary): ActorNames {
   const isAdmin = me.role === "admin";
   const none = () => Promise.resolve(undefined);
   const users = useLoad(() => (isAdmin ? get<Page<UserSummary>>("/users?page_size=100") : none()), [isAdmin]);

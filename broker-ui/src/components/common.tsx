@@ -185,7 +185,8 @@ export function OneTimeSecret({ label, value, hint }: { label: string; value: st
 }
 
 export function Pager<T>({ page, onPage }: { page: Page<T> | undefined; onPage: (p: number) => void }) {
-  if (!page || page.total === 0) return null;
+  // No pager until there is a second page.
+  if (!page || (page.page === 1 && page.total <= page.page_size)) return null;
   const pages = Math.max(1, Math.ceil(page.total / page.page_size));
   const first = (page.page - 1) * page.page_size + 1;
   const last = Math.min(page.total, page.page * page.page_size);

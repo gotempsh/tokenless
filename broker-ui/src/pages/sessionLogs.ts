@@ -6,6 +6,7 @@
 // what the API answered (`proxy.response`, same `request_id`).
 
 import type { AuditEvent } from "../api";
+import { hostOnly } from "../audit";
 
 export type LogOutcome = "brokered" | "blocked" | "passthrough" | "error";
 
@@ -35,8 +36,10 @@ function mcpCall(e: AuditEvent | undefined): string | undefined {
 
 const BLOCKED = new Set(["proxy.deny", "proxy.connect_denied", "proxy.egress_blocked"]);
 
+/** `GET api.example.com/v1/items`: the port only when it isn't 443. */
 function request(e: AuditEvent): string {
-  return [e.detail.method, e.detail.host, e.detail.path].filter(Boolean).join(" ");
+  const target = e.detail.host ? `${hostOnly(e.detail.host)}${e.detail.path ?? ""}` : e.detail.path;
+  return [e.detail.method, target].filter(Boolean).join(" ");
 }
 
 function number(value: string | undefined): number | undefined {

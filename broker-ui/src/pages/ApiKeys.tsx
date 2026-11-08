@@ -32,15 +32,14 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-type KeyRole = Extract<Role, "session_issuer" | "viewer" | "editor">;
+type KeyRole = Extract<Role, "viewer" | "editor">;
 
 const KEY_ROLES: Choice<KeyRole>[] = [
-  { value: "session_issuer", title: "Session issuer", description: "Mint proxy sessions only" },
   { value: "viewer", title: "Viewer", description: "Read the vault" },
-  { value: "editor", title: "Editor", description: "Manage rules and sessions" },
+  { value: "editor", title: "Editor", description: "Manage rules, bundles and sessions" },
 ];
 
-const EMPTY_FORM = { name: "", vault_id: "", role: "session_issuer" as KeyRole, expires_in_days: 30 };
+const EMPTY_FORM = { name: "", vault_id: "", role: "viewer" as KeyRole, expires_in_days: 30 };
 
 function keyStatus(k: ApiKey) {
   if (k.revoked_at) return <Status tone="destructive">revoked</Status>;
@@ -105,7 +104,7 @@ export function ApiKeys() {
           <Empty
             icon={KeySquare}
             title="No API keys"
-            description="Create a session-issuer key so a CI job or orchestrator can mint short-lived proxy sessions for its agents."
+            description="Create a key so a script or CI job can use this console's API. Agents get a session instead, from an access bundle's page."
             action={createButton}
           />
         ) : (

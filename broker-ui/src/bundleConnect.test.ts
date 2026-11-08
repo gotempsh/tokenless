@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import type { CredentialMeta, Substitution } from "./api";
-import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote } from "./bundleConnect";
+import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote, signedInRunCommand } from "./bundleConnect";
 
 const at = "2026-01-01T00:00:00Z";
 
@@ -56,11 +56,12 @@ describe("bundle connect commands", () => {
 
   test("commands and the env file carry the references", () => {
     const refs = envReferences([credential("Work GitHub", "github", [sub("token", "GITHUB_TOKEN")])]);
-    expect(runAgentCommand("code-review", "claude", "main vault")).toBe(
+    expect(runAgentCommand("claude")).toBe("tokenless run -- claude");
+    expect(signedInRunCommand("code-review", "claude", "main vault")).toBe(
       "tokenless run --vault 'main vault' --bundle code-review -- claude",
     );
-    expect(execCommand("code-review", refs)).toBe(
-      "tokenless exec --bundle code-review \\\n  GITHUB_TOKEN='cb://Work GitHub/token' \\\n  -- ./script.sh",
+    expect(execCommand(refs)).toBe(
+      "tokenless exec \\\n  GITHUB_TOKEN='cb://Work GitHub/token' \\\n  -- ./script.sh",
     );
     expect(envFile(refs)).toBe('# References, not secrets: safe to commit.\nGITHUB_TOKEN="cb://Work GitHub/token"\n');
   });
