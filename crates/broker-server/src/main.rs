@@ -162,11 +162,11 @@ struct MintArgs {
     /// Access bundle to mint the session from, by name or id.
     #[arg(long, env = "TOKENLESS_BUNDLE")]
     bundle: Option<String>,
-    /// Lifetime of each session (e.g. 90s, 15m, 1h), within the longest
-    /// Settings allow. The session port renews the session before it runs
-    /// out.
-    #[arg(long, default_value = "15m")]
-    ttl: String,
+    /// Lifetime of each session (e.g. 90s, 15m, 1h; default 15m), within
+    /// the longest Settings allow. The session port renews the session
+    /// before it runs out.
+    #[arg(long)]
+    ttl: Option<String>,
     /// Requests each session may make through the proxy.
     #[arg(long)]
     request_limit: Option<u64>,
@@ -961,6 +961,9 @@ fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
     Ok(Arc::new(ApiClient::new(&args.server, credentials)?))
 }
 
+/// How long each session `run` mints lasts when --ttl is not given.
+const DEFAULT_RUN_TTL: &str = "15m";
+
 fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest, CliError> {
     let Some(bundle) = args.bundle.clone() else {
         return Err(LauncherError::config(
@@ -970,7 +973,7 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
     };
     // The broker enforces its own cap (Settings → Session lifetime) and
     // names it in the error; the session port renews, so short is fine.
-    let ttl_secs = parse_duration_secs(&args.ttl)?;
+    let ttl_secs = parse_duration_secs(args.ttl.as_deref().unwrap_or(DEFAULT_RUN_TTL))?;
     let mut labels = BTreeMap::new();
     for raw in &args.labels {
         let (k, v) = parse_label(raw)?;
@@ -993,29 +996,49 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
 
 /// A session token handed over (`--session-token-file`, or
 /// TOKENLESS_SESSION_TOKEN when no bundle is given), or `None` to mint one.
-/// A bundle and a token together are refused rather than guessed between.
+/// A bundle and a token together are refused rather than guessed between,
+/// and so are the flags that shape a new session: a given one keeps the
+/// lifetime, request limit and labels it was created with.
 fn given_session(
     mint: &MintArgs,
     given: &GivenSessionArgs,
     from_env: Option<Zeroizing<String>>,
 ) -> Result<Option<Zeroizing<String>>, CliError> {
-    if let Some(path) = &given.session_token_file {
+    let token = if let Some(path) = &given.session_token_file {
         let token = std::fs::read_to_string(path).map_err(|e| CliError::Io {
             context: format!("reading the session token file {}", path.display()),
             source: e,
         })?;
-        return Ok(Some(Zeroizing::new(token.trim().to_string())));
-    }
-    let Some(token) = from_env else {
-        return Ok(None);
+        Zeroizing::new(token.trim().to_string())
+    } else {
+        let Some(token) = from_env else {
+            return Ok(None);
+        };
+        if let Some(bundle) = &mint.bundle {
+            return Err(LauncherError::config(format!(
+                "both a bundle to mint a session from ('{bundle}') and TOKENLESS_SESSION_TOKEN are set; unset one"
+            ))
+            .into());
+        }
+        Zeroizing::new(token.trim().to_string())
     };
-    match &mint.bundle {
-        Some(bundle) => Err(LauncherError::config(format!(
-            "both a bundle to mint a session from ('{bundle}') and TOKENLESS_SESSION_TOKEN are set; unset one"
+    let shaping: Vec<&str> = [
+        ("--ttl", mint.ttl.is_some()),
+        ("--request-limit", mint.request_limit.is_some()),
+        ("--name", mint.name.is_some()),
+        ("--label", !mint.labels.is_empty()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, set)| set.then_some(flag))
+    .collect();
+    if !shaping.is_empty() {
+        return Err(LauncherError::config(format!(
+            "{} only apply to a session minted with --bundle; a given session token keeps the lifetime, request limit and labels it was created with (create a new session to change them)",
+            shaping.join(", ")
         ))
-        .into()),
-        None => Ok(Some(Zeroizing::new(token.trim().to_string()))),
+        .into());
     }
+    Ok(Some(token))
 }
 
 /// The session behind a session port: the one handed over, or a new one
@@ -1646,6 +1669,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("unset one"), "{err}");
+        // Flags that shape a new session are refused with a given one,
+        // rather than ignored.
+        let err = given(
+            &["--request-limit", "10", "--ttl", "1h"],
+            token("v4.public.abc"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.starts_with("--ttl, --request-limit only apply"),
+            "{err}"
+        );
+        assert!(given(&["--name", "x"], token("v4.public.abc")).is_err());
+        assert!(given(&["--label", "a=b"], token("v4.public.abc")).is_err());
         // Neither: minting then asks for a bundle.
         let none = run_args(&[]);
         assert_eq!(given(&[], None).unwrap(), None);
