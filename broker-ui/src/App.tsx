@@ -39,6 +39,7 @@ import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
 import { BreadcrumbContext, trail, type Crumb } from "./breadcrumbs";
 import { parseAddServiceContext } from "./addService";
+import { parseBundleFormContext } from "./bundleForm";
 import { useTheme, type Theme } from "./theme";
 import { useSidebarCollapsed } from "./sidebar";
 import { cn } from "./lib/utils";
@@ -50,6 +51,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { AcceptInvite, AuthLayout, Login, StepUpDialog } from "./pages/Auth";
 import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
+import { BundleFormPage } from "./pages/BundleFormPage";
 import { Bundles } from "./pages/Bundles";
 import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
@@ -214,7 +216,13 @@ export function App() {
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
       {section === "bundles" && !id && <Bundles user={user} />}
-      {section === "bundles" && id && <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />}
+      {section === "bundles" && id === "new" && <BundleFormPage ctx={parseBundleFormContext(undefined, query)} />}
+      {section === "bundles" && id && id !== "new" && tab === "edit" && (
+        <BundleFormPage key={id} ctx={parseBundleFormContext(id, query)} />
+      )}
+      {section === "bundles" && id && id !== "new" && tab !== "edit" && (
+        <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />
+      )}
       {section === "sessions" && !id && <Sessions me={user} />}
       {section === "sessions" && id && <SessionPage sessionId={id} user={user} />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}
