@@ -485,7 +485,12 @@ async fn handle_proxy_request(
     let open = shared.traffic.enter(claims.jti);
     if clock::now(&snapshot) >= claims.exp {
         Metrics::inc(&shared.metrics.proxy_auth_failures_total);
-        return proxy_auth_required("proxy session has expired");
+        // As the session check answers: a binding's client sends no
+        // credentials to retry with.
+        return match binding {
+            Some(_) => respond(StatusCode::FORBIDDEN, "proxy session has expired"),
+            None => proxy_auth_required("proxy session has expired"),
+        };
     }
     if req.method() != Method::CONNECT {
         return respond(

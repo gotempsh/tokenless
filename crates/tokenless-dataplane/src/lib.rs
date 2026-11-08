@@ -318,9 +318,9 @@ impl DataPlane {
             let installed = snapshot
                 .as_ref()
                 .is_some_and(|s| s.revoked.contains(&session));
-            let expired = snapshot
-                .as_ref()
-                .is_some_and(|s| clock::now(s) >= expires_at);
+            // One reading for both: expired, or a positive time left.
+            let now = snapshot.as_deref().map(clock::now);
+            let expired = now.is_some_and(|now| now >= expires_at);
             let open = traffic.count(&session);
             if (installed || expired) && open == 0 {
                 return Ok(CutReport {
@@ -330,10 +330,9 @@ impl DataPlane {
                 });
             }
             // The session expiring is a cut too, with no snapshot to say so.
-            let expiry = snapshot
-                .as_ref()
+            let expiry = now
                 .filter(|_| !expired)
-                .and_then(|s| (expires_at - clock::now(s)).to_std().ok())
+                .and_then(|now| (expires_at - now).to_std().ok())
                 .map_or(deadline, |left| {
                     deadline.min(tokio::time::Instant::now() + left)
                 });
