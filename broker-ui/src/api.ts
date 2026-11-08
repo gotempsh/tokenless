@@ -200,6 +200,16 @@ export interface AccessBundle {
   updated_at: string;
 }
 
+/** A vault with what the vault list shows of it. */
+export interface VaultOverview extends Vault {
+  /** The first few services, in the vault's list order. */
+  services: CredentialMeta[];
+  service_count: number;
+  live_sessions: number;
+  /** When a proxy last added one of its credentials; null if never or not visible. */
+  last_request_at: string | null;
+}
+
 export interface ProxySession {
   id: string;
   vault_id: string;

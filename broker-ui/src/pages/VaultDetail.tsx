@@ -16,7 +16,9 @@ import {
   type Rule,
   type UserSummary,
   type Vault,
+  type VaultOverview,
 } from "../api";
+import { DetailLayout, Fact, FactList } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
 import { SessionHandoff } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
@@ -26,9 +28,11 @@ import {
   CheckField,
   ChoiceCards,
   ConfirmDialog,
+  CopyButton,
   DialogActions,
   Empty,
   ErrorBanner,
+  Exact,
   Field,
   FormDialog,
   lines,
@@ -36,6 +40,7 @@ import {
   Mono,
   Pager,
   Panel,
+  Relative,
   RowActions,
   RowMenu,
   rowLink,
@@ -120,59 +125,103 @@ function DeleteVaultForm({ vault, onCancel }: { vault: Vault; onCancel: () => vo
 }
 
 export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab; user: UserSummary }) {
-  const vault = useLoad(() => get<Vault>(`/vaults/${vaultId}`), [vaultId]);
+  const vault = useLoad(() => get<VaultOverview>(`/vaults/${vaultId}/overview`), [vaultId]);
+  const v = vault.data && vault.data.id === vaultId ? vault.data : undefined;
   const [deleting, setDeleting] = useState(false);
   const isAdmin = user.role === "admin";
   useBreadcrumbs([
     { label: "Vaults", href: "#/vaults" },
-    { label: vault.data?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
+    { label: v?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
     { label: TABS.find((t) => t.value === tab)?.label ?? null },
   ]);
   return (
     <PageContainer>
       <PageHeader
-        title={vault.data ? vault.data.name : <Skeleton className="h-8 w-48" />}
-        description={vault.data ? <Mono>{vault.data.scope}</Mono> : undefined}
+        title={v ? v.name : <Skeleton className="h-8 w-48" />}
+        verdict={
+          v &&
+          (v.live_sessions > 0 ? (
+            <Status tone="success">{v.live_sessions} live</Status>
+          ) : (
+            <Status tone="neutral">Idle</Status>
+          ))
+        }
         actions={
-          <Button
-            type="button"
-            variant="outline"
-            className="text-destructive hover:text-destructive"
-            disabled={!isAdmin || !vault.data}
-            title={isAdmin ? undefined : "Only admins can delete a vault"}
-            onClick={() => setDeleting(true)}
-          >
-            <Trash2 />
-            <span className="hidden sm:inline">Delete vault</span>
-          </Button>
+          v && (
+            <RowMenu
+              label={v.name}
+              items={[
+                {
+                  label: "Delete vault",
+                  icon: Trash2,
+                  onSelect: () => setDeleting(true),
+                  destructive: true,
+                  disabled: !isAdmin,
+                  reason: "Only admins can delete a vault",
+                },
+              ]}
+            />
+          )
         }
       />
       <ErrorBanner error={vault.error} />
-      <Tabs
-        value={tab}
-        onValueChange={(v) => {
-          window.location.hash = `#/vaults/${vaultId}/${v}`;
-        }}
+      <DetailLayout
+        facts={
+          v ? (
+            <FactList>
+              <Fact label="Live sessions">
+                {v.live_sessions > 0 ? (
+                  <a href={`#/vaults/${vaultId}/sessions`} className="underline-offset-2 hover:underline">
+                    {v.live_sessions} now
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground">None</span>
+                )}
+              </Fact>
+              <Fact label="Last request">
+                {v.last_request_at ? <Relative at={v.last_request_at} /> : <span className="text-muted-foreground">None yet</span>}
+              </Fact>
+              <Fact label="Created">
+                <Exact at={v.created_at} />
+              </Fact>
+              <Fact label="Vault ID">
+                <span className="flex items-center gap-1">
+                  <Mono className="truncate">{v.id}</Mono>
+                  <CopyButton value={v.id} label="Copy vault ID" iconOnly />
+                </span>
+              </Fact>
+            </FactList>
+          ) : (
+            <Skeleton className="h-48 rounded-lg" />
+          )
+        }
       >
-        <TabsList>
-          {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-      {tab === "rules" && <Rules vaultId={vaultId} />}
-      {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-      {tab === "sessions" && <Sessions vaultId={vaultId} />}
+        <Tabs
+          value={tab}
+          onValueChange={(t) => {
+            window.location.hash = `#/vaults/${vaultId}/${t}`;
+          }}
+        >
+          <TabsList>
+            {TABS.map((t) => (
+              <TabsTrigger key={t.value} value={t.value} count={t.value === "credentials" ? v?.service_count : undefined}>
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+        {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
+        {tab === "rules" && <Rules vaultId={vaultId} />}
+        {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
+        {tab === "sessions" && <Sessions vaultId={vaultId} />}
+      </DetailLayout>
       <FormDialog
         open={deleting}
         onOpenChange={setDeleting}
-        title={vault.data ? `Delete vault "${vault.data.name}"?` : "Delete vault"}
+        title={v ? `Delete vault "${v.name}"?` : "Delete vault"}
         description="Admins only, with a recent sign-in confirmation."
       >
-        {vault.data && <DeleteVaultForm vault={vault.data} onCancel={() => setDeleting(false)} />}
+        {v && <DeleteVaultForm vault={v} onCancel={() => setDeleting(false)} />}
       </FormDialog>
     </PageContainer>
   );
