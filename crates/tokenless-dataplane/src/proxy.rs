@@ -1104,10 +1104,8 @@ pub(crate) async fn handle_intercepted(
         RuleChoice::None => None,
         RuleChoice::Ambiguous(first, second) => {
             Metrics::inc(&shared.metrics.requests_denied_total);
-            let reason = format!(
-                "rules {} and {} in this session both allow {method} {path} on {} and send different credentials; narrow one rule's paths",
-                first.id, second.id, ctx.host
-            );
+            // The event's method and path details carry the request,
+            // capped; the reason stays bounded.
             audit_best_effort(
                 shared,
                 claims,
@@ -1116,9 +1114,18 @@ pub(crate) async fn handle_intercepted(
                 &ctx.host,
                 ctx.port,
                 Some((&method, &path)),
-                &format!("ambiguous_rules: {reason}"),
+                &format!(
+                    "ambiguous_rules: rules {} and {} match equally and send different credentials",
+                    first.id, second.id
+                ),
             );
-            return respond(StatusCode::FORBIDDEN, &reason);
+            return respond(
+                StatusCode::FORBIDDEN,
+                &format!(
+                    "rules {} and {} in this session both allow {method} {path} on {} and send different credentials; narrow one rule's paths",
+                    first.id, second.id, ctx.host
+                ),
+            );
         }
     };
     let Some(rule) = rule else {
@@ -1888,11 +1895,23 @@ mod tests {
         use tokenless_core::session::{SessionClaims, SessionSigner};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        use crate::testing::{https_echo_authorization_upstream, running};
+        use crate::audit::AuditShipper;
+        use crate::testing::{https_echo_authorization_upstream, running_with};
+
+        #[derive(Default)]
+        struct Collect(std::sync::Mutex<Vec<AuditEvent>>);
+        #[async_trait::async_trait]
+        impl AuditShipper for Collect {
+            async fn ship(&self, events: &[AuditEvent]) -> Result<(), crate::DataPlaneError> {
+                self.0.lock().unwrap().extend_from_slice(events);
+                Ok(())
+            }
+        }
 
         let (port, root) = https_echo_authorization_upstream().await;
         let target = format!("localhost:{port}");
-        let r = running(&target, vec![root]).await;
+        let audit = Arc::new(Collect::default());
+        let r = running_with(&target, vec![root], 600, audit.clone()).await;
         let git = r.rule;
         let api = RuleId::new();
         let install = |version: u64, api_paths: &[&str]| {
@@ -1927,7 +1946,7 @@ mod tests {
         let token = SessionSigner::new(r.f.session_signer.clone())
             .sign(&claims)
             .unwrap();
-        let get = |path: &'static str| {
+        let get = |path: String| {
             let target = target.clone();
             let token = token.clone();
             let r = &r;
@@ -1946,15 +1965,43 @@ mod tests {
         };
 
         install(2, &["/*"]);
-        let answer = get("/api/v4/projects").await;
+        let answer = get("/api/v4/projects".into()).await;
         assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
         assert!(answer.contains("send different credentials"), "{answer}");
+        // A long path is recorded capped, never whole.
+        let long = format!("/{}", "a".repeat(8000));
+        let answer = get(long.clone()).await;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+        let mut denied = None;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            denied = audit
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.action == "proxy.deny")
+                .find(|e| e.detail.get("path").is_some_and(|p| p.starts_with("/aaa")))
+                .cloned();
+            if denied.is_some() {
+                break;
+            }
+        }
+        let denied = denied.expect("the refusal was audited");
+        assert!(denied.detail["reason"].starts_with("ambiguous_rules: "));
+        for (key, value) in &denied.detail {
+            assert!(
+                value.len() <= 512,
+                "audit detail {key} is {} bytes",
+                value.len()
+            );
+        }
 
         install(3, &["/api/*"]);
-        let answer = get("/api/v4/projects").await;
+        let answer = get("/api/v4/projects".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         assert!(answer.ends_with("Bearer api"), "{answer}");
-        let answer = get("/acme/widgets.git/info/refs").await;
+        let answer = get("/acme/widgets.git/info/refs".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
         assert!(answer.ends_with("Bearer git"), "{answer}");
         r.dp.abort();
