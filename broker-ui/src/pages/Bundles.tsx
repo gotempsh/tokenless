@@ -34,14 +34,13 @@ import {
   Relative,
   RowMenu,
   Section,
-  Status,
   useConfirm,
 } from "../components/common";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
-import { ServiceLogo } from "../components/ServiceLogo";
+import { ServiceStrip } from "../components/ServiceStrip";
 import { PANEL_GRID } from "../components/layout";
 import { templateOf } from "./Services";
 
@@ -257,9 +256,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   );
 }
 
-/** How many of a bundle's services its panel names. */
-const SHOWN = 4;
-
 /** One bundle: what it is for, its first services and when it changed. */
 function BundlePanel({
   bundle: b,
@@ -281,7 +277,6 @@ function BundlePanel({
 }) {
   const href = `#/bundles/${b.id}`;
   const off = rules.filter((r) => !r.enabled).length;
-  const more = b.rule_ids.length - Math.min(rules.length, SHOWN);
   return (
     <Panel className="relative flex flex-col transition-colors focus-within:border-foreground/40 hover:border-foreground/25">
       <div className="flex items-start justify-between gap-2 px-4 pt-3">
@@ -292,40 +287,33 @@ function BundlePanel({
               {b.name}
             </a>
           </h2>
-          {(b.description || vaultName) && (
-            <p className="truncate text-xs text-muted-foreground">
-              {[b.description, vaultName && `in ${vaultName}`].filter(Boolean).join(" · ")}
-            </p>
-          )}
+          {/* Always one line, so panels without a description line up. */}
+          <p className="h-4 truncate text-xs text-muted-foreground">
+            {[b.description, vaultName && `in ${vaultName}`].filter(Boolean).join(" · ")}
+          </p>
         </div>
         <div className="relative z-10 -mr-2">{menu}</div>
       </div>
       <div className="flex-1 px-4 py-3">
-        {b.rule_ids.length === 0 ? (
-          <p className="py-1 text-sm text-warning-strong">No services yet</p>
-        ) : loading ? (
-          <Skeleton className="h-16 w-full" />
+        {loading && b.rule_ids.length > 0 ? (
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-36" />
+            <Skeleton className="h-4 w-48" />
+          </div>
         ) : (
-          <ul className="space-y-1">
-            {rules.slice(0, SHOWN).map((r) => {
+          <ServiceStrip
+            services={rules.map((r) => {
               const c = credentials.find((x) => x.id === r.credential_id);
-              const tpl = c ? templateOf(templates, c) : undefined;
-              return (
-                <li key={r.id} className="flex min-w-0 items-center gap-3 py-1">
-                  <ServiceLogo template={tpl ?? { id: c?.template_id ?? "", kind: "http" }} size="sm" />
-                  <span className="min-w-0 truncate text-sm font-medium">{c?.name ?? r.name}</span>
-                  {/* The rule is worth naming only when it is not the service's own name. */}
-                  {c && r.name !== c.name && <span className="truncate text-xs text-muted-foreground">{r.name}</span>}
-                  {!r.enabled && (
-                    <span className="ml-auto shrink-0">
-                      <Status tone="warning">Turned off</Status>
-                    </span>
-                  )}
-                </li>
-              );
+              return {
+                key: r.id,
+                name: c?.name ?? r.name,
+                logo: (c && templateOf(templates, c)) ?? { id: c?.template_id ?? "", kind: "http" },
+                off: !r.enabled,
+              };
             })}
-            {more > 0 && <li className="pl-11 text-xs text-muted-foreground">+{more} more</li>}
-          </ul>
+            total={b.rule_ids.length}
+            empty={<span className="text-warning-strong">No services yet</span>}
+          />
         )}
       </div>
       <div className="border-t px-4 py-3 text-xs text-muted-foreground">

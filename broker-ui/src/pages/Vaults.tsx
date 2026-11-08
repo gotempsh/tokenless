@@ -6,10 +6,9 @@ import { FolderLock as VaultIcon, Plus } from "lucide-react";
 import { get, post, type StoredTemplate, type Page, type Vault, type VaultOverview } from "../api";
 import { fallbackPage, hasPager } from "../paging";
 import { addServiceHref } from "../addService";
-import { targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
 import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Pager, Panel, Relative, Status } from "../components/common";
-import { ServiceLogo } from "../components/ServiceLogo";
+import { ServiceStrip } from "../components/ServiceStrip";
 import { PANEL_GRID as GRID } from "../components/layout";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -120,7 +119,6 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
 /** One vault: whether it is in use, its first services and its last request. */
 function VaultPanel({ vault, templates }: { vault: VaultOverview; templates: StoredTemplate[] }) {
   const href = `#/vaults/${vault.id}/credentials`;
-  const more = vault.service_count - vault.services.length;
   return (
     <Panel className="relative flex flex-col transition-colors hover:border-foreground/25 focus-within:border-foreground/40">
       <div className="flex items-center justify-between gap-2 px-4 pt-4">
@@ -137,30 +135,22 @@ function VaultPanel({ vault, templates }: { vault: VaultOverview; templates: Sto
         )}
       </div>
       <div className="flex-1 px-4 py-3">
-        {vault.services.length === 0 ? (
-          <p className="py-2 text-sm text-warning-strong">
-            No services yet.{" "}
-            <a href={addServiceHref({ vault: vault.id })} className="relative z-10 underline underline-offset-2">
-              Add one
-            </a>
-          </p>
-        ) : (
-          <ul className="space-y-1">
-            {vault.services.map((c) => {
-              const tpl = templateOf(templates, c);
-              return (
-                <li key={c.id} className="flex min-w-0 items-center gap-3 py-1">
-                  <ServiceLogo template={tpl ?? { id: c.template_id, kind: "http" }} size="sm" />
-                  <span className="min-w-0 truncate text-sm font-medium">{c.name}</span>
-                  <span className="ml-auto min-w-0 truncate font-mono text-xs text-muted-foreground">
-                    {targetHosts(tpl, c.host_override)[0] ?? ""}
-                  </span>
-                </li>
-              );
-            })}
-            {more > 0 && <li className="pl-11 text-xs text-muted-foreground">+{more} more</li>}
-          </ul>
-        )}
+        <ServiceStrip
+          services={vault.services.map((c) => ({
+            key: c.id,
+            name: c.name,
+            logo: templateOf(templates, c) ?? { id: c.template_id, kind: "http" },
+          }))}
+          total={vault.service_count}
+          empty={
+            <span className="text-warning-strong">
+              No services yet.{" "}
+              <a href={addServiceHref({ vault: vault.id })} className="relative z-10 underline underline-offset-2">
+                Add one
+              </a>
+            </span>
+          }
+        />
       </div>
       <div className="border-t px-4 py-3 text-xs text-muted-foreground">
         {vault.last_request_at ? (

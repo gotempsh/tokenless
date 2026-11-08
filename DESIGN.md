@@ -130,7 +130,7 @@ Geist Variable for all interface text and Geist Mono Variable for data, both bun
 
 - **Page container**: `PageContainer` in `components/ui/page-header.tsx`, padded 16 / 24 / 32px by breakpoint, centred with `mx-auto`, width `default` 1440px, `settings` 1040px, `form` 640px.
 - **Page header**: title (and a verdict badge on records) at left, actions at right. The title keeps at least 12rem, so one action stays beside it on a phone and more move to their own line.
-- **Panel grid**: `PANEL_GRID` in `components/layout.tsx`, as many 320px-or-wider columns as fit, 16px gap, panels sized to their own content.
+- **Panel grid**: `PANEL_GRID` in `components/layout.tsx`, as many 320px-or-wider columns as fit, 16px gap. Panels have a fixed shape, so they line up without stretching.
 - **Detail layout**: `DetailLayout`, a main column and a 320px facts column from `lg`, 32px apart; on a phone the facts follow the content. Only for records without tabs (a service, a session).
 - **Tabbed records** (a vault, an access bundle): no facts column. The header carries the state badge and one line of status (last request, or the description and vault); the last tab, Settings, holds the record's ID, history, edit and Delete as settings sections, capped at 1040px.
 - **Settings sections**: `SettingsSection`, a 240px label column (title, one hint line) and the controls beside it, sections divided by a top border and 24px of padding.
@@ -153,7 +153,7 @@ One filled `primary` button per view for the main action; everything else is `ou
 
 ### Record panel
 
-`VaultPanel`, `BundlePanel`: name (the link covers the whole panel), a state badge or a "…" menu at the top right, up to four services with logo, name and host, "+N more", and one footer line: the last activity or a problem in `warning-strong`.
+`VaultPanel`, `BundlePanel`: name (the link covers the whole panel), a state badge or a "…" menu at the top right, then `ServiceStrip`: up to four service logos in one row with a "+N" tile and their names on one line below, and one footer line: the last activity or a problem in `warning-strong`. Every part is one line high, so panels in a row are the same height whatever they hold.
 
 ### Facts column
 
