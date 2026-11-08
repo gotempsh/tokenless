@@ -23,13 +23,9 @@ import {
   lifetimeLabel,
   lifetimesUpTo,
   type LifetimeUnit,
+  type SessionLimits,
 } from "../sessionForm";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
-
-interface SessionLimits {
-  max_ttl_secs: number;
-  default_ttl_secs: number;
-}
 
 /** The Expires after choice that reveals the typed-in lifetime. */
 const CUSTOM = "custom";

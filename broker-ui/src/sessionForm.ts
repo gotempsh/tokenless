@@ -66,6 +66,27 @@ export function customLifetime(
   return { secs };
 }
 
+/** What `/vaults/{id}/sessions/limits` answers: the vault's lifetime cap and default. */
+export interface SessionLimits {
+  max_ttl_secs: number;
+  default_ttl_secs: number;
+}
+
+/**
+ * A lifetime typed in minutes: the most the vault's cap allows, and the
+ * hint saying so. Before the cap has loaded there is no maximum; the
+ * server still enforces it.
+ */
+export function minutesUpTo(maxSecs: number | undefined): { max?: number; hint: string } {
+  const where = "Settings → Session lifetime";
+  if (!maxSecs) return { hint: `Up to the cap an admin sets in ${where}.` };
+  const max = Math.floor(maxSecs / 60);
+  return {
+    max,
+    hint: `Up to ${lifetimeLabel(maxSecs)} (${max.toLocaleString("en-US")} minutes), the cap set in ${where}.`,
+  };
+}
+
 /** One day when allowed: long enough for a day's work, short enough to forget safely. */
 export function defaultLifetime(maxSecs: number): number {
   return Math.min(DAY, maxSecs);

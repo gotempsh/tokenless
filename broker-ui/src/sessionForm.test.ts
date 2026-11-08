@@ -13,6 +13,7 @@ import {
   shortToken,
   suggestedProxy,
   handoffMayClose,
+  minutesUpTo,
 } from "./sessionForm";
 
 describe("new session form", () => {
@@ -92,5 +93,19 @@ describe("handoffMayClose", () => {
   test("closes once something was copied, or after the warning", () => {
     expect(handoffMayClose(true, false)).toBe(true);
     expect(handoffMayClose(false, true)).toBe(true);
+  });
+});
+
+describe("minutesUpTo", () => {
+  test("allows what the vault's cap allows, past the old 7-day ceiling", () => {
+    expect(minutesUpTo(30 * 24 * 3600)).toEqual({
+      max: 43_200,
+      hint: "Up to 30 days (43,200 minutes), the cap set in Settings → Session lifetime.",
+    });
+    expect(minutesUpTo(7 * 24 * 3600).max).toBe(10_080);
+  });
+
+  test("sets no maximum before the cap has loaded", () => {
+    expect(minutesUpTo(undefined)).toEqual({ hint: "Up to the cap an admin sets in Settings → Session lifetime." });
   });
 });

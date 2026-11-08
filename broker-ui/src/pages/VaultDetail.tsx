@@ -20,6 +20,7 @@ import {
 } from "../api";
 import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
+import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
@@ -546,6 +547,12 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
   const [bundleId, setBundleId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [ttlMinutes, setTtlMinutes] = useState(15);
+  // The vault's lifetime cap, as the bundle page's New session reads it.
+  const limits = useLoad(
+    () => (open ? get<SessionLimits>(`/vaults/${vaultId}/sessions/limits`) : Promise.resolve(undefined)),
+    [open, vaultId],
+  );
+  const ttl = minutesUpTo(limits.data?.max_ttl_secs);
   const [limit, setLimit] = useState("");
   const [labels, setLabels] = useState("");
   const [minted, setMinted] = useState<Minted | null>(null);
@@ -720,13 +727,13 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
               <Field
                 label="Lifetime (minutes)"
                 htmlFor="mint-ttl"
-                hint="Up to the cap an admin sets in Settings → Session lifetime (60 by default)."
+                hint={ttl.hint}
               >
                 <Input
                   id="mint-ttl"
                   type="number"
                   min={1}
-                  max={7 * 24 * 60}
+                  max={ttl.max}
                   value={ttlMinutes}
                   onChange={(e) => setTtlMinutes(Number(e.target.value))}
                 />
