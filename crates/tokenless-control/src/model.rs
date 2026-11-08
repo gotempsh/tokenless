@@ -222,6 +222,9 @@ pub struct ProxySession {
     pub bundle: Option<SessionBundle>,
     pub labels: BTreeMap<String, String>,
     pub request_limit: Option<u64>,
+    /// The only node that accepts it, when minted for one.
+    #[serde(default)]
+    pub node_id: Option<NodeId>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -342,6 +345,11 @@ pub struct Node {
     pub enrolled_at: DateTime<Utc>,
     pub last_seen_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Sent only the rules of live sessions minted for it, rather than
+    /// every enabled rule, so it never holds sealed credentials for
+    /// workloads it does not run. Embedded data planes are.
+    #[serde(default)]
+    pub scoped_rules: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

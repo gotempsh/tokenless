@@ -4,7 +4,7 @@
 //! Data plane nodes: join tokens, enrolment, certificate renewal, snapshot
 //! building and audit ingestion.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
@@ -14,7 +14,7 @@ use serde::Serialize;
 use tokenless_auth::token;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
-use tokenless_core::ids::{NodeId, VaultId};
+use tokenless_core::ids::{NodeId, RuleId, VaultId};
 use tokenless_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
     MAX_AUDIT_BATCH,
@@ -56,8 +56,22 @@ pub struct JoinTokenIssued {
 
 struct CachedContent {
     content_generation: u64,
+    /// For a scoped node, the sessions generation its rules were chosen at.
+    sessions_generation: Option<u64>,
+    /// For a scoped node, when the first session its rules came from ends.
+    valid_until: Option<DateTime<Utc>>,
     rules: Vec<SnapshotRule>,
     ca: InterceptionCa,
+}
+
+impl CachedContent {
+    fn fresh(&self, generation: Generation, now: DateTime<Utc>) -> bool {
+        self.content_generation == generation.content
+            && self
+                .sessions_generation
+                .is_none_or(|g| g == generation.sessions)
+            && self.valid_until.is_none_or(|at| now < at)
+    }
 }
 
 pub struct NodeService {
@@ -230,6 +244,7 @@ impl NodeService {
                     enrolled_at: now,
                     last_seen_at: None,
                     revoked_at: None,
+                    scoped_rules: false,
                 },
                 &[event],
             )
@@ -275,6 +290,7 @@ impl NodeService {
             enrolled_at: now,
             last_seen_at: None,
             revoked_at: None,
+            scoped_rules: true,
         };
         let event = AuditEvent::new(
             caller.actor(),
@@ -343,8 +359,22 @@ impl NodeService {
     async fn build_content(
         &self,
         node: &Node,
-        generation: u64,
+        generation: Generation,
     ) -> Result<CachedContent, ControlError> {
+        // A scoped node holds only what its own live sessions use.
+        let (hosted, valid_until) = if node.scoped_rules {
+            let sessions = self
+                .policy
+                .list_live_sessions_for_node(&node.id, Utc::now())
+                .await?;
+            let rules: HashSet<RuleId> = sessions
+                .iter()
+                .flat_map(|s| s.rule_ids.iter().copied())
+                .collect();
+            (Some(rules), sessions.iter().map(|s| s.expires_at).min())
+        } else {
+            (None, None)
+        };
         let recipient = decode_public_key(&node.seal_public_key)?;
         let ca_key = self.keys.interception_ca.key_pkcs8_der()?;
         let ca = InterceptionCa {
@@ -359,6 +389,9 @@ impl NodeService {
         }
         let mut rules = Vec::new();
         for rule in self.policy.list_enabled_rules().await? {
+            if hosted.as_ref().is_some_and(|ids| !ids.contains(&rule.id)) {
+                continue;
+            }
             let Some(meta) = self.credentials.get_credential(&rule.credential_id).await? else {
                 warn!(rule_id = %rule.id, credential_id = %rule.credential_id, "rule references a missing credential; skipped");
                 continue;
@@ -411,7 +444,9 @@ impl NodeService {
             });
         }
         Ok(CachedContent {
-            content_generation: generation,
+            content_generation: generation.content,
+            sessions_generation: node.scoped_rules.then_some(generation.sessions),
+            valid_until,
             rules,
             ca,
         })
@@ -420,14 +455,15 @@ impl NodeService {
     async fn content_for(
         &self,
         node: &Node,
-        generation: u64,
+        generation: Generation,
     ) -> Result<Arc<CachedContent>, ControlError> {
+        let now = Utc::now();
         let cached = self
             .cache
             .lock()
             .ok()
             .and_then(|c| c.get(&node.id).cloned())
-            .filter(|c| c.content_generation == generation);
+            .filter(|c| c.fresh(generation, now));
         if let Some(c) = cached {
             return Ok(c);
         }
@@ -441,7 +477,7 @@ impl NodeService {
     /// Builds and signs a fresh snapshot for `node` with a new version.
     pub async fn build_snapshot(&self, node: &Node) -> Result<SignedSnapshot, ControlError> {
         let generation = self.notifier.current();
-        let content = self.content_for(node, generation.content).await?;
+        let content = self.content_for(node, generation).await?;
         let now = Utc::now();
         let settings = self.policy.get_settings().await?;
         let body = SnapshotBody {
@@ -549,15 +585,30 @@ mod tests {
     use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
     use tokenless_core::snapshot::{SnapshotBody, MIN_SNAPSHOT_FORMAT};
 
-    use crate::service::policy::CreateCredential;
+    use tokenless_core::ids::{NodeId, RuleId, VaultId};
+
+    use crate::model::Node;
+    use crate::service::policy::{CreateCredential, CreateRule};
+    use crate::service::sessions::MintSession;
     use crate::service::testing::{services, vault_with_rule};
+    use crate::store::NodeStore;
     use crate::{Caller, ControlError, ControlServices};
 
-    async fn snapshot(cs: &ControlServices, host: &Caller) -> SnapshotBody {
+    /// The snapshot of a new embedded node running one session for `rule`.
+    async fn snapshot(
+        cs: &ControlServices,
+        host: &Caller,
+        vault: VaultId,
+        rule: RuleId,
+    ) -> SnapshotBody {
         let secret = SealSecretKey::random_from_rng(OsRng);
         let node = cs
             .nodes
             .register_embedded(host, "n", &encode_public_key(&SealPublicKey::from(&secret)))
+            .await
+            .unwrap();
+        cs.sessions
+            .mint(host, &vault, mint(rule, Some(node.node.id), 600))
             .await
             .unwrap();
         cs.nodes
@@ -568,14 +619,124 @@ mod tests {
             .unwrap()
     }
 
+    fn mint(rule: RuleId, node: Option<NodeId>, ttl_secs: u64) -> MintSession {
+        MintSession {
+            rule_ids: vec![rule],
+            bundle: None,
+            ttl_secs: Some(ttl_secs),
+            longest: false,
+            request_limit: None,
+            labels: BTreeMap::new(),
+            node_id: node,
+            binding: None,
+            not_after: None,
+        }
+    }
+
+    /// A node that runs some workloads holds only the credentials their
+    /// sessions use: not every rule, nor the rules of other nodes' or
+    /// unbound sessions, and nothing once those sessions end.
+    #[tokio::test]
+    async fn a_scoped_node_holds_only_the_rules_of_its_own_live_sessions() {
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule_a) = vault_with_rule(&cs, &host).await;
+        let credential_id = cs
+            .policy
+            .get_rule(&host, &rule_a)
+            .await
+            .unwrap()
+            .credential_id;
+        let rule_b = cs
+            .policy
+            .create_rule(
+                &host,
+                &vault,
+                CreateRule {
+                    name: "second".into(),
+                    credential_id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let scoped = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "n",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        assert!(scoped.node.scoped_rules);
+        let mut everything = scoped.node.clone();
+        everything.id = NodeId::new();
+        everything.scoped_rules = false;
+        store.insert_node(everything.clone(), &[]).await.unwrap();
+        let rules = |node: Node| {
+            let cs = &cs;
+            let key = scoped.snapshot_verify_key;
+            async move {
+                let body = cs
+                    .nodes
+                    .build_snapshot(&node)
+                    .await
+                    .unwrap()
+                    .verify(&key)
+                    .unwrap();
+                let mut ids: Vec<_> = body.rules.iter().map(|r| r.rule_id).collect();
+                ids.sort();
+                ids
+            }
+        };
+        let mut both = vec![rule_a, rule_b];
+        both.sort();
+        assert_eq!(rules(scoped.node.clone()).await, vec![]);
+        assert_eq!(rules(everything.clone()).await, both);
+
+        let mine = cs
+            .sessions
+            .mint(&host, &vault, mint(rule_a, Some(scoped.node.id), 600))
+            .await
+            .unwrap();
+        cs.sessions
+            .mint(&host, &vault, mint(rule_b, None, 600))
+            .await
+            .unwrap();
+        cs.sessions
+            .mint(&host, &vault, mint(rule_b, Some(NodeId::new()), 600))
+            .await
+            .unwrap();
+        assert_eq!(rules(scoped.node.clone()).await, vec![rule_a]);
+
+        // A session that runs out takes its rules with it.
+        cs.sessions
+            .mint(&host, &vault, mint(rule_b, Some(scoped.node.id), 1))
+            .await
+            .unwrap();
+        assert_eq!(rules(scoped.node.clone()).await, both);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert_eq!(rules(scoped.node.clone()).await, vec![rule_a]);
+
+        cs.sessions.revoke(&host, &mine.session.id).await.unwrap();
+        assert_eq!(rules(scoped.node.clone()).await, vec![]);
+        assert_eq!(rules(everything).await, both);
+    }
+
     /// A secret that expires upstream ships with its deadline, in the
     /// format that carries it; replacing the secret replaces the deadline.
     #[tokio::test]
     async fn a_credentials_deadline_reaches_snapshots_and_follows_its_secret() {
         let (_, cs) = services().await;
         let host = Caller::service(Principal::service("host", Role::Admin, None));
-        let (vault, _) = vault_with_rule(&cs, &host).await;
-        let body = snapshot(&cs, &host).await;
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let body = snapshot(&cs, &host, vault, rule).await;
         assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
         assert_eq!(body.rules[0].not_after, None);
 
@@ -588,7 +749,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rotated.not_after, Some(deadline));
-        let body = snapshot(&cs, &host).await;
+        let body = snapshot(&cs, &host, vault, rule).await;
         assert_eq!(body.format, 2);
         assert_eq!(body.rules[0].not_after, Some(deadline));
 
@@ -597,7 +758,7 @@ mod tests {
             .rotate_credential(&host, &credential, fields.clone(), None)
             .await
             .unwrap();
-        let body = snapshot(&cs, &host).await;
+        let body = snapshot(&cs, &host, vault, rule).await;
         assert_eq!(
             (body.format, body.rules[0].not_after),
             (MIN_SNAPSHOT_FORMAT, None)

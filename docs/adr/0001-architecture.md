@@ -277,6 +277,13 @@ node protocol and the snapshot format are unchanged.
   written in the oldest format that carries everything in it, so older
   nodes keep working until a feature that needs the newer one is used.
   Format 2 adds a credential's `not_after`.
+- An embedded data plane is scoped: its snapshot holds only the rules of
+  live sessions minted for it (`node_id`), not every enabled rule, so a
+  compromised worker holds sealed credentials only for the workloads it
+  runs. Minting such a session triggers a new snapshot, and the embedder
+  waits for it with `Binding::ready`. Rules leave when their sessions are
+  revoked or expire. Enrolled nodes still receive every enabled rule, so
+  sessions without a node work on any of them.
 - A credential whose secret expires upstream (an installation token, say)
   carries that deadline, set with the secret and replaced with it. The
   node stops injecting it then and answers 503 `credential_expired`, so a

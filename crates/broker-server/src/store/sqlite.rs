@@ -112,6 +112,19 @@ where
     })
 }
 
+fn get_opt_id<T: FromStr>(row: &SqliteRow, column: &str) -> Result<Option<T>, StoreError>
+where
+    T::Err: std::fmt::Display,
+{
+    get::<Option<String>>(row, column)?
+        .map(|raw| {
+            raw.parse().map_err(|e: T::Err| {
+                StoreError::backend(&format!("decode {column}"), format!("'{raw}': {e}"))
+            })
+        })
+        .transpose()
+}
+
 fn role(row: &SqliteRow) -> Result<Role, StoreError> {
     let raw: String = get(row, "role")?;
     Role::parse(&raw)
@@ -680,6 +693,7 @@ fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
         bundle,
         labels: from_json("labels", &get::<String>(row, "labels")?)?,
         request_limit: get::<Option<i64>>(row, "request_limit")?.map(to_u64),
+        node_id: get_opt_id(row, "node_id")?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         expires_at: get_ts(row, "expires_at")?,
@@ -689,7 +703,7 @@ fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
 
 const RULE_COLUMNS: &str =
     "id, vault_id, credential_id, name, allow, enabled, created_by, created_at, updated_at";
-const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
+const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
 
 /// Bundle columns plus its rule ids as a JSON array, in one statement.
 const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
@@ -1181,12 +1195,13 @@ impl PolicyStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_session").await?;
-        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(s.id.to_string())
             .bind(s.vault_id.to_string())
             .bind(to_json("rule_ids", &s.rule_ids)?)
             .bind(to_json("labels", &s.labels)?)
             .bind(s.request_limit.map(to_i64))
+            .bind(s.node_id.map(|n| n.to_string()))
             .bind(&s.created_by)
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
@@ -1321,6 +1336,23 @@ impl PolicyStore for SqliteStore {
             .map_err(db("list limited sessions", "session"))?
             .iter()
             .map(|r| Ok((get_id(r, "id")?, to_u64(get::<i64>(r, "request_limit")?))))
+            .collect()
+    }
+
+    async fn list_live_sessions_for_node(
+        &self,
+        node: &NodeId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE node_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id");
+        sqlx::query(&sql)
+            .bind(node.to_string())
+            .bind(ts(&now))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list a node's live sessions", "session"))?
+            .iter()
+            .map(session_from_row)
             .collect()
     }
 
@@ -1964,6 +1996,7 @@ fn node_from_row(row: &SqliteRow) -> Result<Node, StoreError> {
         enrolled_at: get_ts(row, "enrolled_at")?,
         last_seen_at: get_opt_ts(row, "last_seen_at")?,
         revoked_at: get_opt_ts(row, "revoked_at")?,
+        scoped_rules: get::<i64>(row, "scoped_rules")? != 0,
     })
 }
 
@@ -2008,7 +2041,7 @@ impl NodeStore for SqliteStore {
 
     async fn insert_node(&self, n: Node, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_node").await?;
-        sqlx::query("INSERT INTO nodes (id, name, seal_public_key, cert_serial, cert_not_after, enrolled_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO nodes (id, name, seal_public_key, cert_serial, cert_not_after, enrolled_at, last_seen_at, revoked_at, scoped_rules) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(n.id.to_string())
             .bind(&n.name)
             .bind(&n.seal_public_key)
@@ -2017,6 +2050,7 @@ impl NodeStore for SqliteStore {
             .bind(ts(&n.enrolled_at))
             .bind(opt_ts(&n.last_seen_at))
             .bind(opt_ts(&n.revoked_at))
+            .bind(i64::from(n.scoped_rules))
             .execute(&mut *tx)
             .await
             .map_err(db("insert node", "node"))?;

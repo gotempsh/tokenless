@@ -146,6 +146,7 @@ fn session(vault_id: VaultId, expires_offset: i64, limit: Option<u64>) -> ProxyS
         bundle: None,
         labels: BTreeMap::from([("agent".to_string(), "conformance".to_string())]),
         request_limit: limit,
+        node_id: None,
         created_by: "user:conformance".into(),
         created_at: at(-10),
         expires_at: at(expires_offset),
@@ -759,12 +760,37 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let active = session(v1.id, 600, None);
     let limited = session(v1.id, 600, Some(5));
     let expired = session(v1.id, -1, Some(5));
-    for s in [&active, &limited, &expired] {
+    // Sessions minted for one node: a scoped node is sent only their rules.
+    let node = NodeId::new();
+    let mut on_node = session(v2.id, 600, None);
+    on_node.node_id = Some(node);
+    let mut on_node_expired = session(v2.id, -1, None);
+    on_node_expired.node_id = Some(node);
+    let mut elsewhere = session(v2.id, 600, None);
+    elsewhere.node_id = Some(NodeId::new());
+    for s in [
+        &active,
+        &limited,
+        &expired,
+        &on_node,
+        &on_node_expired,
+        &elsewhere,
+    ] {
         store
             .insert_session(s.clone(), &[])
             .await
             .map_err(backend(S, "session_insert"))?;
     }
+    let for_node = store
+        .list_live_sessions_for_node(&node, at(0))
+        .await
+        .map_err(backend(S, "sessions_for_node"))?;
+    ensure!(
+        S,
+        "sessions_for_node",
+        for_node == vec![on_node.clone()],
+        "only the node's own live session should be listed, with its node: {for_node:?}"
+    );
     let got = store
         .get_session(&active.id)
         .await
@@ -2365,6 +2391,7 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         enrolled_at: at(0),
         last_seen_at: None,
         revoked_at: None,
+        scoped_rules: true,
     };
     store
         .insert_node(node.clone(), &[])
@@ -2386,9 +2413,9 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
         S,
         "node_update",
         got.as_ref()
-            .map(|n| (n.cert_serial.as_str(), n.last_seen_at))
-            == Some(("02", Some(at(10)))),
-        "node cert/heartbeat not stored: {got:?}"
+            .map(|n| (n.cert_serial.as_str(), n.last_seen_at, n.scoped_rules))
+            == Some(("02", Some(at(10)), true)),
+        "node cert/heartbeat/scope not stored: {got:?}"
     );
     let first = store
         .revoke_node(&node.id, at(20), &[])

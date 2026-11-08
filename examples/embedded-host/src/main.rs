@@ -137,8 +137,6 @@ async fn main() -> Result<(), Error> {
         }),
     )
     .await?;
-    let version = installer.install(&control.nodes.build_snapshot(&node).await?)?;
-    println!("data plane running with snapshot {version}");
 
     // 3. A workload, bound to a session minted for it on this node.
     let minted = control
@@ -162,12 +160,18 @@ async fn main() -> Result<(), Error> {
             },
         )
         .await?;
+    // The node holds only the credentials of sessions minted for it, so
+    // its snapshot is built once the workload's session exists, and the
+    // workload starts once the binding is ready under it.
+    let version = installer.install(&control.nodes.build_snapshot(&node).await?)?;
+    println!("data plane running with snapshot {version}");
     let binding = Arc::new(dataplane.bind(BindingSpec {
         binding_id: "workload-1".into(),
         generation: 1,
         sessions: vec![minted.token],
         max_connections: 8,
     })?);
+    binding.ready(version, Duration::from_secs(5)).await?;
 
     // The workload's proxy connection: any byte stream will do.
     let (workload, proxy_side) = tokio::io::duplex(64 * 1024);

@@ -1905,6 +1905,7 @@ mod tests {
             enrolled_at: Utc::now(),
             last_seen_at: None,
             revoked_at: None,
+            scoped_rules: false,
         };
         let forged = AuditEvent::new(
             "user:someone",
@@ -2226,7 +2227,9 @@ mod tests {
         let signed = cs.nodes.build_snapshot(&registered.node).await.unwrap();
         let body = signed.verify(&registered.snapshot_verify_key).unwrap();
         assert_eq!(body.node_id, registered.node.id);
-        assert_eq!(body.rules.len(), 1);
+        // It is scoped: no session runs on it yet, so it holds no rule.
+        assert!(registered.node.scoped_rules);
+        assert!(body.rules.is_empty());
         let shipped = AuditEvent::new(
             "forged",
             "proxy.request",

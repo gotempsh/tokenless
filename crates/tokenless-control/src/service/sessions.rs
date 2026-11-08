@@ -244,6 +244,7 @@ impl SessionService {
             bundle,
             labels: req.labels,
             request_limit: req.request_limit,
+            node_id: claims.aud,
             created_by: caller.actor().to_string(),
             created_at: claims.iat,
             expires_at: claims.exp,
@@ -275,7 +276,9 @@ impl SessionService {
         self.policy
             .insert_session(session.clone(), &[event])
             .await?;
-        if session.request_limit.is_some() {
+        // A limited session is announced to every node; one minted for a
+        // node may need rules a scoped node does not hold yet.
+        if session.request_limit.is_some() || session.node_id.is_some() {
             self.notifier.bump_sessions();
         }
         Ok(MintedSession { token, session })
@@ -654,6 +657,7 @@ mod tests {
             bundle: None,
             labels: BTreeMap::new(),
             request_limit: None,
+            node_id: None,
             created_by: "test".into(),
             created_at: expires_at - TimeDelta::minutes(15),
             expires_at,

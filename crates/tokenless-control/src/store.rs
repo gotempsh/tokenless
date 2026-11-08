@@ -286,6 +286,12 @@ pub trait PolicyStore: Send + Sync {
         &self,
         now: DateTime<Utc>,
     ) -> Result<Vec<(SessionId, u64)>, StoreError>;
+    /// Unrevoked sessions minted for `node` that expire after `now`.
+    async fn list_live_sessions_for_node(
+        &self,
+        node: &NodeId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError>;
 
     async fn get_settings(&self) -> Result<Settings, StoreError>;
     async fn put_settings(
