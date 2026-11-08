@@ -43,16 +43,16 @@ import {
   Relative,
   RowActions,
   RowMenu,
-  rowLink,
   Section,
   SelectField,
   Status,
   TabSections,
   Tags,
   useConfirm,
-  When,
 } from "../components/common";
-import { cn } from "../lib/utils";
+import { allowsLabel, EVERYTHING } from "../rules";
+import { useActorNames } from "./Audit";
+import { SessionTable } from "./Sessions";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -215,7 +215,7 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
           {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
           {tab === "rules" && <Rules vaultId={vaultId} />}
           {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-          {tab === "sessions" && <Sessions vaultId={vaultId} />}
+          {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
         </TabSections>
       </DetailLayout>
       <FormDialog
@@ -364,12 +364,9 @@ function Rules({ vaultId }: { vaultId: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className={fromWidth.xl}>Credential</TableHead>
-                <TableHead className={fromWidth["2xl"]}>Hosts</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Paths</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Methods</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Rule</TableHead>
+                <TableHead className={fromWidth.xl}>Hosts</TableHead>
+                <TableHead>On</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -378,35 +375,26 @@ function Rules({ vaultId }: { vaultId: string }) {
                 <TableRow key={r.id}>
                   <TableCell>
                     <div className="font-medium">{r.name}</div>
-                    <div className="text-xs text-muted-foreground @xl:hidden">{credName(r.credential_id)}</div>
+                    {credName(r.credential_id) !== r.name && (
+                      <div className="text-xs text-muted-foreground">{credName(r.credential_id)}</div>
+                    )}
                   </TableCell>
-                  <TableCell className={fromWidth.xl}>{credName(r.credential_id)}</TableCell>
-                  <TableCell className={fromWidth["2xl"]}>
+                  <TableCell className={fromWidth.xl}>
                     <Tags values={r.allow.hosts} />
-                  </TableCell>
-                  <TableCell className={fromWidth["4xl"]}>
-                    <Tags values={r.allow.paths} />
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>
-                    <Tags values={r.allow.methods} />
+                    {allowsLabel(r) !== EVERYTHING && <p className="mt-1 text-xs text-muted-foreground">{allowsLabel(r)}</p>}
                     {r.allow.mcp_tools !== undefined && (
-                      <p className="mt-1 max-w-48 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
+                      <p className="mt-1 max-w-64 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
                         MCP: {toolsLabel(r.allow.mcp_tools)}
                       </p>
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={r.enabled}
-                        disabled={action.busy}
-                        onCheckedChange={() => void toggle(r)}
-                        aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
-                      />
-                      <span className="hidden @lg:inline">
-                        <Status tone={r.enabled ? "success" : "neutral"}>{r.enabled ? "enabled" : "disabled"}</Status>
-                      </span>
-                    </div>
+                    <Switch
+                      checked={r.enabled}
+                      disabled={action.busy}
+                      onCheckedChange={() => void toggle(r)}
+                      aria-label={`${r.enabled ? "Turn off" : "Turn on"} ${r.name}`}
+                    />
                   </TableCell>
                   <TableCell>
                     <RowActions>
@@ -549,13 +537,9 @@ interface Minted {
   session: ProxySession;
 }
 
-function sessionStatus(s: ProxySession) {
-  if (s.revoked_at) return <Status tone="destructive">revoked</Status>;
-  if (new Date(s.expires_at) <= new Date()) return <Status tone="neutral">expired</Status>;
-  return <Status tone="success">active</Status>;
-}
-
-function Sessions({ vaultId }: { vaultId: string }) {
+function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
+  const actors = useActorNames(user);
+  const canChange = user.role === "admin" || user.role === "editor";
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/vaults/${vaultId}/sessions?page=${page}`), [vaultId, page]);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
@@ -632,53 +616,12 @@ function Sessions({ vaultId }: { vaultId: string }) {
             action={mintButton}
           />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Session</TableHead>
-                <TableHead className={fromWidth.xl}>Bundle</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Labels</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Limit</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
-                <TableHead className={fromWidth.lg}>Expires</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sessions.data?.items.map((s) => (
-                <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
-                  <TableCell>
-                    <Mono>{s.id.slice(0, 8)}</Mono>
-                    {s.bundle && <div className="text-xs text-muted-foreground @xl:hidden">{s.bundle.name}</div>}
-                  </TableCell>
-                  <TableCell className={fromWidth.xl}>
-                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>
-                    <Tags values={Object.entries(s.labels).map(([k, v]) => `${k}=${v}`)} />
-                  </TableCell>
-                  <TableCell className={cn(fromWidth["4xl"], "tabular-nums")}>{s.request_limit ?? "—"}</TableCell>
-                  <TableCell className={fromWidth["4xl"]}>
-                    <Mono>{s.created_by}</Mono>
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
-                    <When at={s.expires_at} />
-                  </TableCell>
-                  <TableCell>{sessionStatus(s)}</TableCell>
-                  <TableCell>
-                    <RowActions>
-                      {!s.revoked_at && (
-                        <Button type="button" variant="outline" size="sm" onClick={() => confirm.ask(s)}>
-                          Revoke
-                        </Button>
-                      )}
-                    </RowActions>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <SessionTable
+            sessions={sessions.data?.items ?? []}
+            actors={actors}
+            canRevoke={canChange}
+            onRevoke={confirm.ask}
+          />
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>

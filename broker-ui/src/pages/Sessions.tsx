@@ -7,7 +7,7 @@
 import { useMemo, useState } from "react";
 import { Ban, Plus, Timer } from "lucide-react";
 import { get, post, type AccessBundle, type Page, type ProxySession, type UserSummary, type Vault } from "../api";
-import { actorName } from "../audit";
+import { actorName, type ActorNames } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
   fromWidth,
@@ -60,6 +60,96 @@ export function sessionStatus(s: ProxySession) {
 
 export const isActive = (s: ProxySession) => !s.revoked_at && new Date(s.expires_at) > new Date();
 
+/**
+ * Sessions as rows that open their page. `vaultNames` adds a vault column
+ * (the list across vaults); a live session's menu revokes it.
+ */
+export function SessionTable({
+  sessions,
+  actors,
+  vaultNames,
+  showBundle = true,
+  canRevoke,
+  onRevoke,
+}: {
+  sessions: ProxySession[];
+  actors: ActorNames;
+  vaultNames?: Record<string, string>;
+  showBundle?: boolean;
+  canRevoke: boolean;
+  onRevoke: (s: ProxySession) => void;
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Name</TableHead>
+          {vaultNames && <TableHead className={fromWidth["2xl"]}>Vault</TableHead>}
+          {showBundle && <TableHead className={fromWidth["3xl"]}>Bundle</TableHead>}
+          <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
+          <TableHead className={fromWidth.xl}>Created</TableHead>
+          <TableHead className={fromWidth.lg}>Expires</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {sessions.map((s) => {
+          // Where the vault and bundle columns are hidden, they show under the name.
+          const where = [vaultNames?.[s.vault_id], showBundle ? s.bundle?.name : undefined].filter(Boolean).join(" · ");
+          return (
+            <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
+              <TableCell>
+                <div className="font-medium">{sessionLabel(s)}</div>
+                {where && <div className="text-xs text-muted-foreground @3xl:hidden">{where}</div>}
+              </TableCell>
+              {vaultNames && (
+                <TableCell className={fromWidth["2xl"]}>
+                  {vaultNames[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
+                </TableCell>
+              )}
+              {showBundle && (
+                <TableCell className={fromWidth["3xl"]}>
+                  {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
+                </TableCell>
+              )}
+              <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
+                {actorName(s.created_by, actors)}
+              </TableCell>
+              <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
+                <Relative at={s.created_at} />
+              </TableCell>
+              <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
+                <Relative at={s.expires_at} />
+              </TableCell>
+              <TableCell>{sessionStatus(s)}</TableCell>
+              <TableCell>
+                <RowActions>
+                  {isActive(s) && (
+                    <RowMenu
+                      label={sessionLabel(s)}
+                      items={[
+                        {
+                          label: "Revoke session",
+                          icon: Ban,
+                          onSelect: () => onRevoke(s),
+                          destructive: true,
+                          disabled: !canRevoke,
+                          reason: "Only editors and admins can revoke sessions",
+                        },
+                      ]}
+                    />
+                  )}
+                </RowActions>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
 export function Sessions({ me }: { me: UserSummary }) {
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/sessions?page=${page}`), [page]);
@@ -110,67 +200,13 @@ export function Sessions({ me }: { me: UserSummary }) {
             action={newButton}
           />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className={fromWidth["2xl"]}>Vault</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Bundle</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
-                <TableHead className={fromWidth.xl}>Created</TableHead>
-                <TableHead className={fromWidth.lg}>Expires</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sessions.data?.items.map((s) => (
-                <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
-                  <TableCell>
-                    <div className="font-medium">{sessionLabel(s)}</div>
-                    <div className="text-xs text-muted-foreground @3xl:hidden">
-                      {[names[s.vault_id], s.bundle?.name].filter(Boolean).join(" · ")}
-                    </div>
-                  </TableCell>
-                  <TableCell className={fromWidth["2xl"]}>
-                    {names[s.vault_id] ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>
-                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
-                    {actorName(s.created_by, actors)}
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
-                    <Relative at={s.created_at} />
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
-                    <Relative at={s.expires_at} />
-                  </TableCell>
-                  <TableCell>{sessionStatus(s)}</TableCell>
-                  <TableCell>
-                    <RowActions>
-                      {isActive(s) && (
-                        <RowMenu
-                          label={sessionLabel(s)}
-                          items={[
-                            {
-                              label: "Revoke session",
-                              icon: Ban,
-                              onSelect: () => confirm.ask(s),
-                              destructive: true,
-                              disabled: !canRevoke,
-                              reason: "Only editors and admins can revoke sessions",
-                            },
-                          ]}
-                        />
-                      )}
-                    </RowActions>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <SessionTable
+            sessions={sessions.data?.items ?? []}
+            actors={actors}
+            vaultNames={names}
+            canRevoke={canRevoke}
+            onRevoke={confirm.ask}
+          />
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>

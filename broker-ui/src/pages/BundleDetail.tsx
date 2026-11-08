@@ -6,7 +6,6 @@
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
-  Ban,
   Bot,
   Boxes,
   Braces,
@@ -55,10 +54,8 @@ import {
   Mono,
   Pager,
   Panel,
-  Relative,
   RowActions,
   RowMenu,
-  rowLink,
   Section,
   Status,
   TabSections,
@@ -80,7 +77,7 @@ import { DetailLayout, Fact, FactList } from "../components/layout";
 import { CommandSnippet } from "./Bundles";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
-import { isActive, sessionLabel, sessionStatus } from "./Sessions";
+import { SessionTable, sessionLabel } from "./Sessions";
 import { actorName, type ActorNames } from "../audit";
 
 export type BundleTab = "services" | "sessions" | "connect";
@@ -721,54 +718,13 @@ function BundleSessions({
             action={newButton}
           />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Created by</TableHead>
-                <TableHead className={fromWidth.xl}>Created</TableHead>
-                <TableHead className={fromWidth.lg}>Expires</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sessions.data?.items.map((s) => (
-                <TableRow key={s.id} {...rowLink(`#/sessions/${s.id}`)}>
-                  <TableCell className="font-medium">{sessionLabel(s)}</TableCell>
-                  <TableCell className={cn(fromWidth["3xl"], "text-muted-foreground")}>
-                    {actorName(s.created_by, actors)}
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
-                    <Relative at={s.created_at} />
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
-                    <Relative at={s.expires_at} />
-                  </TableCell>
-                  <TableCell>{sessionStatus(s)}</TableCell>
-                  <TableCell>
-                    <RowActions>
-                      {isActive(s) && (
-                        <RowMenu
-                          label={sessionLabel(s)}
-                          items={[
-                            {
-                              label: "Revoke session",
-                              icon: Ban,
-                              onSelect: () => confirm.ask(s),
-                              destructive: true,
-                              disabled: !canChange,
-                              reason: "Only editors and admins can revoke sessions",
-                            },
-                          ]}
-                        />
-                      )}
-                    </RowActions>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <SessionTable
+            sessions={sessions.data?.items ?? []}
+            actors={actors}
+            showBundle={false}
+            canRevoke={canChange}
+            onRevoke={confirm.ask}
+          />
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>
