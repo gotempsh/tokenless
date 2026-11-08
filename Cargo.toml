@@ -53,7 +53,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pki-types = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+# `yaml_serde`, the YAML organization's maintained `serde_yaml`, under the
+# old name so `serde_yaml::` paths keep working. Never the real `serde_yaml`:
+# it and its `unsafe-libyaml` parser are unmaintained (RUSTSEC-2024-0449);
+# tokenless-core's dependency tests fail if either is locked again.
+serde_yaml = { package = "yaml_serde", version = "0.10" }
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 subtle = "2.5"

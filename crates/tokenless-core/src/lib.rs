@@ -11,6 +11,8 @@
 pub mod audit;
 pub mod authz;
 mod builtin_catalog;
+#[cfg(test)]
+mod dependency_tests;
 pub mod egress;
 pub mod error;
 pub mod git;
