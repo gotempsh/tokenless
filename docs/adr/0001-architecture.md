@@ -251,12 +251,19 @@ node protocol and the snapshot format are unchanged.
   refuses all traffic (503), both on new CONNECTs and on requests inside
   existing tunnels. The server sends a snapshot on every policy or session
   change, and at least every `lease/3`.
-- Traffic already flowing is cut when its session ends: a passthrough
-  tunnel, an intercepted connection (idle or mid-response) and an MCP
-  gateway response that is still streaming are closed when a snapshot
-  lists the session as revoked, when the session expires, or when the lease
-  runs out. A revocation therefore reaches open traffic within one snapshot
-  push while the node is connected, and within the lease otherwise.
+- Traffic already flowing is cut when its session is taken back: a
+  passthrough tunnel, an intercepted connection (idle or mid-response) and
+  an MCP gateway response that is still streaming are closed when a
+  snapshot lists the session as revoked, when the binding it came through
+  is revoked, or when the lease runs out. A revocation therefore reaches
+  open traffic within one snapshot push while the node is connected, and
+  within the lease otherwise.
+- Expiry only stops new traffic, because the holder has usually renewed
+  (`tokenless run` mints the next session before the current one ends and
+  keeps relaying tunnels opened under the old one). An intercepted
+  connection closes gracefully at expiry once its requests in flight have
+  finished, and the client reconnects with its current session. To end
+  open traffic at a deadline, revoke the session then.
 - Snapshot bodies and session claims reject unknown fields. A new field
   that changes a security decision raises the snapshot `format` (claims
   rely on the unknown-field refusal), so a node too old to enforce it

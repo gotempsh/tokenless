@@ -51,6 +51,15 @@ pub struct Running {
 /// A data plane whose rule covers `host` (injecting `Bearer t`), trusting
 /// `upstream_roots` for upstream TLS, with a session for that rule.
 pub async fn running(host: &str, upstream_roots: Vec<CertificateDer<'static>>) -> Running {
+    running_for(host, upstream_roots, 600).await
+}
+
+/// [`running`] with a session that lasts `ttl_secs`.
+pub async fn running_for(
+    host: &str,
+    upstream_roots: Vec<CertificateDer<'static>>,
+    ttl_secs: u64,
+) -> Running {
     let f = Fixture::new();
     let keys = NodeKeys {
         node_id: f.keys.node_id,
@@ -73,7 +82,7 @@ pub async fn running(host: &str, upstream_roots: Vec<CertificateDer<'static>>) -
     let claims = SessionClaims::new(
         scope(),
         vec![rule],
-        600,
+        ttl_secs,
         None,
         BTreeMap::new(),
         Utc::now(),

@@ -51,7 +51,7 @@ use tracing::{debug, info, warn};
 
 use crate::audit::AuditPipeline;
 use crate::binding::BindingState;
-use crate::cut::{session_end, SessionEnd, SessionWatch};
+use crate::cut::{session_end, session_expiry, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::upstream::UpstreamHandle;
@@ -673,6 +673,7 @@ async fn intercepted_connection(
         shared.upstream_tls.clone(),
         shared.connect_timeout,
     );
+    let exp = claims.exp;
     let ctx = Arc::new(TunnelCtx {
         host,
         port,
@@ -689,7 +690,18 @@ async fn intercepted_connection(
     builder
         .timer(TokioTimer::new())
         .header_read_timeout(Duration::from_secs(60));
-    if let Err(e) = builder.serve_connection(TokioIo::new(tls), service).await {
+    let connection = builder.serve_connection(TokioIo::new(tls), service);
+    tokio::pin!(connection);
+    let served = tokio::select! {
+        served = connection.as_mut() => served,
+        () = session_expiry(exp) => {
+            // The session may start nothing new, but what is in flight
+            // finishes; the client reconnects with its current session.
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    };
+    if let Err(e) = served {
         debug!(error = %e, "intercepted connection ended with error");
     }
 }

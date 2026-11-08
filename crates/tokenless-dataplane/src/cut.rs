@@ -7,8 +7,19 @@
 //! intercepted one, but a passthrough tunnel, an idle keep-alive connection
 //! or a streaming body can outlive those checks. Each of them waits on
 //! [`session_end`] next to its I/O and is dropped when it resolves: when a
-//! snapshot lists the session as revoked, when the session expires, or when
-//! the snapshot lease runs out (revocations can no longer arrive).
+//! snapshot lists the session as revoked, when the binding it came through
+//! is revoked, or when the snapshot lease runs out (revocations can no
+//! longer arrive).
+//!
+//! Expiry is not a cut. A session that expires is not taken back: its
+//! holder usually renews it (`tokenless run` mints the next one before the
+//! current one runs out) and keeps using connections it opened under the
+//! old one. So expiry only stops new traffic: no new tunnel, no new request
+//! inside an intercepted one. An intercepted connection is closed
+//! gracefully at expiry, once its requests in flight have finished, so the
+//! client reconnects with its current session; a passthrough tunnel, which
+//! carries no credential, and a streaming response run until they end.
+//! To end a session's open traffic at a deadline, revoke it then.
 //!
 //! Nothing is registered per session: every open tunnel holds a receiver of
 //! the snapshot-change signal and its own deadline, so a new snapshot wakes
@@ -35,7 +46,6 @@ use crate::state::SnapshotHandle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEnd {
     Revoked,
-    Expired,
     /// The binding the traffic came through was revoked.
     BindingRevoked,
     /// The snapshot lease ran out, so a revocation could no longer arrive.
@@ -46,7 +56,6 @@ impl SessionEnd {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Revoked => "the session was revoked",
-            Self::Expired => "the session expired",
             Self::BindingRevoked => "the binding it came through was revoked",
             Self::LeaseExpired => {
                 "the policy lease expired (control plane unreachable), so revocations cannot arrive"
@@ -61,7 +70,6 @@ pub(crate) struct SessionWatch {
     pub changes: watch::Receiver<u64>,
     pub snapshot: SnapshotHandle,
     pub jti: SessionId,
-    pub exp: DateTime<Utc>,
     pub binding: Option<BindingWatch>,
 }
 
@@ -75,7 +83,6 @@ impl SessionWatch {
             changes,
             snapshot,
             jti: claims.jti,
-            exp: claims.exp,
             binding: None,
         }
     }
@@ -97,7 +104,15 @@ async fn binding_revoked(binding: &mut Option<BindingWatch>) {
     }
 }
 
-/// Resolves when the session can no longer carry traffic.
+/// Resolves at the session's expiry: the moment it may start nothing new.
+pub(crate) async fn session_expiry(exp: DateTime<Utc>) {
+    if let Ok(left) = (exp - Utc::now()).to_std() {
+        tokio::time::sleep(left).await;
+    }
+}
+
+/// Resolves when the session's open traffic must be cut; see the module
+/// docs for why expiry is not one of those moments.
 pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
     loop {
         if watch.binding.as_ref().is_some_and(|b| *b.revoked.borrow()) {
@@ -110,14 +125,10 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
             if current.revoked.contains(&watch.jti) {
                 return SessionEnd::Revoked;
             }
-            let to_exp = match (watch.exp - Utc::now()).to_std() {
-                Ok(left) if !left.is_zero() => left,
-                _ => return SessionEnd::Expired,
-            };
             if !current.lease_valid() {
                 return SessionEnd::LeaseExpired;
             }
-            (Instant::now() + to_exp).min(Instant::from_std(current.lease_deadline))
+            Instant::from_std(current.lease_deadline)
         };
         tokio::select! {
             changed = watch.changes.changed() => {
@@ -301,21 +312,21 @@ mod tests {
         assert_eq!(end, SessionEnd::Revoked);
     }
 
+    /// Expiry is not a cut: the holder has usually renewed by then.
     #[tokio::test]
-    async fn expiry_ends_the_session_without_a_new_snapshot() {
+    async fn expiry_alone_cuts_nothing() {
         let s = setup();
         let mine = claims(1);
         let end = timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(2),
             session_end(SessionWatch::new(
                 s.changed.subscribe(),
                 s.handle.clone(),
                 &mine,
             )),
         )
-        .await
-        .unwrap();
-        assert_eq!(end, SessionEnd::Expired);
+        .await;
+        assert!(end.is_err(), "{end:?}");
     }
 
     #[tokio::test]
@@ -417,7 +428,7 @@ mod tests {
         use tokio::net::TcpListener;
 
         use super::*;
-        use crate::testing::running;
+        use crate::testing::{running, running_for};
         use crate::DataPlane;
 
         /// How long a revocation may take to cut open traffic once the
@@ -491,6 +502,120 @@ mod tests {
             let took = until_closed(tls).await;
             assert!(took < CUT_BOUND, "cut took {took:?}");
             assert_eq!(cuts(&r.dp), 1);
+            r.dp.shutdown();
+        }
+
+        /// `tokenless run` renews before expiry and keeps relaying tunnels
+        /// it opened under the old session; they must not break.
+        #[tokio::test]
+        async fn a_passthrough_tunnel_outlives_its_sessions_expiry() {
+            let r = running_for("api.example.com", vec![], 1).await;
+            let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let target = upstream.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let (mut conn, _) = upstream.accept().await.unwrap();
+                let chunk = vec![7u8; 1024];
+                while conn.write_all(&chunk).await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            });
+            let mut stream = r.tunnel(&target).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut after = 0;
+            while after < 8 * 1024 {
+                let n = timeout(Duration::from_secs(2), stream.read(&mut buf))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(n > 0, "the tunnel closed after the session expired");
+                after += n;
+            }
+            assert_eq!(cuts(&r.dp), 0);
+            r.dp.shutdown();
+        }
+
+        /// An idle intercepted connection closes at expiry, so the client
+        /// reconnects with its current session instead of being refused on
+        /// its next request. That is not a cut.
+        #[tokio::test]
+        async fn an_idle_intercepted_connection_closes_at_expiry() {
+            let r = running_for("api.example.com", vec![], 2).await;
+            let tls = r
+                .intercepted("api.example.com:443", "api.example.com")
+                .await;
+            let took = until_closed(tls).await;
+            assert!(took < Duration::from_secs(3), "closed after {took:?}");
+            assert_eq!(cuts(&r.dp), 0);
+            r.dp.shutdown();
+        }
+
+        #[tokio::test]
+        async fn a_request_in_flight_at_expiry_gets_its_answer() {
+            use rustls::pki_types::CertificateDer;
+            use tokio_rustls::TlsAcceptor;
+
+            use crate::tls::leaf_server_config;
+
+            // An upstream that answers two seconds after each request.
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let root = CertificateDer::from(cert.cert.der().to_vec());
+            let server = leaf_server_config(
+                "localhost",
+                vec![root.clone()],
+                cert.signing_key.serialize_der(),
+            )
+            .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                while let Ok((tcp, _)) = listener.accept().await {
+                    let acceptor = TlsAcceptor::from(server.clone());
+                    tokio::spawn(async move {
+                        let Ok(mut tls) = acceptor.accept(tcp).await else {
+                            return;
+                        };
+                        let mut head = Vec::new();
+                        let mut byte = [0u8; 1];
+                        while !head.ends_with(b"\r\n\r\n") {
+                            if tls.read(&mut byte).await.unwrap_or(0) == 0 {
+                                return;
+                            }
+                            head.push(byte[0]);
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = tls
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone")
+                            .await;
+                    });
+                }
+            });
+
+            let target = format!("localhost:{port}");
+            let r = running_for(&target, vec![root], 1).await;
+            let mut tls = r.intercepted(&target, "localhost").await;
+            tls.write_all(format!("GET /slow HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            // The session expires while the upstream is still answering.
+            let mut response = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !response.ends_with(b"done") {
+                let n = timeout(Duration::from_secs(5), tls.read(&mut buf))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    n > 0,
+                    "closed before the answer: {:?}",
+                    String::from_utf8_lossy(&response)
+                );
+                response.extend_from_slice(&buf[..n]);
+            }
+            assert!(response.starts_with(b"HTTP/1.1 200"));
+            // Then the connection closes, with nothing cut.
+            until_closed(tls).await;
+            assert_eq!(cuts(&r.dp), 0);
             r.dp.shutdown();
         }
     }
