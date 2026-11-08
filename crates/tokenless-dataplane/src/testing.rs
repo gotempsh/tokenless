@@ -78,6 +78,7 @@ pub async fn running_with(
     };
     let config = DataPlaneConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
+        mcp_listen: Some("127.0.0.1:0".parse().unwrap()),
         use_public_roots: false,
         extra_upstream_roots: upstream_roots,
         ..DataPlaneConfig::default()
@@ -280,6 +281,16 @@ async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> String {
 /// A local HTTPS upstream for `localhost` that answers every request with
 /// `answer` (a whole response). Returns its port and certificate.
 pub async fn https_upstream(answer: &'static str) -> (u16, CertificateDer<'static>) {
+    https_upstream_with(answer, false).await
+}
+
+/// [`https_upstream`] that keeps each connection open after `answer`, as
+/// an event stream does.
+pub async fn https_stream_upstream(answer: &'static str) -> (u16, CertificateDer<'static>) {
+    https_upstream_with(answer, true).await
+}
+
+async fn https_upstream_with(answer: &'static str, hold: bool) -> (u16, CertificateDer<'static>) {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let root = CertificateDer::from(cert.cert.der().to_vec());
     let server = leaf_server_config(
@@ -299,6 +310,12 @@ pub async fn https_upstream(answer: &'static str) -> (u16, CertificateDer<'stati
                 };
                 read_head(&mut tls).await;
                 let _ = tls.write_all(answer.as_bytes()).await;
+                if hold {
+                    let _ = tls.flush().await;
+                    let mut rest = [0u8; 1];
+                    // Until the proxy closes its side.
+                    let _ = tls.read(&mut rest).await;
+                }
                 let _ = tls.shutdown().await;
             });
         }

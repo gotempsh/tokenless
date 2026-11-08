@@ -30,7 +30,6 @@ use tokenless_core::audit::AuditOutcome;
 use tokenless_core::host::parse_authority;
 use tokenless_core::session::verify_session;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::cut::CutBody;
@@ -39,6 +38,7 @@ use crate::proxy::{
     audit_best_effort, check_session, handle_intercepted, respond, session_rules, tunnel_cut,
     ProxyBody, ProxyShared, TunnelCtx,
 };
+use crate::shutdown::{closed, stopping};
 use crate::upstream::UpstreamHandle;
 
 /// Every gateway URL starts with this.
@@ -122,8 +122,10 @@ fn upstream_for(
     handle
 }
 
-pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connections: usize) {
-    let limit = Arc::new(Semaphore::new(max_connections.max(1)));
+/// Accepts MCP gateway connections. Each holds a permit of
+/// `shared.gateway_connections` until it closes, so a shutdown drains and
+/// counts it like a proxy connection.
+pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>) {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(conn) => conn,
@@ -133,7 +135,7 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connecti
                 continue;
             }
         };
-        let Ok(permit) = limit.clone().try_acquire_owned() else {
+        let Ok(permit) = shared.gateway_connections.clone().try_acquire_owned() else {
             Metrics::inc(&shared.metrics.connections_rejected);
             debug!(%peer, "connection limit reached; dropping MCP gateway connection");
             continue;
@@ -142,6 +144,7 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connecti
         let _ = stream.set_nodelay(true);
         let shared = shared.clone();
         tokio::spawn(async move {
+            let mut lifecycle = shared.lifecycle.subscribe();
             let slot: ConnectionUpstream = Arc::new(Mutex::new(None));
             let service = service_fn(move |req| {
                 let shared = shared.clone();
@@ -152,10 +155,24 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>, max_connecti
             builder
                 .timer(TokioTimer::new())
                 .header_read_timeout(Duration::from_secs(60));
-            if let Err(e) = builder
-                .serve_connection(TokioIo::new(stream), service)
-                .await
-            {
+            let connection = builder.serve_connection(TokioIo::new(stream), service);
+            tokio::pin!(connection);
+            let served = tokio::select! {
+                served = connection.as_mut() => served,
+                () = stopping(&mut lifecycle) => {
+                    // Draining: requests in flight answer, then the
+                    // connection closes; the drain deadline drops it.
+                    connection.as_mut().graceful_shutdown();
+                    tokio::select! {
+                        served = connection.as_mut() => served,
+                        () = closed(&mut lifecycle) => {
+                            debug!(%peer, "drain deadline reached; dropping MCP gateway connection");
+                            return;
+                        }
+                    }
+                }
+            };
+            if let Err(e) = served {
                 debug!(%peer, error = %e, "MCP gateway connection ended with error");
             }
             drop(permit);

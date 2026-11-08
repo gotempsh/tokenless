@@ -5,9 +5,9 @@
 //!
 //! [`DataPlane::shutdown`](crate::DataPlane::shutdown) moves through two
 //! phases. While [`Lifecycle::Draining`] nothing new is accepted: the
-//! listeners stop, a binding refuses new connections, and an intercepted
-//! or idle proxy connection closes once its requests in flight have
-//! answered. Snapshots keep arriving, so a revocation still cuts traffic.
+//! listeners stop, a binding refuses new connections, and an intercepted,
+//! idle proxy or MCP gateway connection closes once its requests in
+//! flight have answered. Snapshots keep arriving, so a revocation still cuts traffic.
 //! At the drain deadline it becomes [`Lifecycle::Closed`] and every tunnel
 //! and streaming response still open is cut and audited as cut. The audit
 //! queue ships what it holds without waiting for a full batch, gets one
@@ -64,8 +64,8 @@ pub(crate) async fn closed(lifecycle: &mut watch::Receiver<Lifecycle>) {
 /// What a shutdown left behind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShutdownReport {
-    /// Proxy and binding connections, tunnels included, still open at the
-    /// drain deadline and cut there.
+    /// Proxy, binding and MCP gateway connections, tunnels included,
+    /// still open at the drain deadline and cut there.
     pub cut_connections: usize,
     /// Audit events recorded but not shipped when the data plane stopped.
     /// They are lost; the control plane never sees them.
@@ -121,8 +121,11 @@ pub(crate) async fn drain(shared: &Arc<ProxyShared>, deadline: Instant) -> Shutd
     report
 }
 
+/// Proxy and binding connections with their tunnels, and MCP gateway
+/// connections.
 fn open_connections(shared: &ProxyShared) -> usize {
-    shared.max_connections - shared.connections.available_permits()
+    (shared.max_connections - shared.connections.available_permits())
+        + (shared.max_connections - shared.gateway_connections.available_permits())
 }
 
 /// Polls `done` until it holds or `deadline` passes. Shutdown happens
@@ -151,7 +154,7 @@ mod tests {
     use super::*;
     use crate::audit::AuditShipper;
     use crate::error::DataPlaneError;
-    use crate::testing::{running, running_with};
+    use crate::testing::{https_stream_upstream, running, running_with};
 
     /// A TCP upstream that echoes what it receives.
     async fn echo() -> String {
@@ -313,5 +316,80 @@ mod tests {
             timeout(Duration::from_secs(2), tls.read(&mut buf)).await,
             Ok(Ok(0)) | Ok(Err(_))
         ));
+    }
+
+    /// Opens a gateway request to `target` that streams; returns the
+    /// connection once the response head and first event arrived.
+    async fn gateway_stream(r: &crate::testing::Running, target: &str) -> TcpStream {
+        let gateway =
+            r.dp.mcp_addr()
+                .expect("the test plane runs the MCP gateway");
+        let mut stream = TcpStream::connect(gateway).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "GET /mcp/{target}/events HTTP/1.1\r\nHost: {gateway}\r\nAuthorization: Bearer {}\r\n\r\n",
+                    r.token
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !String::from_utf8_lossy(&seen).contains("hello") {
+            let n = timeout(Duration::from_secs(5), stream.read(&mut buf))
+                .await
+                .expect("the stream answers")
+                .unwrap();
+            assert!(n > 0, "closed early: {}", String::from_utf8_lossy(&seen));
+            seen.extend_from_slice(&buf[..n]);
+        }
+        assert!(
+            String::from_utf8_lossy(&seen).starts_with("HTTP/1.1 200"),
+            "{}",
+            String::from_utf8_lossy(&seen)
+        );
+        stream
+    }
+
+    const EVENT_STREAM: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n12\r\ndata: hello world\n\r\n";
+
+    /// An event stream open through the MCP gateway is drained like a
+    /// tunnel: it gets the drain time, then is cut and counted.
+    #[tokio::test]
+    async fn an_open_gateway_stream_is_drained_cut_and_counted() {
+        let (port, root) = https_stream_upstream(EVENT_STREAM).await;
+        let target = format!("localhost:{port}");
+        let r = running(&target, vec![root]).await;
+        let mut stream = gateway_stream(&r, &target).await;
+
+        let started = std::time::Instant::now();
+        let report = r.dp.shutdown(Duration::from_millis(500)).await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(500),
+            "the stream got the drain time: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(report.cut_connections, 1, "{report:?}");
+        assert!(!report.clean());
+        assert!(closed(&mut stream).await, "the stream is cut");
+    }
+
+    /// An idle keep-alive gateway connection closes when the drain starts.
+    #[tokio::test]
+    async fn an_idle_gateway_connection_closes_when_the_drain_starts() {
+        let r = running("api.example.com", vec![]).await;
+        let mut idle = TcpStream::connect(r.dp.mcp_addr().unwrap()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        let report = r.dp.shutdown(Duration::from_secs(10)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(report.cut_connections, 0);
+        assert!(closed(&mut idle).await);
     }
 }

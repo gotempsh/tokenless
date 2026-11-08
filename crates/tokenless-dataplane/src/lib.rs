@@ -192,6 +192,7 @@ impl DataPlane {
             node: node_id,
             connections: Arc::new(Semaphore::new(max_connections)),
             max_connections,
+            gateway_connections: Arc::new(Semaphore::new(max_connections)),
             snapshot: snapshot.clone(),
             snapshot_changed: snapshot_changed.clone(),
             audit,
@@ -221,11 +222,7 @@ impl DataPlane {
             }
             info!(%bound, "MCP gateway listening");
             mcp_addr = Some(bound);
-            gateway_task = Some(tokio::spawn(gateway::serve(
-                listener,
-                shared.clone(),
-                config.max_connections,
-            )));
+            gateway_task = Some(tokio::spawn(gateway::serve(listener, shared.clone())));
         }
         let mut accepting = vec![tokio::spawn(proxy::serve(listener, shared.clone()))];
         accepting.extend(gateway_task);

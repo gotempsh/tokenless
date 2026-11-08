@@ -53,7 +53,7 @@ use crate::audit::AuditPipeline;
 use crate::binding::BindingState;
 use crate::cut::{session_end, session_expiry, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
-use crate::shutdown::{stopping, Lifecycle};
+use crate::shutdown::{closed, stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::status::UpstreamFailureKind;
 use crate::upstream::UpstreamHandle;
@@ -80,6 +80,9 @@ pub struct ProxyShared {
     /// Open client connections and their tunnels, bound or not.
     pub connections: Arc<Semaphore>,
     pub max_connections: usize,
+    /// Open MCP gateway connections, limited to `max_connections` apart
+    /// from the proxy's.
+    pub gateway_connections: Arc<Semaphore>,
     pub snapshot: SnapshotHandle,
     /// Bumped to each applied snapshot's version; open tunnels watch it to
     /// notice their session being revoked.
@@ -308,9 +311,13 @@ pub(crate) async fn serve_stream<S>(
         served = connection.as_mut() => served,
         () = stopping(&mut lifecycle) => {
             // Draining: a CONNECT being answered still opens its tunnel,
-            // and the idle connection then closes.
+            // and the idle connection then closes; the drain deadline
+            // drops one that has not.
             connection.as_mut().graceful_shutdown();
-            connection.await
+            tokio::select! {
+                served = connection.as_mut() => served,
+                () = closed(&mut lifecycle) => return,
+            }
         }
     };
     if let Err(e) = served {
