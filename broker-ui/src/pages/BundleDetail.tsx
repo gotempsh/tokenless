@@ -27,7 +27,6 @@ import {
   post,
   type AccessBundle,
   type CredentialMeta,
-  type DiscoveredService,
   type MintedSession,
   type Page,
   type ProxySession,
@@ -39,7 +38,7 @@ import {
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote, signedInRunCommand } from "../bundleConnect";
-import { claudeMcpCommand, DEFAULT_GATEWAY, mcpClientJson, mcpCredentials, mcpEndpoints, type McpEndpoint } from "../mcpConnect";
+import { claudeMcpCommand, DEFAULT_GATEWAY, mcpClientJson, mcpCredentials, mcpEndpoints, tokenServices, type McpEndpoint } from "../mcpConnect";
 import {
   fromWidth,
   CheckField,
@@ -822,18 +821,6 @@ interface McpToken {
 
 type McpClient = "claude" | "json";
 
-/** The services a freshly minted token reaches, asked with the token itself. */
-async function tokenServices(token: string): Promise<DiscoveredService[]> {
-  const response = await fetch("/api/v1/sessions/self", {
-    headers: { authorization: `Bearer ${token}` },
-    credentials: "omit",
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(`Looking up the token's MCP servers failed with HTTP ${response.status}`);
-  const found = (await response.json()) as { services: DiscoveredService[] };
-  return found.services;
-}
-
 function McpConnect({
   bundle,
   vaultName,
@@ -985,8 +972,8 @@ function Connect({
         <ol className="space-y-6">
           <Step n={1} title="Create a session for the agent">
             <p className="text-sm text-muted-foreground">
-              The session's token is all the agent's machine needs. It reaches this bundle's services until it expires
-              or you revoke it, and every request it makes is logged on the session's page.
+              You get the token and the commands to paste on the agent's machine. The session reaches this bundle's
+              services until it expires or you revoke it, and every request it makes is logged on the session's page.
             </p>
             <Button
               type="button"
@@ -997,14 +984,6 @@ function Connect({
               <Plus />
               New session
             </Button>
-            <p className="text-xs text-muted-foreground">
-              Off this machine, also set <Mono>TOKENLESS_URL</Mono> to this console's address and{" "}
-              <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a{" "}
-              <a href="#/proxies" className="underline">
-                proxy
-              </a>
-              's <Mono>host:port</Mono>.
-            </p>
           </Step>
           <Step n={2} title="Start the agent">
             <ChoiceCards

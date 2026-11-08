@@ -165,7 +165,18 @@ export function CopyButton({ value, label = "Copy", iconOnly = false }: { value:
 }
 
 /** A credential minted by the request: shown once, never retrievable again. */
-export function OneTimeSecret({ label, value, hint }: { label: string; value: string; hint?: ReactNode }) {
+export function OneTimeSecret({
+  label,
+  value,
+  display,
+  hint,
+}: {
+  label: string;
+  value: string;
+  /** Shown instead of `value` (a shortened token); Copy still copies `value`. */
+  display?: string;
+  hint?: ReactNode;
+}) {
   return (
     <Alert variant="warning">
       <KeyRound className="size-4" />
@@ -174,7 +185,7 @@ export function OneTimeSecret({ label, value, hint }: { label: string; value: st
         <p>This is the only time it is shown. Store it now.</p>
         <div className="flex items-center gap-2">
           <code className="min-w-0 flex-1 break-all rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground">
-            {value}
+            {display ?? value}
           </code>
           <CopyButton value={value} />
         </div>

@@ -10,17 +10,14 @@ import { useAction, useLoad } from "../hooks";
 import {
   DialogActions,
   ErrorBanner,
-  Exact,
   Field,
   FormDialog,
-  Mono,
-  OneTimeSecret,
   SelectField,
 } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
-import { defaultLifetime, lifetimeLabel, lifetimesUpTo, tokenCommands } from "../sessionForm";
-import { CommandSnippet } from "./Bundles";
+import { defaultLifetime, lifetimeLabel, lifetimesUpTo } from "../sessionForm";
+import { SessionHandoff } from "./SessionHandoff";
 
 interface SessionLimits {
   max_ttl_secs: number;
@@ -37,7 +34,6 @@ export function NewSessionDialog({
   onOpenChange,
   onCreated,
   isAdmin,
-  agentCommand = "claude",
 }: {
   /** The bundle the session is for; without it the form asks, from `choices`. */
   bundle?: AccessBundle;
@@ -47,8 +43,6 @@ export function NewSessionDialog({
   onOpenChange: (open: boolean) => void;
   onCreated?: (minted: MintedSession) => void;
   isAdmin: boolean;
-  /** The command the result's `tokenless run` line starts. */
-  agentCommand?: string;
 }) {
   const [form, setForm] = useState(EMPTY);
   // With a single bundle to choose from, it is chosen.
@@ -93,7 +87,6 @@ export function NewSessionDialog({
     }
   };
 
-  const commands = minted ? tokenCommands(minted.token, agentCommand) : null;
   const bundleOptions = (choices ?? []).map((b) => ({
     value: b.id,
     label: vaultNames[b.vault_id] ? `${b.name} · ${vaultNames[b.vault_id]}` : b.name,
@@ -105,41 +98,8 @@ export function NewSessionDialog({
       wide={minted !== null}
       title={minted ? "Session created" : fixed ? `New session for ${fixed.name}` : "New session"}
     >
-      {minted && commands && bundle ? (
-        <div className="space-y-4">
-          <OneTimeSecret
-            label="Session token"
-            value={minted.token}
-            hint={
-              <>
-                It reaches {bundle.name}'s services until <Exact at={minted.session.expires_at} />
-                {minted.session.request_limit ? `, for ${minted.session.request_limit} requests,` : ""} or until you
-                revoke it.
-              </>
-            }
-          />
-          <div className="space-y-2 text-sm">
-            <p>In the agent's shell:</p>
-            <CommandSnippet command={commands.exportLine} display={`${commands.exportLine.slice(0, 50)}…`} />
-            <CommandSnippet command={commands.run} />
-            <p className="text-xs text-muted-foreground">
-              On another machine, also set <Mono>TOKENLESS_URL</Mono> to this console's address and{" "}
-              <Mono>TOKENLESS_PROXY_ADDRESS</Mono> to a{" "}
-              <a href="#/proxies" className="underline">
-                proxy
-              </a>
-              's <Mono>host:port</Mono>.
-            </p>
-          </div>
-          <DialogActions>
-            <Button type="button" variant="outline" asChild>
-              <a href={`#/sessions/${minted.session.id}`}>Open session</a>
-            </Button>
-            <Button type="button" onClick={() => close(false)}>
-              Done
-            </Button>
-          </DialogActions>
-        </div>
+      {minted && bundle ? (
+        <SessionHandoff minted={minted} reaches={`${bundle.name}'s services`} onDone={() => close(false)} />
       ) : (
         <form className="space-y-4" onSubmit={submit}>
           <ErrorBanner error={limits.error ?? action.error} />

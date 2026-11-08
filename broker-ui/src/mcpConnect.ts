@@ -60,3 +60,15 @@ export function mcpCredentials(credentials: CredentialMeta[], templates: StoredT
     templates.some((t) => t.template.id === c.template_id && t.template.version === c.template_version && t.template.kind === "mcp"),
   );
 }
+
+/** The services a freshly minted token reaches, asked with the token itself. */
+export async function tokenServices(token: string): Promise<DiscoveredService[]> {
+  const response = await fetch("/api/v1/sessions/self", {
+    headers: { authorization: `Bearer ${token}` },
+    credentials: "omit",
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Looking up the token's MCP servers failed with HTTP ${response.status}`);
+  const found = (await response.json()) as { services: DiscoveredService[] };
+  return found.services;
+}

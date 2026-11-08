@@ -18,8 +18,8 @@ import {
   type Vault,
 } from "../api";
 import { useAction, useLoad } from "../hooks";
-import { tokenCommands } from "../sessionForm";
-import { Bundles, CommandSnippet } from "./Bundles";
+import { SessionHandoff } from "./SessionHandoff";
+import { Bundles } from "./Bundles";
 import { Services } from "./Services";
 import {
   fromWidth,
@@ -34,7 +34,6 @@ import {
   lines,
   Loading,
   Mono,
-  OneTimeSecret,
   Pager,
   Panel,
   RowActions,
@@ -639,35 +638,11 @@ function Sessions({ vaultId }: { vaultId: string }) {
         description={minted ? undefined : "Choose the rules the agent may use and how long the session lives."}
       >
         {minted ? (
-          <div className="space-y-4">
-            <OneTimeSecret
-              label="Proxy session token"
-              value={minted.token}
-              hint={
-                <div className="space-y-2">
-                  <p>Point the agent at the data plane:</p>
-                  <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs">
-                    HTTPS_PROXY=http://{minted.token.slice(0, 18)}…@&lt;data-plane-host&gt;:3128
-                  </code>
-                  <p>
-                    and trust the{" "}
-                    <a href="/api/v1/ca/interception.pem" className="font-medium underline underline-offset-4">
-                      interception CA certificate
-                    </a>
-                    .
-                  </p>
-                  <p>Or, with the tokenless CLI, in the agent's shell:</p>
-                  <CommandSnippet command={tokenCommands(minted.token, "<agent-command>").exportLine} />
-                  <CommandSnippet command={tokenCommands(minted.token, "<agent-command>").run} />
-                </div>
-              }
-            />
-            <DialogActions>
-              <Button type="button" onClick={() => closeMint(false)}>
-                Done
-              </Button>
-            </DialogActions>
-          </div>
+          <SessionHandoff
+            minted={minted}
+            reaches={minted.session.bundle ? `${minted.session.bundle.name}'s services` : "the rules you chose"}
+            onDone={() => closeMint(false)}
+          />
         ) : (
           <form className="space-y-4" onSubmit={mint}>
             <ErrorBanner error={mintAction.error} />
