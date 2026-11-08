@@ -4,8 +4,8 @@
 // One session: what it is, whether it still works, and its whole log:
 // every request it made and everything done to it, from the audit log.
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Ban, History, Pencil, Route, ScrollText } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
+import { Ban, History, Pencil, Route } from "lucide-react";
 import {
   ApiError,
   get,
@@ -18,7 +18,7 @@ import {
   type UserSummary,
   type Vault,
 } from "../api";
-import { actorLabel, actorName, sessionHistoryPhrase, type ActorNames } from "../audit";
+import { actorName, sessionHistoryPhrase, type ActorNames } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { useAction, useLoad, usePolling } from "../hooks";
 import {
@@ -30,32 +30,28 @@ import {
   Exact,
   Field,
   FormDialog,
-  fromWidth,
   lines,
   Loading,
   Mono,
-  Pager,
   Panel,
   Relative,
   RowMenu,
-  rowOpener,
   Section,
   Status,
   Tags as TagList,
   useConfirm,
-  When,
 } from "../components/common";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
-import { EventDetails, useActorNames } from "./Audit";
+import { useActorNames } from "./Audit";
 import { DetailLayout, Fact, FactList } from "../components/layout";
-import { outcomeLabel, outcomeSentence, requestUsage, sessionLog, type LogRow, type SessionLogEntry } from "./sessionLogs";
-import { isActive, outcomeBadge, sessionLabel, sessionStatus } from "./Sessions";
+import { RequestLog } from "./RequestLog";
+import { requestUsage } from "./sessionLogs";
+import { isActive, sessionLabel, sessionStatus } from "./Sessions";
 
 /** Proxies report traffic every few seconds; a live session's page follows it. */
 const REFRESH_MS = 5_000;
@@ -173,7 +169,15 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
           }
         >
           <Reaches session={s} services={services.data} error={services.error} />
-          <SessionLogs session={s} names={names} rules={rules} live={active} />
+          <RequestLog
+            query={`session_id=${s.id}`}
+            deps={[s.revoked_at, JSON.stringify(s.labels)]}
+            names={names}
+            rules={rules}
+            live={active}
+            phrase={sessionHistoryPhrase}
+            empty="Requests made with this session appear here a few seconds after a proxy handles them."
+          />
         </DetailLayout>
       )}
       {!s && session.loading && <Loading />}
@@ -377,218 +381,6 @@ function Reaches({
         )}
       </Panel>
     </Section>
-  );
-}
-
-// ----- logs -------------------------------------------------------------------
-
-function SessionLogs({
-  session,
-  names,
-  rules,
-  live,
-}: {
-  session: ProxySession;
-  names: ActorNames;
-  rules: Map<string, DiscoveredService>;
-  live: boolean;
-}) {
-  const [page, setPage] = useState(1);
-  const events = useLoad(
-    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&page=${page}&page_size=50`),
-    [session.id, page, session.revoked_at, JSON.stringify(session.labels)],
-  );
-  usePolling(events.reload, REFRESH_MS, live && page === 1);
-  const log = useMemo(() => sessionLog(events.data?.items ?? []), [events.data]);
-  const [open, setOpen] = useState<SessionLogEntry | null>(null);
-  const announcement = useNewestRequest(live && page === 1 ? log[0] : undefined);
-  return (
-    <Section
-      title="Logs"
-      actions={live ? <span className="text-xs text-muted-foreground">Updates every few seconds</span> : undefined}
-    >
-      <Panel>
-        <p className="sr-only" aria-live="polite">
-          {announcement}
-        </p>
-        <ErrorBanner error={events.error} />
-        {events.loading && !events.data ? (
-          <Loading rows={4} />
-        ) : log.length === 0 ? (
-          <Empty
-            icon={ScrollText}
-            title="Nothing logged yet"
-            description="Requests made with this session appear here a few seconds after a proxy handles them."
-          />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className={fromWidth.xl}>Time</TableHead>
-                <TableHead>What happened</TableHead>
-                <TableHead className={fromWidth.md}>Result</TableHead>
-                <TableHead className={cn(fromWidth.lg, "text-right")}>Took</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {log.map((entry) => (
-                <LogLine key={entryKey(entry)} entry={entry} names={names} onOpen={() => setOpen(entry)} />
-              ))}
-            </TableBody>
-          </Table>
-        )}
-        <Pager page={events.data} onPage={setPage} />
-      </Panel>
-      <FormDialog
-        open={open !== null}
-        onOpenChange={(o) => {
-          if (!o) setOpen(null);
-        }}
-        wide
-        title={open?.kind === "request" ? open.row.request : "Log entry"}
-      >
-        {open && (
-          <div className="space-y-6">
-            {open.kind === "request" ? (
-              <RequestDetails row={open.row} names={names} rules={rules} />
-            ) : (
-              <EventDetails event={open.event} names={names} />
-            )}
-            <DialogActions>
-              <Button type="button" variant="outline" onClick={() => setOpen(null)}>
-                Close
-              </Button>
-            </DialogActions>
-          </div>
-        )}
-      </FormDialog>
-    </Section>
-  );
-}
-
-/**
- * What a screen reader hears when a new request lands at the top of a live
- * log; nothing for the first load, so opening the page stays quiet.
- */
-function useNewestRequest(newest: SessionLogEntry | undefined): string {
-  const [said, setSaid] = useState("");
-  const seen = useRef<string | null>(null);
-  const key = newest ? entryKey(newest) : null;
-  useEffect(() => {
-    if (key === null) return;
-    if (seen.current !== null && seen.current !== key && newest?.kind === "request") {
-      setSaid(`New request: ${newest.row.request}, ${outcomeLabel(newest.row)}`);
-    }
-    seen.current = key;
-  }, [key, newest]);
-  return said;
-}
-
-/** A request in words first: what happened, then its facts, then the raw events. */
-function RequestDetails({
-  row,
-  names,
-  rules,
-}: {
-  row: LogRow;
-  names: ActorNames;
-  rules: Map<string, DiscoveredService>;
-}) {
-  const decision = row.events[0];
-  const rule = row.ruleId ? rules.get(row.ruleId) : undefined;
-  const labels = Object.entries(decision?.detail ?? {})
-    .filter(([k]) => k.startsWith("label."))
-    .map(([k, v]) => `${k.slice(6)}=${v}`);
-  return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <div>{outcomeBadge(row)}</div>
-        <p className="text-sm">{outcomeSentence(row, rule?.rule)}</p>
-        {row.reason && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{row.reason}</p>}
-      </div>
-      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-        <Fact label="When">
-          <Exact at={row.at} />
-        </Fact>
-        {decision && <Fact label="Handled by">{actorLabel(decision, names)}</Fact>}
-        {rule && (
-          <Fact label="Credential">
-            {rule.credential}
-            <span className="text-muted-foreground"> · rule {rule.rule}</span>
-          </Fact>
-        )}
-        {row.durationMs !== undefined && <Fact label="Took">{row.durationMs} ms</Fact>}
-        {row.mcp && (
-          <Fact label="MCP call">
-            <Mono>{row.mcp}</Mono>
-          </Fact>
-        )}
-        {row.substituted && (
-          <Fact label="Filled in">
-            <Mono>{row.substituted}</Mono>
-          </Fact>
-        )}
-        {row.bodySkipped && <Fact label="Body not searched">{row.bodySkipped}</Fact>}
-        {labels.length > 0 && (
-          <Fact label="Session labels then" className="sm:col-span-2">
-            <TagList values={labels} />
-          </Fact>
-        )}
-      </dl>
-      <details className="rounded-md border">
-        <summary className="cursor-pointer px-3 py-2 text-sm text-muted-foreground">
-          Recorded event{row.events.length === 1 ? "" : "s"}
-        </summary>
-        <div className="space-y-6 border-t p-3">
-          {row.events.map((e, i) => (
-            <div key={e.id} className={cn(i > 0 && "border-t pt-6")}>
-              <EventDetails event={e} names={names} />
-            </div>
-          ))}
-        </div>
-      </details>
-    </div>
-  );
-}
-
-function entryKey(entry: SessionLogEntry): string {
-  return entry.kind === "request" ? entry.row.key : entry.event.id;
-}
-
-function LogLine({ entry, names, onOpen }: { entry: SessionLogEntry; names: ActorNames; onOpen: () => void }) {
-  const at = entry.kind === "request" ? entry.row.at : entry.event.at;
-  const time = <When at={at} />;
-  return (
-    <TableRow title="Show everything recorded" {...rowOpener(onOpen)}>
-      <TableCell className={cn(fromWidth.xl, "w-32 text-muted-foreground")}>{time}</TableCell>
-      {entry.kind === "request" ? (
-        <>
-          <TableCell className="max-w-96">
-            <Mono className="inline-block max-w-full truncate align-bottom">{entry.row.request}</Mono>
-            {entry.row.mcp && <p className="mt-1 text-xs">MCP {entry.row.mcp}</p>}
-            {entry.row.reason && <p className="mt-1 text-xs text-muted-foreground">{entry.row.reason}</p>}
-            {entry.row.substituted && (
-              <p className="mt-1 text-xs text-muted-foreground">Filled in {entry.row.substituted}</p>
-            )}
-            <div className="mt-1 @md:hidden">{outcomeBadge(entry.row)}</div>
-            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
-          </TableCell>
-          <TableCell className={fromWidth.md}>{outcomeBadge(entry.row)}</TableCell>
-          <TableCell className={cn(fromWidth.lg, "whitespace-nowrap text-right tabular-nums text-muted-foreground")}>
-            {entry.row.durationMs !== undefined ? `${entry.row.durationMs} ms` : ""}
-          </TableCell>
-        </>
-      ) : (
-        <>
-          <TableCell>
-            <span className="font-medium">{actorLabel(entry.event, names)}</span> {sessionHistoryPhrase(entry.event)}
-            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
-          </TableCell>
-          <TableCell className={fromWidth.md} />
-          <TableCell className={fromWidth.lg} />
-        </>
-      )}
-    </TableRow>
   );
 }
 

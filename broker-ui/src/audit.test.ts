@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AuditEvent } from "./api";
-import { actionPhrase, actorLabel, actorName, hostOnly, sessionHistoryPhrase } from "./audit";
+import { actionPhrase, actorLabel, actorName, hostOnly, serviceHistoryPhrase, sessionHistoryPhrase } from "./audit";
 
 const event = (over: Partial<AuditEvent>): AuditEvent => ({
   id: "e1",
@@ -84,5 +84,29 @@ describe("a session's history", () => {
       sessionHistoryPhrase(event({ action: "session.update_labels", detail: { "label.name": "laptop", "label.ticket": "T-1" } })),
     ).toBe("set the labels to name=laptop, ticket=T-1");
     expect(sessionHistoryPhrase(event({ action: "session.update_labels" }))).toBe("removed the labels");
+  });
+});
+
+describe("serviceHistoryPhrase", () => {
+  test("says what was done to the service, without naming it again", () => {
+    expect(serviceHistoryPhrase(event({ action: "credential.create", detail: { name: "github" } }))).toBe(
+      "added the service",
+    );
+    expect(serviceHistoryPhrase(event({ action: "credential.rotate", detail: { name: "github" } }))).toBe(
+      "replaced the secret",
+    );
+    expect(serviceHistoryPhrase(event({ action: "credential.update_headers" }))).toBe("changed the custom headers");
+    expect(serviceHistoryPhrase(event({ action: "credential.validate", detail: { status: "200" } }))).toBe(
+      "tested the service: it worked (200)",
+    );
+    expect(
+      serviceHistoryPhrase(event({ action: "credential.validate", outcome: "failure", detail: { status: "none" } })),
+    ).toBe("tested the service: it failed");
+  });
+
+  test("falls back to the general phrase for its rules", () => {
+    expect(serviceHistoryPhrase(event({ action: "rule.create", detail: { hosts: "api.github.com" } }))).toBe(
+      "added a rule for api.github.com",
+    );
   });
 });

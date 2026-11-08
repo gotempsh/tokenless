@@ -98,4 +98,20 @@ impl AuditEvent {
             None => self.detail.get("session_id").map(String::as_str),
         }
     }
+
+    /// The service (credential) this event is about: the one it targets
+    /// (created, secret replaced, deleted), else the one its `credential_id`
+    /// detail names (a brokered request, a rule over it). The SQLite store
+    /// indexes the same rule as `audit_events.credential_ref` (migration
+    /// 0012).
+    pub fn credential_ref(&self) -> Option<&str> {
+        match self
+            .target
+            .as_deref()
+            .and_then(|t| t.strip_prefix("credential:"))
+        {
+            Some(id) => Some(id),
+            None => self.detail.get("credential_id").map(String::as_str),
+        }
+    }
 }

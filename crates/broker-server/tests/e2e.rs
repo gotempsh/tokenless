@@ -1102,6 +1102,33 @@ async fn end_to_end() {
     )
     .await;
 
+    // A service's log: what was done to it and the requests that used it,
+    // the API's answers included, and nothing about other services.
+    let log = api
+        .get(&format!(
+            "/audit?vault_id={vault_id}&credential_id={credential_id}&page_size=100"
+        ))
+        .await;
+    let items = log["items"].as_array().cloned().unwrap_or_default();
+    let actions: Vec<&str> = items.iter().filter_map(|e| e["action"].as_str()).collect();
+    for action in [
+        "credential.create",
+        "rule.create",
+        "proxy.inject",
+        "proxy.response",
+    ] {
+        assert!(
+            actions.contains(&action),
+            "{action} missing from the service's log: {actions:?}"
+        );
+    }
+    let ours = format!("credential:{credential_id}");
+    assert!(
+        items.iter().all(|e| e["target"] == ours.as_str()
+            || e["detail"]["credential_id"] == credential_id.as_str()),
+        "the service's log holds another service's events: {items:?}"
+    );
+
     // --- secrets are write-only ------------------------------------------------
     let mut bodies = Vec::new();
     for path in [
@@ -1115,6 +1142,7 @@ async fn end_to_end() {
         format!("/vaults/{vault_id}/overview"),
         "/templates".to_string(),
         "/audit?page_size=100".to_string(),
+        format!("/audit?credential_id={credential_id}&page_size=100"),
         "/nodes".to_string(),
         "/settings".to_string(),
         "/api-keys".to_string(),

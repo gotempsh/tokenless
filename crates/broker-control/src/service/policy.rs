@@ -999,7 +999,7 @@ impl PolicyService {
         let event = AuditEvent::new(caller.actor(), "rule.create", AuditOutcome::Success)
             .vault(*vault_id)
             .target(format!("rule:{}", rule.id))
-            .detail("credential", meta.id.to_string())
+            .detail("credential_id", meta.id.to_string())
             .detail("hosts", hosts_string(&rule.allow.hosts))
             .detail("mcp_tools", tools_string(&rule.allow.mcp_tools));
         self.policy.insert_rule(rule.clone(), &[event]).await?;
@@ -1060,6 +1060,7 @@ impl PolicyService {
         let event = AuditEvent::new(caller.actor(), "rule.update", AuditOutcome::Success)
             .vault(rule.vault_id)
             .target(format!("rule:{id}"))
+            .detail("credential_id", rule.credential_id.to_string())
             .detail("widened", widened.to_string())
             .detail("enabled", rule.enabled.to_string())
             .detail("hosts", hosts_string(&rule.allow.hosts))
@@ -1080,7 +1081,8 @@ impl PolicyService {
             .await?;
         let event = AuditEvent::new(caller.actor(), "rule.delete", AuditOutcome::Success)
             .vault(rule.vault_id)
-            .target(format!("rule:{id}"));
+            .target(format!("rule:{id}"))
+            .detail("credential_id", rule.credential_id.to_string());
         self.policy.delete_rule(id, &[event]).await?;
         self.notifier.bump_content();
         Ok(())

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// Turns a session's proxy audit events into one row per request: the
-// decision a proxy records before forwarding (`proxy.inject`) joined with
-// what the API answered (`proxy.response`, same `request_id`).
+// Turns proxy audit events (a session's, or a service's) into one row per
+// request: the decision a proxy records before forwarding (`proxy.inject`)
+// joined with what the API answered (`proxy.response`, same `request_id`).
 
 import type { AuditEvent } from "../api";
 import { hostOnly } from "../audit";
@@ -28,6 +28,8 @@ export interface LogRow {
   mcp?: string;
   /** The rule that matched, from the decision's `rule:` target. */
   ruleId?: string;
+  /** The session that made the request, named by its `name` label then. */
+  session?: { id: string; name?: string };
   /** The audit events behind the row: the decision, then the answer. */
   events: AuditEvent[];
 }
@@ -68,6 +70,11 @@ export function outcomeSentence(row: LogRow, rule?: string): string {
     case "error":
       return `The proxy added ${by}, but the request failed${took}.`;
   }
+}
+
+function sessionOf(e: AuditEvent): LogRow["session"] {
+  const id = e.detail.session_id;
+  return id ? { id, name: e.detail["label.name"] } : undefined;
 }
 
 function mcpCall(e: AuditEvent | undefined): string | undefined {
@@ -115,6 +122,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         request: request(e),
         reason: e.detail.reason,
         ruleId: ruleOf(e),
+        session: sessionOf(e),
         events: [e],
       });
     } else if (e.action === "proxy.inject") {
@@ -131,6 +139,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         bodySkipped: e.detail.body_not_substituted,
         mcp: mcpCall(e),
         ruleId: ruleOf(e),
+        session: sessionOf(e),
         events: response ? [e, response] : [e],
       });
     } else if (BLOCKED.has(e.action)) {
@@ -142,10 +151,19 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         reason: e.detail.reason,
         mcp: mcpCall(e),
         ruleId: ruleOf(e),
+        session: sessionOf(e),
         events: [e],
       });
     } else if (e.action === "proxy.tunnel") {
-      rows.push({ key: e.id, at: e.at, outcome: "passthrough", request: request(e), reason: e.detail.reason, events: [e] });
+      rows.push({
+        key: e.id,
+        at: e.at,
+        outcome: "passthrough",
+        request: request(e),
+        reason: e.detail.reason,
+        session: sessionOf(e),
+        events: [e],
+      });
     }
   }
   return rows;

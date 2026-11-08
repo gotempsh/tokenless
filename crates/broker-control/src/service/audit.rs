@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use broker_core::audit::AuditEvent;
 use broker_core::authz::Action;
-use broker_core::ids::{SessionId, VaultId};
+use broker_core::ids::VaultId;
 use chrono::{DateTime, Utc};
 
 use super::{Caller, Guard};
@@ -31,8 +31,16 @@ impl AuditService {
         action_prefix: Option<String>,
         page: PageRequest,
     ) -> Result<Page<AuditEvent>, ControlError> {
-        self.query_session(caller, vault_id, action_prefix, None, page)
-            .await
+        self.query_events(
+            caller,
+            AuditQuery {
+                vault_id,
+                action_prefix,
+                page,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// When the vault last recorded `action`, for a list page's summary.
@@ -48,37 +56,26 @@ impl AuditService {
         Ok(self.sink.latest_at(vault_id, action).await?)
     }
 
-    /// Like [`query`](Self::query), optionally narrowed to one proxy session.
-    pub async fn query_session(
+    /// Like [`query`](Self::query), optionally narrowed to one proxy
+    /// session or one service. A vault-bound caller only ever sees its vault.
+    pub async fn query_events(
         &self,
         caller: &Caller,
-        vault_id: Option<VaultId>,
-        action_prefix: Option<String>,
-        session_id: Option<SessionId>,
-        page: PageRequest,
+        mut query: AuditQuery,
     ) -> Result<Page<AuditEvent>, ControlError> {
-        let vault_id = match (&caller.principal.vault, vault_id) {
-            (Some(bound), _) => Some(*bound),
-            (None, requested) => requested,
-        };
+        if let Some(bound) = caller.principal.vault {
+            query.vault_id = Some(bound);
+        }
         self.guard
-            .check(caller, Action::AuditRead, vault_id.as_ref())
+            .check(caller, Action::AuditRead, query.vault_id.as_ref())
             .await?;
-        if let Some(prefix) = &action_prefix {
+        if let Some(prefix) = &query.action_prefix {
             if prefix.len() > 64 {
                 return Err(ControlError::validation(
                     "action filter is longer than 64 characters",
                 ));
             }
         }
-        Ok(self
-            .sink
-            .query(&AuditQuery {
-                vault_id,
-                action_prefix,
-                session_id,
-                page,
-            })
-            .await?)
+        Ok(self.sink.query(&query).await?)
     }
 }

@@ -1210,7 +1210,33 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
         .clone()
         .target(format!("session:{}", SessionId::new()))
         .detail("session_id", session.to_string());
+    let credential = CredentialId::new();
+    events[0] = events[0]
+        .clone()
+        .detail("credential_id", credential.to_string());
+    events[1] = events[1].clone().target(format!("credential:{credential}"));
+    // An event about another service belongs to that service.
+    events[2] = events[2]
+        .clone()
+        .target(format!("credential:{}", CredentialId::new()))
+        .detail("credential_id", credential.to_string());
     sink.record(&events).await.map_err(backend(S, "record"))?;
+    let by_credential = sink
+        .query(&AuditQuery {
+            credential_id: Some(credential),
+            ..Default::default()
+        })
+        .await
+        .map_err(backend(S, "query_credential"))?;
+    ensure!(
+        S,
+        "query_credential",
+        by_credential.total == 2
+            && by_credential.items[0].id == events[1].id
+            && by_credential.items[1].id == events[0].id,
+        "expected the service's traffic and its own history, newest first, got {:?}",
+        by_credential.items
+    );
     let by_session = sink
         .query(&AuditQuery {
             session_id: Some(session),

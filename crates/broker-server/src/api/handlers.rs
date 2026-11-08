@@ -14,7 +14,7 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use broker_auth::cookie::clear_session_cookie;
-use broker_control::model::{Page, PageRequest, Settings};
+use broker_control::model::{AuditQuery, Page, PageRequest, Settings};
 use broker_control::service::auth::{
     AuthService, ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator,
     LoginRequest, StepUpProof, TotpEnrollment, UserSummary,
@@ -945,6 +945,7 @@ pub struct AuditParams {
     vault_id: Option<String>,
     action_prefix: Option<String>,
     session_id: Option<String>,
+    credential_id: Option<String>,
     page: Option<u64>,
     page_size: Option<u64>,
 }
@@ -967,15 +968,24 @@ pub async fn query_audit(
         .filter(|v| !v.is_empty())
         .map(|v| parse_id::<SessionId>("session", v))
         .transpose()?;
+    let credential_id = q
+        .credential_id
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| parse_id::<CredentialId>("credential", v))
+        .transpose()?;
     Ok(Json(
         s.control
             .audit
-            .query_session(
+            .query_events(
                 &authed.caller,
-                vault_id,
-                prefix,
-                session_id,
-                PageRequest::new(q.page, q.page_size),
+                AuditQuery {
+                    vault_id,
+                    action_prefix: prefix,
+                    session_id,
+                    credential_id,
+                    page: PageRequest::new(q.page, q.page_size),
+                },
             )
             .await?,
     ))

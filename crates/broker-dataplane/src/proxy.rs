@@ -832,7 +832,7 @@ pub(crate) async fn handle_intercepted(
                         "this rule limits MCP tools, so its requests need a JSON body of known length up to 4 MiB that is not compressed ({reason})"
                     );
                     Metrics::inc(&shared.metrics.requests_denied_total);
-                    audit_best_effort(
+                    let event = proxy_event(
                         shared,
                         claims,
                         "proxy.deny",
@@ -840,8 +840,11 @@ pub(crate) async fn handle_intercepted(
                         &ctx.host,
                         ctx.port,
                         Some((&method, &path)),
-                        &reason,
-                    );
+                    )
+                    .target(format!("rule:{}", rule.id))
+                    .detail("credential_id", rule.credential_id.to_string())
+                    .detail("reason", reason.clone());
+                    let _ = shared.audit.try_record(event);
                     return respond(StatusCode::BAD_REQUEST, &reason);
                 }
                 body_skipped = Some(reason);
@@ -873,6 +876,7 @@ pub(crate) async fn handle_intercepted(
                             Some((&method, &path)),
                         )
                         .target(format!("rule:{}", rule.id))
+                        .detail("credential_id", rule.credential_id.to_string())
                         .detail("mcp_method", "tools/call")
                         .detail("mcp_tool", tool.to_string())
                         .detail(
@@ -945,6 +949,7 @@ pub(crate) async fn handle_intercepted(
     }
     rewrite_headers(req.headers_mut(), rule);
     let rule_id = rule.id;
+    let credential_id = rule.credential_id;
     drop(snapshot);
     let started = std::time::Instant::now();
     let sent = ctx.upstream.send(req).await;
@@ -960,6 +965,7 @@ pub(crate) async fn handle_intercepted(
         Some((&method, &path)),
     )
     .target(format!("rule:{rule_id}"))
+    .detail("credential_id", credential_id.to_string())
     .detail("request_id", request_id.clone())
     .detail("duration_ms", started.elapsed().as_millis().to_string());
     match sent {

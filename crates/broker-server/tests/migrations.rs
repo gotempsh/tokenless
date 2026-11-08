@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use broker_control::model::{AuditQuery, PageRequest};
 use broker_control::store::{AuditSink, IdentityStore, PolicyStore};
-use broker_core::ids::{ApiKeyId, SessionId, VaultId};
+use broker_core::ids::{ApiKeyId, CredentialId, SessionId, VaultId};
 use broker_server::store::SqliteStore;
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -297,5 +297,108 @@ async fn upgrading_finds_a_vaults_last_request_without_counting_its_history() {
     assert!(
         !plan.iter().any(|d| d.contains("TEMP B-TREE")),
         "expected no sort, got {plan:?}"
+    );
+}
+
+#[tokio::test]
+async fn upgrading_indexes_the_audit_log_by_service() {
+    let (_dir, url, pool) = database_before(12).await;
+    let vault = VaultId::new();
+    let credential = CredentialId::new().to_string();
+    let other = CredentialId::new().to_string();
+    sqlx::query("INSERT INTO vaults (id, name, scope, created_at) VALUES (?, 'work', ?, ?)")
+        .bind(vault.to_string())
+        .bind(format!("vault:{vault}"))
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .expect("vault");
+    for (id, at, action, target, detail) in [
+        (
+            "e1",
+            "2026-01-01T00:00:01.000000Z",
+            "credential.create",
+            format!("credential:{credential}"),
+            "{}".to_string(),
+        ),
+        (
+            "e2",
+            "2026-01-01T00:00:02.000000Z",
+            "proxy.inject",
+            "rule:r1".to_string(),
+            format!(r#"{{"credential_id":"{credential}"}}"#),
+        ),
+        (
+            "e3",
+            "2026-01-01T00:00:03.000000Z",
+            "proxy.inject",
+            "rule:r2".to_string(),
+            format!(r#"{{"credential_id":"{other}"}}"#),
+        ),
+        (
+            "e4",
+            "2026-01-01T00:00:04.000000Z",
+            "vault.create",
+            format!("vault:{vault}"),
+            "{}".to_string(),
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) \
+             VALUES (?, ?, 'user:test', ?, 'success', ?, ?, ?)",
+        )
+        .bind(uuid_like(id))
+        .bind(at)
+        .bind(action)
+        .bind(vault.to_string())
+        .bind(target)
+        .bind(detail)
+        .execute(&pool)
+        .await
+        .expect("audit event");
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    let found = store
+        .query(&AuditQuery {
+            vault_id: Some(vault),
+            credential_id: Some(credential.parse().expect("credential id")),
+            ..Default::default()
+        })
+        .await
+        .expect("query by service");
+    let actions: Vec<_> = found.items.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["proxy.inject", "credential.create"],
+        "events recorded before the upgrade are found, and only this service's"
+    );
+    assert_eq!(found.total, 2);
+
+    // The service index, even with the vault the page passes along: not a
+    // walk through every event in the vault.
+    let pool = SqlitePoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("reopen");
+    let plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT * FROM audit_events WHERE 1 = 1 AND +vault_id = ? \
+         AND credential_ref = ? ORDER BY at DESC, id LIMIT ? OFFSET ?",
+    )
+    .bind(vault.to_string())
+    .bind(&credential)
+    .bind(20)
+    .bind(0)
+    .fetch_all(&pool)
+    .await
+    .expect("query plan")
+    .iter()
+    .map(|r| sqlx::Row::get::<String, _>(r, "detail"))
+    .collect();
+    assert!(
+        plan.iter()
+            .any(|d| d.contains("audit_events_credential_at")),
+        "expected the service index, got {plan:?}"
     );
 }

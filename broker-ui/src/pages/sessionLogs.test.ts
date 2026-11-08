@@ -55,6 +55,24 @@ describe("logRows", () => {
   });
 });
 
+describe("the session behind a request", () => {
+  test("comes from the decision, named by the label it had then", () => {
+    const [row] = logRows([
+      event("d", "proxy.inject", "success", { ...request, request_id: "r1", session_id: "s1", "label.name": "laptop" }),
+    ]);
+    expect(row?.session).toEqual({ id: "s1", name: "laptop" });
+  });
+
+  test("is unnamed when the session had no name, and absent when not recorded", () => {
+    const [named, none] = logRows([
+      event("d", "proxy.deny", "denied", { ...request, session_id: "s2" }),
+      event("t", "proxy.tunnel", "success", { host: "example.com:443" }),
+    ]);
+    expect(named?.session).toEqual({ id: "s2", name: undefined });
+    expect(none?.session).toBeUndefined();
+  });
+});
+
 describe("sessionLog", () => {
   test("interleaves requests with what was done to the session, each event once", () => {
     const log = sessionLog([

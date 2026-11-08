@@ -4,7 +4,7 @@
 // One service (a credential and how it is sent): what it reaches, the rules
 // and bundles that let agents use it, and everything that changes it.
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import {
   ApiError,
@@ -24,6 +24,7 @@ import {
   type UserSummary,
   type Vault,
 } from "../api";
+import { serviceHistoryPhrase } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { KIND_LABEL, targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
@@ -59,6 +60,8 @@ import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
+import { useActorNames } from "./Audit";
+import { RequestLog } from "./RequestLog";
 import { SecretSummary, templateOf } from "./Services";
 
 type Editing = "secret" | "headers" | "placeholders" | null;
@@ -85,6 +88,7 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const [result, setResult] = useState<CredentialValidation | null>(null);
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
+  const names = useActorNames(user);
 
   // Ignore what is still loaded for another service while this one loads.
   const c = cred.data && cred.data.id === credentialId ? cred.data : undefined;
@@ -100,6 +104,16 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const usedBy = (rules.data?.items ?? []).filter((r) => r.credential_id === credentialId);
   const ruleIds = new Set(usedBy.map((r) => r.id));
   const inBundles = (bundles.data?.items ?? []).filter((b) => b.rule_ids.some((id) => ruleIds.has(id)));
+  const serviceName = c?.name ?? "";
+  const logRules = useMemo(
+    () =>
+      new Map(
+        (rules.data?.items ?? [])
+          .filter((r) => r.credential_id === credentialId)
+          .map((r) => [r.id, { credential: serviceName, rule: r.name }]),
+      ),
+    [rules.data, credentialId, serviceName],
+  );
 
   const test = async (target: CredentialMeta) => {
     setResult(null);
@@ -286,6 +300,15 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
                 ))}
               </ItemList>
             </Section>
+            <RequestLog
+              query={`vault_id=${vaultId}&credential_id=${credentialId}`}
+              deps={[c.updated_at]}
+              names={names}
+              rules={logRules}
+              phrase={serviceHistoryPhrase}
+              empty="Requests that use this service appear here a few seconds after a proxy handles them."
+              showSession
+            />
           </DetailLayout>
         </>
       )}

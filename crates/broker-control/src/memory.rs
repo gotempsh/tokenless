@@ -777,6 +777,11 @@ impl AuditSink for MemoryStore {
                     .session_id
                     .is_none_or(|id| e.session_ref() == Some(id.to_string().as_str()))
             })
+            .filter(|e| {
+                query
+                    .credential_id
+                    .is_none_or(|id| e.credential_ref() == Some(id.to_string().as_str()))
+            })
             .cloned()
             .collect();
         Ok(query.page.apply(&newest_first(items, |e| e.at)))

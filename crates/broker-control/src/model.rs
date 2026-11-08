@@ -346,6 +346,8 @@ pub struct AuditQuery {
     /// relabelled, revoked) and its traffic (events whose `session_id`
     /// detail is this session): `AuditEvent::session_ref`.
     pub session_id: Option<SessionId>,
+    /// One service's history and traffic: `AuditEvent::credential_ref`.
+    pub credential_id: Option<CredentialId>,
     pub page: PageRequest,
 }
 

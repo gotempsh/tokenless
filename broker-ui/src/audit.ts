@@ -83,6 +83,8 @@ export function actionPhrase(event: AuditEvent): string {
       return `added ${named("service")}`;
     case "credential.rotate":
       return `replaced the secret of ${named("service")}`;
+    case "credential.validate":
+      return `tested a service${tested(event)}`;
     case "credential.update_headers":
       return `changed the headers of ${named("service")}`;
     case "credential.update_substitutions":
@@ -179,6 +181,30 @@ export function sessionHistoryPhrase(e: AuditEvent): string {
     default:
       return actionPhrase(e);
   }
+}
+
+/** {@link actionPhrase}, said of "the service" since the page is about one. */
+export function serviceHistoryPhrase(e: AuditEvent): string {
+  switch (e.action) {
+    case "credential.create":
+      return "added the service";
+    case "credential.rotate":
+      return "replaced the secret";
+    case "credential.validate":
+      return `tested the service${tested(e)}`;
+    case "credential.update_headers":
+      return "changed the custom headers";
+    case "credential.update_substitutions":
+      return "changed the placeholders";
+    default:
+      return actionPhrase(e);
+  }
+}
+
+/** How a service test went: ": it worked (200)", ": it failed (401)". */
+function tested(e: AuditEvent): string {
+  const status = e.detail.status && e.detail.status !== "none" ? ` (${e.detail.status})` : "";
+  return e.outcome === "success" ? `: it worked${status}` : `: it failed${status}`;
 }
 
 /** `api.example.com:443` reads as `api.example.com`; other ports stay. */

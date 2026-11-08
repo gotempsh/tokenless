@@ -301,8 +301,8 @@ pub trait AuditSink: Send + Sync {
             .query(&AuditQuery {
                 vault_id: Some(*vault_id),
                 action_prefix: Some(action.to_string()),
-                session_id: None,
                 page: PageRequest::new(Some(1), Some(1)),
+                ..Default::default()
             })
             .await?;
         Ok(page

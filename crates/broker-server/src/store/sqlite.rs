@@ -1379,7 +1379,14 @@ impl AuditSink for SqliteStore {
     async fn query(&self, query: &AuditQuery) -> Result<Page<AuditEvent>, StoreError> {
         let mut filter = String::from(" WHERE 1 = 1");
         if query.vault_id.is_some() {
-            filter.push_str(" AND vault_id = ?");
+            // Narrowed to a session or a service, the vault only confirms
+            // the caller may read it: `+` keeps SQLite on the narrower
+            // index instead of walking the whole vault's history.
+            if query.session_id.is_some() || query.credential_id.is_some() {
+                filter.push_str(" AND +vault_id = ?");
+            } else {
+                filter.push_str(" AND vault_id = ?");
+            }
         }
         if query.action_prefix.is_some() {
             filter.push_str(" AND substr(action, 1, ?) = ?");
@@ -1387,6 +1394,10 @@ impl AuditSink for SqliteStore {
         if query.session_id.is_some() {
             // Indexed (migration 0010): a live session's page polls this.
             filter.push_str(" AND session_ref = ?");
+        }
+        if query.credential_id.is_some() {
+            // Indexed (migration 0012): a service's page lists its log.
+            filter.push_str(" AND credential_ref = ?");
         }
         let count_sql = format!("SELECT COUNT(*) AS n FROM audit_events{filter}");
         let list_sql =
@@ -1403,6 +1414,10 @@ impl AuditSink for SqliteStore {
             list = list.bind(len).bind(prefix.clone());
         }
         if let Some(id) = &query.session_id {
+            count = count.bind(id.to_string());
+            list = list.bind(id.to_string());
+        }
+        if let Some(id) = &query.credential_id {
             count = count.bind(id.to_string());
             list = list.bind(id.to_string());
         }
