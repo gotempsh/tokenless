@@ -22,8 +22,8 @@ use tokenless_core::protocol::{
 use tokenless_core::seal::{decode_public_key, seal};
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
-    ca_aad, rule_aad, InterceptionCa, PublishedKey, SessionLimit, SignedSnapshot, SnapshotBody,
-    SnapshotRule, SNAPSHOT_FORMAT,
+    ca_aad, format_for, rule_aad, InterceptionCa, PublishedKey, SessionLimit, SignedSnapshot,
+    SnapshotBody, SnapshotRule,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -407,6 +407,7 @@ impl NodeService {
                     &headers_json,
                     &rule_aad(&node.id, &rule.id, &meta.id),
                 )?,
+                not_after: meta.not_after,
             });
         }
         Ok(CachedContent {
@@ -444,7 +445,7 @@ impl NodeService {
         let now = Utc::now();
         let settings = self.policy.get_settings().await?;
         let body = SnapshotBody {
-            format: SNAPSHOT_FORMAT,
+            format: format_for(&content.rules),
             version: self.nodes.next_snapshot_version().await?,
             node_id: node.id,
             issued_at: now,
@@ -535,5 +536,98 @@ impl NodeService {
     /// PEM of the interception CA for agents to trust.
     pub fn interception_ca_cert_pem(&self) -> String {
         pem_encode("CERTIFICATE", &self.keys.interception_ca.cert_der)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::{TimeDelta, Utc};
+    use rand::rngs::OsRng;
+    use tokenless_core::authz::{Principal, Role};
+    use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
+    use tokenless_core::snapshot::{SnapshotBody, MIN_SNAPSHOT_FORMAT};
+
+    use crate::service::policy::CreateCredential;
+    use crate::service::testing::{services, vault_with_rule};
+    use crate::{Caller, ControlError, ControlServices};
+
+    async fn snapshot(cs: &ControlServices, host: &Caller) -> SnapshotBody {
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(host, "n", &encode_public_key(&SealPublicKey::from(&secret)))
+            .await
+            .unwrap();
+        cs.nodes
+            .build_snapshot(&node.node)
+            .await
+            .unwrap()
+            .verify(&node.snapshot_verify_key)
+            .unwrap()
+    }
+
+    /// A secret that expires upstream ships with its deadline, in the
+    /// format that carries it; replacing the secret replaces the deadline.
+    #[tokio::test]
+    async fn a_credentials_deadline_reaches_snapshots_and_follows_its_secret() {
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, _) = vault_with_rule(&cs, &host).await;
+        let body = snapshot(&cs, &host).await;
+        assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
+        assert_eq!(body.rules[0].not_after, None);
+
+        let credential = body.rules[0].credential_id;
+        let deadline = Utc::now() + TimeDelta::hours(1);
+        let fields = BTreeMap::from([("token".to_string(), "t2".to_string())]);
+        let rotated = cs
+            .policy
+            .rotate_credential(&host, &credential, fields.clone(), Some(deadline))
+            .await
+            .unwrap();
+        assert_eq!(rotated.not_after, Some(deadline));
+        let body = snapshot(&cs, &host).await;
+        assert_eq!(body.format, 2);
+        assert_eq!(body.rules[0].not_after, Some(deadline));
+
+        // A secret with no deadline clears the old one.
+        cs.policy
+            .rotate_credential(&host, &credential, fields.clone(), None)
+            .await
+            .unwrap();
+        let body = snapshot(&cs, &host).await;
+        assert_eq!(
+            (body.format, body.rules[0].not_after),
+            (MIN_SNAPSHOT_FORMAT, None)
+        );
+
+        let past = Utc::now() - TimeDelta::seconds(1);
+        let err = cs
+            .policy
+            .rotate_credential(&host, &credential, fields, Some(past))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ControlError::Validation { .. }), "{err}");
+        let err = cs
+            .policy
+            .create_credential(
+                &host,
+                &vault,
+                CreateCredential {
+                    name: "late".into(),
+                    template_id: "generic-bearer".into(),
+                    template_version: None,
+                    host_override: vec!["api.example.com".into()],
+                    fields: [("token".to_string(), "t".to_string())].into(),
+                    custom_headers: vec![],
+                    substitutions: vec![],
+                    not_after: Some(past),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("has already passed"), "{err}");
     }
 }

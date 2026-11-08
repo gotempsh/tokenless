@@ -365,6 +365,9 @@ pub async fn get_credential(
 #[derive(Deserialize)]
 pub struct RotateRequest {
     fields: BTreeMap<String, String>,
+    /// When the new secret stops being valid upstream, if it does.
+    #[serde(default)]
+    not_after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn rotate_credential(
@@ -377,7 +380,7 @@ pub async fn rotate_credential(
     Ok(Json(
         s.control
             .policy
-            .rotate_credential(&authed.caller, &id, req.fields)
+            .rotate_credential(&authed.caller, &id, req.fields, req.not_after)
             .await?,
     ))
 }

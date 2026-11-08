@@ -51,6 +51,16 @@ pub struct StoredCiphertext {
 /// The store never sees plaintext and there is no method that returns a
 /// decrypted secret. `load_secret_ciphertext` exists only so the control
 /// plane can seal credentials to data plane nodes.
+/// A credential's replacement secret and what is derived from it.
+#[derive(Debug, Clone)]
+pub struct NewSecret {
+    pub ciphertext: Vec<u8>,
+    pub field_names: Vec<String>,
+    pub variable_refs: Vec<String>,
+    /// The new secret's own deadline; `None` clears the old one.
+    pub not_after: Option<DateTime<Utc>>,
+}
+
 #[async_trait]
 pub trait CredentialStore: Send + Sync {
     async fn insert_credential(
@@ -66,13 +76,12 @@ pub trait CredentialStore: Send + Sync {
         vault_id: &VaultId,
         page: PageRequest,
     ) -> Result<Page<CredentialMeta>, StoreError>;
-    /// Replaces the secret; `NotFound` if the credential does not exist.
+    /// Replaces the secret and what comes with it; `NotFound` if the
+    /// credential does not exist.
     async fn replace_secret(
         &self,
         id: &CredentialId,
-        ciphertext: Vec<u8>,
-        field_names: Vec<String>,
-        variable_refs: Vec<String>,
+        secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;

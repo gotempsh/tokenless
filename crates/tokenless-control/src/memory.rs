@@ -27,7 +27,7 @@ use crate::model::{
     VaultDeletion,
 };
 use crate::store::{
-    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
     StoredCiphertext,
 };
 
@@ -129,9 +129,7 @@ impl CredentialStore for MemoryStore {
     async fn replace_secret(
         &self,
         id: &CredentialId,
-        ct: Vec<u8>,
-        field_names: Vec<String>,
-        variable_refs: Vec<String>,
+        secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
@@ -140,10 +138,11 @@ impl CredentialStore for MemoryStore {
             .credentials
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
-        meta.field_names = field_names;
-        meta.variable_refs = variable_refs;
+        meta.field_names = secret.field_names;
+        meta.variable_refs = secret.variable_refs;
+        meta.not_after = secret.not_after;
         meta.updated_at = updated_at;
-        *stored = ct;
+        *stored = secret.ciphertext;
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

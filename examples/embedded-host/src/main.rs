@@ -87,7 +87,8 @@ async fn main() -> Result<(), Error> {
                 fields: [("token".to_string(), API_TOKEN.to_string())].into(),
                 custom_headers: vec![],
                 substitutions: vec![],
-            },
+            not_after: None,
+        },
         )
         .await?;
     let rule = control

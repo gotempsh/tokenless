@@ -9,6 +9,8 @@ pub mod overview;
 pub mod policy;
 pub(crate) mod render;
 pub mod sessions;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod users;
 pub mod variables;
 
@@ -433,6 +435,7 @@ mod tests {
                 .collect(),
             custom_headers: vec![],
             substitutions: vec![],
+            not_after: None,
         }
     }
 
@@ -1987,6 +1990,7 @@ mod tests {
             fields: [("api_key".to_string(), key.to_string())].into(),
             custom_headers: vec![],
             substitutions: vec![],
+            not_after: None,
         }
     }
 

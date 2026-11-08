@@ -34,6 +34,7 @@ import {
   Empty,
   ErrorBanner,
   Exact,
+  Field,
   FormDialog,
   Mono,
   Panel,
@@ -58,11 +59,13 @@ import { SubstitutionsEditor, substitutionProblem } from "../components/Substitu
 import { CustomHeadersEditor, referencedKeys } from "../components/VariableInput";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
+import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { useActorNames } from "./Audit";
 import { RequestLog } from "./RequestLog";
 import { SecretSummary, templateOf } from "./Services";
+import { expiryToSend, secretExpired } from "../secretExpiry";
 
 type Editing = "secret" | "headers" | "placeholders" | null;
 
@@ -213,6 +216,24 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         !cred.error && <Skeleton className="h-64 w-full rounded-lg" />
       ) : (
         <>
+          {secretExpired(c.not_after, new Date()) && (
+            <Alert variant="warning">
+              <AlertTriangle className="size-4" />
+              <AlertTitle>The secret expired</AlertTitle>
+              <AlertDescription>
+                The proxy refuses requests to this service until the secret is replaced.{" "}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="font-medium underline underline-offset-4"
+                    onClick={() => setEditing("secret")}
+                  >
+                    Replace secret
+                  </button>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {rules.data && usedBy.length === 0 && (
             <Alert variant="warning">
               <AlertTriangle className="size-4" />
@@ -235,6 +256,11 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
                 <Fact label="Secret">
                   <SecretSummary credential={c} />
                 </Fact>
+                {c.not_after && (
+                  <Fact label="Expires">
+                    <Exact at={c.not_after} />
+                  </Fact>
+                )}
                 <Fact label="Created">
                   <Exact at={c.created_at} />
                 </Fact>
@@ -446,11 +472,17 @@ function RotateForm({
     template?.credential_fields ??
     credential.field_names.map((n) => ({ name: n, label: n, required: true, description: "" }));
   const [secrets, setSecrets] = useState(() => initialSecrets(fields, [], null));
+  const [expires, setExpires] = useState("");
+  const expiry = expiryToSend(expires, new Date());
   const action = useAction();
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (expiry.problem) return;
     const ok = await action.run(() =>
-      put<CredentialMeta>(`/credentials/${credential.id}/secret`, { fields: secretValues(secrets) }),
+      put<CredentialMeta>(`/credentials/${credential.id}/secret`, {
+        fields: secretValues(secrets),
+        not_after: expiry.value ?? null,
+      }),
     );
     setSecrets(initialSecrets(fields, [], null));
     if (ok) onDone();
@@ -468,11 +500,25 @@ function RotateForm({
           labelPrefix="New "
         />
       ))}
+      <Field
+        label="Expires (optional)"
+        htmlFor="rotate-expires"
+        hint="When the new secret stops working upstream. The proxy stops sending it then."
+        error={expiry.problem}
+      >
+        <Input
+          id="rotate-expires"
+          type="datetime-local"
+          value={expires}
+          onChange={(e) => setExpires(e.target.value)}
+          aria-invalid={Boolean(expiry.problem)}
+        />
+      </Field>
       <DialogActions>
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={action.busy}>
+        <Button type="submit" disabled={action.busy || Boolean(expiry.problem)}>
           Replace secret
         </Button>
       </DialogActions>

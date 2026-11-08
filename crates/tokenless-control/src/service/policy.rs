@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Role};
@@ -32,7 +32,7 @@ use crate::model::{
 };
 use crate::notify::PolicyNotifier;
 use crate::probe::{CredentialProber, ProbeRequest};
-use crate::store::{CredentialStore, PolicyStore};
+use crate::store::{CredentialStore, NewSecret, PolicyStore};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCredential {
@@ -51,6 +51,9 @@ pub struct CreateCredential {
     /// Placeholders the proxy replaces with one of `fields`.
     #[serde(default)]
     pub substitutions: Vec<Substitution>,
+    /// When the secret stops being valid upstream, if it does.
+    #[serde(default)]
+    pub not_after: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -694,6 +697,7 @@ impl PolicyService {
         check_substitutions(&req.substitutions, &fields.names())?;
         let id = CredentialId::new();
         let now = Utc::now();
+        check_not_after(req.not_after, now)?;
         let meta = CredentialMeta {
             id,
             vault_id: *vault_id,
@@ -705,6 +709,7 @@ impl PolicyService {
             custom_headers: req.custom_headers,
             variable_refs,
             substitutions: req.substitutions,
+            not_after: req.not_after,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -737,6 +742,9 @@ impl PolicyService {
         if !meta.substitutions.is_empty() {
             event = event.detail("substitutions", placeholder_names(&meta.substitutions));
         }
+        if let Some(not_after) = meta.not_after {
+            event = event.detail("not_after", not_after.to_rfc3339());
+        }
         self.credentials
             .insert_credential(meta.clone(), ciphertext, &[event])
             .await
@@ -753,13 +761,16 @@ impl PolicyService {
         Ok(meta)
     }
 
-    /// Replaces a credential's secret. The old value is never returned.
+    /// Replaces a credential's secret, with the new secret's deadline if it
+    /// has one. The old value is never returned.
     pub async fn rotate_credential(
         &self,
         caller: &Caller,
         id: &CredentialId,
         fields: BTreeMap<String, String>,
+        not_after: Option<DateTime<Utc>>,
     ) -> Result<CredentialMeta, ControlError> {
+        check_not_after(not_after, Utc::now())?;
         let meta = self.credential_meta(id).await?;
         self.guard
             .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
@@ -789,15 +800,21 @@ impl PolicyService {
                 &credential_aad_for(&meta),
             )
             .await?;
-        let event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
+        let mut event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
             .vault(meta.vault_id)
             .target(format!("credential:{id}"));
+        if let Some(not_after) = not_after {
+            event = event.detail("not_after", not_after.to_rfc3339());
+        }
         self.credentials
             .replace_secret(
                 id,
-                ciphertext,
-                fields.names(),
-                variable_refs,
+                NewSecret {
+                    ciphertext,
+                    field_names: fields.names(),
+                    variable_refs,
+                    not_after,
+                },
                 Utc::now(),
                 &[event],
             )
@@ -1196,5 +1213,20 @@ impl PolicyService {
         self.policy.put_settings(settings.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(settings)
+    }
+}
+
+/// A secret's deadline must still be ahead: a secret already past it would
+/// only ever be refused.
+fn check_not_after(
+    not_after: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Result<(), ControlError> {
+    match not_after {
+        Some(at) if at <= now => Err(ControlError::validation(format!(
+            "not_after {} has already passed; give the secret's real expiry, or none",
+            at.to_rfc3339()
+        ))),
+        _ => Ok(()),
     }
 }

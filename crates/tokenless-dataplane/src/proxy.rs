@@ -1033,6 +1033,33 @@ pub(crate) async fn handle_intercepted(
             ),
         );
     };
+    if let Some(not_after) = rule.not_after.filter(|at| Utc::now() >= *at) {
+        Metrics::inc(&shared.metrics.requests_denied_total);
+        audit_best_effort(
+            shared,
+            claims,
+            "proxy.deny",
+            AuditOutcome::Denied,
+            &ctx.host,
+            ctx.port,
+            Some((&method, &path)),
+            "credential_expired: the credential's not_after has passed",
+        );
+        if let Some(binding) = &ctx.binding {
+            binding.record_failure(UpstreamFailureKind::CredentialExpired, &ctx.host, ctx.port);
+        }
+        let mut r = respond(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &format!(
+                "the credential for {} expired at {}; nothing was sent, retry once it is replaced",
+                ctx.host,
+                not_after.to_rfc3339()
+            ),
+        );
+        r.headers_mut()
+            .insert("retry-after", HeaderValue::from_static("5"));
+        return r;
+    }
     if let Some(limit) = claims.request_limit {
         let Some(counter) = snapshot.limits.get(&claims.jti) else {
             let mut r = respond(
@@ -1336,6 +1363,7 @@ mod tests {
                 HeaderValue::from_static("Bearer broker"),
             )],
             substitutions: vec![],
+            not_after: None,
         };
         let mut h = HeaderMap::new();
         h.insert(

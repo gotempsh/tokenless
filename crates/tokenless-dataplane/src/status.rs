@@ -88,6 +88,9 @@ pub enum UpstreamFailureKind {
     /// The upstream answered 401 to a request carrying the injected
     /// credential.
     CredentialRejected,
+    /// The credential's `not_after` has passed, so nothing was sent; it
+    /// works again once its secret is replaced.
+    CredentialExpired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -354,6 +357,29 @@ mod tests {
         let err = binding.ready(3, Duration::from_secs(5)).await.unwrap_err();
         assert!(started.elapsed() < Duration::from_secs(1));
         assert!(err.to_string().contains("the session was revoked"), "{err}");
+        r.dp.shutdown();
+    }
+
+    /// A credential past its deadline is not sent: the request gets a
+    /// typed 503 and the binding says why.
+    #[tokio::test]
+    async fn a_credential_past_its_deadline_is_not_injected() {
+        let (port, root) = https_upstream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let target = format!("localhost:{port}");
+        let r = running(&target, vec![root]).await;
+        let (token, _) = r.bound_token("sbx-1", 1, 600);
+        let binding = r.bind("sbx-1", vec![token]);
+        let ahead = Utc::now() + TimeDelta::hours(1);
+        r.installer.install(&r.snapshot_until(2, ahead)).unwrap();
+        let status = r.request_through(&binding, &target).await;
+        assert!(status.contains(" 200 "), "{status}");
+
+        let past = Utc::now() - TimeDelta::seconds(1);
+        r.installer.install(&r.snapshot_until(3, past)).unwrap();
+        let status = r.request_through(&binding, &target).await;
+        assert!(status.contains(" 503 "), "{status}");
+        let failure = binding.status().last_failure.unwrap();
+        assert_eq!(failure.kind, UpstreamFailureKind::CredentialExpired);
         r.dp.shutdown();
     }
 

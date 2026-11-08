@@ -21,7 +21,13 @@ use crate::scope::Scope;
 use crate::seal::Sealed;
 use crate::session::key_id;
 
-pub const SNAPSHOT_FORMAT: u32 = 1;
+/// The newest format this build reads and writes. Format 2 adds a rule's
+/// `not_after`; a snapshot that uses none is still written as format 1, so
+/// nodes too old to know it keep working until a credential has a
+/// deadline, and then refuse the snapshot rather than ignore the deadline.
+pub const SNAPSHOT_FORMAT: u32 = 2;
+/// The oldest format this build still reads.
+pub const MIN_SNAPSHOT_FORMAT: u32 = 1;
 // Predates the rename to tokenless and is kept: changing it invalidates
 // existing snapshot signatures.
 const SIGNATURE_CONTEXT: &[u8] = b"credential-broker/snapshot/v1\0";
@@ -90,6 +96,20 @@ pub struct SnapshotRule {
     pub strip_headers: Vec<String>,
     /// [`crate::injection::InjectedHeaders`] JSON, sealed to the node.
     pub headers: Sealed,
+    /// When the credential stops being valid upstream: the node injects it
+    /// until then and refuses with a typed error after. Format 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<DateTime<Utc>>,
+}
+
+/// The format a snapshot with `rules` is written in: the oldest that
+/// carries everything in it.
+pub fn format_for(rules: &[SnapshotRule]) -> u32 {
+    if rules.iter().any(|r| r.not_after.is_some()) {
+        2
+    } else {
+        MIN_SNAPSHOT_FORMAT
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,10 +191,22 @@ impl SignedSnapshot {
             })?;
         let body: SnapshotBody = serde_json::from_str(&self.body)
             .map_err(|e| CoreError::encoding("snapshot body", e))?;
-        if body.format != SNAPSHOT_FORMAT {
+        if !(MIN_SNAPSHOT_FORMAT..=SNAPSHOT_FORMAT).contains(&body.format) {
             return Err(CoreError::encoding(
                 "snapshot body",
-                format!("unsupported format {}", body.format),
+                format!(
+                    "unsupported format {} (this node reads {MIN_SNAPSHOT_FORMAT}-{SNAPSHOT_FORMAT}); upgrade the node",
+                    body.format
+                ),
+            ));
+        }
+        if body.format < format_for(&body.rules) {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry a credential deadline, but a rule has one",
+                    body.format
+                ),
             ));
         }
         Ok(body)
@@ -236,5 +268,52 @@ mod tests {
         let published = PublishedKey::from_key(&key);
         assert_eq!(published.decode().unwrap(), key);
         assert_eq!(published.kid, key_id(&key));
+    }
+
+    #[test]
+    fn a_credential_deadline_needs_format_2_and_older_formats_still_read() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        let node_key = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
+        let (rule_id, credential_id) = (RuleId::new(), CredentialId::new());
+        b.rules.push(SnapshotRule {
+            rule_id,
+            scope: Scope::parse("vault:test").unwrap(),
+            credential_id,
+            allow: RuleScope {
+                hosts: vec![crate::host::HostPattern::parse("api.example.com").unwrap()],
+                paths: vec![],
+                methods: vec![],
+                mcp_tools: None,
+            },
+            strip_headers: vec![],
+            headers: seal(
+                &node_key,
+                b"{}",
+                &rule_aad(&b.node_id, &rule_id, &credential_id),
+            )
+            .unwrap(),
+            not_after: None,
+        });
+        b.format = format_for(&b.rules);
+        assert_eq!(b.format, MIN_SNAPSHOT_FORMAT);
+        assert!(signed(&b).verify(&key.verifying_key()).is_ok());
+
+        b.rules[0].not_after = Some(Utc::now());
+        assert_eq!(format_for(&b.rules), 2);
+        // Format 1 cannot say it; a node must not read it as no deadline.
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot carry a credential deadline"),
+            "{err}"
+        );
+        b.format = 2;
+        assert!(signed(&b).verify(&key.verifying_key()).is_ok());
+
+        b.format = SNAPSHOT_FORMAT + 1;
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(err.to_string().contains("upgrade the node"), "{err}");
     }
 }

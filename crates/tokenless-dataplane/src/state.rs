@@ -61,6 +61,8 @@ pub struct ActiveRule {
     pub inject: Vec<(HeaderName, HeaderValue)>,
     /// Placeholders swapped for secret values; empty for most rules.
     pub substitutions: Vec<RenderedSubstitution>,
+    /// When the credential stops being valid upstream, if it does.
+    pub not_after: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Interception certificates, one server config per rule host.
@@ -306,6 +308,7 @@ pub fn build_active(
             strip,
             inject,
             substitutions: headers.substitutions.clone(),
+            not_after: rule.not_after,
         });
     }
 
@@ -448,6 +451,7 @@ pub(crate) mod tests {
                                 &rule_aad(&node, &rule_id, &credential_id),
                             )
                             .unwrap(),
+                            not_after: None,
                         }
                     })
                     .collect(),

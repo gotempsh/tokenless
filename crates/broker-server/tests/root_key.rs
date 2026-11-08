@@ -70,6 +70,7 @@ fn credential() -> CreateCredential {
         fields: BTreeMap::from([("token".to_string(), TOKEN.to_string())]),
         custom_headers: vec![],
         substitutions: vec![],
+        not_after: None,
     }
 }
 

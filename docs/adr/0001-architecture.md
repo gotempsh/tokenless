@@ -273,7 +273,16 @@ node protocol and the snapshot format are unchanged.
   that changes a security decision raises the snapshot `format` (claims
   rely on the unknown-field refusal), so a node too old to enforce it
   refuses the snapshot or session instead of ignoring the field: it fails
-  closed. Upgrade nodes first, then the control plane.
+  closed. Upgrade nodes first, then the control plane. A snapshot is
+  written in the oldest format that carries everything in it, so older
+  nodes keep working until a feature that needs the newer one is used.
+  Format 2 adds a credential's `not_after`.
+- A credential whose secret expires upstream (an installation token, say)
+  carries that deadline, set with the secret and replaced with it. The
+  node stops injecting it then and answers 503 `credential_expired`, so a
+  stale secret is never sent; it works again once whoever manages it
+  replaces the secret. Issuing and refreshing such secrets is the
+  embedder's job.
 - Credentials and the interception CA key are sealed to the node's X25519
   key: ephemeral X25519, then HKDF-SHA256, then AES-256-GCM, with AAD
   binding node, rule and credential. Nodes hold them in memory only;

@@ -25,7 +25,7 @@ use tokenless_control::model::{
     TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
 use tokenless_control::store::{
-    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
     StoredCiphertext,
 };
 use tokenless_control::StoreError;
@@ -229,13 +229,14 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         custom_headers: from_json("custom_headers", &get::<String>(row, "custom_headers")?)?,
         variable_refs: from_json("variable_refs", &get::<String>(row, "variable_refs")?)?,
         substitutions: from_json("substitutions", &get::<String>(row, "substitutions")?)?,
+        not_after: get_opt_ts(row, "not_after")?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, created_by, created_at, updated_at";
 
 fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
     Ok(Variable {
@@ -265,7 +266,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -277,6 +278,7 @@ impl CredentialStore for SqliteStore {
         .bind(to_json("custom_headers", &meta.custom_headers)?)
         .bind(to_json("variable_refs", &meta.variable_refs)?)
         .bind(to_json("substitutions", &meta.substitutions)?)
+        .bind(opt_ts(&meta.not_after))
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -336,19 +338,18 @@ impl CredentialStore for SqliteStore {
     async fn replace_secret(
         &self,
         id: &CredentialId,
-        ciphertext: Vec<u8>,
-        field_names: Vec<String>,
-        variable_refs: Vec<String>,
+        secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("replace_secret").await?;
         let result = sqlx::query(
-            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
+            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(ciphertext)
-        .bind(to_json("field_names", &field_names)?)
-        .bind(to_json("variable_refs", &variable_refs)?)
+        .bind(secret.ciphertext)
+        .bind(to_json("field_names", &secret.field_names)?)
+        .bind(to_json("variable_refs", &secret.variable_refs)?)
+        .bind(opt_ts(&secret.not_after))
         .bind(ts(&updated_at))
         .bind(id.to_string())
         .execute(&mut *tx)

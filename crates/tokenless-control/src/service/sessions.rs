@@ -631,8 +631,6 @@ fn capped_ttl(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use chrono::{DateTime, TimeDelta};
     use rand::rngs::OsRng;
     use tokenless_core::authz::{Principal, Role};
@@ -640,36 +638,8 @@ mod tests {
     use tokenless_core::session::OPEN_TRAFFIC_GRACE_SECS;
 
     use super::*;
-    use crate::cipher::AesGcmCipher;
-    use crate::envelope::Envelope;
     use crate::memory::MemoryStore;
-    use crate::probe::DisabledProber;
-    use crate::store::RbacAuthorizer;
-    use crate::{ControlConfig, ControlServices, ServiceStores};
-
-    async fn services() -> (Arc<MemoryStore>, ControlServices) {
-        let store = Arc::new(MemoryStore::new());
-        let cipher = Arc::new(
-            Envelope::open(&AesGcmCipher::generate_key(), store.clone())
-                .await
-                .unwrap(),
-        );
-        let cs = ControlServices::new(
-            ServiceStores {
-                credentials: store.clone(),
-                policy: store.clone(),
-                audit: store.clone(),
-                nodes: store.clone(),
-            },
-            Arc::new(RbacAuthorizer),
-            cipher,
-            Arc::new(DisabledProber),
-            ControlConfig::default(),
-        )
-        .await
-        .unwrap();
-        (store, cs)
-    }
+    use crate::service::testing::{services, vault_with_rule};
 
     /// A stored session of `vault` that expires at `expires_at`.
     async fn stored(
@@ -726,46 +696,6 @@ mod tests {
             .verify(&node.snapshot_verify_key)
             .unwrap();
         assert_eq!(body.revoked_sessions, vec![recent.id]);
-    }
-
-    /// A vault with one rule a host service may mint sessions for.
-    async fn vault_with_rule(cs: &ControlServices, host: &Caller) -> (VaultId, RuleId) {
-        use crate::service::policy::{CreateCredential, CreateRule};
-        let vault = cs.policy.create_vault(host, "v").await.unwrap();
-        let credential = cs
-            .policy
-            .create_credential(
-                host,
-                &vault.id,
-                CreateCredential {
-                    name: "api".into(),
-                    template_id: "generic-bearer".into(),
-                    template_version: None,
-                    host_override: vec!["api.example.com".into()],
-                    fields: [("token".to_string(), "t".to_string())].into(),
-                    custom_headers: vec![],
-                    substitutions: vec![],
-                },
-            )
-            .await
-            .unwrap();
-        let rule = cs
-            .policy
-            .create_rule(
-                host,
-                &vault.id,
-                CreateRule {
-                    name: "api".into(),
-                    credential_id: credential.id,
-                    hosts: None,
-                    paths: None,
-                    methods: None,
-                    mcp_tools: None,
-                },
-            )
-            .await
-            .unwrap();
-        (vault.id, rule.id)
     }
 
     fn until(rule: RuleId, not_after: DateTime<Utc>) -> MintSession {

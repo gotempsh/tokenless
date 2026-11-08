@@ -129,6 +129,12 @@ pub struct CredentialMeta {
     /// secret fields. Configuration only; the values stay sealed.
     #[serde(default)]
     pub substitutions: Vec<Substitution>,
+    /// When the secret stops being valid upstream, for one that expires
+    /// (an installation token, say). The proxy stops injecting it then,
+    /// with a typed error, rather than sending a credential the upstream
+    /// will refuse. Set with the secret; replacing the secret replaces it.
+    #[serde(default)]
+    pub not_after: Option<DateTime<Utc>>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

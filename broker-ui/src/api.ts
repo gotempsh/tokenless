@@ -152,6 +152,8 @@ export interface CredentialMeta {
   custom_headers: CustomHeader[];
   variable_refs: string[];
   substitutions: Substitution[];
+  /** When the secret stops working upstream, if it does. */
+  not_after?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;

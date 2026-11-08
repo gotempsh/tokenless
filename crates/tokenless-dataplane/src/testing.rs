@@ -177,6 +177,20 @@ impl Running {
         snapshot(&self.f, version, self.rule, &self.host, revoked)
     }
 
+    /// The next snapshot, its credential valid until `not_after`.
+    pub fn snapshot_until(&self, version: u64, not_after: chrono::DateTime<Utc>) -> SignedSnapshot {
+        let mut body = self
+            .f
+            .snapshot_body(version, vec![(self.rule, scope(), &self.host, "t")]);
+        body.egress = EgressPolicy {
+            block_private: false,
+            allow: vec![],
+        };
+        body.rules[0].not_after = Some(not_after);
+        body.format = 2;
+        self.f.sign(&body)
+    }
+
     /// Opens a CONNECT tunnel with the session and checks it was accepted.
     pub async fn tunnel(&self, target: &str) -> TcpStream {
         let mut stream = TcpStream::connect(self.dp.local_addr()).await.unwrap();

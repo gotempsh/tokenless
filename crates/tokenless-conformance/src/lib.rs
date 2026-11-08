@@ -19,7 +19,8 @@ use tokenless_control::model::{
     UiSession, User, Variable, Vault, VaultDeletion,
 };
 use tokenless_control::store::{
-    AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
+    PolicyStore,
 };
 use tokenless_control::StoreError;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
@@ -97,6 +98,7 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         custom_headers: vec![],
         variable_refs: vec![],
         substitutions: vec![],
+        not_after: None,
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -244,9 +246,12 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
     store
         .replace_secret(
             &first.id,
-            b"ct-rotated".to_vec(),
-            vec!["token".into(), "extra".into()],
-            vec![],
+            NewSecret {
+                ciphertext: b"ct-rotated".to_vec(),
+                field_names: vec!["token".into(), "extra".into()],
+                variable_refs: vec![],
+                not_after: Some(at(3600)),
+            },
             at(5),
             &[],
         )
@@ -272,8 +277,24 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         meta.as_ref().map(|m| m.field_names.len()) == Some(2),
         "field names not updated: {meta:?}"
     );
+    ensure!(
+        S,
+        "replace_not_after",
+        meta.as_ref().and_then(|m| m.not_after) == Some(at(3600)),
+        "the new secret's deadline must be stored with it: {meta:?}"
+    );
     let missing = store
-        .replace_secret(&CredentialId::new(), vec![], vec![], vec![], at(0), &[])
+        .replace_secret(
+            &CredentialId::new(),
+            NewSecret {
+                ciphertext: vec![],
+                field_names: vec![],
+                variable_refs: vec![],
+                not_after: None,
+            },
+            at(0),
+            &[],
+        )
         .await;
     ensure!(
         S,
