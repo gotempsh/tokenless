@@ -627,7 +627,7 @@ impl Binding {
             &self.state,
             snapshot.as_deref(),
             &self.shared.node,
-            Utc::now(),
+            crate::clock::now_or_wall(snapshot.as_deref()),
         )
     }
 

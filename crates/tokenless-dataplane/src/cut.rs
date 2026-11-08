@@ -210,10 +210,19 @@ async fn plane_closed(lifecycle: &mut Option<watch::Receiver<Lifecycle>>) {
     }
 }
 
-/// Resolves at the session's expiry: the moment it may start nothing new.
-pub(crate) async fn session_expiry(exp: DateTime<Utc>) {
-    if let Ok(left) = (exp - Utc::now()).to_std() {
-        tokio::time::sleep(left).await;
+/// How often [`session_expiry`] reads the deadline clock again: a new
+/// snapshot or a corrected host clock can bring the expiry closer.
+const EXPIRY_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Resolves at the session's expiry by the clock requests are checked
+/// against (see `clock`): the moment it may start nothing new.
+pub(crate) async fn session_expiry(exp: DateTime<Utc>, snapshots: &SnapshotHandle) {
+    loop {
+        let now = clock::now_or_wall(snapshots.load().as_deref());
+        match (exp - now).to_std() {
+            Ok(left) if !left.is_zero() => tokio::time::sleep(left.min(EXPIRY_RECHECK)).await,
+            _ => return,
+        }
     }
 }
 
@@ -467,6 +476,34 @@ mod tests {
             changed,
             metrics,
         }
+    }
+
+    #[tokio::test]
+    async fn the_graceful_close_follows_the_clock_requests_are_refused_by() {
+        // This host's clock is behind the control plane's (by less than the
+        // skew a snapshot may arrive with; it can drift further later).
+        let f = Fixture::new();
+        let handle: SnapshotHandle = Arc::new(ArcSwapOption::empty());
+        let (changed, _) = watch::channel(0);
+        let metrics = Metrics::default();
+        let mut body = f.snapshot_body(1, vec![]);
+        body.issued_at = Utc::now() + chrono::Duration::seconds(50);
+        apply(&f.sign(&body), &f.keys, &handle, &changed, &metrics).unwrap();
+        // Half a minute left by the host's clock, but past by the control
+        // plane's, which refuses its requests already.
+        let mine = claims(30);
+        let snapshot = handle.load_full().unwrap();
+        assert!(crate::proxy::check_session(&snapshot, &mine, &f.keys.node_id, None).is_err());
+        timeout(Duration::from_secs(1), session_expiry(mine.exp, &handle))
+            .await
+            .expect("the connection closes when its requests start being refused");
+        // With no snapshot, the host's clock is all there is.
+        let empty: SnapshotHandle = Arc::new(ArcSwapOption::empty());
+        assert!(
+            timeout(Duration::from_millis(100), session_expiry(mine.exp, &empty))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

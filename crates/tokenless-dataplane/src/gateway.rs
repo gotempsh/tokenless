@@ -243,11 +243,14 @@ async fn handle(
         Metrics::inc(&shared.metrics.gateway_auth_failures_total);
         return unauthorized(reason);
     }
-    // Counted before expiry is checked again, as for a CONNECT.
+    // Counted, then checked again against the snapshot in force, as for a
+    // CONNECT.
     let open = shared.traffic.enter(claims.jti);
-    if crate::clock::now(&snapshot) >= claims.exp {
+    if let Err(reason) =
+        crate::proxy::still_valid_once_counted(shared.snapshot.load().as_deref(), &claims)
+    {
         Metrics::inc(&shared.metrics.gateway_auth_failures_total);
-        return unauthorized("session rejected: proxy session has expired");
+        return unauthorized(&format!("session rejected: {reason}"));
     }
     if !session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port)) {
         Metrics::inc(&shared.metrics.connect_denied_total);

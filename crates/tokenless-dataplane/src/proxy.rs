@@ -196,6 +196,27 @@ pub fn session_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
+/// Checked again once a session's traffic is counted, against the
+/// snapshot in force now rather than the one it was first checked with.
+/// [`crate::DataPlane::session_cut`] reads the snapshot before it counts
+/// the traffic, under the same lock as counting, so if it saw nothing open
+/// this sees its revocation, or the expiry it relied on.
+pub(crate) fn still_valid_once_counted(
+    current: Option<&ActiveSnapshot>,
+    claims: &SessionClaims,
+) -> Result<(), &'static str> {
+    let Some(snapshot) = current else {
+        return Err("data plane has no policy snapshot");
+    };
+    if clock::now(snapshot) >= claims.exp {
+        return Err("proxy session has expired");
+    }
+    if snapshot.revoked.contains(&claims.jti) {
+        return Err("proxy session has been revoked");
+    }
+    Ok(())
+}
+
 /// Session-level checks that must hold at CONNECT and again on every
 /// request inside a tunnel. `binding` is the subject of the binding the
 /// traffic came through, `None` when the client presented the token.
@@ -480,16 +501,16 @@ async fn handle_proxy_request(
     };
     // Counted as the session's open traffic from the check on, so a wait
     // for its cut sees a tunnel still being set up (resolving its host).
-    // Expiry is checked again once counted: a cut that ran in between saw
-    // nothing open only if the session had already expired.
+    // Checked again once counted: a cut that ran in between saw nothing
+    // open only if its revocation was installed or the session had expired.
     let open = shared.traffic.enter(claims.jti);
-    if clock::now(&snapshot) >= claims.exp {
+    if let Err(reason) = still_valid_once_counted(shared.snapshot.load().as_deref(), &claims) {
         Metrics::inc(&shared.metrics.proxy_auth_failures_total);
         // As the session check answers: a binding's client sends no
         // credentials to retry with.
         return match binding {
-            Some(_) => respond(StatusCode::FORBIDDEN, "proxy session has expired"),
-            None => proxy_auth_required("proxy session has expired"),
+            Some(_) => respond(StatusCode::FORBIDDEN, reason),
+            None => proxy_auth_required(reason),
         };
     }
     if req.method() != Method::CONNECT {
@@ -847,6 +868,7 @@ async fn intercepted_connection(
         shared.connect_timeout,
     );
     let exp = claims.exp;
+    let snapshots = shared.snapshot.clone();
     let mut lifecycle = shared.lifecycle.subscribe();
     let left = left_binding(binding.clone());
     let (binding, bound_token) = binding.unzip();
@@ -877,7 +899,7 @@ async fn intercepted_connection(
             connection.as_mut().graceful_shutdown();
             connection.await
         }
-        () = session_expiry(exp) => {
+        () = session_expiry(exp, &snapshots) => {
             // The session may start nothing new, but what is in flight
             // finishes, within the open-traffic grace period that
             // `session_end` enforces around this connection; the client
@@ -1569,6 +1591,63 @@ mod tests {
             HeaderValue::from_str(&format!("Basic {}", STANDARD.encode(raw))).unwrap(),
         );
         h
+    }
+
+    #[test]
+    fn a_counted_session_is_checked_against_the_snapshot_in_force() {
+        use std::collections::BTreeMap;
+
+        use arc_swap::ArcSwapOption;
+        use tokio::sync::watch;
+
+        use crate::metrics::Metrics;
+        use crate::state::apply;
+        use crate::state::tests::Fixture;
+
+        let f = Fixture::new();
+        let handle: crate::state::SnapshotHandle = Arc::new(ArcSwapOption::empty());
+        let (changed, _) = watch::channel(0);
+        let metrics = Metrics::default();
+        let claims = |ttl: u64, issued: chrono::DateTime<Utc>| {
+            SessionClaims::new(
+                Scope::parse("vault:test").unwrap(),
+                vec![RuleId::new()],
+                ttl,
+                None,
+                BTreeMap::new(),
+                issued,
+                3600,
+            )
+            .unwrap()
+        };
+        let mine = claims(600, Utc::now());
+        assert_eq!(
+            still_valid_once_counted(None, &mine),
+            Err("data plane has no policy snapshot")
+        );
+        apply(&f.snapshot(1, vec![]), &f.keys, &handle, &changed, &metrics).unwrap();
+        assert_eq!(
+            still_valid_once_counted(handle.load().as_deref(), &mine),
+            Ok(())
+        );
+
+        // The connection was checked against version 1; version 2, which
+        // revokes the session, is in force by the time it is counted.
+        let checked = handle.load_full().unwrap();
+        let mut body = f.snapshot_body(2, vec![]);
+        body.revoked_sessions = vec![mine.jti];
+        apply(&f.sign(&body), &f.keys, &handle, &changed, &metrics).unwrap();
+        assert!(!checked.revoked.contains(&mine.jti));
+        assert_eq!(
+            still_valid_once_counted(handle.load().as_deref(), &mine),
+            Err("proxy session has been revoked")
+        );
+
+        let expired = claims(60, Utc::now() - chrono::Duration::seconds(120));
+        assert_eq!(
+            still_valid_once_counted(handle.load().as_deref(), &expired),
+            Err("proxy session has expired")
+        );
     }
 
     #[test]

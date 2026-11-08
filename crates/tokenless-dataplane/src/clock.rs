@@ -21,6 +21,11 @@ pub(crate) fn now(snapshot: &ActiveSnapshot) -> DateTime<Utc> {
     later_of(Utc::now(), control_time(snapshot))
 }
 
+/// [`now`] by `snapshot`, or the wall clock while there is none.
+pub(crate) fn now_or_wall(snapshot: Option<&ActiveSnapshot>) -> DateTime<Utc> {
+    snapshot.map_or_else(Utc::now, now)
+}
+
 /// The control plane's time now, by the snapshot in force.
 fn control_time(snapshot: &ActiveSnapshot) -> DateTime<Utc> {
     TimeDelta::from_std(snapshot.installed_at.elapsed())

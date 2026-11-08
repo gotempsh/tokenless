@@ -204,7 +204,10 @@ pub(crate) fn status(shared: &ProxyShared) -> Status {
     let bindings = shared
         .live_bindings()
         .iter()
-        .map(|b| binding_status(b, snapshot.as_deref(), &shared.node, now))
+        .map(|b| {
+            let deadline_now = crate::clock::now_or_wall(snapshot.as_deref());
+            binding_status(b, snapshot.as_deref(), &shared.node, deadline_now)
+        })
         .collect();
     Status {
         snapshot_version: snapshot.as_ref().map(|s| s.version),
