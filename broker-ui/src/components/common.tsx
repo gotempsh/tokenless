@@ -4,7 +4,7 @@
 // Broker-specific building blocks composed from the ported Temps primitives
 // in ./ui. Pages use these so every list, form and status reads the same.
 
-import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createContext, useContext, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
 import type { Page } from "../api";
 import { compactTime, exactTime, relativeTime } from "../time";
@@ -86,6 +86,17 @@ export function Empty({
   return <EmptyState size="compact" icon={icon} title={title} description={description} action={action} />;
 }
 
+/** Set inside a tab, whose label already names the section below it. */
+const InTab = createContext(false);
+
+/**
+ * Wraps a tab's content: its sections keep their heading for screen
+ * readers but show only their actions, since the tab already names them.
+ */
+export function TabSections({ children }: { children: ReactNode }) {
+  return <InTab.Provider value>{children}</InTab.Provider>;
+}
+
 /** A titled block within a page; sections are separated by the page's `space-y-6`. */
 export function Section({
   title,
@@ -98,14 +109,29 @@ export function Section({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const inTab = useContext(InTab);
+  if (inTab) {
+    return (
+      <section className="space-y-4">
+        <h2 className="sr-only">{title}</h2>
+        {(description || actions) && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0 text-sm text-muted-foreground">{description}</div>
+            {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+          </div>
+        )}
+        {children}
+      </section>
+    );
+  }
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-[1_1_12rem]">
           <h2 className="text-lg font-semibold">{title}</h2>
           {description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}
         </div>
-        {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
       {children}
     </section>
@@ -113,7 +139,7 @@ export function Section({
 }
 
 /** A record's facts on a detail page: one row per label, values beside them once there is room. */
-export function Facts({ children }: { children: ReactNode }) {
+export function FactRows({ children }: { children: ReactNode }) {
   return (
     <Panel>
       <dl className="divide-y">{children}</dl>
@@ -121,8 +147,8 @@ export function Facts({ children }: { children: ReactNode }) {
   );
 }
 
-/** One row of {@link Facts}. */
-export function Fact({ label, children }: { label: string; children: ReactNode }) {
+/** One row of {@link FactRows}. */
+export function FactRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid gap-1 px-4 py-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:gap-4">
       <dt className="text-sm text-muted-foreground">{label}</dt>

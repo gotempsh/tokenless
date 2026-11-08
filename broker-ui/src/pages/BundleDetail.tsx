@@ -61,6 +61,7 @@ import {
   rowLink,
   Section,
   Status,
+  TabSections,
   Tags,
   useConfirm,
   When,
@@ -75,6 +76,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
+import { DetailLayout, Fact, FactList } from "../components/layout";
 import { CommandSnippet } from "./Bundles";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
@@ -94,15 +96,6 @@ export function bundleTab(raw: string | undefined): BundleTab {
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0 space-y-1">
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="truncate text-sm">{children}</dd>
-    </div>
-  );
-}
 
 /** What the bundle gives an agent today, in one glance. */
 function verdict(bundle: AccessBundle, rules: Rule[] | undefined) {
@@ -224,72 +217,79 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
       />
       <ErrorBanner error={bundle.error ?? vault.error ?? services.error ?? deleteAction.error} />
       {b && (
-        <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 md:grid-cols-4">
-          <Fact label="Vault">
-            <a href={`#/vaults/${b.vault_id}/bundles`} className="text-primary hover:text-primary/80">
-              {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
-            </a>
-          </Fact>
-          <Fact label="Services">
-            {b.rule_ids.length}
-            {members.some((r) => !r.enabled) && (
-              <span className="text-muted-foreground"> ({members.filter((r) => !r.enabled).length} disabled)</span>
+        <DetailLayout
+          facts={
+            <FactList>
+              <Fact label="Vault">
+                <a href={`#/vaults/${b.vault_id}/bundles`} className="underline-offset-2 hover:underline">
+                  {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
+                </a>
+              </Fact>
+              <Fact label="Services">
+                {b.rule_ids.length}
+                {members.some((r) => !r.enabled) && (
+                  <span className="text-warning-strong"> · {members.filter((r) => !r.enabled).length} turned off</span>
+                )}
+              </Fact>
+              <Fact label="Created by">{actorName(b.created_by, actors)}</Fact>
+              <Fact label="Updated">
+                <When at={b.updated_at} />
+              </Fact>
+            </FactList>
+          }
+        >
+          <Tabs value={tab} onValueChange={(v) => goTab(bundleTab(v))}>
+            <TabsList>
+              {TABS.map((t) => (
+                <TabsTrigger key={t.value} value={t.value}>
+                  {t.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          <TabSections>
+            {b && tab === "services" && (
+              <BundleServices
+                bundle={b}
+                services={services.data}
+                loading={services.loading && !services.data}
+                canEdit={canEdit}
+                canAdd={canAdd}
+                onAdd={goAdd}
+                onInclude={() => setIncluding(true)}
+                onChanged={bundle.reload}
+              />
             )}
-          </Fact>
-          <Fact label="Created by">{actorName(b.created_by, actors)}</Fact>
-          <Fact label="Updated">
-            <When at={b.updated_at} />
-          </Fact>
-        </dl>
-      )}
-      <Tabs value={tab} onValueChange={(v) => goTab(bundleTab(v))}>
-        <TabsList>
-          {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      {b && tab === "services" && (
-        <BundleServices
-          bundle={b}
-          services={services.data}
-          loading={services.loading && !services.data}
-          canEdit={canEdit}
-          canAdd={canAdd}
-          onAdd={goAdd}
-          onInclude={() => setIncluding(true)}
-          onChanged={bundle.reload}
-        />
-      )}
-      {b && tab === "sessions" && (
-        <BundleSessions
-          bundle={b}
-          actors={actors}
-          canChange={canEdit}
-          refresh={created}
-          onCreate={() => setCreating(true)}
-        />
-      )}
-      {b && tab === "connect" && (
-        <div className="space-y-10">
-          <McpConnect
-            bundle={b}
-            vaultName={vault.data?.name}
-            servers={mcpCredentials(memberCredentials, services.data?.templates ?? [])}
-            canAdd={canAdd}
-            onAdd={goAdd}
-          />
-          <Connect
-            bundle={b}
-            vaultName={vault.data?.name}
-            credentials={memberCredentials}
-            empty={members.length === 0}
-            canCreate={canEdit}
-            onCreate={() => setCreating(true)}
-          />
-        </div>
+            {b && tab === "sessions" && (
+              <BundleSessions
+                bundle={b}
+                actors={actors}
+                canChange={canEdit}
+                refresh={created}
+                onCreate={() => setCreating(true)}
+              />
+            )}
+          </TabSections>
+          {b && tab === "connect" && (
+            <div className="space-y-10">
+              <McpConnect
+                bundle={b}
+                vaultName={vault.data?.name}
+                servers={mcpCredentials(memberCredentials, services.data?.templates ?? [])}
+                canAdd={canAdd}
+                onAdd={goAdd}
+              />
+              <Connect
+                bundle={b}
+                vaultName={vault.data?.name}
+                credentials={memberCredentials}
+                empty={members.length === 0}
+                canCreate={canEdit}
+                onCreate={() => setCreating(true)}
+              />
+            </div>
+          )}
+        </DetailLayout>
       )}
       {!b && bundle.loading && <Loading />}
       {b && (

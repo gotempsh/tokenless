@@ -8,16 +8,19 @@ import type { ReactNode } from "react";
 import { cn } from "../lib/utils";
 import { Panel } from "./common";
 
+/** Few records render as panels: as many columns as fit at 320px or wider. */
+export const PANEL_GRID = "grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))]";
+
 /**
  * A record's page: its working content (lists, logs, tabs) in the main
  * column and its facts in a 320px column on the right. On narrow screens
- * the facts come first, above the work.
+ * the facts follow the work, so a phone opens on what the record does.
  */
 export function DetailLayout({ facts, children }: { facts: ReactNode; children: ReactNode }) {
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-8">
-      <aside className="min-w-0 space-y-4 lg:order-last">{facts}</aside>
+    <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="min-w-0 space-y-8">{children}</div>
+      <aside className="min-w-0 space-y-4">{facts}</aside>
     </div>
   );
 }

@@ -69,11 +69,13 @@ export function PageHeader({
     <div
       data-page-header
       className={cn(
-        'flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between',
+        'flex flex-wrap items-start justify-between gap-3',
         className,
       )}
     >
-      <div className="min-w-0">
+      {/* At least 16rem for the title: on a phone, more than a menu's worth
+          of actions moves to its own line instead of squeezing the title. */}
+      <div className="min-w-0 flex-[1_1_16rem]">
         <div className="flex flex-wrap items-center gap-2">
           <Heading className="text-2xl font-semibold tracking-tight">{title}</Heading>
           {verdict}
@@ -85,7 +87,7 @@ export function PageHeader({
       {actions ? (
         // Never narrower than its buttons: the description wraps instead
         // of running under them.
-        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {actions}
         </div>
       ) : null}

@@ -33,8 +33,6 @@ import {
   Empty,
   ErrorBanner,
   Exact,
-  Fact,
-  Facts,
   FormDialog,
   Mono,
   Panel,
@@ -46,6 +44,7 @@ import {
   useConfirm,
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { DetailLayout, Fact, FactList } from "../components/layout";
 import {
   EMPTY_SECRET,
   initialSecrets,
@@ -212,77 +211,82 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
               </AlertDescription>
             </Alert>
           )}
-          <Facts>
-            <Fact label="Type">{KIND_LABEL[template?.kind ?? "http"]}</Fact>
-            <Fact label="Hosts">
-              <Tags values={targetHosts(template, c.host_override)} />
-            </Fact>
-            <Fact label="Secret">
-              <SecretSummary credential={c} />
-            </Fact>
-            <Fact label="Created">
-              <Exact at={c.created_at} />
-            </Fact>
-            <Fact label="Updated">
-              <Relative at={c.updated_at} />
-            </Fact>
-          </Facts>
-          <Section
-            title="Custom headers"
-            actions={<EditButton onClick={() => setEditing("headers")} isAdmin={isAdmin} />}
-          >
-            <ItemList empty="No custom headers.">
-              {c.custom_headers.map((h) => (
-                <li key={h.name} className="flex flex-wrap items-baseline gap-x-2 px-4 py-3 text-sm">
-                  <span className="font-medium">{h.name}</span>
-                  <Mono>{h.value}</Mono>
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section
-            title="Placeholders"
-            actions={<EditButton onClick={() => setEditing("placeholders")} isAdmin={isAdmin} />}
-          >
-            <ItemList empty="No placeholders.">
-              {c.substitutions.map((s) => (
-                <li key={s.placeholder} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3 text-sm">
-                  <Mono>{s.placeholder}</Mono>
-                  <span className="text-muted-foreground">becomes {s.field}</span>
-                  {s.env && <span className="text-muted-foreground">· sets {s.env}</span>}
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section
-            title="Rules"
-            actions={
-              <Button type="button" variant="outline" size="sm" asChild>
-                <a href={`#/vaults/${vaultId}/rules`}>Manage rules</a>
-              </Button>
+          <DetailLayout
+            facts={
+              <FactList>
+                <Fact label="Type">{KIND_LABEL[template?.kind ?? "http"]}</Fact>
+                <Fact label="Hosts">
+                  <Tags values={targetHosts(template, c.host_override)} />
+                </Fact>
+                <Fact label="Secret">
+                  <SecretSummary credential={c} />
+                </Fact>
+                <Fact label="Created">
+                  <Exact at={c.created_at} />
+                </Fact>
+                <Fact label="Updated">
+                  <Relative at={c.updated_at} />
+                </Fact>
+              </FactList>
             }
           >
-            <ItemList empty="No rule uses this service.">
-              {usedBy.map((r) => (
-                <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
-                  <span className="font-medium">{r.name}</span>
-                  <Tags values={r.allow.hosts} />
-                  {!r.enabled && <Status tone="neutral">Disabled</Status>}
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section title="Access bundles">
-            <ItemList empty="Not in any access bundle.">
-              {inBundles.map((b) => (
-                <li key={b.id}>
-                  <a href={`#/bundles/${b.id}`} className="block px-4 py-3 text-sm font-medium hover:bg-muted/50">
-                    {b.name}
-                  </a>
-                </li>
-              ))}
-            </ItemList>
-          </Section>
+            <Section
+              title="Rules"
+              actions={
+                <Button type="button" variant="outline" size="sm" asChild>
+                  <a href={`#/vaults/${vaultId}/rules`}>Manage rules</a>
+                </Button>
+              }
+            >
+              <ItemList empty="No rule uses this service.">
+                {usedBy.map((r) => (
+                  <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
+                    <span className="font-medium">{r.name}</span>
+                    <Tags values={r.allow.hosts} />
+                    {!r.enabled && <Status tone="neutral">Disabled</Status>}
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section title="Access bundles">
+              <ItemList empty="Not in any access bundle.">
+                {inBundles.map((b) => (
+                  <li key={b.id}>
+                    <a href={`#/bundles/${b.id}`} className="block px-4 py-3 text-sm font-medium hover:bg-muted/50">
+                      {b.name}
+                    </a>
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section
+              title="Custom headers"
+              actions={<EditButton onClick={() => setEditing("headers")} isAdmin={isAdmin} />}
+            >
+              <ItemList empty="No custom headers.">
+                {c.custom_headers.map((h) => (
+                  <li key={h.name} className="flex flex-wrap items-baseline gap-x-2 px-4 py-3 text-sm">
+                    <span className="font-medium">{h.name}</span>
+                    <Mono>{h.value}</Mono>
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section
+              title="Placeholders"
+              actions={<EditButton onClick={() => setEditing("placeholders")} isAdmin={isAdmin} />}
+            >
+              <ItemList empty="No placeholders.">
+                {c.substitutions.map((s) => (
+                  <li key={s.placeholder} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3 text-sm">
+                    <Mono>{s.placeholder}</Mono>
+                    <span className="text-muted-foreground">becomes {s.field}</span>
+                    {s.env && <span className="text-muted-foreground">· sets {s.env}</span>}
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+          </DetailLayout>
         </>
       )}
       <FormDialog

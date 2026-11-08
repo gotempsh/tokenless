@@ -47,6 +47,7 @@ import {
   Section,
   SelectField,
   Status,
+  TabSections,
   Tags,
   useConfirm,
   When,
@@ -210,10 +211,12 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
             ))}
           </TabsList>
         </Tabs>
-        {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-        {tab === "rules" && <Rules vaultId={vaultId} />}
-        {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-        {tab === "sessions" && <Sessions vaultId={vaultId} />}
+        <TabSections>
+          {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
+          {tab === "rules" && <Rules vaultId={vaultId} />}
+          {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
+          {tab === "sessions" && <Sessions vaultId={vaultId} />}
+        </TabSections>
       </DetailLayout>
       <FormDialog
         open={deleting}

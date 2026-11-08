@@ -4,7 +4,7 @@
 // One session: what it is, whether it still works, and its whole log:
 // every request it made and everything done to it, from the audit log.
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Ban, History, Pencil, Route, ScrollText } from "lucide-react";
 import {
   ApiError,
@@ -53,6 +53,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
 import { EventDetails, useActorNames } from "./Audit";
+import { DetailLayout, Fact, FactList } from "../components/layout";
 import { outcomeLabel, outcomeSentence, requestUsage, sessionLog, type LogRow, type SessionLogEntry } from "./sessionLogs";
 import { isActive, outcomeBadge, sessionLabel, sessionStatus } from "./Sessions";
 
@@ -159,17 +160,22 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
         </Panel>
       )}
       {s && (
-        <SessionInfo
-          session={s}
-          vaultName={vault.data?.name}
-          used={used.data}
-          names={names}
-          canChange={canChange}
-          onEdit={() => setEditing(true)}
-        />
+        <DetailLayout
+          facts={
+            <SessionInfo
+              session={s}
+              vaultName={vault.data?.name}
+              used={used.data}
+              names={names}
+              canChange={canChange}
+              onEdit={() => setEditing(true)}
+            />
+          }
+        >
+          <Reaches session={s} services={services.data} error={services.error} />
+          <SessionLogs session={s} names={names} rules={rules} live={active} />
+        </DetailLayout>
       )}
-      {s && <Reaches session={s} services={services.data} error={services.error} />}
-      {s && <SessionLogs session={s} names={names} rules={rules} live={active} />}
       {!s && session.loading && <Loading />}
       <FormDialog open={editing} onOpenChange={setEditing} title="Edit name and labels">
         {s && editing && (
@@ -200,15 +206,6 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
 
 // ----- info -------------------------------------------------------------------
 
-function InfoItem({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
-  return (
-    <div className={cn("min-w-0 space-y-1", className)}>
-      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="text-sm [overflow-wrap:anywhere]">{children}</dd>
-    </div>
-  );
-}
-
 /** When the session stopped working, or will. */
 function endFact(s: ProxySession): { label: string; at: string } {
   if (s.revoked_at) return { label: "Revoked", at: s.revoked_at };
@@ -236,64 +233,65 @@ function SessionInfo({
   const others = Object.entries(s.labels).filter(([k]) => k !== "name");
   const usage = used === undefined ? undefined : requestUsage(used, s.request_limit);
   return (
-    <Panel>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
-        <InfoItem label="Created by">{actorName(s.created_by, names)}</InfoItem>
-        <InfoItem label="Access bundle">
-          {s.bundle ? (
-            <a href={`#/bundles/${s.bundle.id}`} className="text-primary hover:text-primary/80">
-              {s.bundle.name}
-            </a>
-          ) : (
-            `${s.rule_ids.length} rule${s.rule_ids.length === 1 ? "" : "s"}, chosen one by one`
-          )}
-        </InfoItem>
-        <InfoItem label="Vault">{vaultName ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}</InfoItem>
-        <InfoItem label="Requests">
-          {usage ? (
-            <span className={cn(usage.near && "font-medium text-warning-strong")}>{usage.text}</span>
-          ) : (
-            <Skeleton className="h-5 w-24" />
-          )}
-        </InfoItem>
-        <InfoItem label="Created">
-          <Exact at={s.created_at} />
-        </InfoItem>
-        <InfoItem label={end.label}>
-          <Exact at={end.at} />
-          <span className="text-muted-foreground">
-            {" "}
-            (<Relative at={end.at} />)
-          </span>
-        </InfoItem>
-        <InfoItem label="Session ID" className="col-span-2">
-          <span className="flex items-center gap-1">
-            <Mono>{s.id}</Mono>
-            <CopyButton value={s.id} label="Copy session ID" iconOnly />
-          </span>
-        </InfoItem>
-      </dl>
-      <div className="flex items-start gap-4 border-t p-4">
-        <dl className="grid min-w-0 flex-1 gap-4 md:grid-cols-2">
-          <InfoItem label="Name">
-            <span className={s.labels.name ? undefined : "text-muted-foreground"}>{s.labels.name ?? "None"}</span>
-          </InfoItem>
-          <InfoItem label="Labels">
-            {others.length > 0 ? (
-              <TagList values={others.map(([k, v]) => `${k}=${v}`)} />
-            ) : (
-              <span className="text-muted-foreground">None</span>
-            )}
-          </InfoItem>
-        </dl>
-        {canChange && (
-          <Button type="button" variant="ghost" size="sm" onClick={onEdit}>
+    <FactList
+      title="Details"
+      action={
+        canChange && (
+          <Button type="button" variant="ghost" size="sm" className="-my-1" onClick={onEdit}>
             <Pencil />
             Edit
           </Button>
+        )
+      }
+    >
+      <Fact label="Requests">
+        {usage ? (
+          <span className={cn(usage.near && "font-medium text-warning-strong")}>{usage.text}</span>
+        ) : (
+          <Skeleton className="h-5 w-24" />
         )}
-      </div>
-    </Panel>
+      </Fact>
+      <Fact label={end.label}>
+        <Exact at={end.at} />
+        <span className="text-muted-foreground">
+          {" "}
+          (<Relative at={end.at} />)
+        </span>
+      </Fact>
+      <Fact label="Access bundle">
+        {s.bundle ? (
+          <a href={`#/bundles/${s.bundle.id}`} className="underline-offset-2 hover:underline">
+            {s.bundle.name}
+          </a>
+        ) : (
+          `${s.rule_ids.length} rule${s.rule_ids.length === 1 ? "" : "s"}, chosen one by one`
+        )}
+      </Fact>
+      <Fact label="Vault">
+        <a href={`#/vaults/${s.vault_id}/credentials`} className="underline-offset-2 hover:underline">
+          {vaultName ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}
+        </a>
+      </Fact>
+      <Fact label="Created">
+        {actorName(s.created_by, names)} · <Exact at={s.created_at} />
+      </Fact>
+      <Fact label="Name">
+        <span className={s.labels.name ? undefined : "text-muted-foreground"}>{s.labels.name ?? "None"}</span>
+      </Fact>
+      <Fact label="Labels">
+        {others.length > 0 ? (
+          <TagList values={others.map(([k, v]) => `${k}=${v}`)} />
+        ) : (
+          <span className="text-muted-foreground">None</span>
+        )}
+      </Fact>
+      <Fact label="Session ID">
+        <span className="flex items-center gap-1">
+          <Mono className="truncate">{s.id}</Mono>
+          <CopyButton value={s.id} label="Copy session ID" iconOnly />
+        </span>
+      </Fact>
+    </FactList>
   );
 }
 
@@ -303,6 +301,12 @@ function SessionInfo({
 function narrowedPaths(svc: DiscoveredService): string | undefined {
   const paths = svc.paths.filter((p) => p !== "/**" && p !== "/*" && p !== "*");
   return paths.length > 0 ? paths.join(", ") : undefined;
+}
+
+/** Methods worth naming: empty or `*` means any. */
+function narrowedMethods(svc: DiscoveredService): string | undefined {
+  const methods = svc.methods.filter((m) => m !== "*");
+  return methods.length > 0 ? methods.join(", ") : undefined;
 }
 
 /** The services the session's token gets a credential for, rule by rule. */
@@ -332,6 +336,7 @@ function Reaches({
           <ul className="divide-y">
             {services.map((svc) => {
               const paths = narrowedPaths(svc);
+              const methods = narrowedMethods(svc);
               return (
                 <li key={svc.rule_id} className="flex flex-col gap-1 px-4 py-3 @lg:flex-row @lg:items-baseline @lg:gap-6">
                   <div className="min-w-0 @lg:w-64 @lg:shrink-0">
@@ -352,10 +357,10 @@ function Reaches({
                       {svc.hosts.join(", ")}
                       {svc.kind === "mcp" && svc.mcp_path}
                     </span>
-                    {(paths || svc.methods.length > 0) && (
+                    {(paths || methods) && (
                       <span className="text-xs text-muted-foreground">
                         {" "}
-                        · {svc.methods.length > 0 ? svc.methods.join(", ") : "any method"}
+                        · {methods ?? "any method"}
                         {paths && <> on {paths}</>}
                       </span>
                     )}
@@ -421,7 +426,7 @@ function SessionLogs({
               <TableRow>
                 <TableHead className={fromWidth.xl}>Time</TableHead>
                 <TableHead>What happened</TableHead>
-                <TableHead>Result</TableHead>
+                <TableHead className={fromWidth.md}>Result</TableHead>
                 <TableHead className={cn(fromWidth.lg, "text-right")}>Took</TableHead>
               </TableRow>
             </TableHeader>
@@ -502,32 +507,32 @@ function RequestDetails({
         {row.reason && <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{row.reason}</p>}
       </div>
       <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-        <InfoItem label="When">
+        <Fact label="When">
           <Exact at={row.at} />
-        </InfoItem>
-        {decision && <InfoItem label="Handled by">{actorLabel(decision, names)}</InfoItem>}
+        </Fact>
+        {decision && <Fact label="Handled by">{actorLabel(decision, names)}</Fact>}
         {rule && (
-          <InfoItem label="Credential">
+          <Fact label="Credential">
             {rule.credential}
             <span className="text-muted-foreground"> · rule {rule.rule}</span>
-          </InfoItem>
+          </Fact>
         )}
-        {row.durationMs !== undefined && <InfoItem label="Took">{row.durationMs} ms</InfoItem>}
+        {row.durationMs !== undefined && <Fact label="Took">{row.durationMs} ms</Fact>}
         {row.mcp && (
-          <InfoItem label="MCP call">
+          <Fact label="MCP call">
             <Mono>{row.mcp}</Mono>
-          </InfoItem>
+          </Fact>
         )}
         {row.substituted && (
-          <InfoItem label="Filled in">
+          <Fact label="Filled in">
             <Mono>{row.substituted}</Mono>
-          </InfoItem>
+          </Fact>
         )}
-        {row.bodySkipped && <InfoItem label="Body not searched">{row.bodySkipped}</InfoItem>}
+        {row.bodySkipped && <Fact label="Body not searched">{row.bodySkipped}</Fact>}
         {labels.length > 0 && (
-          <InfoItem label="Session labels then" className="sm:col-span-2">
+          <Fact label="Session labels then" className="sm:col-span-2">
             <TagList values={labels} />
-          </InfoItem>
+          </Fact>
         )}
       </dl>
       <details className="rounded-md border">
@@ -565,10 +570,11 @@ function LogLine({ entry, names, onOpen }: { entry: SessionLogEntry; names: Acto
             {entry.row.substituted && (
               <p className="mt-1 text-xs text-muted-foreground">Filled in {entry.row.substituted}</p>
             )}
+            <div className="mt-1 @md:hidden">{outcomeBadge(entry.row)}</div>
             <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
           </TableCell>
-          <TableCell>{outcomeBadge(entry.row)}</TableCell>
-          <TableCell className={cn(fromWidth.lg, "text-right tabular-nums text-muted-foreground")}>
+          <TableCell className={fromWidth.md}>{outcomeBadge(entry.row)}</TableCell>
+          <TableCell className={cn(fromWidth.lg, "whitespace-nowrap text-right tabular-nums text-muted-foreground")}>
             {entry.row.durationMs !== undefined ? `${entry.row.durationMs} ms` : ""}
           </TableCell>
         </>
@@ -578,7 +584,7 @@ function LogLine({ entry, names, onOpen }: { entry: SessionLogEntry; names: Acto
             <span className="font-medium">{actorLabel(entry.event, names)}</span> {sessionHistoryPhrase(entry.event)}
             <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
           </TableCell>
-          <TableCell />
+          <TableCell className={fromWidth.md} />
           <TableCell className={fromWidth.lg} />
         </>
       )}

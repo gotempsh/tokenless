@@ -9,14 +9,13 @@ import { targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
 import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Pager, Panel, Relative, Status } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { PANEL_GRID as GRID } from "../components/layout";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { templateOf } from "./Services";
 
-/** Panels fill the row, as many as fit at 320px or wider. */
-const GRID = "grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))]";
 
 export function Vaults({ canCreate }: { canCreate: boolean }) {
   const [page, setPage] = useState(1);
