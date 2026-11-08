@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// One session: whether it still works, what it was given, every request
-// it made and everything done to it, from the audit log.
+// One session: what it is, whether it still works, and its whole log:
+// every request it made and everything done to it, from the audit log.
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Ban, History, ScrollText, Tags } from "lucide-react";
+import { Ban, Check, History, Pencil, ScrollText, Tags, X } from "lucide-react";
 import { ApiError, get, patch, post, type AuditEvent, type Page, type ProxySession, type UserSummary, type Vault } from "../api";
 import { actorLabel, actorName, sessionHistoryPhrase, type ActorNames } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { useAction, useLoad, usePolling } from "../hooks";
 import {
   ConfirmDialog,
+  CopyButton,
   DialogActions,
   Empty,
   ErrorBanner,
@@ -24,36 +25,29 @@ import {
   Mono,
   Pager,
   Panel,
+  Relative,
   RowMenu,
+  rowOpener,
+  Section,
+  Tags as TagList,
   useConfirm,
   When,
 } from "../components/common";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/button-components";
+import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
-import { useActorNames } from "./Audit";
-import { logRows } from "./sessionLogs";
+import { EventDetails, useActorNames } from "./Audit";
+import { sessionLog, type SessionLogEntry } from "./sessionLogs";
 import { isActive, outcomeBadge, sessionLabel, sessionStatus } from "./Sessions";
-
-export type SessionTab = "requests" | "history";
-
-const TABS: { value: SessionTab; label: string }[] = [
-  { value: "requests", label: "Requests" },
-  { value: "history", label: "History" },
-];
-
-export function sessionTab(raw: string | undefined): SessionTab {
-  return raw === "history" ? raw : "requests";
-}
 
 /** Proxies report traffic every few seconds; a live session's page follows it. */
 const REFRESH_MS = 5_000;
 
-export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: SessionTab; user: UserSummary }) {
+export function SessionPage({ sessionId, user }: { sessionId: string; user: UserSummary }) {
   // A session that does not exist loads as null, not as an error.
   const session = useLoad(
     () =>
@@ -71,7 +65,7 @@ export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: 
     [vaultId],
   );
   const names = useActorNames(user);
-  const [editing, setEditing] = useState(false);
+  const [editingLabels, setEditingLabels] = useState(false);
   const confirm = useConfirm<ProxySession>();
   const action = useAction();
   const canChange = user.role === "admin" || user.role === "editor";
@@ -79,8 +73,7 @@ export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: 
 
   useBreadcrumbs([
     { label: "Sessions", href: "#/sessions" },
-    { label: s ? sessionLabel(s) : session.error || missing ? "Session" : null, href: `#/sessions/${sessionId}` },
-    { label: TABS.find((t) => t.value === tab)?.label ?? null },
+    { label: s ? sessionLabel(s) : session.error || missing ? "Session" : null },
   ]);
 
   const revoke = async (target: ProxySession) => {
@@ -102,7 +95,7 @@ export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: 
                 {
                   label: "Edit labels",
                   icon: Tags,
-                  onSelect: () => setEditing(true),
+                  onSelect: () => setEditingLabels(true),
                   disabled: !canChange,
                   reason: "Only editors and admins can change sessions",
                 },
@@ -139,45 +132,24 @@ export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: 
         </Panel>
       )}
       {s && (
-        <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 md:grid-cols-5">
-          <SessionFact label="Access bundle">
-            {s.bundle ? (
-              <a href={`#/bundles/${s.bundle.id}`} className="text-primary hover:text-primary/80">
-                {s.bundle.name}
-              </a>
-            ) : (
-              `${s.rule_ids.length} rule${s.rule_ids.length === 1 ? "" : "s"}`
-            )}
-          </SessionFact>
-          <SessionFact label="Vault">{vault.data?.name ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}</SessionFact>
-          <SessionFact label="Created by">{actorName(s.created_by, names)}</SessionFact>
-          <SessionFact label={s.revoked_at ? "Revoked" : new Date(s.expires_at) <= new Date() ? "Expired" : "Expires"}>
-            <When at={s.revoked_at ?? s.expires_at} />
-          </SessionFact>
-          <SessionFact label="Request limit">{s.request_limit ?? "None"}</SessionFact>
-        </dl>
+        <SessionInfo
+          session={s}
+          vaultName={vault.data?.name}
+          names={names}
+          canChange={canChange}
+          onChanged={session.reload}
+          onEditLabels={() => setEditingLabels(true)}
+        />
       )}
-      {s && (
-        <Tabs value={tab} onValueChange={(v) => (window.location.hash = `#/sessions/${sessionId}/${sessionTab(v)}`)}>
-          <TabsList>
-            {TABS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value}>
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      )}
-      {s && tab === "requests" && <Requests session={s} live={active} />}
-      {s && tab === "history" && <SessionHistory session={s} names={names} />}
+      {s && <SessionLogs session={s} names={names} live={active} />}
       {!s && session.loading && <Loading />}
-      <FormDialog open={editing} onOpenChange={setEditing} title="Edit labels">
-        {s && editing && (
+      <FormDialog open={editingLabels} onOpenChange={setEditingLabels} title="Edit labels">
+        {s && editingLabels && (
           <LabelsForm
             session={s}
-            onCancel={() => setEditing(false)}
+            onCancel={() => setEditingLabels(false)}
             onSaved={() => {
-              setEditing(false);
+              setEditingLabels(false);
               session.reload();
             }}
           />
@@ -198,122 +170,277 @@ export function SessionPage({ sessionId, tab, user }: { sessionId: string; tab: 
   );
 }
 
-function SessionFact({ label, children }: { label: string; children: ReactNode }) {
+// ----- info -------------------------------------------------------------------
+
+function InfoItem({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
-    <div className="min-w-0 space-y-1">
+    <div className={cn("min-w-0 space-y-1", className)}>
       <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="truncate text-sm">{children}</dd>
+      <dd className="text-sm [overflow-wrap:anywhere]">{children}</dd>
     </div>
   );
 }
 
-function Requests({ session, live }: { session: ProxySession; live: boolean }) {
-  const [page, setPage] = useState(1);
-  const logs = useLoad(
-    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&action_prefix=proxy.&page=${page}&page_size=50`),
-    [session.id, page],
-  );
-  usePolling(logs.reload, REFRESH_MS, live && page === 1);
-  const rows = useMemo(() => logRows(logs.data?.items ?? []), [logs.data]);
+/** When the session stopped working, or will. */
+function endFact(s: ProxySession): { label: string; at: string } {
+  if (s.revoked_at) return { label: "Revoked", at: s.revoked_at };
+  if (new Date(s.expires_at) <= new Date()) return { label: "Expired", at: s.expires_at };
+  return { label: "Expires", at: s.expires_at };
+}
+
+function SessionInfo({
+  session: s,
+  vaultName,
+  names,
+  canChange,
+  onChanged,
+  onEditLabels,
+}: {
+  session: ProxySession;
+  vaultName?: string;
+  names: ActorNames;
+  canChange: boolean;
+  onChanged: () => void;
+  onEditLabels: () => void;
+}) {
+  const end = endFact(s);
+  const others = Object.entries(s.labels).filter(([k]) => k !== "name");
   return (
     <Panel>
-      <ErrorBanner error={logs.error} />
-      {logs.loading && !logs.data ? (
-        <Loading rows={3} />
-      ) : rows.length === 0 ? (
-        <Empty
-          icon={ScrollText}
-          title="No requests yet"
-          description={
-            live
-              ? "Requests made with this session appear here a few seconds after a proxy handles them."
-              : "This session made no requests."
-          }
-        />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className={fromWidth.xl}>Time</TableHead>
-              <TableHead>Request</TableHead>
-              <TableHead>Result</TableHead>
-              <TableHead className={cn(fromWidth.lg, "text-right")}>Took</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r) => (
-              <TableRow key={r.key}>
-                <TableCell className={cn(fromWidth.xl, "text-muted-foreground")}>
-                  <When at={r.at} />
-                </TableCell>
-                <TableCell className="max-w-96">
-                  <Mono className="block truncate">{r.request}</Mono>
-                  <p className="mt-1 text-xs text-muted-foreground @xl:hidden">
-                    <When at={r.at} />
-                  </p>
-                  {r.mcp && <p className="mt-1 text-xs">MCP {r.mcp}</p>}
-                  {r.reason && <p className="mt-1 text-xs text-muted-foreground">{r.reason}</p>}
-                  {r.substituted && <p className="mt-1 text-xs text-muted-foreground">Filled in {r.substituted}</p>}
-                  {r.bodySkipped && (
-                    <p className="mt-1 text-xs text-muted-foreground">Body not searched: {r.bodySkipped}</p>
-                  )}
-                </TableCell>
-                <TableCell>{outcomeBadge(r)}</TableCell>
-                <TableCell className={cn(fromWidth.lg, "text-right tabular-nums text-muted-foreground")}>
-                  {r.durationMs !== undefined ? `${r.durationMs} ms` : ""}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-      <Pager page={logs.data} onPage={setPage} />
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
+        <InfoItem label="Created by">{actorName(s.created_by, names)}</InfoItem>
+        <InfoItem label="Access bundle">
+          {s.bundle ? (
+            <a href={`#/bundles/${s.bundle.id}`} className="text-primary hover:text-primary/80">
+              {s.bundle.name}
+            </a>
+          ) : (
+            `${s.rule_ids.length} rule${s.rule_ids.length === 1 ? "" : "s"}, chosen one by one`
+          )}
+        </InfoItem>
+        <InfoItem label="Vault">{vaultName ?? <Mono>{s.vault_id.slice(0, 8)}</Mono>}</InfoItem>
+        <InfoItem label="Request limit">{s.request_limit ?? "None"}</InfoItem>
+        <InfoItem label="Created">
+          <Exact at={s.created_at} />
+        </InfoItem>
+        <InfoItem label={end.label}>
+          <Exact at={end.at} />
+          <span className="text-muted-foreground">
+            {" "}
+            (<Relative at={end.at} />)
+          </span>
+        </InfoItem>
+        <InfoItem label="Session ID" className="col-span-2">
+          <span className="flex items-center gap-1">
+            <Mono>{s.id}</Mono>
+            <CopyButton value={s.id} label="Copy session ID" iconOnly />
+          </span>
+        </InfoItem>
+      </dl>
+      <div className="grid gap-4 border-t p-4 md:grid-cols-2">
+        <NameField session={s} canChange={canChange} onChanged={onChanged} />
+        <div className="min-w-0 space-y-1">
+          <div className="text-xs font-medium text-muted-foreground">Labels</div>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            {others.length > 0 ? (
+              <TagList values={others.map(([k, v]) => `${k}=${v}`)} />
+            ) : (
+              <span className="text-muted-foreground">None</span>
+            )}
+            {canChange && (
+              <Button type="button" variant="ghost" size="sm" onClick={onEditLabels}>
+                Edit
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
     </Panel>
   );
 }
 
-function SessionHistory({ session, names }: { session: ProxySession; names: ActorNames }) {
-  const [page, setPage] = useState(1);
-  const events = useLoad(
-    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&action_prefix=session.&page=${page}&page_size=50`),
-    [session.id, page, session.revoked_at],
-  );
+/** The session's name, editable in place. It is the `name` label. */
+function NameField({ session, canChange, onChanged }: { session: ProxySession; canChange: boolean; onChanged: () => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const action = useAction();
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const name = (draft ?? "").trim();
+    const labels = { ...session.labels };
+    if (name) labels.name = name;
+    else delete labels.name;
+    const saved = await action.run(() => patch<ProxySession>(`/sessions/${session.id}`, { labels }));
+    if (saved) {
+      setDraft(null);
+      onChanged();
+    }
+  };
+  if (draft !== null) {
+    return (
+      <form className="min-w-0 space-y-1" onSubmit={save}>
+        <label htmlFor="session-name-edit" className="text-xs font-medium text-muted-foreground">
+          Name
+        </label>
+        <div className="flex items-center gap-1">
+          <Input
+            id="session-name-edit"
+            autoFocus
+            value={draft}
+            maxLength={256}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setDraft(null);
+            }}
+          />
+          <Button type="submit" variant="ghost" size="icon" aria-label="Save name" disabled={action.busy}>
+            <Check />
+          </Button>
+          <Button type="button" variant="ghost" size="icon" aria-label="Cancel" onClick={() => setDraft(null)}>
+            <X />
+          </Button>
+        </div>
+        <ErrorBanner error={action.error} />
+      </form>
+    );
+  }
   return (
-    <Panel>
-      <ErrorBanner error={events.error} />
-      {events.loading && !events.data ? (
-        <Loading rows={3} />
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Time</TableHead>
-              <TableHead>What happened</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {events.data?.items.map((e) => (
-              <TableRow key={e.id}>
-                <TableCell className="w-32 text-muted-foreground">
-                  <When at={e.at} />
-                </TableCell>
-                <TableCell>
-                  <span className="font-medium">{actorLabel(e, names)}</span> {sessionHistoryPhrase(e)}
-                  {e.action === "session.mint" && e.detail.expires_at && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Valid until <Exact at={e.detail.expires_at} />
-                    </p>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-      <Pager page={events.data} onPage={setPage} />
-    </Panel>
+    <div className="min-w-0 space-y-1">
+      <div className="text-xs font-medium text-muted-foreground">Name</div>
+      <div className="flex items-center gap-1 text-sm">
+        <span className={session.labels.name ? undefined : "text-muted-foreground"}>
+          {session.labels.name ?? "None"}
+        </span>
+        {canChange && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            aria-label="Rename session"
+            title="Rename"
+            onClick={() => setDraft(session.labels.name ?? "")}
+          >
+            <Pencil className="size-3.5" />
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
+
+// ----- logs -------------------------------------------------------------------
+
+function SessionLogs({ session, names, live }: { session: ProxySession; names: ActorNames; live: boolean }) {
+  const [page, setPage] = useState(1);
+  const events = useLoad(
+    () => get<Page<AuditEvent>>(`/audit?session_id=${session.id}&page=${page}&page_size=50`),
+    [session.id, page, session.revoked_at, JSON.stringify(session.labels)],
+  );
+  usePolling(events.reload, REFRESH_MS, live && page === 1);
+  const log = useMemo(() => sessionLog(events.data?.items ?? []), [events.data]);
+  const [open, setOpen] = useState<SessionLogEntry | null>(null);
+  return (
+    <Section
+      title="Logs"
+      actions={live ? <span className="text-xs text-muted-foreground">Updates every few seconds</span> : undefined}
+    >
+      <Panel>
+        <ErrorBanner error={events.error} />
+        {events.loading && !events.data ? (
+          <Loading rows={4} />
+        ) : log.length === 0 ? (
+          <Empty
+            icon={ScrollText}
+            title="Nothing logged yet"
+            description="Requests made with this session appear here a few seconds after a proxy handles them."
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className={fromWidth.xl}>Time</TableHead>
+                <TableHead>What happened</TableHead>
+                <TableHead>Result</TableHead>
+                <TableHead className={cn(fromWidth.lg, "text-right")}>Took</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {log.map((entry) => (
+                <LogLine key={entryKey(entry)} entry={entry} names={names} onOpen={() => setOpen(entry)} />
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        <Pager page={events.data} onPage={setPage} />
+      </Panel>
+      <FormDialog
+        open={open !== null}
+        onOpenChange={(o) => {
+          if (!o) setOpen(null);
+        }}
+        wide
+        title={open?.kind === "request" ? open.row.request : "Log entry"}
+      >
+        {open && (
+          <div className="space-y-6">
+            {(open.kind === "request" ? open.row.events : [open.event]).map((e, i) => (
+              <div key={e.id} className={cn(i > 0 && "border-t pt-6")}>
+                <EventDetails event={e} names={names} />
+              </div>
+            ))}
+            <DialogActions>
+              <Button type="button" variant="outline" onClick={() => setOpen(null)}>
+                Close
+              </Button>
+            </DialogActions>
+          </div>
+        )}
+      </FormDialog>
+    </Section>
+  );
+}
+
+function entryKey(entry: SessionLogEntry): string {
+  return entry.kind === "request" ? entry.row.key : entry.event.id;
+}
+
+function LogLine({ entry, names, onOpen }: { entry: SessionLogEntry; names: ActorNames; onOpen: () => void }) {
+  const at = entry.kind === "request" ? entry.row.at : entry.event.at;
+  const time = <When at={at} />;
+  return (
+    <TableRow title="Show everything recorded" {...rowOpener(onOpen)}>
+      <TableCell className={cn(fromWidth.xl, "w-32 text-muted-foreground")}>{time}</TableCell>
+      {entry.kind === "request" ? (
+        <>
+          <TableCell className="max-w-96">
+            <Mono className="inline-block max-w-full truncate align-bottom">{entry.row.request}</Mono>
+            {entry.row.mcp && <p className="mt-1 text-xs">MCP {entry.row.mcp}</p>}
+            {entry.row.reason && <p className="mt-1 text-xs text-muted-foreground">{entry.row.reason}</p>}
+            {entry.row.substituted && (
+              <p className="mt-1 text-xs text-muted-foreground">Filled in {entry.row.substituted}</p>
+            )}
+            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
+          </TableCell>
+          <TableCell>{outcomeBadge(entry.row)}</TableCell>
+          <TableCell className={cn(fromWidth.lg, "text-right tabular-nums text-muted-foreground")}>
+            {entry.row.durationMs !== undefined ? `${entry.row.durationMs} ms` : ""}
+          </TableCell>
+        </>
+      ) : (
+        <>
+          <TableCell>
+            <span className="font-medium">{actorLabel(entry.event, names)}</span> {sessionHistoryPhrase(entry.event)}
+            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
+          </TableCell>
+          <TableCell />
+          <TableCell className={fromWidth.lg} />
+        </>
+      )}
+    </TableRow>
+  );
+}
+
+// ----- labels -----------------------------------------------------------------
 
 function LabelsForm({
   session,

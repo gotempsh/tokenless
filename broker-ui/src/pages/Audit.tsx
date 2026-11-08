@@ -146,7 +146,7 @@ export function Audit({ me }: { me: UserSummary }) {
 }
 
 /** Everything the event recorded, including the raw identifiers the list leaves out. */
-function EventDetails({ event, names, onClose }: { event: AuditEvent; names: ActorNames; onClose: () => void }) {
+export function EventDetails({ event, names, onClose }: { event: AuditEvent; names: ActorNames; onClose?: () => void }) {
   return (
     <div className="space-y-4">
       <p className="text-sm">
@@ -183,11 +183,13 @@ function EventDetails({ event, names, onClose }: { event: AuditEvent; names: Act
           </Fact>
         ))}
       </dl>
-      <DialogActions>
-        <Button type="button" variant="outline" onClick={onClose}>
-          Close
-        </Button>
-      </DialogActions>
+      {onClose && (
+        <DialogActions>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogActions>
+      )}
     </div>
   );
 }

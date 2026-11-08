@@ -26,6 +26,8 @@ export interface LogRow {
   bodySkipped?: string;
   /** The MCP call, e.g. "tools/call search_issues". */
   mcp?: string;
+  /** The audit events behind the row: the decision, then the answer. */
+  events: AuditEvent[];
 }
 
 function mcpCall(e: AuditEvent | undefined): string | undefined {
@@ -34,7 +36,7 @@ function mcpCall(e: AuditEvent | undefined): string | undefined {
   return tool ? `tools/call ${tool}` : e.detail.mcp_method;
 }
 
-const BLOCKED = new Set(["proxy.deny", "proxy.connect_denied", "proxy.egress_blocked"]);
+const BLOCKED = new Set(["proxy.deny", "proxy.connect_denied", "proxy.egress_blocked", "proxy.gateway_denied"]);
 
 /** `GET api.example.com/v1/items`: the port only when it isn't 443. */
 function request(e: AuditEvent): string {
@@ -72,6 +74,7 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         durationMs: number(e.detail.duration_ms),
         request: request(e),
         reason: e.detail.reason,
+        events: [e],
       });
     } else if (e.action === "proxy.inject") {
       const response = id ? responses.get(id) : undefined;
@@ -86,12 +89,42 @@ export function logRows(events: AuditEvent[]): LogRow[] {
         substituted: e.detail.substituted,
         bodySkipped: e.detail.body_not_substituted,
         mcp: mcpCall(e),
+        events: response ? [e, response] : [e],
       });
     } else if (BLOCKED.has(e.action)) {
-      rows.push({ key: e.id, at: e.at, outcome: "blocked", request: request(e), reason: e.detail.reason, mcp: mcpCall(e) });
+      rows.push({
+        key: e.id,
+        at: e.at,
+        outcome: "blocked",
+        request: request(e),
+        reason: e.detail.reason,
+        mcp: mcpCall(e),
+        events: [e],
+      });
     } else if (e.action === "proxy.tunnel") {
-      rows.push({ key: e.id, at: e.at, outcome: "passthrough", request: request(e), reason: e.detail.reason });
+      rows.push({ key: e.id, at: e.at, outcome: "passthrough", request: request(e), reason: e.detail.reason, events: [e] });
     }
   }
   return rows;
+}
+
+/** One line of a session's log: a request it made, or something done to it. */
+export type SessionLogEntry = { kind: "request"; row: LogRow } | { kind: "event"; event: AuditEvent };
+
+/**
+ * Everything recorded about a session, in the order given (newest first):
+ * its requests, each joined with the API's answer, and every other event
+ * such as being created, relabelled or revoked.
+ */
+export function sessionLog(events: AuditEvent[]): SessionLogEntry[] {
+  const rows = logRows(events);
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const shown = new Set(rows.flatMap((r) => r.events.map((e) => e.id)));
+  const out: SessionLogEntry[] = [];
+  for (const e of events) {
+    const row = byKey.get(e.id);
+    if (row) out.push({ kind: "request", row });
+    else if (!shown.has(e.id)) out.push({ kind: "event", event: e });
+  }
+  return out;
 }

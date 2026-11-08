@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AuditEvent } from "../api";
-import { logRows } from "./sessionLogs";
+import { logRows, sessionLog } from "./sessionLogs";
 
 function event(id: string, action: string, outcome: string, detail: Record<string, string>): AuditEvent {
   return { id, at: "2026-01-01T00:00:00Z", actor: "node:n", action, outcome, detail };
@@ -52,5 +52,28 @@ describe("logRows", () => {
   test("an injected request still waiting for its answer has no status", () => {
     const rows = logRows([event("1", "proxy.inject", "success", { ...request, request_id: "r2" })]);
     expect(rows[0]).toMatchObject({ outcome: "brokered", status: undefined });
+  });
+});
+
+describe("sessionLog", () => {
+  test("interleaves requests with what was done to the session, each event once", () => {
+    const log = sessionLog([
+      event("4", "session.revoke", "success", {}),
+      event("3", "proxy.response", "success", { ...request, request_id: "r1", status: "200" }),
+      event("2", "proxy.inject", "success", { ...request, request_id: "r1" }),
+      event("1", "session.mint", "success", { bundle: "code-review" }),
+    ]);
+    expect(log.map((l) => (l.kind === "request" ? `request ${l.row.status}` : l.event.action))).toEqual([
+      "session.revoke",
+      "request 200",
+      "session.mint",
+    ]);
+    const req = log[1];
+    expect(req?.kind === "request" ? req.row.events.map((e) => e.id) : []).toEqual(["2", "3"]);
+  });
+
+  test("shows a refused MCP call as blocked", () => {
+    const log = sessionLog([event("1", "proxy.gateway_denied", "denied", { ...request, mcp_tool: "drop_table" })]);
+    expect(log[0]).toMatchObject({ kind: "request", row: { outcome: "blocked", mcp: "tools/call drop_table" } });
   });
 });

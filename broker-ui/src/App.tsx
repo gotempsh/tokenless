@@ -58,7 +58,7 @@ import { Nodes } from "./pages/Nodes";
 import { ProxyDetail } from "./pages/ProxyDetail";
 import { ServiceDetail } from "./pages/ServiceDetail";
 import { Sessions } from "./pages/Sessions";
-import { SessionPage, sessionTab } from "./pages/SessionPage";
+import { SessionPage } from "./pages/SessionPage";
 import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
 import { Templates } from "./pages/Templates";
@@ -216,7 +216,7 @@ export function App() {
       {section === "bundles" && !id && <Bundles user={user} />}
       {section === "bundles" && id && <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />}
       {section === "sessions" && !id && <Sessions me={user} />}
-      {section === "sessions" && id && <SessionPage sessionId={id} tab={sessionTab(tab)} user={user} />}
+      {section === "sessions" && id && <SessionPage sessionId={id} user={user} />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}
       {section === "templates" && <Templates user={user} />}
       {section === "people" && <People me={user} />}
