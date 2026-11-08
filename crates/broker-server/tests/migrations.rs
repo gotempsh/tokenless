@@ -342,6 +342,14 @@ async fn upgrading_indexes_the_audit_log_by_service() {
             format!("vault:{vault}"),
             "{}".to_string(),
         ),
+        // A rule created before the detail key was renamed.
+        (
+            "e5",
+            "2026-01-01T00:00:05.000000Z",
+            "rule.create",
+            "rule:r1".to_string(),
+            format!(r#"{{"credential":"{credential}"}}"#),
+        ),
     ] {
         sqlx::query(
             "INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) \
@@ -371,10 +379,10 @@ async fn upgrading_indexes_the_audit_log_by_service() {
     let actions: Vec<_> = found.items.iter().map(|e| e.action.as_str()).collect();
     assert_eq!(
         actions,
-        ["proxy.inject", "credential.create"],
+        ["rule.create", "proxy.inject", "credential.create"],
         "events recorded before the upgrade are found, and only this service's"
     );
-    assert_eq!(found.total, 2);
+    assert_eq!(found.total, 3);
 
     // The service index, even with the vault the page passes along: not a
     // walk through every event in the vault.

@@ -101,17 +101,55 @@ impl AuditEvent {
 
     /// The service (credential) this event is about: the one it targets
     /// (created, secret replaced, deleted), else the one its `credential_id`
-    /// detail names (a brokered request, a rule over it). The SQLite store
+    /// detail names (a brokered request, a rule over it). Older `rule.create`
+    /// events named it `credential`. The SQLite store
     /// indexes the same rule as `audit_events.credential_ref` (migration
     /// 0012).
     pub fn credential_ref(&self) -> Option<&str> {
-        match self
+        if let Some(id) = self
             .target
             .as_deref()
             .and_then(|t| t.strip_prefix("credential:"))
         {
-            Some(id) => Some(id),
-            None => self.detail.get("credential_id").map(String::as_str),
+            return Some(id);
         }
+        let named = self.detail.get("credential_id");
+        let legacy = || {
+            (self.action == "rule.create")
+                .then(|| self.detail.get("credential"))
+                .flatten()
+        };
+        named.or_else(legacy).map(String::as_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(action: &str) -> AuditEvent {
+        AuditEvent::new("user:test", action, AuditOutcome::Success)
+    }
+
+    #[test]
+    fn credential_ref_reads_the_target_then_the_detail() {
+        let targeted = event("credential.rotate").target("credential:c1");
+        assert_eq!(targeted.credential_ref(), Some("c1"));
+        let request = event("proxy.inject")
+            .target("rule:r1")
+            .detail("credential_id", "c2");
+        assert_eq!(request.credential_ref(), Some("c2"));
+        assert_eq!(event("vault.create").credential_ref(), None);
+    }
+
+    #[test]
+    fn credential_ref_reads_rule_creations_recorded_before_the_rename() {
+        let old = event("rule.create")
+            .target("rule:r1")
+            .detail("credential", "c3");
+        assert_eq!(old.credential_ref(), Some("c3"));
+        // Only rule.create ever used that key.
+        let other = event("bundle.create").detail("credential", "c3");
+        assert_eq!(other.credential_ref(), None);
     }
 }
