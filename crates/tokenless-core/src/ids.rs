@@ -67,6 +67,11 @@ id_type!(ApiKeyId, "api_key");
 id_type!(InviteId, "invite");
 id_type!(VariableId, "variable");
 id_type!(AuditEventId, "audit_event");
+id_type!(
+    /// An OpenID Connect provider people sign in with.
+    OidcProviderId,
+    "oidc_provider"
+);
 
 #[cfg(test)]
 mod tests {

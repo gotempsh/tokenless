@@ -25,6 +25,7 @@ use tokenless_control::service::policy::{
     CreateCredential, CreateRule, RotateCredential, UpdateRule,
 };
 use tokenless_control::service::sessions::MintSession;
+use tokenless_control::service::sso::SsoSignIn;
 use tokenless_control::service::users::{
     AcceptInviteRequest, CreateInvite, InviteInfo, InviteIssued, UpdateUser,
 };
@@ -74,6 +75,10 @@ pub struct SessionInfo {
     csrf_token: String,
     expires_at: DateTime<Utc>,
     step_up_at: Option<DateTime<Utc>>,
+    /// The provider the person signs in and steps up with, when they use
+    /// single sign-on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sso: Option<SsoSignIn>,
 }
 
 pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResult<Response> {
@@ -85,6 +90,7 @@ pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResu
         csrf_token: outcome.csrf_token.clone(),
         expires_at: outcome.expires_at,
         step_up_at: Some(Utc::now()),
+        sso: None,
     };
     let mut response = Json(body).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -116,6 +122,11 @@ pub async fn me(State(s): St, authed: Authed) -> ApiResult<Json<SessionInfo>> {
         csrf_token: s.control.auth.csrf_token(&session.token_hash),
         expires_at: session.expires_at,
         step_up_at: session.caller.step_up_at,
+        sso: s
+            .control
+            .sso
+            .sign_in_of(session.user.sso_provider_id.as_ref())
+            .await,
     }))
 }
 

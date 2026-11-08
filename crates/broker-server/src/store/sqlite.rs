@@ -21,8 +21,8 @@ use sqlx::sqlite::{
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+    PageRequest, ProxySession, Rule, SessionBundle, Settings, SsoIdentity, StoredTemplate,
+    TemplateSource, TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -32,13 +32,15 @@ use tokenless_control::StoreError;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Role;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
+
+mod sso;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -1551,6 +1553,13 @@ fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
         role: role(row)?,
         created_at: get_ts(row, "created_at")?,
         disabled_at: get_opt_ts(row, "disabled_at")?,
+        sso: match get_opt_id::<OidcProviderId>(row, "sso_provider_id")? {
+            Some(provider_id) => Some(SsoIdentity {
+                provider_id,
+                subject: get(row, "sso_subject")?,
+            }),
+            None => None,
+        },
     })
 }
 
@@ -1574,7 +1583,7 @@ fn invite_from_row(row: &SqliteRow) -> Result<Invite, StoreError> {
 }
 
 async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at, disabled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at, disabled_at, sso_provider_id, sso_subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(u.id.to_string())
         .bind(&u.username)
         .bind(&u.password_hash)
@@ -1583,6 +1592,8 @@ async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Resu
         .bind(u.role.as_str())
         .bind(ts(&u.created_at))
         .bind(opt_ts(&u.disabled_at))
+        .bind(u.sso.as_ref().map(|s| s.provider_id.to_string()))
+        .bind(u.sso.as_ref().map(|s| s.subject.clone()))
         .execute(&mut **tx)
         .await
         .map_err(db("insert user", "user"))?;
@@ -2274,6 +2285,20 @@ impl NodeStore for SqliteStore {
                 ciphertext: get(&row, "totp_secret_enc")?,
             });
         }
+        for row in sqlx::query(
+            "SELECT id, client_secret_enc FROM oidc_providers WHERE client_secret_enc IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db("list identity provider ciphertexts", "oidc_provider"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::OidcClientSecret {
+                    id: get_id(&row, "id")?,
+                },
+                ciphertext: get(&row, "client_secret_enc")?,
+            });
+        }
         for row in sqlx::query("SELECT name, value FROM key_material")
             .fetch_all(&self.pool)
             .await
@@ -2313,6 +2338,10 @@ impl NodeStore for SqliteStore {
                 CiphertextOwner::KeyMaterial { name } => (
                     "UPDATE key_material SET value = ? WHERE name = ? AND value = ?",
                     name.clone(),
+                ),
+                CiphertextOwner::OidcClientSecret { id } => (
+                    "UPDATE oidc_providers SET client_secret_enc = ? WHERE id = ? AND client_secret_enc = ?",
+                    id.to_string(),
                 ),
             };
             let result = sqlx::query(sql)

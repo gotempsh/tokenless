@@ -10,6 +10,7 @@ pub mod policy;
 pub mod refresh;
 pub(crate) mod render;
 pub mod sessions;
+pub mod sso;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod users;
@@ -28,7 +29,9 @@ use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
-use crate::store::{AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore};
+use crate::store::{
+    AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore, SsoStore,
+};
 
 #[derive(Debug, Clone)]
 pub struct ControlConfig {
@@ -86,6 +89,7 @@ pub struct Stores {
     pub policy: Arc<dyn PolicyStore>,
     pub audit: Arc<dyn AuditSink>,
     pub identity: Arc<dyn IdentityStore>,
+    pub sso: Arc<dyn SsoStore>,
     pub nodes: Arc<dyn NodeStore>,
 }
 
@@ -288,6 +292,7 @@ impl ControlServices {
 /// Everything the HTTP layer needs, wired once at startup.
 pub struct ControlPlane {
     pub auth: auth::AuthService,
+    pub sso: sso::SsoService,
     pub policy: policy::PolicyService,
     pub sessions: sessions::SessionService,
     pub bundles: bundles::BundleService,
@@ -305,13 +310,30 @@ impl ControlPlane {
         authorizer: Arc<dyn Authorizer>,
         cipher: Arc<dyn SecretCipher>,
         prober: Arc<dyn CredentialProber>,
+        oidc: Arc<dyn sso::oidc::OidcTransport>,
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
         let guard = Guard::new(authorizer, config.step_up_window_secs);
-        let users = users::UserService::new(stores.identity.clone(), cipher.clone(), guard.clone());
+        let users = users::UserService::new(
+            stores.identity.clone(),
+            stores.sso.clone(),
+            cipher.clone(),
+            guard.clone(),
+        );
+        let sso = sso::SsoService::new(
+            stores.identity.clone(),
+            stores.sso.clone(),
+            cipher.clone(),
+            keys.clone(),
+            guard.clone(),
+            AuditRecorder::new(stores.audit.clone()),
+            config.clone(),
+            oidc,
+        );
         let auth = auth::AuthService::new(
             stores.identity.clone(),
+            stores.sso.clone(),
             cipher.clone(),
             keys.clone(),
             guard.clone(),
@@ -334,6 +356,7 @@ impl ControlPlane {
         .await?;
         Ok(Self {
             auth,
+            sso,
             policy: services.policy,
             sessions: services.sessions,
             bundles: services.bundles,
@@ -386,6 +409,7 @@ mod tests {
             policy: store.clone(),
             audit: store.clone(),
             identity: store.clone(),
+            sso: store.clone(),
             nodes: store.clone(),
         }
     }
@@ -402,6 +426,7 @@ mod tests {
             Arc::new(RbacAuthorizer),
             cipher,
             prober,
+            Arc::new(sso::oidc::NoTransport),
             ControlConfig::default(),
         )
         .await
@@ -497,6 +522,7 @@ mod tests {
             Arc::new(RbacAuthorizer),
             Arc::new(AesGcmCipher::new(&root).unwrap()),
             Arc::new(crate::probe::DisabledProber),
+            Arc::new(sso::oidc::NoTransport),
             ControlConfig::default(),
         )
         .await
@@ -545,6 +571,7 @@ mod tests {
             Arc::new(RbacAuthorizer),
             envelope.clone(),
             Arc::new(crate::probe::DisabledProber),
+            Arc::new(sso::oidc::NoTransport),
             ControlConfig::default(),
         )
         .await

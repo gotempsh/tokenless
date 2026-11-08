@@ -1902,6 +1902,7 @@ fn person(username: &str, role: Role, created_offset: i64) -> User {
         role,
         created_at: at(created_offset),
         disabled_at: None,
+        sso: None,
     }
 }
 
@@ -2209,6 +2210,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         role: Role::Admin,
         created_at: at(0),
         disabled_at: None,
+        sso: None,
     };
     store
         .insert_user(user.clone(), &[])
@@ -2652,3 +2654,8 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
     );
     Ok(())
 }
+
+// After `ensure!`, which it uses.
+mod sso;
+
+pub use sso::sso_store_suite;

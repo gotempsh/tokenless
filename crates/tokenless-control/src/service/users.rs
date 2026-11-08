@@ -21,8 +21,8 @@ use super::auth::{build_user, check_new_account, validate_username, TotpEnrollme
 use super::{Caller, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::{ControlError, StoreError};
-use crate::model::{Invite, Page, PageRequest};
-use crate::store::IdentityStore;
+use crate::model::{Invite, Page, PageRequest, PasswordSignIn};
+use crate::store::{IdentityStore, SsoStore};
 
 pub const DEFAULT_INVITE_HOURS: u32 = 72;
 pub const MAX_INVITE_HOURS: u32 = 7 * 24;
@@ -81,6 +81,7 @@ fn invalid_invite() -> ControlError {
 
 pub struct UserService {
     identity: Arc<dyn IdentityStore>,
+    sso: Arc<dyn SsoStore>,
     cipher: Arc<dyn SecretCipher>,
     guard: Guard,
 }
@@ -88,10 +89,12 @@ pub struct UserService {
 impl UserService {
     pub fn new(
         identity: Arc<dyn IdentityStore>,
+        sso: Arc<dyn SsoStore>,
         cipher: Arc<dyn SecretCipher>,
         guard: Guard,
     ) -> Self {
         Self {
+            sso,
             identity,
             cipher,
             guard,
@@ -133,6 +136,12 @@ impl UserService {
             .await?
             .ok_or_else(|| ControlError::not_found("user", id))?;
         let role = req.role.unwrap_or(user.role);
+        if role != user.role && user.sso.is_some() {
+            return Err(ControlError::validation(format!(
+                "'{}' gets its role from its groups at its single sign-on provider at every sign-in; change the provider's group mappings instead",
+                user.username
+            )));
+        }
         let disabled_at = match req.disabled {
             Some(true) => user.disabled_at.or_else(|| Some(Utc::now())),
             Some(false) => None,
@@ -194,6 +203,14 @@ impl UserService {
         if hours == 0 || hours > MAX_INVITE_HOURS {
             return Err(ControlError::validation(format!(
                 "expires_in_hours must be between 1 and {MAX_INVITE_HOURS}"
+            )));
+        }
+        // The account it creates signs in with a password.
+        if role != Role::Admin
+            && self.sso.get_sign_in_settings().await?.password_sign_in == PasswordSignIn::AdminsOnly
+        {
+            return Err(ControlError::validation(format!(
+                "password sign-in is limited to admins, so a {role} invited here could not sign in; people sign in with single sign-on and get their role from their groups"
             )));
         }
         let plaintext = token::new_token(token::INVITE_PREFIX);

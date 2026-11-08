@@ -86,7 +86,8 @@ fn legacy_binding(owner: &CiphertextOwner) -> Option<(KeyScope, Vec<u8>)> {
         CiphertextOwner::KeyMaterial { name } if !name.starts_with(PREFIX) => {
             Some((KeyScope::Instance, crate::keys::aad(name)))
         }
-        CiphertextOwner::KeyMaterial { .. } => None,
+        // Written only under the hierarchy, never by an older version.
+        CiphertextOwner::KeyMaterial { .. } | CiphertextOwner::OidcClientSecret { .. } => None,
     }
 }
 

@@ -5,9 +5,9 @@
 //!
 //! `CredentialStore`, `PolicyStore`, `AuditSink` and `Authorizer` are the
 //! four traits a host platform supplies to run the broker natively.
-//! `IdentityStore` and `NodeStore` back the standalone login and node
-//! enrolment flows. `tokenless-conformance` holds the behaviour every
-//! implementation must exhibit.
+//! `IdentityStore`, `SsoStore` and `NodeStore` back the standalone login,
+//! single sign-on and node enrolment flows. `tokenless-conformance` holds
+//! the behaviour every implementation must exhibit.
 
 use std::collections::BTreeMap;
 
@@ -16,17 +16,17 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
-    VaultDeletion,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
+    OidcRequest, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate,
+    UiSession, User, Variable, Vault, VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -35,6 +35,7 @@ pub enum CiphertextOwner {
     Credential { id: CredentialId, vault_id: VaultId },
     Variable { id: VariableId },
     UserTotp { id: UserId },
+    OidcClientSecret { id: OidcProviderId },
     KeyMaterial { name: String },
 }
 
@@ -491,6 +492,75 @@ pub trait IdentityStore: Send + Sync {
     async fn touch_api_key(&self, id: &ApiKeyId, at: DateTime<Utc>) -> Result<(), StoreError>;
 }
 
+/// Single sign-on (standalone mode): OpenID Connect providers, sign-ins in
+/// progress with them, and the sign-in settings. A person who signs in
+/// with a provider is a [`User`] whose `sso` names it; [`IdentityStore::insert_user`]
+/// must refuse (`Conflict`) a second user with the same provider and subject.
+#[async_trait]
+pub trait SsoStore: Send + Sync {
+    /// `Conflict` if the slug is taken.
+    async fn insert_oidc_provider(
+        &self,
+        provider: OidcProvider,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_oidc_provider(
+        &self,
+        id: &OidcProviderId,
+    ) -> Result<Option<OidcProvider>, StoreError>;
+    async fn get_oidc_provider_by_slug(
+        &self,
+        slug: &str,
+    ) -> Result<Option<OidcProvider>, StoreError>;
+    /// Every provider, oldest first. There are at most
+    /// [`MAX_OIDC_PROVIDERS`](crate::model::MAX_OIDC_PROVIDERS).
+    async fn list_oidc_providers(&self) -> Result<Vec<OidcProvider>, StoreError>;
+    /// Replaces everything but the id and creation time. `NotFound` if
+    /// missing, `Conflict` if the new slug is taken.
+    async fn update_oidc_provider(
+        &self,
+        provider: OidcProvider,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// `NotFound` if missing; `Conflict`, deleting nothing, while any user
+    /// signs in with it.
+    async fn delete_oidc_provider(
+        &self,
+        id: &OidcProviderId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_user_by_sso(
+        &self,
+        provider_id: &OidcProviderId,
+        subject: &str,
+    ) -> Result<Option<User>, StoreError>;
+
+    /// Stores a sign-in in progress unless `max_pending` unexpired ones
+    /// (at `request.created_at`) exist already; false, storing nothing,
+    /// when they do. `Conflict` if the state hash exists.
+    async fn insert_oidc_request(
+        &self,
+        request: OidcRequest,
+        max_pending: u64,
+    ) -> Result<bool, StoreError>;
+    /// Removes the request with this state hash and returns it if it had
+    /// not expired at `now`. A second call for it finds nothing.
+    async fn take_oidc_request(
+        &self,
+        state_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<OidcRequest>, StoreError>;
+    async fn delete_expired_oidc_requests(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+
+    /// The defaults until first written.
+    async fn get_sign_in_settings(&self) -> Result<SignInSettings, StoreError>;
+    async fn put_sign_in_settings(
+        &self,
+        settings: SignInSettings,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+}
+
 /// Data plane nodes, join tokens, key material and the snapshot counter.
 #[async_trait]
 pub trait NodeStore: Send + Sync {
@@ -543,7 +613,8 @@ pub trait NodeStore: Send + Sync {
     ) -> Result<(), StoreError>;
 
     /// Every encrypted value held: credential secrets, variable values,
-    /// authenticator secrets and key material.
+    /// authenticator secrets, identity provider client secrets and key
+    /// material.
     async fn list_ciphertexts(&self) -> Result<Vec<StoredCiphertext>, StoreError>;
 
     /// Replaces each `(old, new)` pair in one transaction, only where the

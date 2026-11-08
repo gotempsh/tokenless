@@ -79,6 +79,9 @@ pub enum Action {
     VariableRead,
     /// Create, replace and delete variables.
     VariableManage,
+    /// Add, change and remove single sign-on providers and the sign-in
+    /// settings.
+    IdentityProviderManage,
 }
 
 impl Action {
@@ -95,6 +98,7 @@ impl Action {
                 | Action::NodeManage
                 | Action::UserManage
                 | Action::VariableManage
+                | Action::IdentityProviderManage
         )
     }
 
@@ -113,6 +117,7 @@ impl Action {
                 | Action::UserManage
                 | Action::VariableRead
                 | Action::VariableManage
+                | Action::IdentityProviderManage
         )
     }
 }

@@ -37,6 +37,8 @@ export interface UserSummary {
   created_at: string;
   disabled_at: string | null;
   totp_enrolled: boolean;
+  /** Set for people who sign in with an identity provider. */
+  sso_provider_id?: string | null;
 }
 
 export interface Invite {
@@ -60,6 +62,68 @@ export interface SessionInfo {
   csrf_token: string;
   expires_at: string;
   step_up_at: string | null;
+  /** The identity provider this person signs in with, if any. */
+  sso?: SsoSignIn;
+}
+
+export type PasswordSignIn = "everyone" | "admins_only";
+
+export interface SignInSettings {
+  password_sign_in: PasswordSignIn;
+}
+
+export interface SignInProvider {
+  slug: string;
+  name: string;
+}
+
+export interface SignInOptions {
+  providers: SignInProvider[];
+  password_sign_in: PasswordSignIn;
+}
+
+export interface SsoSignIn {
+  provider_id: string;
+  slug: string;
+  name: string;
+}
+
+export interface RoleMapping {
+  group: string;
+  role: Role;
+}
+
+export interface OidcProvider {
+  id: string;
+  slug: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  has_client_secret: boolean;
+  redirect_uri: string;
+  scopes: string[];
+  groups_claim: string;
+  username_claim: string;
+  role_mappings: RoleMapping[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A provider to create or replace. The client secret is write-only. */
+export interface OidcProviderInput {
+  slug: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret?: string;
+  clear_client_secret?: boolean;
+  redirect_uri: string;
+  scopes: string[];
+  groups_claim: string;
+  username_claim: string;
+  role_mappings: RoleMapping[];
+  enabled: boolean;
 }
 
 export interface Vault {

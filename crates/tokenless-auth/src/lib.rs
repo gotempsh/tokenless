@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Authentication primitives: argon2id password hashing, TOTP, random
-//! bearer tokens stored only as hashes, CSRF tokens and cookie formatting.
+//! bearer tokens stored only as hashes, CSRF tokens, cookie formatting and
+//! signed-JWT verification.
 //! No storage and no I/O; the control plane composes these.
 
 pub mod cookie;
 pub mod csrf;
 pub mod error;
+pub mod jwt;
 pub mod password;
 pub mod token;
 pub mod totp;

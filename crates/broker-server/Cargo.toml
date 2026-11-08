@@ -50,10 +50,12 @@ tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+tokenless-auth = { workspace = true, features = ["test-signing"] }
 tokenless-conformance.workspace = true
 rcgen.workspace = true
 totp-rs.workspace = true

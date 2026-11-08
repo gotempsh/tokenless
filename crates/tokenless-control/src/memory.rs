@@ -13,18 +13,20 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::Role;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
+mod sso;
+
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, Settings, StoredTemplate, UiSession, User, Variable, Vault,
-    VaultDeletion,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
+    OidcRequest, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate,
+    UiSession, User, Variable, Vault, VaultDeletion,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -50,6 +52,9 @@ struct Inner {
     nodes: HashMap<NodeId, Node>,
     key_material: HashMap<String, Vec<u8>>,
     snapshot_version: u64,
+    oidc_providers: HashMap<OidcProviderId, OidcProvider>,
+    oidc_requests: HashMap<String, OidcRequest>,
+    sign_in_settings: Option<SignInSettings>,
 }
 
 #[derive(Default)]
@@ -854,6 +859,17 @@ impl IdentityStore for MemoryStore {
                 detail: format!("username '{}' exists", user.username),
             });
         }
+        if let Some(sso) = &user.sso {
+            if inner.users.values().any(|u| u.sso.as_ref() == Some(sso)) {
+                return Err(StoreError::Conflict {
+                    entity: "user",
+                    detail: format!(
+                        "a user already signs in as subject '{}' of provider {}",
+                        sso.subject, sso.provider_id
+                    ),
+                });
+            }
+        }
         inner.users.insert(user.id, user);
         inner.audit.extend_from_slice(audit);
         Ok(())
@@ -1319,6 +1335,14 @@ impl NodeStore for MemoryStore {
                 ciphertext: value.clone(),
             });
         }
+        for provider in inner.oidc_providers.values() {
+            if let Some(secret) = &provider.client_secret_enc {
+                out.push(StoredCiphertext {
+                    owner: CiphertextOwner::OidcClientSecret { id: provider.id },
+                    ciphertext: secret.clone(),
+                });
+            }
+        }
         Ok(out)
     }
 
@@ -1342,6 +1366,10 @@ impl NodeStore for MemoryStore {
                     .get_mut(id)
                     .and_then(|user| user.totp_secret_enc.as_mut()),
                 CiphertextOwner::KeyMaterial { name } => inner.key_material.get_mut(name),
+                CiphertextOwner::OidcClientSecret { id } => inner
+                    .oidc_providers
+                    .get_mut(id)
+                    .and_then(|p| p.client_secret_enc.as_mut()),
             };
             if let Some(slot) = slot {
                 if *slot == old.ciphertext {

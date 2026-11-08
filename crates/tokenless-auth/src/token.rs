@@ -32,6 +32,12 @@ pub fn new_token(prefix: &str) -> String {
     format!("{prefix}_{}", random_part(32))
 }
 
+/// 256 random bits as base64url, without a prefix: an OAuth `state`,
+/// `nonce` or PKCE verifier.
+pub fn random_value() -> String {
+    random_part(32)
+}
+
 pub fn hash_token(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }

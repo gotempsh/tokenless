@@ -3,7 +3,7 @@
 
 import { useState, type FormEvent } from "react";
 import { CheckCircle2 } from "lucide-react";
-import { post, type UserSummary } from "../api";
+import { post, type SsoSignIn, type UserSummary } from "../api";
 import { useAction } from "../hooks";
 import { ErrorBanner, Field, Status } from "../components/common";
 import { SettingsSection } from "../components/layout";
@@ -13,8 +13,23 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { CodeField, EnrollmentBox, type TotpEnrollment } from "./Auth";
 
-/** The signed-in person's own sign-in: password and authenticator app. */
-export function Account({ user, onChanged }: { user: UserSummary; onChanged: () => void }) {
+/**
+ * The signed-in person's own sign-in: password and authenticator app, or
+ * the identity provider that handles both for them.
+ */
+export function Account({ user, sso, onChanged }: { user: UserSummary; sso?: SsoSignIn; onChanged: () => void }) {
+  if (sso)
+    return (
+      <PageContainer width="settings">
+        <PageHeader title="Account" verdict={<span className="text-sm text-muted-foreground">{user.username}</span>} />
+        <SettingsSection title="Sign-in">
+          <p className="text-sm">
+            You sign in with <strong>{sso.name}</strong>. Your password, second factor and groups are managed there; your{" "}
+            <strong>{user.role}</strong> role follows your groups at each sign-in.
+          </p>
+        </SettingsSection>
+      </PageContainer>
+    );
   return (
     <PageContainer width="settings">
       <PageHeader title="Account" verdict={<span className="text-sm text-muted-foreground">{user.username}</span>} />

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokenless_auth::{cookie, csrf, password, token, totp};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Principal, PrincipalKind, Role};
-use tokenless_core::ids::{ApiKeyId, UserId, VaultId};
+use tokenless_core::ids::{ApiKeyId, OidcProviderId, UserId, VaultId};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
@@ -22,8 +22,8 @@ use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{ApiKey, Page, PageRequest, UiSession, User};
-use crate::store::IdentityStore;
+use crate::model::{ApiKey, Page, PageRequest, PasswordSignIn, UiSession, User};
+use crate::store::{IdentityStore, SsoStore};
 
 const MAX_FAILED_LOGINS: u32 = 5;
 const LOGIN_WINDOW: StdDuration = StdDuration::from_secs(300);
@@ -40,6 +40,9 @@ pub struct UserSummary {
     pub disabled_at: Option<DateTime<Utc>>,
     /// Whether the person signs in with an authenticator code as well.
     pub totp_enrolled: bool,
+    /// The provider a single sign-on account signs in with; `None` for a
+    /// password account.
+    pub sso_provider_id: Option<OidcProviderId>,
 }
 
 impl From<&User> for UserSummary {
@@ -51,6 +54,7 @@ impl From<&User> for UserSummary {
             created_at: u.created_at,
             disabled_at: u.disabled_at,
             totp_enrolled: u.totp_secret_enc.is_some(),
+            sso_provider_id: u.sso.as_ref().map(|s| s.provider_id),
         }
     }
 }
@@ -243,6 +247,54 @@ pub(super) async fn build_user(
         role,
         created_at: Utc::now(),
         disabled_at: None,
+        sso: None,
+    })
+}
+
+/// Refuses `what` for a single sign-on account, whose password and second
+/// factor live at its provider.
+fn local_account(user: &User, what: &str) -> Result<(), ControlError> {
+    match &user.sso {
+        None => Ok(()),
+        Some(sso) => Err(ControlError::validation(format!(
+            "cannot {what} for '{}': it signs in with single sign-on (provider {}), which manages its password and second factor",
+            user.username, sso.provider_id
+        ))),
+    }
+}
+
+/// Starts a UI session for `user`, recording `event` with it.
+pub(super) async fn open_ui_session(
+    identity: &dyn IdentityStore,
+    keys: &KeyRing,
+    config: &ControlConfig,
+    user: &User,
+    step_up_at: Option<DateTime<Utc>>,
+    event: AuditEvent,
+) -> Result<LoginOutcome, ControlError> {
+    let now = Utc::now();
+    let max_age = config.ui_session_ttl_secs;
+    let expires_at = now + Duration::seconds(i64::try_from(max_age).unwrap_or(43_200));
+    let plaintext = token::new_token(token::SESSION_PREFIX);
+    let token_hash = token::hash_token(&plaintext);
+    identity
+        .insert_ui_session(
+            UiSession {
+                token_hash: token_hash.clone(),
+                user_id: user.id,
+                created_at: now,
+                expires_at,
+                step_up_at,
+            },
+            &[event],
+        )
+        .await?;
+    Ok(LoginOutcome {
+        token: plaintext,
+        csrf_token: csrf::derive(&keys.csrf_key, &token_hash),
+        user: UserSummary::from(user),
+        expires_at,
+        max_age_secs: max_age,
     })
 }
 
@@ -306,6 +358,7 @@ impl LoginLimiter {
 
 pub struct AuthService {
     identity: Arc<dyn IdentityStore>,
+    sso: Arc<dyn SsoStore>,
     cipher: Arc<dyn SecretCipher>,
     keys: Arc<KeyRing>,
     guard: Guard,
@@ -322,6 +375,7 @@ pub(crate) fn totp_aad(user_id: &UserId) -> Vec<u8> {
 impl AuthService {
     pub fn new(
         identity: Arc<dyn IdentityStore>,
+        sso: Arc<dyn SsoStore>,
         cipher: Arc<dyn SecretCipher>,
         keys: Arc<KeyRing>,
         guard: Guard,
@@ -330,6 +384,7 @@ impl AuthService {
     ) -> Result<Self, ControlError> {
         Ok(Self {
             identity,
+            sso,
             cipher,
             keys,
             guard,
@@ -397,6 +452,7 @@ impl AuthService {
             .get_user_by_username(&username)
             .await?
             .ok_or_else(|| ControlError::not_found("user", &username))?;
+        local_account(&user, "reset the password")?;
         let password = password::generate_password();
         let hash = password::hash_password(&password)?;
         let event = AuditEvent::new("system", "user.password_reset", AuditOutcome::Success)
@@ -450,6 +506,7 @@ impl AuthService {
         req: &ChangePassword,
     ) -> Result<(), ControlError> {
         let user = self.session_user(auth).await?;
+        local_account(&user, "change the password")?;
         self.confirm_password(auth, &user, &req.current_password, "user.password_change")
             .await?;
         password::check_password_policy(&req.new_password)?;
@@ -480,6 +537,7 @@ impl AuthService {
         req: &EnableAuthenticator,
     ) -> Result<UserSummary, ControlError> {
         let user = self.session_user(auth).await?;
+        local_account(&user, "add an authenticator")?;
         if user.totp_secret_enc.is_some() {
             return Err(ControlError::Conflict {
                 message: format!(
@@ -524,6 +582,7 @@ impl AuthService {
         req: &DisableAuthenticator,
     ) -> Result<UserSummary, ControlError> {
         let user = self.session_user(auth).await?;
+        local_account(&user, "remove an authenticator")?;
         if user.totp_secret_enc.is_none() {
             return Err(ControlError::Conflict {
                 message: format!("user '{}' has no authenticator to remove", user.username),
@@ -596,9 +655,13 @@ impl AuthService {
         let username = req.username.trim().to_ascii_lowercase();
         self.limiter.check(&username)?;
         let user = self.identity.get_user_by_username(&username).await?;
+        // A single sign-on account has no password: it fails like a wrong
+        // one, after the same work, so neither reveals which it is.
         let password_ok = match &user {
-            Some(u) => password::verify_password(&u.password_hash, &req.password)?,
-            None => {
+            Some(u) if u.sso.is_none() => {
+                password::verify_password(&u.password_hash, &req.password)?
+            }
+            _ => {
                 let _ = password::verify_password(&self.dummy_hash, &req.password);
                 false
             }
@@ -636,35 +699,57 @@ impl AuthService {
             }
         };
         self.limiter.reset(&username);
-        let now = Utc::now();
-        let max_age = self.config.ui_session_ttl_secs;
-        let expires_at = now + Duration::seconds(i64::try_from(max_age).unwrap_or(43_200));
-        let plaintext = token::new_token(token::SESSION_PREFIX);
-        let token_hash = token::hash_token(&plaintext);
+        if let Err(e) = self.password_sign_in_allowed(&user).await? {
+            self.audit
+                .record(
+                    AuditEvent::new(
+                        format!("user:{}", user.id),
+                        "auth.login",
+                        AuditOutcome::Denied,
+                    )
+                    .detail("username", user.username.clone())
+                    .detail("reason", "password sign-in is limited to admins"),
+                )
+                .await;
+            return Err(e);
+        }
         let event = AuditEvent::new(
             format!("user:{}", user.id),
             "auth.login",
             AuditOutcome::Success,
         )
-        .detail("username", user.username.clone());
-        self.identity
-            .insert_ui_session(
-                UiSession {
-                    token_hash: token_hash.clone(),
-                    user_id: user.id,
-                    created_at: now,
-                    expires_at,
-                    step_up_at: Some(now),
-                },
-                &[event],
-            )
-            .await?;
-        Ok(LoginOutcome {
-            token: plaintext,
-            csrf_token: csrf::derive(&self.keys.csrf_key, &token_hash),
-            user: UserSummary::from(&user),
-            expires_at,
-            max_age_secs: max_age,
+        .detail("username", user.username.clone())
+        .detail("method", "password");
+        open_ui_session(
+            self.identity.as_ref(),
+            &self.keys,
+            &self.config,
+            &user,
+            Some(Utc::now()),
+            event,
+        )
+        .await
+    }
+
+    /// `Err` inside `Ok` when the settings keep this password account out:
+    /// with password sign-in limited to admins, everyone else uses single
+    /// sign-on.
+    async fn password_sign_in_allowed(
+        &self,
+        user: &User,
+    ) -> Result<Result<(), ControlError>, ControlError> {
+        if user.role == Role::Admin {
+            return Ok(Ok(()));
+        }
+        let settings = self.sso.get_sign_in_settings().await?;
+        Ok(match settings.password_sign_in {
+            PasswordSignIn::Everyone => Ok(()),
+            PasswordSignIn::AdminsOnly => Err(ControlError::Forbidden {
+                reason: format!(
+                    "password sign-in is limited to admins here; '{}' signs in with single sign-on",
+                    user.username
+                ),
+            }),
         })
     }
 
@@ -696,6 +781,28 @@ impl AuthService {
         if user.disabled_at.is_some() {
             return Err(unauth("the account has been disabled"));
         }
+        match &user.sso {
+            // Turning a provider off ends its people's sessions.
+            Some(sso) => {
+                let enabled = self
+                    .sso
+                    .get_oidc_provider(&sso.provider_id)
+                    .await?
+                    .is_some_and(|p| p.enabled);
+                if !enabled {
+                    return Err(unauth(
+                        "the account's single sign-on provider has been turned off",
+                    ));
+                }
+            }
+            None => {
+                if let Err(ControlError::Forbidden { reason }) =
+                    self.password_sign_in_allowed(&user).await?
+                {
+                    return Err(ControlError::Unauthenticated { reason });
+                }
+            }
+        }
         Ok(SessionAuth {
             caller: Caller {
                 principal: Principal {
@@ -705,7 +812,8 @@ impl AuthService {
                     vault: None,
                 },
                 step_up_at: session.step_up_at,
-                second_factor: user.totp_secret_enc.is_some(),
+                // A single sign-on account steps up at its provider.
+                second_factor: user.totp_secret_enc.is_some() || user.sso.is_some(),
             },
             token_hash,
             user: UserSummary::from(&user),
@@ -734,6 +842,12 @@ impl AuthService {
             .get_user(&auth.user.id)
             .await?
             .ok_or_else(|| ControlError::not_found("user", auth.user.id))?;
+        if let Some(sso) = &user.sso {
+            return Err(ControlError::validation(format!(
+                "'{}' steps up at its single sign-on provider: open GET /api/v1/auth/oidc/<provider>/start?purpose=step_up in the browser (provider {})",
+                user.username, sso.provider_id
+            )));
+        }
         self.limiter.check(&user.username)?;
         let (ok, reason) = match (&user.totp_secret_enc, non_empty(&proof.code)) {
             (Some(_), Some(code)) => (
@@ -778,8 +892,14 @@ impl AuthService {
         Ok(())
     }
 
+    /// Deletes expired UI sessions, and single sign-ons never finished;
+    /// returns how many sessions.
     pub async fn purge_expired_sessions(&self) -> Result<u64, ControlError> {
-        Ok(self.identity.delete_expired_ui_sessions(Utc::now()).await?)
+        let now = Utc::now();
+        if let Err(e) = self.sso.delete_expired_oidc_requests(now).await {
+            warn!(error = %e, "failed to delete expired single sign-on requests");
+        }
+        Ok(self.identity.delete_expired_ui_sessions(now).await?)
     }
 
     pub async fn authenticate_api_key(&self, presented: &str) -> Result<Caller, ControlError> {

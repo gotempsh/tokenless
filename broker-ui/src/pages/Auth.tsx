@@ -1,9 +1,16 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent, type ReactNode } from "react";
-import { ChevronLeft, Smartphone } from "lucide-react";
-import { ApiError, post, type InviteInfo, type SessionInfo, type UserSummary } from "../api";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { ChevronLeft, ExternalLink, LogIn, Smartphone } from "lucide-react";
+import { ApiError, get, post, type InviteInfo, type SessionInfo, type SignInOptions, type SsoSignIn, type UserSummary } from "../api";
+import {
+  returnToHere,
+  ssoStartHref,
+  STEP_UP_CHANNEL,
+  STEP_UP_DONE_ROUTE,
+  type StepUpMessage,
+} from "../sso";
 import { useAction, useLoad } from "../hooks";
 import { CheckField, CopyButton, DialogActions, ErrorBanner, Field, When } from "../components/common";
 import { BrandMark } from "../components/Brand";
@@ -236,8 +243,32 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
   );
 }
 
-/** Username and password; a second screen asks for the code only when the account has an authenticator. */
-export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
+/** "Continue with …" for each identity provider people sign in with here. */
+function ProviderButtons({ options }: { options: SignInOptions }) {
+  const back = returnToHere(window.location);
+  return (
+    <div className="space-y-2">
+      {options.providers.map((p) => (
+        <Button key={p.slug} asChild variant="outline" className="w-full">
+          <a href={ssoStartHref(p.slug, back)}>
+            <LogIn />
+            Continue with {p.name}
+          </a>
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Single sign-on buttons when providers are set up, then username and
+ * password; a second screen asks for the code only when the account has an
+ * authenticator. When only local admins may use a password, the password
+ * form stays one click away for when the provider cannot be reached.
+ */
+export function Login({ onLogin, ssoError }: { onLogin: (s: SessionInfo) => void; ssoError: string | null }) {
+  const options = useLoad(() => get<SignInOptions>("/auth/sign-in-options"), []);
+  const [showPassword, setShowPassword] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -288,52 +319,184 @@ export function Login({ onLogin }: { onLogin: (s: SessionInfo) => void }) {
       </AuthLayout>
     );
 
+  const providers = options.data?.providers.length ? options.data : null;
+  const adminsOnly = options.data?.password_sign_in === "admins_only";
+  const passwordForm = !providers || !adminsOnly || showPassword;
+
   return (
     <AuthLayout title="Sign in">
-      <form onSubmit={submit} className="space-y-5">
-        <ErrorBanner error={action.error} title="Sign-in failed" />
-        <Field label="Username" htmlFor="username">
-          <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required />
-        </Field>
-        <Field label="Password" htmlFor="password">
-          <Input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            required
-          />
-        </Field>
-        <Button type="submit" className="w-full" disabled={action.busy}>
-          Sign in
-        </Button>
-      </form>
-      <div className="mt-6 space-y-1.5 border-t pt-5 text-xs text-muted-foreground">
-        <p>
-          <span className="font-medium text-foreground">First time?</span> Sign in as <code>admin</code> with the
-          password <code>tokenless serve</code> printed when it first started.
-        </p>
-        <p>
-          Lost it? On the server, run <code>tokenless admin reset-password</code>. No account yet? Ask an admin for an
-          invitation.
-        </p>
+      {ssoError && (
+        <div className="mb-5">
+          <ErrorBanner error={ssoError} title="Single sign-on failed" />
+        </div>
+      )}
+      {providers && (
+        <>
+          <ProviderButtons options={providers} />
+          {passwordForm ? (
+            <div className="my-5 flex items-center gap-3 text-xs text-muted-foreground">
+              <div className="h-px flex-1 bg-border" />
+              {adminsOnly ? "Local admin account" : "or with a password"}
+              <div className="h-px flex-1 bg-border" />
+            </div>
+          ) : (
+            <Button type="button" variant="link" className="mt-4 h-auto w-full p-0 text-xs text-muted-foreground" onClick={() => setShowPassword(true)}>
+              Sign in with a local admin account
+            </Button>
+          )}
+        </>
+      )}
+      {passwordForm && (
+        <>
+          <form onSubmit={submit} className="space-y-5">
+            <ErrorBanner error={action.error} title="Sign-in failed" />
+            <Field label="Username" htmlFor="username">
+              <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus={!providers} required />
+            </Field>
+            <Field label="Password" htmlFor="password">
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </Field>
+            <Button type="submit" className="w-full" disabled={action.busy}>
+              Sign in
+            </Button>
+          </form>
+          {!providers && (
+            <div className="mt-6 space-y-1.5 border-t pt-5 text-xs text-muted-foreground">
+              <p>
+                <span className="font-medium text-foreground">First time?</span> Sign in as <code>admin</code> with the
+                password <code>tokenless serve</code> printed when it first started.
+              </p>
+              <p>
+                Lost it? On the server, run <code>tokenless admin reset-password</code>. No account yet? Ask an admin for
+                an invitation.
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </AuthLayout>
+  );
+}
+
+const STEP_UP_WHY =
+  "Adding credentials, widening rules, and managing people, API keys, templates and nodes needs a confirmation from the last 5 minutes.";
+
+/**
+ * Where the provider's popup lands after a step-up: tells the console that
+ * opened it how it went, then closes.
+ */
+export function StepUpDone({ error }: { error: string | null }) {
+  useEffect(() => {
+    const channel = new BroadcastChannel(STEP_UP_CHANNEL);
+    channel.postMessage({ ok: error === null, error } satisfies StepUpMessage);
+    channel.close();
+    if (error === null) window.close();
+  }, [error]);
+  return (
+    <AuthLayout title={error === null ? "Confirmed" : "Confirmation failed"}>
+      <div className="space-y-5">
+        {error !== null && <ErrorBanner error={error} title="Single sign-on failed" />}
+        <p className="text-sm text-muted-foreground">You can close this window.</p>
       </div>
     </AuthLayout>
   );
 }
 
 /**
- * Asks someone with an authenticator for a fresh code before a sensitive
- * action is retried. Password-only accounts are never asked.
+ * A step-up for someone who signs in with an identity provider: they sign
+ * in there again, in a popup so this page keeps its state. A blocked popup
+ * falls back to going there with the whole page.
+ */
+function SsoStepUp({
+  sso,
+  initialError,
+  onResult,
+}: {
+  sso: SsoSignIn;
+  initialError: string | null;
+  onResult: (ok: boolean) => void;
+}) {
+  const [error, setError] = useState(initialError);
+  const [waiting, setWaiting] = useState(false);
+  const finished = useRef(false);
+  const report = useRef(onResult);
+  report.current = onResult;
+
+  useEffect(() => {
+    if (!waiting) return;
+    const channel = new BroadcastChannel(STEP_UP_CHANNEL);
+    channel.onmessage = (e: MessageEvent<StepUpMessage>) => {
+      if (finished.current) return;
+      setWaiting(false);
+      if (e.data.ok) {
+        finished.current = true;
+        report.current(true);
+      } else {
+        setError(e.data.error ?? "Single sign-on failed.");
+      }
+    };
+    return () => channel.close();
+  }, [waiting]);
+
+  const go = () => {
+    setError(null);
+    finished.current = false;
+    const popup = window.open("about:blank", "tokenless-step-up", "popup,width=520,height=700");
+    if (!popup) {
+      window.location.href = ssoStartHref(sso.slug, returnToHere(window.location), "step_up");
+      return;
+    }
+    // The provider's pages get no handle on this one.
+    popup.opener = null;
+    popup.location.href = ssoStartHref(sso.slug, `/#/${STEP_UP_DONE_ROUTE}`, "step_up");
+    setWaiting(true);
+  };
+
+  return (
+    <div className="space-y-4">
+      <ErrorBanner error={error} title="Single sign-on failed" />
+      {waiting && (
+        <p className="text-sm text-muted-foreground">
+          Waiting for you to sign in to {sso.name} in the window that opened…
+        </p>
+      )}
+      <DialogActions>
+        <Button type="button" variant="outline" onClick={() => onResult(false)}>
+          Cancel
+        </Button>
+        <Button type="button" onClick={go}>
+          <ExternalLink />
+          {waiting ? "Open again" : `Continue with ${sso.name}`}
+        </Button>
+      </DialogActions>
+    </div>
+  );
+}
+
+/**
+ * Asks for a fresh confirmation before a sensitive action is retried: a
+ * code from the authenticator, the password, or a new sign-in at the
+ * identity provider the person signs in with.
  */
 export function StepUpDialog({
   open,
   totpEnrolled,
+  sso,
+  ssoError = null,
   onResult,
 }: {
   open: boolean;
   totpEnrolled: boolean;
+  sso?: SsoSignIn;
+  /** Why the last step-up at the provider failed, when the page went there. */
+  ssoError?: string | null;
   onResult: (ok: boolean) => void;
 }) {
   const [value, setValue] = useState("");
@@ -359,41 +522,50 @@ export function StepUpDialog({
       }}
     >
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{totpEnrolled ? "Confirm with your authenticator" : "Confirm your password"}</DialogTitle>
-          <DialogDescription>
-            Adding credentials, widening rules, and managing people, API keys, templates and nodes needs a confirmation
-            from the last 5 minutes.
-          </DialogDescription>
-        </DialogHeader>
-        <form onSubmit={submit} className="space-y-4">
-          <ErrorBanner error={action.error} />
-          {totpEnrolled ? (
-            <Field label="Authenticator code" htmlFor="totp-code">
-              <CodeField value={value} onChange={setValue} required autoFocus />
-            </Field>
-          ) : (
-            <Field label="Password" htmlFor="step-up-password">
-              <Input
-                id="step-up-password"
-                autoFocus
-                type="password"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </Field>
-          )}
-          <DialogActions>
-            <Button type="button" variant="outline" onClick={() => onResult(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={action.busy}>
-              Confirm
-            </Button>
-          </DialogActions>
-        </form>
+        {sso ? (
+          <>
+            <DialogHeader>
+              <DialogTitle>Confirm with {sso.name}</DialogTitle>
+              <DialogDescription>{STEP_UP_WHY}</DialogDescription>
+            </DialogHeader>
+            <SsoStepUp key={String(open)} sso={sso} initialError={ssoError} onResult={onResult} />
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>{totpEnrolled ? "Confirm with your authenticator" : "Confirm your password"}</DialogTitle>
+              <DialogDescription>{STEP_UP_WHY}</DialogDescription>
+            </DialogHeader>
+            <form onSubmit={submit} className="space-y-4">
+              <ErrorBanner error={action.error} />
+              {totpEnrolled ? (
+                <Field label="Authenticator code" htmlFor="totp-code">
+                  <CodeField value={value} onChange={setValue} required autoFocus />
+                </Field>
+              ) : (
+                <Field label="Password" htmlFor="step-up-password">
+                  <Input
+                    id="step-up-password"
+                    autoFocus
+                    type="password"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    autoComplete="current-password"
+                    required
+                  />
+                </Field>
+              )}
+              <DialogActions>
+                <Button type="button" variant="outline" onClick={() => onResult(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={action.busy}>
+                  Confirm
+                </Button>
+              </DialogActions>
+            </form>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

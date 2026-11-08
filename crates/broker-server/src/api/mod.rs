@@ -6,6 +6,7 @@
 mod console;
 mod extract;
 mod handlers;
+mod sso;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,6 +39,23 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/auth/authenticator", post(enable_authenticator))
         .route("/auth/authenticator/remove", post(disable_authenticator))
+        .route("/auth/sign-in-options", get(sso::sign_in_options))
+        .route("/auth/oidc/callback", get(sso::callback))
+        .route("/auth/oidc/{slug}/start", get(sso::start))
+        .route(
+            "/auth/sign-in-settings",
+            get(sso::get_sign_in_settings).put(sso::put_sign_in_settings),
+        )
+        .route(
+            "/identity-providers",
+            get(sso::list_providers).post(sso::create_provider),
+        )
+        .route(
+            "/identity-providers/{provider_id}",
+            get(sso::get_provider)
+                .put(sso::update_provider)
+                .delete(sso::delete_provider),
+        )
         .route("/vaults", get(list_vaults).post(create_vault))
         .route("/vaults/overview", get(vault_overviews))
         .route("/vaults/{vault_id}/overview", get(vault_overview))

@@ -78,6 +78,21 @@ pub enum ControlError {
         retry_after_secs: u64,
     },
 
+    /// An identity provider could not be reached, or answered with
+    /// something that is not a valid sign-in.
+    #[error("identity provider '{provider}' failed during {operation}: {reason}")]
+    IdentityProvider {
+        provider: String,
+        operation: &'static str,
+        reason: String,
+    },
+
+    /// The provider vouched for the person but this instance does not let
+    /// them in: no group maps to a role, the account is disabled, or its
+    /// username is someone else's.
+    #[error("single sign-on with '{provider}' refused: {reason}")]
+    SsoRefused { provider: String, reason: String },
+
     #[error("cryptographic operation '{operation}' failed: {reason}")]
     Crypto { operation: String, reason: String },
 

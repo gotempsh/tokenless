@@ -209,6 +209,16 @@ fn map_control(e: &ControlError) -> Mapped {
                 "rate_limited",
             )
         },
+        ControlError::IdentityProvider { .. } => mapped(
+            StatusCode::BAD_GATEWAY,
+            "Identity Provider Failed",
+            "identity_provider_failed",
+        ),
+        ControlError::SsoRefused { .. } => mapped(
+            StatusCode::FORBIDDEN,
+            "Single Sign-On Refused",
+            "sso_refused",
+        ),
         ControlError::Crypto { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Cryptographic Error",

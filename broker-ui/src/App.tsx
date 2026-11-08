@@ -48,7 +48,9 @@ import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
-import { AcceptInvite, AuthLayout, Login, StepUpDialog } from "./pages/Auth";
+import { AcceptInvite, AuthLayout, Login, StepUpDialog, StepUpDone } from "./pages/Auth";
+import { ProviderFormPage } from "./pages/SingleSignOn";
+import { STEP_UP_DONE_ROUTE, takeSsoError } from "./sso";
 import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
 import { BundleFormPage } from "./pages/BundleFormPage";
@@ -117,7 +119,12 @@ const LABELS: Record<string, string> = {
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
   const [stepUpOpen, setStepUpOpen] = useState(false);
+  // Why a sign-in or step-up at an identity provider failed, read once from
+  // the address the provider sent the browser back to.
+  const [ssoError, setSsoError] = useState(takeSsoError);
   const pending = useRef<((ok: boolean) => void) | null>(null);
+  const ssoErrorRef = useRef(ssoError);
+  ssoErrorRef.current = ssoError;
   const route = useHashRoute();
   const query = useHashQuery();
 
@@ -126,6 +133,9 @@ export function App() {
       const session = await get<SessionInfo>("/auth/me");
       setCsrfToken(session.csrf_token);
       setBoot({ state: "ready", session });
+      // Back from a step-up that failed at the provider: say why where
+      // it would have been confirmed.
+      if (session.sso) setStepUpOpen((open) => open || ssoErrorRef.current !== null);
     } catch (e) {
       if (e instanceof ApiError && e.problem.status === 401) setBoot({ state: "login" });
       else setBoot({ state: "error", message: e instanceof Error ? e.message : String(e) });
@@ -149,6 +159,7 @@ export function App() {
 
   const finishStepUp = (ok: boolean) => {
     setStepUpOpen(false);
+    setSsoError(null);
     pending.current?.(ok);
     pending.current = null;
   };
@@ -158,10 +169,12 @@ export function App() {
       await post<void>("/auth/logout");
     } finally {
       setCsrfToken(null);
+      setSsoError(null);
       setBoot({ state: "login" });
     }
   };
 
+  if (route[0] === STEP_UP_DONE_ROUTE) return <StepUpDone error={ssoError} />;
   if (route[0] === "invite" && route[1])
     return (
       <AcceptInvite
@@ -192,7 +205,9 @@ export function App() {
   if (boot.state === "login")
     return (
       <Login
+        ssoError={ssoError}
         onLogin={(session) => {
+          setSsoError(null);
           setCsrfToken(session.csrf_token);
           setBoot({ state: "ready", session });
         }}
@@ -232,9 +247,17 @@ export function App() {
       {section === "proxies" && !id && <Nodes />}
       {section === "proxies" && id && <ProxyDetail nodeId={id} />}
       {section === "audit" && <Audit me={user} />}
-      {section === "settings" && <Settings />}
-      {section === "account" && <Account user={user} onChanged={() => void load()} />}
-      <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />
+      {section === "settings" && !id && <Settings />}
+      {section === "settings" && id === "sso" && tab === "new" && <ProviderFormPage />}
+      {section === "settings" && id === "sso" && tab && tab !== "new" && <ProviderFormPage key={tab} providerId={tab} />}
+      {section === "account" && <Account user={user} sso={boot.session.sso} onChanged={() => void load()} />}
+      <StepUpDialog
+        open={stepUpOpen}
+        totpEnrolled={user.totp_enrolled}
+        sso={boot.session.sso}
+        ssoError={ssoError}
+        onResult={finishStepUp}
+      />
     </Shell>
   );
 }

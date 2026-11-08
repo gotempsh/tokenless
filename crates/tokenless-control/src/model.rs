@@ -21,6 +21,9 @@ use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod sso;
+pub use sso::*;
+
 pub const DEFAULT_PAGE_SIZE: u64 = 20;
 pub const MAX_PAGE_SIZE: u64 = 100;
 
@@ -287,10 +290,13 @@ pub struct User {
     pub created_at: DateTime<Utc>,
     /// A disabled user cannot log in and has no UI sessions.
     pub disabled_at: Option<DateTime<Utc>>,
+    /// Set for a person who signs in with single sign-on, never with a
+    /// password: the account at the provider they sign in as.
+    pub sso: Option<SsoIdentity>,
 }
 
 tokenless_core::redacted_debug!(User {
-    id, username, totp_last_step, role, created_at, disabled_at;
+    id, username, totp_last_step, role, created_at, disabled_at, sso;
     password_hash, totp_secret_enc
 });
 
@@ -425,6 +431,7 @@ mod tests {
             created_at: now,
             disabled_at: None,
             totp_enrolled: true,
+            sso_provider_id: None,
         };
         let invite = Invite {
             id: InviteId::new(),
@@ -466,6 +473,7 @@ mod tests {
                     role: Role::Admin,
                     created_at: now,
                     disabled_at: None,
+                    sso: None,
                 }
             ),
             format!("{invite:?}"),

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Session cookie formatting. The `__Host-` prefix makes browsers enforce
+//! Session and single sign-on cookie formatting. The `__Host-` prefix makes browsers enforce
 //! `Secure`, `Path=/` and no `Domain`, so a sibling subdomain cannot plant or
 //! read it.
 
@@ -19,9 +19,32 @@ pub fn clear_session_cookie() -> String {
 
 /// Extracts the session token from a `Cookie` header value.
 pub fn session_from_cookie_header(header: &str) -> Option<&str> {
+    named_cookie(header, SESSION_COOKIE)
+}
+
+/// Ties a single sign-on in progress to the browser that started it. `Lax`,
+/// not `Strict`: the browser comes back from the identity provider, another
+/// site, and must still send it. Only for the callback path.
+pub const SSO_FLOW_COOKIE: &str = "__Host-tokenless_sso";
+
+pub fn sso_flow_cookie(value: &str, max_age_secs: u64) -> String {
+    format!(
+        "{SSO_FLOW_COOKIE}={value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={max_age_secs}"
+    )
+}
+
+pub fn clear_sso_flow_cookie() -> String {
+    format!("{SSO_FLOW_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0")
+}
+
+pub fn sso_flow_from_cookie_header(header: &str) -> Option<&str> {
+    named_cookie(header, SSO_FLOW_COOKIE)
+}
+
+fn named_cookie<'a>(header: &'a str, wanted: &str) -> Option<&'a str> {
     header.split(';').find_map(|pair| {
         let (name, value) = pair.trim().split_once('=')?;
-        (name == SESSION_COOKIE && !value.is_empty()).then_some(value)
+        (name == wanted && !value.is_empty()).then_some(value)
     })
 }
 
@@ -42,6 +65,25 @@ mod tests {
             assert!(c.contains(attr), "missing {attr}");
         }
         assert!(!c.contains("Domain"));
+    }
+
+    #[test]
+    fn the_sso_flow_cookie_survives_the_way_back_from_the_provider() {
+        let c = sso_flow_cookie("abc", 600);
+        for attr in [
+            "HttpOnly",
+            "Secure",
+            "SameSite=Lax",
+            "Path=/",
+            "Max-Age=600",
+        ] {
+            assert!(c.contains(attr), "missing {attr}");
+        }
+        assert!(c.starts_with("__Host-"));
+        let header = format!("{SESSION_COOKIE}=s; {SSO_FLOW_COOKIE}=f");
+        assert_eq!(sso_flow_from_cookie_header(&header), Some("f"));
+        assert_eq!(session_from_cookie_header(&header), Some("s"));
+        assert!(clear_sso_flow_cookie().contains("Max-Age=0"));
     }
 
     #[test]

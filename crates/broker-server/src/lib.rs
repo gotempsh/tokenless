@@ -9,6 +9,7 @@ pub mod api_tls;
 pub mod error;
 pub mod launcher;
 pub mod node_api;
+pub mod oidc_transport;
 pub mod probe;
 pub mod root_key;
 pub mod store;
@@ -145,6 +146,7 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
         policy: store.clone(),
         audit: store.clone(),
         identity: store.clone(),
+        sso: store.clone(),
         nodes: store,
     };
     let control = Arc::new(
@@ -153,6 +155,10 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
             Arc::new(RbacAuthorizer),
             cipher,
             Arc::new(probe::HttpProber::new(
+                config.validation_public_roots,
+                &config.validation_extra_roots,
+            )?),
+            Arc::new(oidc_transport::HttpOidcTransport::new(
                 config.validation_public_roots,
                 &config.validation_extra_roots,
             )?),
