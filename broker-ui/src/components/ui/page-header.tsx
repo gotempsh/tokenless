@@ -73,9 +73,9 @@ export function PageHeader({
         className,
       )}
     >
-      {/* At least 16rem for the title: on a phone, more than a menu's worth
-          of actions moves to its own line instead of squeezing the title. */}
-      <div className="min-w-0 flex-[1_1_16rem]">
+      {/* At least 12rem for the title: on a phone one action stays beside
+          it, and more than that moves to its own line instead of squeezing it. */}
+      <div className="min-w-0 flex-[1_1_12rem]">
         <div className="flex flex-wrap items-center gap-2">
           <Heading className="text-2xl font-semibold tracking-tight">{title}</Heading>
           {verdict}

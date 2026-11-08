@@ -132,9 +132,9 @@ function VaultPanel({ vault, templates }: { vault: VaultOverview; templates: Sto
       </div>
       <div className="flex-1 px-4 py-3">
         {vault.services.length === 0 ? (
-          <p className="py-2 text-sm text-muted-foreground">
+          <p className="py-2 text-sm text-warning-strong">
             No services yet.{" "}
-            <a href={addServiceHref({ vault: vault.id })} className="relative z-10 text-foreground underline underline-offset-2">
+            <a href={addServiceHref({ vault: vault.id })} className="relative z-10 underline underline-offset-2">
               Add one
             </a>
           </p>

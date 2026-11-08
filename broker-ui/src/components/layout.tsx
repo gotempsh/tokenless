@@ -9,7 +9,7 @@ import { cn } from "../lib/utils";
 import { Panel } from "./common";
 
 /** Few records render as panels: as many columns as fit at 320px or wider. */
-export const PANEL_GRID = "grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))]";
+export const PANEL_GRID = "grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr))]";
 
 /**
  * A record's page: its working content (lists, logs, tabs) in the main
