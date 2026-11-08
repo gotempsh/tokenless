@@ -30,7 +30,9 @@ use tokenless_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
 };
 use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
-use tokenless_core::snapshot::{decode_verifying_key, SignedSnapshot};
+use tokenless_core::snapshot::{
+    decode_verifying_key, SignedSnapshot, READS_FORMAT_PARAM, SNAPSHOT_FORMAT,
+};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::{sleep, timeout};
@@ -421,7 +423,8 @@ impl NodeClient {
         metrics: &Metrics,
         on_applied: &(dyn Fn() + Send + Sync),
     ) -> Result<(), DataPlaneError> {
-        let path = "/node/v1/snapshots/stream";
+        let path = format!("/node/v1/snapshots/stream?{READS_FORMAT_PARAM}={SNAPSHOT_FORMAT}");
+        let path = path.as_str();
         let response = self.call(Method::GET, path, None).await?;
         if response.status() != StatusCode::OK {
             let status = response.status().as_u16();

@@ -22,10 +22,15 @@ use crate::seal::Sealed;
 use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
-/// `not_after`; a snapshot that uses none is still written as format 1, so
-/// nodes too old to know it keep working until a credential has a
-/// deadline, and then refuse the snapshot rather than ignore the deadline.
+/// `not_after`. A snapshot is written in the oldest format that carries
+/// everything in it, and a node says which format it reads when it opens
+/// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
+/// enforce is left out of its snapshot, so an older node stops using that
+/// one service instead of refusing every snapshot.
 pub const SNAPSHOT_FORMAT: u32 = 2;
+/// The snapshot stream's query parameter with the newest format the node
+/// reads. A node that sends none reads format 1.
+pub const READS_FORMAT_PARAM: &str = "reads_format";
 /// The oldest format this build still reads.
 pub const MIN_SNAPSHOT_FORMAT: u32 = 1;
 // Predates the rename to tokenless and is kept: changing it invalidates
@@ -102,14 +107,37 @@ pub struct SnapshotRule {
     pub not_after: Option<DateTime<Utc>>,
 }
 
-/// The format a snapshot with `rules` is written in: the oldest that
-/// carries everything in it.
-pub fn format_for(rules: &[SnapshotRule]) -> u32 {
-    if rules.iter().any(|r| r.not_after.is_some()) {
+/// The oldest format that carries `rule`.
+pub fn rule_format(rule: &SnapshotRule) -> u32 {
+    if rule.not_after.is_some() {
         2
     } else {
         MIN_SNAPSHOT_FORMAT
     }
+}
+
+/// The format a snapshot with `rules` is written in: the oldest that
+/// carries everything in it.
+pub fn format_for(rules: &[SnapshotRule]) -> u32 {
+    rules
+        .iter()
+        .map(rule_format)
+        .max()
+        .unwrap_or(MIN_SNAPSHOT_FORMAT)
+}
+
+/// The rules a node that reads formats up to `reads` can enforce, and how
+/// many it cannot. Those are left out of its snapshot: an older node never
+/// sends a credential whose limits it does not know, and still serves the
+/// rest.
+pub fn rules_readable_by(rules: &[SnapshotRule], reads: u32) -> (Vec<SnapshotRule>, usize) {
+    let readable: Vec<SnapshotRule> = rules
+        .iter()
+        .filter(|r| rule_format(r) <= reads)
+        .cloned()
+        .collect();
+    let withheld = rules.len() - readable.len();
+    (readable, withheld)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +330,9 @@ mod tests {
 
         b.rules[0].not_after = Some(Utc::now());
         assert_eq!(format_for(&b.rules), 2);
+        // A node that reads only format 1 is sent the rule's absence.
+        assert_eq!(rules_readable_by(&b.rules, 1), (vec![], 1));
+        assert_eq!(rules_readable_by(&b.rules, 2), (b.rules.clone(), 0));
         // Format 1 cannot say it; a node must not read it as no deadline.
         let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
         assert!(

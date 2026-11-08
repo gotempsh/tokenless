@@ -22,8 +22,8 @@ use tokenless_core::protocol::{
 use tokenless_core::seal::{decode_public_key, seal};
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
-    ca_aad, format_for, rule_aad, InterceptionCa, PublishedKey, SessionLimit, SignedSnapshot,
-    SnapshotBody, SnapshotRule,
+    ca_aad, format_for, rule_aad, rules_readable_by, InterceptionCa, PublishedKey, SessionLimit,
+    SignedSnapshot, SnapshotBody, SnapshotRule, MIN_SNAPSHOT_FORMAT, SNAPSHOT_FORMAT,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -52,6 +52,14 @@ pub struct JoinTokenIssued {
     pub token: String,
     pub token_id: String,
     pub expires_at: DateTime<Utc>,
+}
+
+/// A node's snapshot, and how many rules it could not be sent because they
+/// need a newer snapshot format than it reads.
+#[derive(Debug, Clone)]
+pub struct NodeSnapshot {
+    pub snapshot: SignedSnapshot,
+    pub withheld_rules: usize,
 }
 
 struct CachedContent {
@@ -474,14 +482,34 @@ impl NodeService {
         Ok(built)
     }
 
-    /// Builds and signs a fresh snapshot for `node` with a new version.
+    /// Builds and signs a fresh snapshot for `node`, which reads every
+    /// format this build writes (an embedded data plane), with a new
+    /// version.
     pub async fn build_snapshot(&self, node: &Node) -> Result<SignedSnapshot, ControlError> {
+        Ok(self
+            .build_snapshot_for(node, SNAPSHOT_FORMAT)
+            .await?
+            .snapshot)
+    }
+
+    /// Builds and signs a fresh snapshot for `node`, which reads formats up
+    /// to `reads_format`, with a new version. Rules it could not enforce
+    /// are left out and counted.
+    pub async fn build_snapshot_for(
+        &self,
+        node: &Node,
+        reads_format: u32,
+    ) -> Result<NodeSnapshot, ControlError> {
         let generation = self.notifier.current();
         let content = self.content_for(node, generation).await?;
+        let (rules, withheld_rules) = rules_readable_by(
+            &content.rules,
+            reads_format.clamp(MIN_SNAPSHOT_FORMAT, SNAPSHOT_FORMAT),
+        );
         let now = Utc::now();
         let settings = self.policy.get_settings().await?;
         let body = SnapshotBody {
-            format: format_for(&content.rules),
+            format: format_for(&rules),
             version: self.nodes.next_snapshot_version().await?,
             node_id: node.id,
             issued_at: now,
@@ -504,9 +532,12 @@ impl NodeService {
             egress: settings.egress.clone(),
             passthrough_hosts: settings.passthrough_hosts.clone(),
             interception_ca: content.ca.clone(),
-            rules: content.rules.clone(),
+            rules,
         };
-        Ok(SignedSnapshot::sign(&body, &self.keys.snapshot_key)?)
+        Ok(NodeSnapshot {
+            snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
+            withheld_rules,
+        })
     }
 
     /// Records a batch from a node. The actor is always the authenticated
@@ -731,6 +762,105 @@ mod tests {
 
     /// A secret that expires upstream ships with its deadline, in the
     /// format that carries it; replacing the secret replaces the deadline.
+    /// A node too old to enforce a credential's deadline is not sent that
+    /// rule, and keeps every other one, rather than refusing every
+    /// snapshot.
+    #[tokio::test]
+    async fn an_older_node_is_not_sent_a_rule_it_cannot_enforce() {
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, expiring) = vault_with_rule(&cs, &host).await;
+        let other = cs
+            .policy
+            .create_credential(
+                &host,
+                &vault,
+                CreateCredential {
+                    name: "other".into(),
+                    template_id: "generic-bearer".into(),
+                    template_version: None,
+                    host_override: vec!["other.example.com".into()],
+                    fields: [("token".to_string(), "o".to_string())].into(),
+                    custom_headers: vec![],
+                    substitutions: vec![],
+                    not_after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let other = cs
+            .policy
+            .create_rule(
+                &host,
+                &vault,
+                CreateRule {
+                    name: "other".into(),
+                    credential_id: other.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "n",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        for rule in [expiring, other] {
+            cs.sessions
+                .mint(&host, &vault, mint(rule, Some(node.node.id), 600))
+                .await
+                .unwrap();
+        }
+        let built = cs.nodes.build_snapshot_for(&node.node, 1).await.unwrap();
+        let credential = built
+            .snapshot
+            .verify(&node.snapshot_verify_key)
+            .unwrap()
+            .rules
+            .iter()
+            .find(|r| r.rule_id == expiring)
+            .unwrap()
+            .credential_id;
+        assert_eq!(built.withheld_rules, 0, "nothing needs format 2 yet");
+
+        cs.policy
+            .rotate_credential(
+                &host,
+                &credential,
+                [("token".to_string(), "t2".to_string())].into(),
+                Some(Utc::now() + TimeDelta::hours(1)),
+            )
+            .await
+            .unwrap();
+        let old = cs.nodes.build_snapshot_for(&node.node, 1).await.unwrap();
+        assert_eq!(old.withheld_rules, 1);
+        let body = old.snapshot.verify(&node.snapshot_verify_key).unwrap();
+        assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
+        assert_eq!(
+            body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
+            vec![other]
+        );
+
+        let current = cs
+            .nodes
+            .build_snapshot_for(&node.node, tokenless_core::snapshot::SNAPSHOT_FORMAT)
+            .await
+            .unwrap();
+        assert_eq!(current.withheld_rules, 0);
+        let body = current.snapshot.verify(&node.snapshot_verify_key).unwrap();
+        assert_eq!((body.format, body.rules.len()), (2, 2));
+    }
+
     #[tokio::test]
     async fn a_credentials_deadline_reaches_snapshots_and_follows_its_secret() {
         let (_, cs) = services().await;
