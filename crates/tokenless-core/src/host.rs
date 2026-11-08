@@ -147,6 +147,15 @@ impl HostPattern {
         }
     }
 
+    /// Is some target matched by both? A wildcard covers exactly one label,
+    /// so two different wildcards never share a target.
+    pub fn overlaps(&self, other: &HostPattern) -> bool {
+        self.port == other.port
+            && (self.host == other.host
+                || (!other.is_wildcard() && self.matches(&other.host, other.port))
+                || (!self.is_wildcard() && other.matches(&self.host, self.port)))
+    }
+
     /// Is every target matched by `other` also matched by `self`?
     pub fn covers(&self, other: &HostPattern) -> bool {
         if self.port != other.port {
@@ -297,6 +306,19 @@ mod tests {
         assert!(wild.covers(&wild));
         assert!(!exact.covers(&wild));
         assert!(!wild.covers(&HostPattern::parse("api.example.com:8443").unwrap()));
+    }
+
+    #[test]
+    fn overlap_means_a_target_both_match() {
+        let p = |s: &str| HostPattern::parse(s).unwrap();
+        assert!(p("api.example.com").overlaps(&p("api.example.com")));
+        assert!(p("*.example.com").overlaps(&p("api.example.com")));
+        assert!(p("api.example.com").overlaps(&p("*.example.com")));
+        assert!(p("*.example.com").overlaps(&p("*.example.com")));
+        assert!(!p("*.example.com").overlaps(&p("*.api.example.com")));
+        assert!(!p("*.example.com").overlaps(&p("example.com")));
+        assert!(!p("api.example.com").overlaps(&p("api.example.com:8443")));
+        assert!(!p("a.example.com").overlaps(&p("b.example.com")));
     }
 
     #[test]

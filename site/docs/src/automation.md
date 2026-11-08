@@ -29,12 +29,17 @@ curl -s -X POST "$TOKENLESS_URL/api/v1/vaults/<vault-id>/sessions" \
 
 Or by rules, with `"rule_ids": ["..."]` instead of `"bundle"`. Add
 `"request_limit": 100` to cap how many requests the session may make.
+Add `"not_after": "2026-06-01T18:00:00Z"` to end the session by a fixed
+time whatever its lifetime; once that time has passed, no session is
+minted with it, so renewing with the same deadline never extends it.
 Labels show on the **Sessions** page and in the audit log.
 
 A program that embeds the data plane can restrict a session to one node
 with `"node_id": "<node id>"`, and to one workload with
 `"binding": {"id": "sbx-42", "generation": 3}`. A bound session works only
-through that workload's binding, never as `HTTPS_PROXY` credentials.
+through that workload's binding, never as `HTTPS_PROXY` credentials. A
+binding may hold several sessions, one per group of services that share a
+deadline, as long as no two cover the same host.
 
 The response holds the session token. Send it as the proxy's credentials:
 `HTTPS_PROXY=http://<token>@127.0.0.1:3128`.

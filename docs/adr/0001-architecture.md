@@ -308,6 +308,14 @@ checks every read endpoint and the raw database files for the plaintext.
   ignores that header and takes no other session. A workload restarted
   under the same id gets a new generation, so its old sessions stop
   working. Revoking a binding cuts every connection it opened.
+- A binding holds one session per group of services that share a
+  deadline, so one service can end while the others keep working. No two
+  of its sessions may cover the same host: `bind` refuses them, so one
+  session's credential is never used under another's rules (and a request
+  that still finds two, after a policy change, is refused). Deadlines are
+  absolute: a mint's `not_after` caps the session's `exp`, and no session
+  is minted once it has passed, so the embedder that owns a grant passes
+  its deadline on every renewal and a renewal never extends it.
 - The data plane verifies sessions locally. Revocations arrive in the next
   snapshot; with the stream, that takes about one round trip.
 - Clients use `HTTPS_PROXY=http://<token>@host:port`. Both the Basic form

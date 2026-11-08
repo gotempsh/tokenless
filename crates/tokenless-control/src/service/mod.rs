@@ -1355,6 +1355,7 @@ mod tests {
             labels: BTreeMap::new(),
             node_id: None,
             binding: None,
+            not_after: None,
         };
         let minted = cp
             .sessions
@@ -1387,6 +1388,7 @@ mod tests {
                     labels: BTreeMap::new(),
                     node_id: None,
                     binding: None,
+                    not_after: None,
                 },
             )
             .await
@@ -1723,6 +1725,7 @@ mod tests {
                     labels: BTreeMap::new(),
                     node_id: None,
                     binding: None,
+                    not_after: None,
                 },
             )
             .await
@@ -1742,6 +1745,7 @@ mod tests {
                         labels: BTreeMap::new(),
                         node_id: None,
                         binding: None,
+                        not_after: None,
                     },
                 )
                 .await,
@@ -1859,6 +1863,7 @@ mod tests {
                     labels: BTreeMap::new(),
                     node_id: None,
                     binding: None,
+                    not_after: None,
                 },
             )
             .await
@@ -2029,6 +2034,7 @@ mod tests {
                     labels: Default::default(),
                     node_id: None,
                     binding: None,
+                    not_after: None,
                 },
             )
             .await
@@ -2160,6 +2166,7 @@ mod tests {
                     labels: BTreeMap::new(),
                     node_id: None,
                     binding: None,
+                    not_after: None,
                 },
             )
             .await
@@ -2293,6 +2300,7 @@ mod tests {
                 id: id.into(),
                 generation: 4,
             }),
+            not_after: None,
         };
         let minted = cp
             .sessions
@@ -2376,6 +2384,7 @@ mod tests {
             labels: [("agent".to_string(), "reviewer".to_string())].into(),
             node_id: None,
             binding: None,
+            not_after: None,
         };
         let err = cp
             .sessions
@@ -2848,6 +2857,7 @@ mod tests {
             labels: BTreeMap::new(),
             node_id: None,
             binding: None,
+            not_after: None,
         };
         cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
         let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();

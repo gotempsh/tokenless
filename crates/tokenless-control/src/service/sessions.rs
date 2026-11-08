@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
@@ -51,6 +51,12 @@ pub struct MintSession {
     /// binding (one start of one sandbox), never from a header.
     #[serde(default)]
     pub binding: Option<SessionBinding>,
+    /// An absolute deadline: the session ends by then whatever its
+    /// lifetime, and none is minted once it has passed. A caller that
+    /// renews a grant passes the grant's deadline each time, so renewing
+    /// never extends it.
+    #[serde(default)]
+    pub not_after: Option<DateTime<Utc>>,
 }
 
 /// Which binding a session is minted for: the workload's id and which start
@@ -202,18 +208,24 @@ impl SessionService {
             }
         }
         let max_ttl = self.policy.get_settings().await?.max_session_ttl_secs;
+        let now = Utc::now();
+        let ttl = if req.longest {
+            max_ttl
+        } else {
+            req.ttl_secs
+                .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl))
+        };
+        let ttl = match req.not_after {
+            Some(not_after) => capped_ttl(ttl, not_after, now)?,
+            None => ttl,
+        };
         let claims = SessionClaims::new(
             Scope::for_vault(&vault.id),
             rule_ids.clone(),
-            if req.longest {
-                max_ttl
-            } else {
-                req.ttl_secs
-                    .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl))
-            },
+            ttl,
             req.request_limit,
             req.labels.clone(),
-            Utc::now(),
+            now,
             max_ttl,
         )?;
         let claims = match req.node_id {
@@ -256,6 +268,9 @@ impl SessionService {
         }
         if let Some(sub) = &claims.sub {
             event = event.detail("binding", sub.clone());
+        }
+        if let Some(not_after) = req.not_after {
+            event = event.detail("not_after", not_after.to_rfc3339());
         }
         self.policy
             .insert_session(session.clone(), &[event])
@@ -598,6 +613,22 @@ impl SessionService {
     }
 }
 
+/// `ttl_secs` shortened so the session ends by `not_after`. Whole seconds,
+/// rounded down: a session never outlives its deadline.
+fn capped_ttl(
+    ttl_secs: u64,
+    not_after: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<u64, ControlError> {
+    match u64::try_from((not_after - now).num_seconds()) {
+        Ok(left) if left > 0 => Ok(ttl_secs.min(left)),
+        _ => Err(ControlError::validation(format!(
+            "not_after {} has passed (or is under a second away); a session cannot be minted past its deadline",
+            not_after.to_rfc3339()
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -695,6 +726,111 @@ mod tests {
             .verify(&node.snapshot_verify_key)
             .unwrap();
         assert_eq!(body.revoked_sessions, vec![recent.id]);
+    }
+
+    /// A vault with one rule a host service may mint sessions for.
+    async fn vault_with_rule(cs: &ControlServices, host: &Caller) -> (VaultId, RuleId) {
+        use crate::service::policy::{CreateCredential, CreateRule};
+        let vault = cs.policy.create_vault(host, "v").await.unwrap();
+        let credential = cs
+            .policy
+            .create_credential(
+                host,
+                &vault.id,
+                CreateCredential {
+                    name: "api".into(),
+                    template_id: "generic-bearer".into(),
+                    template_version: None,
+                    host_override: vec!["api.example.com".into()],
+                    fields: [("token".to_string(), "t".to_string())].into(),
+                    custom_headers: vec![],
+                    substitutions: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        let rule = cs
+            .policy
+            .create_rule(
+                host,
+                &vault.id,
+                CreateRule {
+                    name: "api".into(),
+                    credential_id: credential.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        (vault.id, rule.id)
+    }
+
+    fn until(rule: RuleId, not_after: DateTime<Utc>) -> MintSession {
+        MintSession {
+            rule_ids: vec![rule],
+            bundle: None,
+            ttl_secs: Some(900),
+            longest: false,
+            request_limit: None,
+            labels: BTreeMap::new(),
+            node_id: None,
+            binding: None,
+            not_after: Some(not_after),
+        }
+    }
+
+    /// A grant's deadline caps every session minted for it, renewals
+    /// included, and none is minted once it has passed.
+    #[tokio::test]
+    async fn not_after_caps_a_session_and_a_late_renewal_is_refused() {
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let deadline = Utc::now() + TimeDelta::seconds(30);
+
+        let minted = cs
+            .sessions
+            .mint(&host, &vault, until(rule, deadline))
+            .await
+            .unwrap();
+        assert!(minted.session.expires_at <= deadline);
+        assert!(minted.session.expires_at > deadline - TimeDelta::seconds(3));
+        let keys = std::collections::HashMap::from([(
+            key_id(&cs.keys.session_signer.verifying_key()),
+            cs.keys.session_signer.verifying_key(),
+        )]);
+        // A data plane whose clock is behind still honours the deadline
+        // once it reaches it; expiry is never extended for skew.
+        let claims = verify_session(
+            &minted.token,
+            &keys,
+            minted.session.created_at - TimeDelta::seconds(20),
+        )
+        .unwrap();
+        assert_eq!(claims.exp, minted.session.expires_at);
+        assert!(matches!(
+            verify_session(&minted.token, &keys, deadline),
+            Err(SessionError::Expired { .. })
+        ));
+
+        // Without not_after the same request gets its full lifetime.
+        let mut uncapped = until(rule, deadline);
+        uncapped.not_after = None;
+        let full = cs.sessions.mint(&host, &vault, uncapped).await.unwrap();
+        assert!(full.session.expires_at > deadline + TimeDelta::minutes(10));
+
+        for past in [Utc::now(), Utc::now() - TimeDelta::hours(1)] {
+            let err = cs
+                .sessions
+                .mint(&host, &vault, until(rule, past))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ControlError::Validation { .. }), "{err}");
+            assert!(err.to_string().contains("has passed"), "{err}");
+        }
     }
 
     /// `tokenless run` ends its session with the token when it exits, which

@@ -157,6 +157,7 @@ async fn main() -> Result<(), Error> {
                     id: "workload-1".into(),
                     generation: 1,
                 }),
+                not_after: None,
             },
         )
         .await?;

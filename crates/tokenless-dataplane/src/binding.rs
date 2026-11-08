@@ -123,6 +123,30 @@ impl BindingState {
     }
 }
 
+/// Why two of a binding's sessions may not be held together, if they may
+/// not: both cover some host, so a request there would have no single
+/// session, and one session's credential could be used under the other's
+/// rules. Each service belongs to one session.
+fn overlap(snapshot: &ActiveSnapshot, sessions: &[SessionClaims]) -> Option<String> {
+    for (i, first) in sessions.iter().enumerate() {
+        for second in &sessions[i + 1..] {
+            for a in session_rules(snapshot, first).flat_map(|r| &r.allow.hosts) {
+                for b in session_rules(snapshot, second).flat_map(|r| &r.allow.hosts) {
+                    if a.overlaps(b) {
+                        return Some(format!(
+                            "sessions {} and {} both cover {}; give each service to one session",
+                            first.jti,
+                            second.jti,
+                            if a.is_wildcard() { b } else { a }
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// A workload bound to its sessions. Serve each of its proxy connections
 /// with [`Binding::serve`]. Revoking it, or dropping it, cuts every
 /// connection and tunnel it opened. Share it behind an `Arc`.
@@ -150,6 +174,7 @@ impl Binding {
         // With a snapshot in force, a session that can never work here is
         // refused now rather than on the workload's first request.
         if let Some(snapshot) = shared.snapshot.load_full() {
+            let mut verified = Vec::with_capacity(spec.sessions.len());
             for token in &spec.sessions {
                 let claims = verify_session(token, &snapshot.session_keys, Utc::now())
                     .map_err(|e| invalid(format!("a session is not usable: {e}")))?;
@@ -166,6 +191,10 @@ impl Binding {
                         claims.jti, shared.node
                     )));
                 }
+                verified.push(claims);
+            }
+            if let Some(reason) = overlap(&snapshot, &verified) {
+                return Err(invalid(reason));
             }
         }
         let (revoked, _) = watch::channel(false);
@@ -344,10 +373,19 @@ mod tests {
 
     impl Plane {
         fn token(&self, rule: RuleId, bind: impl FnOnce(SessionClaims) -> SessionClaims) -> String {
+            self.token_for(rule, 600, bind)
+        }
+
+        fn token_for(
+            &self,
+            rule: RuleId,
+            ttl_secs: u64,
+            bind: impl FnOnce(SessionClaims) -> SessionClaims,
+        ) -> String {
             let claims = SessionClaims::new(
                 scope(),
                 vec![rule],
-                600,
+                ttl_secs,
                 None,
                 BTreeMap::new(),
                 Utc::now(),
@@ -447,6 +485,49 @@ mod tests {
         let answer = String::from_utf8_lossy(&buf[..n]);
         assert!(answer.starts_with("HTTP/1.1 407"), "{answer}");
         assert!(answer.contains("works only through it"), "{answer}");
+        p.dp.shutdown();
+    }
+
+    /// Two sessions covering one host would leave a request there with no
+    /// single session; the binding is refused instead.
+    #[tokio::test]
+    async fn sessions_that_cover_the_same_host_are_refused_at_bind() {
+        let p = plane().await;
+        let twice = vec![p.bound(p.rule_a, "sbx-a", 1), p.bound(p.rule_a, "sbx-a", 1)];
+        let err =
+            p.dp.bind(BindingSpec {
+                binding_id: "sbx-a".into(),
+                generation: 1,
+                sessions: twice,
+                max_connections: 8,
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("both cover a.example.com"),
+            "{err}"
+        );
+        p.dp.shutdown();
+    }
+
+    /// One session per group of services that share a deadline: when A's
+    /// runs out, B's services keep working.
+    #[tokio::test]
+    async fn one_service_expires_while_the_other_keeps_working() {
+        let p = plane().await;
+        let node = p.f.keys.node_id;
+        let short = p.token_for(p.rule_a, 1, |c| {
+            c.for_node(node).for_binding("sbx-a", 1).unwrap()
+        });
+        let long = p.bound(p.rule_b, "sbx-a", 1);
+        let binding = p.bind("sbx-a", vec![short, long], 8);
+        let (status, _) = connect(&binding, "a.example.com:443", None).await;
+        assert!(status.contains(" 200 "), "{status}");
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let (status, _) = connect(&binding, "a.example.com:443", None).await;
+        assert!(status.contains(" 403 "), "{status}");
+        let (status, _) = connect(&binding, "b.example.com:443", None).await;
+        assert!(status.contains(" 200 "), "{status}");
         p.dp.shutdown();
     }
 
