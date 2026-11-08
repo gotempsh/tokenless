@@ -740,8 +740,9 @@ mod tests {
             .mint(&host, &vault, mint(rule_b, None, 600))
             .await
             .unwrap();
+        // Minted for another node, so not this one's.
         cs.sessions
-            .mint(&host, &vault, mint(rule_b, Some(NodeId::new()), 600))
+            .mint(&host, &vault, mint(rule_b, Some(everything.id), 600))
             .await
             .unwrap();
         assert_eq!(rules(scoped.node.clone()).await, vec![rule_a]);

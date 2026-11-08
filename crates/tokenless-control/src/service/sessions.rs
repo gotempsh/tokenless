@@ -23,7 +23,7 @@ use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle};
 use crate::notify::PolicyNotifier;
-use crate::store::{CredentialStore, PolicyStore};
+use crate::store::{CredentialStore, NodeStore, PolicyStore};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MintSession {
@@ -129,6 +129,7 @@ pub struct SessionDiscovery {
 pub struct SessionService {
     policy: Arc<dyn PolicyStore>,
     credentials: Arc<dyn CredentialStore>,
+    nodes: Arc<dyn NodeStore>,
     keys: Arc<KeyRing>,
     guard: Guard,
     notifier: Arc<PolicyNotifier>,
@@ -138,6 +139,7 @@ impl SessionService {
     pub fn new(
         policy: Arc<dyn PolicyStore>,
         credentials: Arc<dyn CredentialStore>,
+        nodes: Arc<dyn NodeStore>,
         keys: Arc<KeyRing>,
         guard: Guard,
         notifier: Arc<PolicyNotifier>,
@@ -145,10 +147,36 @@ impl SessionService {
         Self {
             policy,
             credentials,
+            nodes,
             keys,
             guard,
             notifier,
         }
+    }
+
+    /// A session minted for a node puts its credentials on that node: a
+    /// scoped node is sent the rules of the sessions minted for it. Only
+    /// whoever may manage nodes chooses where credentials go, so being
+    /// able to mint in a vault isn't enough. The node must exist and not
+    /// be revoked.
+    async fn check_node_target(
+        &self,
+        caller: &Caller,
+        node_id: &NodeId,
+    ) -> Result<(), ControlError> {
+        self.guard.check(caller, Action::NodeManage, None).await?;
+        let node = self
+            .nodes
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| ControlError::not_found("node", node_id))?;
+        if node.revoked_at.is_some() {
+            return Err(ControlError::validation(format!(
+                "node {node_id} ('{}') is revoked; sessions can't be minted for it",
+                node.name
+            )));
+        }
+        Ok(())
     }
 
     pub async fn mint(
@@ -160,6 +188,9 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(vault_id))
             .await?;
+        if let Some(node_id) = &req.node_id {
+            self.check_node_target(caller, node_id).await?;
+        }
         let vault = self
             .policy
             .get_vault(vault_id)

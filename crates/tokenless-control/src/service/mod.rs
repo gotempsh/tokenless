@@ -253,6 +253,7 @@ impl ControlServices {
         let sessions = sessions::SessionService::new(
             stores.policy.clone(),
             stores.credentials.clone(),
+            stores.nodes.clone(),
             keys.clone(),
             guard.clone(),
             notifier.clone(),
@@ -2294,7 +2295,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let node = tokenless_core::ids::NodeId::new();
+        let public =
+            encode_public_key(&SealPublicKey::from(&SealSecretKey::random_from_rng(OsRng)));
+        let node = cp
+            .nodes
+            .register_embedded(&a, "embedded", &public)
+            .await
+            .unwrap()
+            .node
+            .id;
         let mint = |id: &str| MintSession {
             rule_ids: vec![rule.id],
             bundle: None,
@@ -2350,6 +2359,47 @@ mod tests {
             ),
             "{err}"
         );
+
+        // Choosing where credentials go is node management: an editor who
+        // may mint in the vault can't send its sessions to a node.
+        let editor = Caller {
+            principal: Principal {
+                kind: PrincipalKind::User,
+                actor: "user:test-editor".into(),
+                role: Role::Editor,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now()),
+            second_factor: true,
+        };
+        let mut unbound = mint("sbx-8");
+        unbound.binding = None;
+        let denied = cp
+            .sessions
+            .mint(&editor, &vault.id, unbound.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(denied, ControlError::Forbidden { .. }), "{denied}");
+        unbound.node_id = None;
+        cp.sessions
+            .mint(&editor, &vault.id, unbound.clone())
+            .await
+            .unwrap();
+
+        // Only to a node that exists and isn't revoked.
+        let unknown = tokenless_core::ids::NodeId::new();
+        unbound.node_id = Some(unknown);
+        let err = cp
+            .sessions
+            .mint(&a, &vault.id, unbound.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ControlError::NotFound { .. }), "{err}");
+        assert!(err.to_string().contains(&unknown.to_string()), "{err}");
+        cp.nodes.revoke_node(&a, &node).await.unwrap();
+        unbound.node_id = Some(node);
+        let err = cp.sessions.mint(&a, &vault.id, unbound).await.unwrap_err();
+        assert!(err.to_string().contains("is revoked"), "{err}");
     }
 
     #[tokio::test]

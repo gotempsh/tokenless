@@ -75,6 +75,10 @@ binding.ready(version, Duration::from_secs(5)).await?;
 tokio::spawn(async move { binding.serve(workload_connection).await });
 ```
 
+- Minting for a node takes node management (an admin, or a service
+  principal not bound to a vault), because it decides which node receives
+  the credentials. Being able to mint in the vault isn't enough, and the
+  node must exist and not be revoked.
 - A bound session works only through its binding, never as
   `HTTPS_PROXY` credentials. A workload restarted under the same id gets
   a new generation, which stops its old sessions.

@@ -305,7 +305,10 @@ node protocol and the snapshot format are unchanged.
   runs. Minting such a session triggers a new snapshot, and the embedder
   waits for it with `Binding::ready`. Rules leave when their sessions are
   revoked or expire. Enrolled nodes still receive every enabled rule, so
-  sessions without a node work on any of them.
+  sessions without a node work on any of them. Because a session's node
+  decides which host receives its credentials, minting one with
+  `node_id` requires node management, not only the right to mint in the
+  vault, and the node must exist and not be revoked.
 - A credential whose secret expires upstream (an installation token, say)
   carries that deadline, set with the secret and replaced with it. The
   node stops injecting it then and answers 503 `credential_expired`, so a

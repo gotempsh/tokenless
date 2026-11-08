@@ -35,7 +35,8 @@ minted with it, so renewing with the same deadline never extends it.
 Labels show on the **Sessions** page and in the audit log.
 
 A program that embeds the data plane can restrict a session to one node
-with `"node_id": "<node id>"`, and to one workload with
+with `"node_id": "<node id>"` (which needs node management, since it
+decides where the credentials go), and to one workload with
 `"binding": {"id": "sbx-42", "generation": 3}`. A bound session works only
 through that workload's binding, never as `HTTPS_PROXY` credentials. A
 binding may hold several sessions, one per group of services that share a
