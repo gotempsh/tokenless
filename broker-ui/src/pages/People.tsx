@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Mail, ShieldCheck, UserPlus } from "lucide-react";
 import { del, get, patch, post, type Invite, type Page, type Role, type UserSummary } from "../api";
+import { actorName } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
   fromWidth,
@@ -15,7 +16,6 @@ import {
   Field,
   FormDialog,
   Loading,
-  Mono,
   OneTimeSecret,
   Pager,
   Panel,
@@ -72,6 +72,10 @@ export function People({ me }: { me: UserSummary }) {
     () => (isAdmin ? get<Page<Invite>>(`/invites?page=${invitePage}`) : Promise.resolve(undefined)),
     [isAdmin, invitePage],
   );
+  const names = useMemo(
+    () => ({ meId: me.id, users: new Map(users.data?.items.map((u) => [u.id, u.username])) }),
+    [me.id, users.data],
+  );
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ role: "editor" as PersonRole, expires_in_hours: 72 });
   const [link, setLink] = useState<string | null>(null);
@@ -122,7 +126,7 @@ export function People({ me }: { me: UserSummary }) {
   );
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title="People"
         actions={inviteButton}
@@ -274,7 +278,7 @@ export function People({ me }: { me: UserSummary }) {
                         <TableRow key={i.id}>
                           <TableCell className="font-medium">{i.role}</TableCell>
                           <TableCell className={fromWidth.xl}>
-                            <Mono>{i.created_by}</Mono>
+                            {actorName(i.created_by, names)}
                           </TableCell>
                           <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                             <When at={i.expires_at} />

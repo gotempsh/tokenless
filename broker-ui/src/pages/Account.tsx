@@ -5,7 +5,8 @@ import { useState, type FormEvent } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { post, type UserSummary } from "../api";
 import { useAction } from "../hooks";
-import { ErrorBanner, Field, Panel, Section, Status } from "../components/common";
+import { ErrorBanner, Field, Status } from "../components/common";
+import { SettingsSection } from "../components/layout";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -15,17 +16,19 @@ import { CodeField, EnrollmentBox, type TotpEnrollment } from "./Auth";
 /** The signed-in person's own sign-in: password and authenticator app. */
 export function Account({ user, onChanged }: { user: UserSummary; onChanged: () => void }) {
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader title="Account" verdict={<span className="text-sm text-muted-foreground">{user.username}</span>} />
-      <Section title="Password">
-        <PasswordForm />
-      </Section>
-      <Section
-        title="Authenticator app"
-        actions={<Status tone={user.totp_enrolled ? "success" : "neutral"}>{user.totp_enrolled ? "On" : "Off"}</Status>}
-      >
-        {user.totp_enrolled ? <RemoveAuthenticator onDone={onChanged} /> : <AddAuthenticator onDone={onChanged} />}
-      </Section>
+      <div>
+        <SettingsSection title="Password">
+          <PasswordForm />
+        </SettingsSection>
+        <SettingsSection
+          title="Authenticator app"
+          hint={<Status tone={user.totp_enrolled ? "success" : "neutral"}>{user.totp_enrolled ? "On" : "Off"}</Status>}
+        >
+          {user.totp_enrolled ? <RemoveAuthenticator onDone={onChanged} /> : <AddAuthenticator onDone={onChanged} />}
+        </SettingsSection>
+      </div>
     </PageContainer>
   );
 }
@@ -74,29 +77,27 @@ function PasswordForm() {
   };
 
   return (
-    <Panel className="p-4 sm:p-6">
-      <form onSubmit={submit} className="max-w-md space-y-5">
-        <ErrorBanner error={action.error} />
-        {done && (
-          <Alert>
-            <CheckCircle2 className="size-4 text-success" />
-            <AlertDescription>Password changed. Your other sessions were signed out.</AlertDescription>
-          </Alert>
-        )}
-        <PasswordInput id="current-password" label="Current password" value={current} onChange={setCurrent} autoComplete="current-password" />
-        <PasswordInput
-          id="new-password"
-          label="New password"
-          value={next}
-          onChange={setNext}
-          hint="At least 12 characters."
-          autoComplete="new-password"
-        />
-        <Button type="submit" disabled={action.busy}>
-          Change password
-        </Button>
-      </form>
-    </Panel>
+    <form onSubmit={submit} className="max-w-md space-y-5">
+      <ErrorBanner error={action.error} />
+      {done && (
+        <Alert>
+          <CheckCircle2 className="size-4 text-success" />
+          <AlertDescription>Password changed. Your other sessions were signed out.</AlertDescription>
+        </Alert>
+      )}
+      <PasswordInput id="current-password" label="Current password" value={current} onChange={setCurrent} autoComplete="current-password" />
+      <PasswordInput
+        id="new-password"
+        label="New password"
+        value={next}
+        onChange={setNext}
+        hint="At least 12 characters."
+        autoComplete="new-password"
+      />
+      <Button type="submit" disabled={action.busy}>
+        Change password
+      </Button>
+    </form>
   );
 }
 
@@ -122,36 +123,32 @@ function AddAuthenticator({ onDone }: { onDone: () => void }) {
 
   if (!enrollment)
     return (
-      <Panel className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
-        <div className="space-y-1">
-          <p className="text-sm">Sign in with a code from an app such as 1Password or Google Authenticator, as well as your password.</p>
-          <ErrorBanner error={action.error} />
-        </div>
-        <Button type="button" variant="outline" onClick={() => void begin()} disabled={action.busy} className="shrink-0">
+      <div className="max-w-md space-y-3">
+        <p className="text-sm">Sign in with a code from an app such as 1Password or Google Authenticator, as well as your password.</p>
+        <ErrorBanner error={action.error} />
+        <Button type="button" variant="outline" onClick={() => void begin()} disabled={action.busy}>
           Set up
         </Button>
-      </Panel>
+      </div>
     );
 
   return (
-    <Panel className="p-4 sm:p-6">
-      <form onSubmit={finish} className="max-w-md space-y-5">
-        <ErrorBanner error={action.error} />
-        <EnrollmentBox enrollment={enrollment} />
-        <Field label="Code from the app" htmlFor="totp-code">
-          <CodeField value={code} onChange={setCode} required />
-        </Field>
-        <PasswordInput id="confirm-password" label="Your password" value={password} onChange={setPassword} autoComplete="current-password" />
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={() => setEnrollment(null)}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={action.busy}>
-            Turn on
-          </Button>
-        </div>
-      </form>
-    </Panel>
+    <form onSubmit={finish} className="max-w-md space-y-5">
+      <ErrorBanner error={action.error} />
+      <EnrollmentBox enrollment={enrollment} />
+      <Field label="Code from the app" htmlFor="totp-code">
+        <CodeField value={code} onChange={setCode} required />
+      </Field>
+      <PasswordInput id="confirm-password" label="Your password" value={password} onChange={setPassword} autoComplete="current-password" />
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" onClick={() => setEnrollment(null)}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={action.busy}>
+          Turn on
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -169,31 +166,29 @@ function RemoveAuthenticator({ onDone }: { onDone: () => void }) {
 
   if (!open)
     return (
-      <Panel className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+      <div className="max-w-md space-y-3">
         <p className="text-sm">Signing in asks for a code from your authenticator app.</p>
-        <Button type="button" variant="outline" onClick={() => setOpen(true)} className="shrink-0">
+        <Button type="button" variant="outline" onClick={() => setOpen(true)}>
           Remove
         </Button>
-      </Panel>
+      </div>
     );
 
   return (
-    <Panel className="p-4 sm:p-6">
-      <form onSubmit={submit} className="max-w-md space-y-5">
-        <ErrorBanner error={action.error} />
-        <Field label="Code from the app" htmlFor="totp-code">
-          <CodeField value={code} onChange={setCode} required autoFocus />
-        </Field>
-        <PasswordInput id="confirm-password" label="Your password" value={password} onChange={setPassword} autoComplete="current-password" />
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="destructive" disabled={action.busy}>
-            Remove authenticator
-          </Button>
-        </div>
-      </form>
-    </Panel>
+    <form onSubmit={submit} className="max-w-md space-y-5">
+      <ErrorBanner error={action.error} />
+      <Field label="Code from the app" htmlFor="totp-code">
+        <CodeField value={code} onChange={setCode} required autoFocus />
+      </Field>
+      <PasswordInput id="confirm-password" label="Your password" value={password} onChange={setPassword} autoComplete="current-password" />
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="destructive" disabled={action.busy}>
+          Remove authenticator
+        </Button>
+      </div>
+    </form>
   );
 }

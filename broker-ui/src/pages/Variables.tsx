@@ -64,7 +64,7 @@ export function Variables({ isAdmin }: { isAdmin: boolean }) {
   );
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title="Variables"
         description={<>Use in a service as <Mono>{"{{NAME}}"}</Mono>.</>}

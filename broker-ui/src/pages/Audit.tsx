@@ -60,7 +60,7 @@ export function Audit({ me }: { me: UserSummary }) {
   const filtered = category.prefix !== "";
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader title="Audit log" />
       <Select
         value={category.label}

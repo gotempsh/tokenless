@@ -91,7 +91,7 @@ export function ApiKeys() {
   );
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title="API keys"
         actions={createButton}
