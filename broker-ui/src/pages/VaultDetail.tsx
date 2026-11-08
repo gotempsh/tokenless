@@ -18,7 +18,7 @@ import {
   type Vault,
   type VaultOverview,
 } from "../api";
-import { DetailLayout, Fact, FactList } from "../components/layout";
+import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
 import { SessionHandoff } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
@@ -63,13 +63,18 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 
-type Tab = "credentials" | "rules" | "bundles" | "sessions";
+export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "settings";
 const TABS: { value: Tab; label: string }[] = [
   { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
   { value: "bundles", label: "Access bundles" },
   { value: "sessions", label: "Sessions" },
+  { value: "settings", label: "Settings" },
 ];
+
+export function vaultTab(raw: string | undefined): Tab {
+  return TABS.find((t) => t.value === raw)?.value ?? "credentials";
+}
 
 interface VaultDeletion {
   credentials: number;
@@ -142,82 +147,46 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         verdict={
           v &&
           (v.live_sessions > 0 ? (
-            <Status tone="success">{v.live_sessions} live</Status>
+            <a href={`#/vaults/${vaultId}/sessions`}>
+              <Status tone="success">{v.live_sessions} live</Status>
+            </a>
           ) : (
             <Status tone="neutral">Idle</Status>
           ))
         }
-        actions={
-          v && (
-            <RowMenu
-              label={v.name}
-              items={[
-                {
-                  label: "Delete vault",
-                  icon: Trash2,
-                  onSelect: () => setDeleting(true),
-                  destructive: true,
-                  disabled: !isAdmin,
-                  reason: "Only admins can delete a vault",
-                },
-              ]}
-            />
-          )
+        description={
+          v &&
+          (v.last_request_at ? (
+            <>
+              Last request <Relative at={v.last_request_at} />
+            </>
+          ) : (
+            "No requests yet"
+          ))
         }
       />
       <ErrorBanner error={vault.error} />
-      <DetailLayout
-        facts={
-          v ? (
-            <FactList>
-              <Fact label="Live sessions">
-                {v.live_sessions > 0 ? (
-                  <a href={`#/vaults/${vaultId}/sessions`} className="underline-offset-2 hover:underline">
-                    {v.live_sessions} now
-                  </a>
-                ) : (
-                  <span className="text-muted-foreground">None</span>
-                )}
-              </Fact>
-              <Fact label="Last request">
-                {v.last_request_at ? <Relative at={v.last_request_at} /> : <span className="text-muted-foreground">None yet</span>}
-              </Fact>
-              <Fact label="Created">
-                <Exact at={v.created_at} />
-              </Fact>
-              <Fact label="Vault ID">
-                <span className="flex items-center gap-1">
-                  <Mono className="truncate">{v.id}</Mono>
-                  <CopyButton value={v.id} label="Copy vault ID" iconOnly />
-                </span>
-              </Fact>
-            </FactList>
-          ) : (
-            <Skeleton className="h-48 rounded-lg" />
-          )
-        }
+      <Tabs
+        value={tab}
+        onValueChange={(t) => {
+          window.location.hash = `#/vaults/${vaultId}/${t}`;
+        }}
       >
-        <Tabs
-          value={tab}
-          onValueChange={(t) => {
-            window.location.hash = `#/vaults/${vaultId}/${t}`;
-          }}
-        >
-          <TabsList>
-            {TABS.map((t) => (
-              <TabsTrigger key={t.value} value={t.value} count={t.value === "credentials" ? v?.service_count : undefined}>
-                {t.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <TabSections>
-          {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-          {tab === "rules" && <Rules vaultId={vaultId} />}
-          {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-          {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
-        </TabSections>
-      </DetailLayout>
+        <TabsList>
+          {TABS.map((t) => (
+            <TabsTrigger key={t.value} value={t.value} count={t.value === "credentials" ? v?.service_count : undefined}>
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
+      <TabSections>
+        {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
+        {tab === "rules" && <Rules vaultId={vaultId} />}
+        {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
+        {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
+      </TabSections>
+      {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin} onDelete={() => setDeleting(true)} />}
       <FormDialog
         open={deleting}
         onOpenChange={setDeleting}
@@ -227,6 +196,34 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         {v && <DeleteVaultForm vault={v} onCancel={() => setDeleting(false)} />}
       </FormDialog>
     </PageContainer>
+  );
+}
+
+/** A vault's own facts and the one thing done to the vault itself: deleting it. */
+function VaultSettings({ vault, isAdmin, onDelete }: { vault: VaultOverview; isAdmin: boolean; onDelete: () => void }) {
+  return (
+    <div className="max-w-[1040px]">
+      <SettingsSection title="Vault ID">
+        <span className="flex items-center gap-1">
+          <Mono>{vault.id}</Mono>
+          <CopyButton value={vault.id} label="Copy vault ID" iconOnly />
+        </span>
+      </SettingsSection>
+      <SettingsSection title="Created">
+        <p className="text-sm">
+          <Exact at={vault.created_at} />
+        </p>
+      </SettingsSection>
+      <SettingsSection title="Delete vault" hint="Deletes its services, rules and access bundles. The audit trail is kept.">
+        <div className="space-y-2">
+          <Button type="button" variant="outline" className="text-destructive" onClick={onDelete} disabled={!isAdmin}>
+            <Trash2 />
+            Delete vault
+          </Button>
+          {!isAdmin && <p className="text-xs text-muted-foreground">Only admins can delete a vault.</p>}
+        </div>
+      </SettingsSection>
+    </div>
   );
 }
 

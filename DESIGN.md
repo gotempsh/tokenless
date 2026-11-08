@@ -93,7 +93,7 @@ Key characteristics:
 
 - Content capped and centred beside the sidebar: 1440px for lists and records, 1040px for settings and admin lists, 640px for long forms.
 - Few records are panels led by service logos; long lists stay tables within the cap.
-- Records split into a main column and a 320px facts column.
+- A record without tabs splits into a main column and a 320px facts column. A record with tabs gives its tabs the full width: status goes in the header, and its own facts, edits and Delete go in a Settings tab.
 - No paragraph under a page title; at most one short line where it is needed to act.
 
 ## Colors
@@ -131,7 +131,8 @@ Geist Variable for all interface text and Geist Mono Variable for data, both bun
 - **Page container**: `PageContainer` in `components/ui/page-header.tsx`, padded 16 / 24 / 32px by breakpoint, centred with `mx-auto`, width `default` 1440px, `settings` 1040px, `form` 640px.
 - **Page header**: title (and a verdict badge on records) at left, actions at right. The title keeps at least 12rem, so one action stays beside it on a phone and more move to their own line.
 - **Panel grid**: `PANEL_GRID` in `components/layout.tsx`, as many 320px-or-wider columns as fit, 16px gap, panels sized to their own content.
-- **Detail layout**: `DetailLayout`, a main column and a 320px facts column from `lg`, 32px apart; on a phone the facts follow the content.
+- **Detail layout**: `DetailLayout`, a main column and a 320px facts column from `lg`, 32px apart; on a phone the facts follow the content. Only for records without tabs (a service, a session).
+- **Tabbed records** (a vault, an access bundle): no facts column. The header carries the state badge and one line of status (last request, or the description and vault); the last tab, Settings, holds the record's ID, history, edit and Delete as settings sections, capped at 1040px.
 - **Settings sections**: `SettingsSection`, a 240px label column (title, one hint line) and the controls beside it, sections divided by a top border and 24px of padding.
 - **Catalogue**: a 200px category rail with counts beside a tile grid; three tiles across, four from 80rem of catalogue. Below 48rem the rail becomes a picker and the tiles a list.
 - **Tables**: columns appear by priority with the container's width (`fromWidth`); hidden columns fold under the first cell. Nothing scrolls sideways.
@@ -156,7 +157,7 @@ One filled `primary` button per view for the main action; everything else is `ou
 
 ### Facts column
 
-`FactList` / `Fact`: a bordered panel of label-over-value facts (12px label, 14px value, long values wrap anywhere), with an optional title and Edit action.
+`FactList` / `Fact`: a bordered panel of label-over-value facts (12px label, 14px value, long values wrap anywhere), with an optional title and Edit action. Used beside a record that has no tabs; a tabbed record puts these facts in its Settings tab instead.
 
 ### Tables
 

@@ -65,7 +65,7 @@ import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
 import { Templates } from "./pages/Templates";
 import { Variables } from "./pages/Variables";
-import { VaultDetail } from "./pages/VaultDetail";
+import { VaultDetail, vaultTab } from "./pages/VaultDetail";
 import { Vaults } from "./pages/Vaults";
 
 type Boot =
@@ -212,7 +212,7 @@ export function App() {
         <ServiceDetail vaultId={id} credentialId={sub} user={user} />
       )}
       {section === "vaults" && id && !(tab === "services" && sub) && (
-        <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
+        <VaultDetail vaultId={id} tab={vaultTab(tab)} user={user} />
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
       {section === "bundles" && !id && <Bundles user={user} />}

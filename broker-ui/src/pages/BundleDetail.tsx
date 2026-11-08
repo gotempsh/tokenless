@@ -61,7 +61,7 @@ import {
   TabSections,
   Tags,
   useConfirm,
-  When,
+  Relative,
 } from "../components/common";
 import { cn } from "../lib/utils";
 import { LogoTile, ServiceLogo } from "../components/ServiceLogo";
@@ -73,23 +73,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
-import { DetailLayout, Fact, FactList } from "../components/layout";
+import { SettingsSection } from "../components/layout";
 import { CommandSnippet } from "./Bundles";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
 import { SessionTable, sessionLabel } from "./Sessions";
 import { actorName, type ActorNames } from "../audit";
 
-export type BundleTab = "services" | "sessions" | "connect";
+export type BundleTab = "services" | "sessions" | "connect" | "settings";
 
 const TABS: { value: BundleTab; label: string }[] = [
   { value: "services", label: "Services" },
   { value: "sessions", label: "Sessions" },
   { value: "connect", label: "Run an agent" },
+  { value: "settings", label: "Settings" },
 ];
 
 export function bundleTab(raw: string | undefined): BundleTab {
-  return raw === "sessions" || raw === "connect" ? raw : "services";
+  return TABS.find((t) => t.value === raw)?.value ?? "services";
 }
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -170,7 +171,16 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
       <PageHeader
         title={b ? <span className="font-mono">{b.name}</span> : <Skeleton className="h-8 w-48" />}
         verdict={b ? verdict(b, rulesInVault) : undefined}
-        description={b?.description || undefined}
+        description={
+          b && (
+            <>
+              {b.description && `${b.description} · `}in{" "}
+              <a href={`#/vaults/${b.vault_id}/bundles`} className="text-foreground underline-offset-2 hover:underline">
+                {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
+              </a>
+            </>
+          )
+        }
         actions={
           b && (
             <>
@@ -188,53 +198,13 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
                 <Terminal />
                 <span className="hidden sm:inline">Run an agent</span>
               </Button>
-              <RowMenu
-                label={b.name}
-                items={[
-                  {
-                    label: "Edit details",
-                    icon: Pencil,
-                    onSelect: () => setEditing(true),
-                    disabled: !canEdit,
-                    reason: "Only editors and admins can change bundles",
-                  },
-                  {
-                    label: "Delete bundle",
-                    icon: Trash2,
-                    onSelect: () => confirmDelete.ask(b),
-                    destructive: true,
-                    disabled: !canEdit,
-                    reason: "Only editors and admins can delete bundles",
-                  },
-                ]}
-              />
             </>
           )
         }
       />
       <ErrorBanner error={bundle.error ?? vault.error ?? services.error ?? deleteAction.error} />
       {b && (
-        <DetailLayout
-          facts={
-            <FactList>
-              <Fact label="Vault">
-                <a href={`#/vaults/${b.vault_id}/bundles`} className="underline-offset-2 hover:underline">
-                  {vault.data?.name ?? <Mono>{b.vault_id.slice(0, 8)}</Mono>}
-                </a>
-              </Fact>
-              <Fact label="Services">
-                {b.rule_ids.length}
-                {members.some((r) => !r.enabled) && (
-                  <span className="text-warning-strong"> · {members.filter((r) => !r.enabled).length} turned off</span>
-                )}
-              </Fact>
-              <Fact label="Created by">{actorName(b.created_by, actors)}</Fact>
-              <Fact label="Updated">
-                <When at={b.updated_at} />
-              </Fact>
-            </FactList>
-          }
-        >
+        <>
           <Tabs value={tab} onValueChange={(v) => goTab(bundleTab(v))}>
             <TabsList>
               {TABS.map((t) => (
@@ -286,7 +256,16 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
               />
             </div>
           )}
-        </DetailLayout>
+          {tab === "settings" && (
+            <BundleSettings
+              bundle={b}
+              createdBy={actorName(b.created_by, actors)}
+              canEdit={canEdit}
+              onEdit={() => setEditing(true)}
+              onDelete={() => confirmDelete.ask(b)}
+            />
+          )}
+        </>
       )}
       {!b && bundle.loading && <Loading />}
       {b && (
@@ -342,6 +321,68 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
         }}
       />
     </PageContainer>
+  );
+}
+
+/** The bundle's own details and the things done to the bundle itself. */
+function BundleSettings({
+  bundle,
+  createdBy,
+  canEdit,
+  onEdit,
+  onDelete,
+}: {
+  bundle: AccessBundle;
+  createdBy: string;
+  canEdit: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const reason = canEdit ? null : <p className="text-xs text-muted-foreground">Only editors and admins can change bundles.</p>;
+  return (
+    <div className="max-w-[1040px]">
+      <SettingsSection title="Name and description">
+        <div className="space-y-3">
+          <div>
+            <p className="font-mono text-sm">{bundle.name}</p>
+            <p className="text-sm text-muted-foreground">{bundle.description || "No description"}</p>
+          </div>
+          <Button type="button" variant="outline" onClick={onEdit} disabled={!canEdit}>
+            <Pencil />
+            Edit
+          </Button>
+          {reason}
+        </div>
+      </SettingsSection>
+      <SettingsSection title="History">
+        <div className="space-y-1 text-sm">
+          <p>
+            Created by {createdBy} · <Exact at={bundle.created_at} />
+          </p>
+          <p className="text-muted-foreground">
+            Updated <Relative at={bundle.updated_at} />
+          </p>
+        </div>
+      </SettingsSection>
+      <SettingsSection title="Bundle ID">
+        <span className="flex items-center gap-1">
+          <Mono>{bundle.id}</Mono>
+          <CopyButton value={bundle.id} label="Copy bundle ID" iconOnly />
+        </span>
+      </SettingsSection>
+      <SettingsSection
+        title="Delete bundle"
+        hint="Ends the live sessions started from it. Its services and their rules stay in the vault."
+      >
+        <div className="space-y-2">
+          <Button type="button" variant="outline" className="text-destructive" onClick={onDelete} disabled={!canEdit}>
+            <Trash2 />
+            Delete bundle
+          </Button>
+          {reason}
+        </div>
+      </SettingsSection>
+    </div>
   );
 }
 
