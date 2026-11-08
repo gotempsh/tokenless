@@ -264,8 +264,13 @@ struct RunArgs {
     #[arg(value_name = "NAME=VALUE")]
     assignments: Vec<String>,
     /// Don't say so when the command is Claude Code and the tokenless
-    /// skill isn't installed.
-    #[arg(long, env = "TOKENLESS_NO_SKILL_HINT")]
+    /// skill isn't installed. From the environment, `0`, `false`, `no`,
+    /// `off` and empty mean no; anything else means yes.
+    #[arg(
+        long,
+        env = "TOKENLESS_NO_SKILL_HINT",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     no_skill_hint: bool,
     /// The command to run, after `--`.
     #[arg(last = true, required = true)]
