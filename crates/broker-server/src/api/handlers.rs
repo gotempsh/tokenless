@@ -725,6 +725,18 @@ pub async fn get_session(
     Ok(Json(s.control.sessions.get(&authed.caller, &id).await?))
 }
 
+/// What a session reaches, for the people who manage it.
+pub async fn session_services(
+    State(s): St,
+    authed: Authed,
+    Path(session_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: SessionId = parse_id("session", &session_id)?;
+    Ok(Json(
+        s.control.sessions.services(&authed.caller, &id).await?,
+    ))
+}
+
 pub async fn revoke_session(
     State(s): St,
     authed: Authed,

@@ -107,6 +107,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             get(get_session).patch(update_session),
         )
         .route("/sessions/{session_id}/revoke", post(revoke_session))
+        .route("/sessions/{session_id}/services", get(session_services))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(
             "/api-keys/{api_key_id}",

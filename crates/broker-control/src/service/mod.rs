@@ -1428,6 +1428,20 @@ mod tests {
             cp.sessions.get(&outsider, &minted.session.id).await,
             Err(ControlError::Forbidden { .. })
         ));
+        // So is what it reaches, in the session's rule order.
+        let reached: Vec<_> = cp
+            .sessions
+            .services(&viewer, &minted.session.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.rule_id)
+            .collect();
+        assert_eq!(reached, minted.session.rule_ids);
+        assert!(matches!(
+            cp.sessions.services(&outsider, &minted.session.id).await,
+            Err(ControlError::Forbidden { .. })
+        ));
         assert!(matches!(
             cp.bundles
                 .create(

@@ -398,6 +398,27 @@ impl SessionService {
                 reason: format!("proxy session {id} has been revoked"),
             });
         }
+        let services = self.services_of(&session).await?;
+        Ok(SessionDiscovery { session, services })
+    }
+
+    /// What the session reaches, for the people who manage it: the same
+    /// list its own token gets from `discover_self`, revoked or not.
+    pub async fn services(
+        &self,
+        caller: &Caller,
+        id: &SessionId,
+    ) -> Result<Vec<DiscoveredService>, ControlError> {
+        let session = self.get(caller, id).await?;
+        self.services_of(&session).await
+    }
+
+    /// The session's rules with their credentials and templates, in the
+    /// session's rule order. Rules or credentials deleted since are left out.
+    async fn services_of(
+        &self,
+        session: &ProxySession,
+    ) -> Result<Vec<DiscoveredService>, ControlError> {
         // Bounded by the session's rule count (at most a bundle's 100).
         let mut services = Vec::with_capacity(session.rule_ids.len());
         for rule_id in &session.rule_ids {
@@ -450,7 +471,7 @@ impl SessionService {
                 mcp_path,
             });
         }
-        Ok(SessionDiscovery { session, services })
+        Ok(services)
     }
 
     pub async fn revoke_self(&self, token: &str) -> Result<ProxySession, ControlError> {
