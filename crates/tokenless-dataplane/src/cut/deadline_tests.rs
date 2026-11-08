@@ -134,6 +134,8 @@ struct Plane {
     version: AtomicU64,
     /// A's credential's `not_after`, in every snapshot installed.
     a_not_after: Mutex<Option<DateTime<Utc>>>,
+    /// A's paths, `/a/*` unless a test widens them.
+    a_paths: Mutex<&'static str>,
 }
 
 impl Plane {
@@ -162,6 +164,7 @@ impl Plane {
             host: format!("localhost:{}", upstream.port),
             version: AtomicU64::new(0),
             a_not_after: Mutex::new(None),
+            a_paths: Mutex::new("/a/*"),
         });
         plane.install();
         plane
@@ -179,7 +182,8 @@ impl Plane {
             block_private: false,
             allow: vec![],
         };
-        body.rules[0].allow.paths = vec![PathPattern::parse("/a/*").unwrap()];
+        body.rules[0].allow.paths =
+            vec![PathPattern::parse(*self.a_paths.lock().unwrap()).unwrap()];
         body.rules[1].allow.paths = vec![PathPattern::parse("/b/*").unwrap()];
         if let Some(at) = *self.a_not_after.lock().unwrap() {
             body.rules[0].not_after = Some(at);
@@ -475,6 +479,71 @@ async fn without_strict_a_grant_deadline_refuses_new_requests_only() {
     refresh.abort();
 }
 
+/// Without strict, a grant ending stops new requests through a binding
+/// too, but not the stream already flowing under it, however many fresh
+/// snapshots wake its watch.
+#[tokio::test]
+async fn without_strict_a_bound_stream_outlives_its_grant_deadline() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    let refresh = p.refresh();
+    let (a_deadline, a_at) = deadline_in(Duration::from_secs(1));
+    let claims = p
+        .claims(vec![p.rule_a, p.rule_b], 600)
+        .for_node(p.f.keys.node_id)
+        .for_binding("sandbox-2", 1)
+        .unwrap()
+        .with_rule_deadlines(&[(p.rule_a, a_deadline)].into(), Utc::now())
+        .unwrap();
+    let binding = Arc::new(
+        p.dp.bind(BindingSpec {
+            binding_id: "sandbox-2".into(),
+            generation: 1,
+            sessions: vec![p.sign(&claims)],
+            version: 1,
+            max_connections: 8,
+        })
+        .unwrap(),
+    );
+    let mut a = p.bound_tunnel(&binding, up.port).await;
+    assert!(get(&mut a, "/a/stream", up.port)
+        .await
+        .contains("Bearer ta"));
+    assert!(
+        ends_by(&mut a, a_at + LATE).await.is_none(),
+        "a bound stream was cut at its grant's deadline without strict"
+    );
+    let mut again = p.bound_tunnel(&binding, up.port).await;
+    let refused = get(&mut again, "/a/next", up.port).await;
+    assert!(refused.contains(" 403 "), "{refused}");
+    refresh.abort();
+}
+
+/// A more specific rule whose grant has ended no longer takes the request
+/// from a broader rule the session still holds.
+#[tokio::test]
+async fn an_ended_grant_leaves_its_requests_to_a_broader_rule_still_held() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    *p.a_paths.lock().unwrap() = "/*";
+    p.install();
+    let refresh = p.refresh();
+    let (b_deadline, b_at) = deadline_in(Duration::from_secs(1));
+    let claims = p
+        .claims(vec![p.rule_a, p.rule_b], 600)
+        .with_rule_deadlines(&[(p.rule_b, b_deadline)].into(), Utc::now())
+        .unwrap();
+    let token = p.sign(&claims);
+    let mut before = p.tunnel(up.port, &token).await;
+    let answer = get(&mut before, "/b/x", up.port).await;
+    assert!(answer.contains("Bearer tb"), "{answer}");
+    tokio::time::sleep_until(b_at + Duration::from_millis(200)).await;
+    let mut after = p.tunnel(up.port, &token).await;
+    let answer = get(&mut after, "/b/x", up.port).await;
+    assert!(answer.contains("Bearer ta"), "{answer}");
+    refresh.abort();
+}
+
 /// An idle strict tunnel to a host closes when the last grant covering it
 /// ends, and a passthrough tunnel when the session expires.
 #[tokio::test]
@@ -677,6 +746,32 @@ async fn revoke_and_wait_returns_once_the_bindings_traffic_has_stopped() {
 /// Waiting for a session's revocation fails, saying why, while the
 /// revocation has not arrived, and succeeds only once it is installed and
 /// the session's open traffic is gone.
+/// A session that expired long ago is no longer listed as revoked, but
+/// nothing can open under it: with nothing open it is cut.
+#[tokio::test]
+async fn session_cut_accepts_a_long_expired_session_with_nothing_open() {
+    let up = upstream().await;
+    let p = Plane::start(&up).await;
+    let gone = tokenless_core::ids::SessionId::new();
+    let long_ago = Utc::now() - TimeDelta::hours(2);
+    let report =
+        p.dp.session_cut(gone, long_ago, Duration::from_millis(300))
+            .await
+            .unwrap();
+    assert_eq!(report.connections_closed, 0);
+    // Still draining: it waits for that.
+    let open = p.dp.shared.traffic.enter(gone);
+    let err =
+        p.dp.session_cut(gone, long_ago, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(err, DataPlaneError::NotCut { open: 1, .. }),
+        "{err}"
+    );
+    drop(open);
+}
+
 #[tokio::test]
 async fn session_cut_waits_for_the_revocation_and_the_traffic() {
     let up = upstream().await;
@@ -691,7 +786,7 @@ async fn session_cut_waits_for_the_revocation_and_the_traffic() {
 
     // Not delivered yet, as when the control plane cannot reach the node.
     let err =
-        p.dp.session_cut(claims.jti, Duration::from_millis(300))
+        p.dp.session_cut(claims.jti, claims.exp, Duration::from_millis(300))
             .await
             .unwrap_err();
     match &err {
@@ -712,7 +807,7 @@ async fn session_cut_waits_for_the_revocation_and_the_traffic() {
     // connection could still use the session.
     let unused = p.claims(vec![p.rule_a], 600);
     let err =
-        p.dp.session_cut(unused.jti, Duration::from_millis(100))
+        p.dp.session_cut(unused.jti, unused.exp, Duration::from_millis(100))
             .await
             .unwrap_err();
     assert!(
@@ -732,9 +827,12 @@ async fn session_cut_waits_for_the_revocation_and_the_traffic() {
     // being torn down after the revocation arrived.
     let slow = p.dp.shared.traffic.enter(claims.jti);
     let waiting = {
-        let dp_session = claims.jti;
+        let (dp_session, exp) = (claims.jti, claims.exp);
         let p = p.clone();
-        tokio::spawn(async move { p.dp.session_cut(dp_session, Duration::from_secs(5)).await })
+        tokio::spawn(async move {
+            p.dp.session_cut(dp_session, exp, Duration::from_secs(5))
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(

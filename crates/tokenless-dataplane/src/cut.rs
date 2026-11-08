@@ -241,7 +241,7 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
             if !current.lease_valid() {
                 return SessionEnd::LeaseExpired;
             }
-            let now = clock::now();
+            let now = clock::now(&current);
             let mut due = (watch.deadline, SessionEnd::Expired);
             if let Some(rule) = &watch.rule {
                 let Some(active) = current
@@ -252,7 +252,7 @@ pub(crate) async fn session_end(mut watch: SessionWatch) -> SessionEnd {
                     return SessionEnd::RuleRemoved;
                 };
                 if let Some(binding) = &watch.binding {
-                    if !binding.state.grants(&current, &rule.id, now) {
+                    if !binding.state.lists(&current, &rule.id) {
                         return SessionEnd::GrantRemoved;
                     }
                 }

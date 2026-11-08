@@ -12,10 +12,18 @@ use crate::cipher::AesGcmCipher;
 use crate::envelope::Envelope;
 use crate::memory::MemoryStore;
 use crate::probe::DisabledProber;
-use crate::store::RbacAuthorizer;
+use crate::store::{CredentialStore, RbacAuthorizer};
 use crate::{ControlConfig, ControlServices, ServiceStores};
 
 pub async fn services() -> (Arc<MemoryStore>, ControlServices) {
+    services_with(|store| store).await
+}
+
+/// [`services`] whose credential store is `credentials` wrapped around the
+/// memory store, for tests that interpose on it.
+pub async fn services_with<C: CredentialStore + 'static>(
+    credentials: impl FnOnce(Arc<MemoryStore>) -> Arc<C>,
+) -> (Arc<MemoryStore>, ControlServices) {
     let store = Arc::new(MemoryStore::new());
     let cipher = Arc::new(
         Envelope::open(&AesGcmCipher::generate_key(), store.clone())
@@ -24,7 +32,7 @@ pub async fn services() -> (Arc<MemoryStore>, ControlServices) {
     );
     let cs = ControlServices::new(
         ServiceStores {
-            credentials: store.clone(),
+            credentials: credentials(store.clone()),
             policy: store.clone(),
             audit: store.clone(),
             nodes: store.clone(),

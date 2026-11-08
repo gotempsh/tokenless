@@ -863,34 +863,55 @@ impl PolicyService {
                 &credential_aad_for(&meta),
             )
             .await?;
-        let mut event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
-            .vault(meta.vault_id)
-            .target(format!("credential:{id}"))
-            .detail("generation", (meta.secret_generation + 1).to_string());
-        if let Some(not_after) = not_after {
-            event = event.detail("not_after", not_after.to_rfc3339());
-        }
-        if let Some(rotation_id) = &rotation_id {
-            event = event.detail("rotation_id", rotation_id.clone());
-        }
-        let replaced = self
-            .credentials
-            .replace_secret(
-                id,
-                NewSecret {
-                    ciphertext,
-                    field_names: fields.names(),
-                    variable_refs,
-                    not_after,
-                    expected_generation,
-                    rotation_id,
-                },
-                Utc::now(),
-                &[event],
-            )
-            .await?;
-        if let SecretReplaced::Written { .. } = replaced {
-            self.notifier.bump_content();
+        // An unfenced rotation is fenced here on the generation it read, so
+        // its audit event names the generation it actually writes; when
+        // another rotation lands first it reads again and retries.
+        let mut generation = meta.secret_generation;
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let fence = expected_generation.unwrap_or(generation);
+            let mut event =
+                AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
+                    .vault(meta.vault_id)
+                    .target(format!("credential:{id}"))
+                    .detail("generation", (fence + 1).to_string());
+            if let Some(not_after) = not_after {
+                event = event.detail("not_after", not_after.to_rfc3339());
+            }
+            if let Some(rotation_id) = &rotation_id {
+                event = event.detail("rotation_id", rotation_id.clone());
+            }
+            let replaced = self
+                .credentials
+                .replace_secret(
+                    id,
+                    NewSecret {
+                        ciphertext: ciphertext.clone(),
+                        field_names: fields.names(),
+                        variable_refs: variable_refs.clone(),
+                        not_after,
+                        expected_generation: Some(fence),
+                        rotation_id: rotation_id.clone(),
+                    },
+                    Utc::now(),
+                    &[event],
+                )
+                .await;
+            match replaced {
+                // A retry of a rotation whose answer was lost bumps as
+                // well: the first attempt may have failed before it could.
+                Ok(SecretReplaced::Written { .. } | SecretReplaced::AlreadyApplied { .. }) => {
+                    self.notifier.bump_content();
+                    break;
+                }
+                Err(StoreError::StaleGeneration { current, .. })
+                    if expected_generation.is_none() && attempts < MAX_ROTATION_ATTEMPTS =>
+                {
+                    generation = current;
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         self.credential_meta(id).await
     }
@@ -1303,6 +1324,10 @@ impl PolicyService {
 
 /// A secret's deadline must still be ahead: a secret already past it would
 /// only ever be refused.
+/// How often an unfenced rotation reads the generation again when other
+/// rotations keep landing first.
+const MAX_ROTATION_ATTEMPTS: u32 = 5;
+
 /// A rotation id is the caller's: 1-128 letters, digits, `.`, `_`, `-` or `:`.
 fn check_rotation_id(rotation_id: &str) -> Result<(), ControlError> {
     let valid = !rotation_id.is_empty()

@@ -212,6 +212,19 @@ impl BindingState {
         })
     }
 
+    /// Whether a session of the binding still holds `rule`, whatever the
+    /// time: what traffic in flight under it is cut for when an update
+    /// leaves it out. Deadlines end that traffic on their own terms (the
+    /// grace period, or at once when strict).
+    pub fn lists(&self, snapshot: &ActiveSnapshot, rule: &RuleId) -> bool {
+        let set = self.sessions.load();
+        set.claims(Some(snapshot)).is_some_and(|claims| {
+            claims
+                .iter()
+                .any(|c| c.rules.contains(rule) && !snapshot.revoked.contains(&c.jti))
+        })
+    }
+
     /// Resolves once the session with this token digest is no longer one
     /// of the binding's, or the binding is gone.
     pub async fn left(&self, digest: [u8; 32]) {

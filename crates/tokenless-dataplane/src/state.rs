@@ -93,6 +93,11 @@ impl InterceptionTls {
 pub struct ActiveSnapshot {
     pub version: u64,
     pub lease_deadline: Instant,
+    /// The control plane's clock when it issued the snapshot, and when it
+    /// was installed here: what deadlines are checked against (see
+    /// `clock`).
+    pub issued_at: DateTime<Utc>,
+    pub installed_at: Instant,
     pub session_keys: HashMap<String, VerifyingKey>,
     pub revoked: HashSet<SessionId>,
     pub limits: HashMap<SessionId, Arc<AtomicU64>>,
@@ -338,6 +343,8 @@ pub fn build_active(
     Ok(ActiveSnapshot {
         version: body.version,
         lease_deadline: Instant::now() + remaining,
+        issued_at: body.issued_at,
+        installed_at: Instant::now(),
         session_keys,
         revoked: body.revoked_sessions.into_iter().collect(),
         limits,

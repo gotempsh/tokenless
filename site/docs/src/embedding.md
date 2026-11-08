@@ -199,16 +199,16 @@ data plane has stopped forwarding. Wait for that on each data plane
 that served the workload:
 
 ```rust
-control.sessions.revoke(&host, &session_id).await?;
+control.sessions.revoke(&host, &session.id).await?;
 installer.install(&control.nodes.build_snapshot(&node).await?)?;
-let report = dataplane.session_cut(session_id, Duration::from_secs(5)).await?;
+let report = dataplane.session_cut(session.id, session.expires_at, Duration::from_secs(5)).await?;
 // or, for a whole workload:
 let report = binding.revoke_and_wait(Duration::from_secs(5)).await?;
 ```
 
 - `session_cut` resolves once a snapshot revoking the session is in
-  force here and nothing the session opened (tunnels, MCP gateway
-  streams) is still open. `revoke_and_wait` revokes the binding and
+  force here, or the session has expired, and nothing it opened
+  (tunnels, MCP gateway streams) is still open. `revoke_and_wait` revokes the binding and
   resolves once its last connection has closed. Upstream connections
   close with their tunnels.
 - The report gives the snapshot version in force and how many

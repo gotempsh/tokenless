@@ -205,7 +205,7 @@ pub(crate) fn check_session(
     node: &NodeId,
     binding: Option<&str>,
 ) -> Result<(), &'static str> {
-    if clock::now() >= claims.exp {
+    if clock::now(snapshot) >= claims.exp {
         return Err("proxy session has expired");
     }
     if snapshot.revoked.contains(&claims.jti) {
@@ -1159,16 +1159,51 @@ pub(crate) async fn handle_intercepted(
         Metrics::inc(&shared.metrics.requests_denied_total);
         return respond(StatusCode::BAD_REQUEST, rejection.as_str());
     }
-    let rule = match choose_rule(
-        session_rules(&snapshot, claims),
-        &ctx.host,
-        ctx.port,
-        &method,
-        &path,
-        query.as_deref(),
-    ) {
+    // A rule past its own deadline is chosen as if the session did not
+    // hold it, so a broader rule it still holds can serve the request.
+    let now = clock::now(&snapshot);
+    let choose = |live_only: bool| {
+        choose_rule(
+            session_rules(&snapshot, claims)
+                .filter(|r| !live_only || now < claims.rule_deadline(&r.id)),
+            &ctx.host,
+            ctx.port,
+            &method,
+            &path,
+            query.as_deref(),
+        )
+    };
+    let rule = match choose(true) {
         RuleChoice::One(rule) => Some(rule),
-        RuleChoice::None => None,
+        RuleChoice::None => {
+            // Only an ended grant allows it: say so rather than "no rule".
+            if let RuleChoice::One(ended) | RuleChoice::Ambiguous(ended, _) = choose(false) {
+                Metrics::inc(&shared.metrics.requests_denied_total);
+                audit_best_effort(
+                    shared,
+                    claims,
+                    "proxy.deny",
+                    AuditOutcome::Denied,
+                    &ctx.host,
+                    ctx.port,
+                    Some((&method, &path)),
+                    &format!(
+                        "grant_expired: the session's grant of rule {} has ended",
+                        ended.id
+                    ),
+                );
+                return respond(
+                    StatusCode::FORBIDDEN,
+                    &format!(
+                        "this session's access to rule {} on {} ended at {}",
+                        ended.id,
+                        ctx.host,
+                        claims.rule_deadline(&ended.id).to_rfc3339()
+                    ),
+                );
+            }
+            None
+        }
         RuleChoice::Ambiguous(first, second) => {
             Metrics::inc(&shared.metrics.requests_denied_total);
             // The event's method and path details carry the request,
@@ -1215,33 +1250,6 @@ pub(crate) async fn handle_intercepted(
             ),
         );
     };
-    let now = clock::now();
-    let rule_deadline = claims.rule_deadline(&rule.id);
-    if now >= rule_deadline {
-        Metrics::inc(&shared.metrics.requests_denied_total);
-        audit_best_effort(
-            shared,
-            claims,
-            "proxy.deny",
-            AuditOutcome::Denied,
-            &ctx.host,
-            ctx.port,
-            Some((&method, &path)),
-            &format!(
-                "grant_expired: the session's grant of rule {} has ended",
-                rule.id
-            ),
-        );
-        return respond(
-            StatusCode::FORBIDDEN,
-            &format!(
-                "this session's access to rule {} on {} ended at {}",
-                rule.id,
-                ctx.host,
-                rule_deadline.to_rfc3339()
-            ),
-        );
-    }
     if let (Some(binding), Some(token)) = (&ctx.binding, &ctx.bound_token) {
         // A tunnel opened before an update still serves the requests in
         // flight; it may use only what the binding still grants.

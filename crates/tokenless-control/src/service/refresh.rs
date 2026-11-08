@@ -196,8 +196,15 @@ mod tests {
     use chrono::TimeDelta;
     use tokenless_core::authz::{Principal, Role};
 
+    use tokenless_core::audit::AuditEvent;
+    use tokenless_core::ids::{VariableId, VaultId};
+    use tokenless_core::substitution::Substitution;
+    use tokenless_core::variables::CustomHeader;
+
     use super::*;
-    use crate::service::testing::{services, vault_with_rule};
+    use crate::model::{Page, PageRequest, Variable};
+    use crate::service::testing::{services, services_with, vault_with_rule};
+    use crate::store::{CredentialStore, NewSecret, SecretReplaced};
     use crate::ControlServices;
 
     #[derive(Debug, thiserror::Error)]
@@ -240,6 +247,233 @@ mod tests {
             .iter()
             .filter(|e| e.action == "credential.rotate")
             .count()
+    }
+
+    /// The memory store with two faults to inject into `replace_secret`:
+    /// commit and then report a backend error once, or let another
+    /// rotation land just before the next one.
+    struct Interposed {
+        inner: Arc<crate::memory::MemoryStore>,
+        lose_answer: std::sync::atomic::AtomicBool,
+        land_first: std::sync::atomic::AtomicBool,
+    }
+
+    impl Interposed {
+        fn new(inner: Arc<crate::memory::MemoryStore>) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                lose_answer: false.into(),
+                land_first: false.into(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialStore for Interposed {
+        async fn insert_credential(
+            &self,
+            meta: CredentialMeta,
+            ciphertext: Vec<u8>,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner.insert_credential(meta, ciphertext, audit).await
+        }
+        async fn get_credential(
+            &self,
+            id: &CredentialId,
+        ) -> Result<Option<CredentialMeta>, StoreError> {
+            self.inner.get_credential(id).await
+        }
+        async fn list_credentials(
+            &self,
+            vault_id: &VaultId,
+            page: PageRequest,
+        ) -> Result<Page<CredentialMeta>, StoreError> {
+            self.inner.list_credentials(vault_id, page).await
+        }
+        async fn replace_secret(
+            &self,
+            id: &CredentialId,
+            secret: NewSecret,
+            updated_at: DateTime<Utc>,
+            audit: &[AuditEvent],
+        ) -> Result<SecretReplaced, StoreError> {
+            if self.land_first.swap(false, Ordering::SeqCst) {
+                let other = NewSecret {
+                    expected_generation: None,
+                    rotation_id: Some("elsewhere".into()),
+                    ..secret.clone()
+                };
+                self.inner
+                    .replace_secret(id, other, updated_at, &[])
+                    .await?;
+            }
+            let replaced = self
+                .inner
+                .replace_secret(id, secret, updated_at, audit)
+                .await?;
+            if self.lose_answer.swap(false, Ordering::SeqCst) {
+                return Err(StoreError::backend(
+                    "commit replace_secret",
+                    "connection reset",
+                ));
+            }
+            Ok(replaced)
+        }
+        async fn update_custom_headers(
+            &self,
+            id: &CredentialId,
+            custom_headers: Vec<CustomHeader>,
+            variable_refs: Vec<String>,
+            updated_at: DateTime<Utc>,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner
+                .update_custom_headers(id, custom_headers, variable_refs, updated_at, audit)
+                .await
+        }
+        async fn update_substitutions(
+            &self,
+            id: &CredentialId,
+            substitutions: Vec<Substitution>,
+            updated_at: DateTime<Utc>,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner
+                .update_substitutions(id, substitutions, updated_at, audit)
+                .await
+        }
+        async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
+            self.inner.list_credentials_with_variables().await
+        }
+        async fn insert_variable(
+            &self,
+            variable: Variable,
+            ciphertext: Vec<u8>,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner
+                .insert_variable(variable, ciphertext, audit)
+                .await
+        }
+        async fn get_variable(&self, id: &VariableId) -> Result<Option<Variable>, StoreError> {
+            self.inner.get_variable(id).await
+        }
+        async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError> {
+            self.inner.list_variables(page).await
+        }
+        async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError> {
+            self.inner.existing_variable_keys(keys).await
+        }
+        async fn replace_variable_value(
+            &self,
+            id: &VariableId,
+            ciphertext: Vec<u8>,
+            updated_by: &str,
+            updated_at: DateTime<Utc>,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner
+                .replace_variable_value(id, ciphertext, updated_by, updated_at, audit)
+                .await
+        }
+        async fn delete_variable(
+            &self,
+            id: &VariableId,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner.delete_variable(id, audit).await
+        }
+        async fn load_variable_ciphertexts(
+            &self,
+            keys: &[String],
+        ) -> Result<Vec<(Variable, Vec<u8>)>, StoreError> {
+            self.inner.load_variable_ciphertexts(keys).await
+        }
+        async fn delete_credential(
+            &self,
+            id: &CredentialId,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner.delete_credential(id, audit).await
+        }
+        async fn load_secret_ciphertext(
+            &self,
+            id: &CredentialId,
+        ) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.load_secret_ciphertext(id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rotation_whose_answer_was_lost_still_reaches_the_nodes() {
+        let mut interposed = None;
+        let (_, cs) = services_with(|store| {
+            let wrapped = Interposed::new(store);
+            interposed = Some(wrapped.clone());
+            wrapped
+        })
+        .await;
+        let interposed = interposed.unwrap();
+        let id = credential(&cs).await;
+        let before = cs.notifier.current().content;
+        interposed.lose_answer.store(true, Ordering::SeqCst);
+        let outcome = CredentialRefresher::new()
+            .refresh(&cs.policy, &host(), &id, 1, |_| async {
+                Ok::<_, IssuerDown>(fresh("t2", TimeDelta::hours(1)))
+            })
+            .await
+            .unwrap();
+        assert!(matches!(&outcome, Refreshed::Rotated(m) if m.secret_generation == 2));
+        assert!(
+            cs.notifier.current().content > before,
+            "the nodes were never told about the new secret"
+        );
+        assert_eq!(rotations(&cs).await, 1);
+    }
+
+    #[tokio::test]
+    async fn an_unfenced_rotation_audits_the_generation_it_writes() {
+        let mut interposed = None;
+        let (_, cs) = services_with(|store| {
+            let wrapped = Interposed::new(store);
+            interposed = Some(wrapped.clone());
+            wrapped
+        })
+        .await;
+        let interposed = interposed.unwrap();
+        let id = credential(&cs).await;
+        // A refresh elsewhere writes generation 2 after this rotation read 1.
+        interposed.land_first.store(true, Ordering::SeqCst);
+        let meta = cs
+            .policy
+            .rotate_credential(
+                &host(),
+                &id,
+                RotateCredential {
+                    fields: [("token".to_string(), "t3".to_string())].into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(meta.secret_generation, 3);
+        let events = cs
+            .audit
+            .query(
+                &host(),
+                None,
+                Some("credential.rotate".into()),
+                Default::default(),
+            )
+            .await
+            .unwrap()
+            .items;
+        let generations: Vec<_> = events
+            .iter()
+            .map(|e| e.detail.get("generation").cloned())
+            .collect();
+        assert_eq!(generations, [Some("3".to_string())]);
     }
 
     #[tokio::test]

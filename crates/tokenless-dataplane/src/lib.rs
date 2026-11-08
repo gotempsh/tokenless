@@ -289,10 +289,12 @@ impl DataPlane {
         self.mcp_addr
     }
 
-    /// Waits until revoking `session` is enforced here: a snapshot listing
-    /// it as revoked is in force and nothing it opened (tunnels, gateway
-    /// streams) is still open, so this data plane forwards nothing for it.
-    /// Revoke it with the control services first; this only waits. Fails
+    /// Waits until revoking `session`, which expires at `expires_at`, is
+    /// enforced here: nothing it opened (tunnels, gateway streams) is still
+    /// open, and nothing new can open, because a snapshot listing it as
+    /// revoked is in force or because it has expired. (Long-expired
+    /// sessions are no longer listed.) So this data plane forwards nothing
+    /// for it. Revoke it with the control services first; this only waits. Fails
     /// with [`DataPlaneError::NotCut`] at `timeout`, saying whether the
     /// revocation has arrived, what is still open and when the lease would
     /// end all traffic anyway. It cannot undo what an upstream already
@@ -300,6 +302,7 @@ impl DataPlane {
     pub async fn session_cut(
         &self,
         session: tokenless_core::ids::SessionId,
+        expires_at: chrono::DateTime<chrono::Utc>,
         timeout: Duration,
     ) -> Result<CutReport, DataPlaneError> {
         let started = tokio::time::Instant::now();
@@ -315,8 +318,11 @@ impl DataPlane {
             let installed = snapshot
                 .as_ref()
                 .is_some_and(|s| s.revoked.contains(&session));
+            let expired = snapshot
+                .as_ref()
+                .is_some_and(|s| clock::now(s) >= expires_at);
             let open = traffic.count(&session);
-            if installed && open == 0 {
+            if (installed || expired) && open == 0 {
                 return Ok(CutReport {
                     snapshot_version: snapshot.map(|s| s.version),
                     connections_closed: open_before,

@@ -509,7 +509,7 @@ impl Harness {
         self.install(CHECK).await?;
         let cut = self
             .dataplane
-            .session_cut(minted.session.id, CUT_BOUND)
+            .session_cut(minted.session.id, minted.session.expires_at, CUT_BOUND)
             .await;
         check!(
             CHECK,
