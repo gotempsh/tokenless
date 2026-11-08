@@ -14,7 +14,7 @@ import { Input } from "../components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { cn } from "../lib/utils";
 import { claudeMcpCommand, mcpClientJson, mcpEndpoints, tokenServices } from "../mcpConnect";
-import { agentEnv, agentScript, gatewayFor, INSTALL_COMMAND, shortToken, suggestedProxy } from "../sessionForm";
+import { agentEnv, agentScript, gatewayFor, handoffMayClose, INSTALL_COMMAND, shortToken, suggestedProxy } from "../sessionForm";
 
 /** The proxy address last used in this browser, so the next session's commands start with it. */
 const PROXY_KEY = "tokenless.agentProxy";
@@ -69,28 +69,59 @@ function arrowChoice(e: KeyboardEvent<HTMLElement>, ids: string[], current: stri
   e.currentTarget.querySelector<HTMLElement>(`[data-choice="${next}"]`)?.focus();
 }
 
+/**
+ * Whether anything from the handoff was copied, shared with the dialog that
+ * shows it: Escape, the close button and an outside click go through the
+ * dialog, so the dialog asks {@link HandoffGuard.mayClose} before closing.
+ */
+export interface HandoffGuard {
+  copied: boolean;
+  warned: boolean;
+  markCopied: () => void;
+  /** True when closing may go ahead; the first try before copying warns instead. */
+  mayClose: () => boolean;
+  reset: () => void;
+}
+
+export function useHandoffGuard(): HandoffGuard {
+  const [copied, setCopied] = useState(false);
+  const [warned, setWarned] = useState(false);
+  return {
+    copied,
+    warned,
+    markCopied: () => setCopied(true),
+    mayClose: () => {
+      if (handoffMayClose(copied, warned)) return true;
+      setWarned(true);
+      return false;
+    },
+    reset: () => {
+      setCopied(false);
+      setWarned(false);
+    },
+  };
+}
+
 export function SessionHandoff({
   minted,
   reaches,
+  guard,
   onDone,
 }: {
   minted: MintedSession;
   /** What the session reaches, for the hint under the token ("code-review's services"). */
   reaches: string;
+  guard: HandoffGuard;
   onDone: () => void;
 }) {
   const [agent, setAgent] = useState(AGENTS[0]?.id ?? "claude");
   const [other, setOther] = useState("");
   const [proxy, setProxy] = useState(() => suggestedProxy(window.location.hostname, rememberedProxy()));
   const [services, setServices] = useState<DiscoveredService[] | null>(null);
-  // Closing before copying anything loses the token, so the first try warns.
-  const [copied, setCopied] = useState(false);
-  const [warned, setWarned] = useState(false);
-  const markCopied = () => setCopied(true);
+  const { copied, warned, markCopied, mayClose } = guard;
   const leave = (e?: { preventDefault: () => void }) => {
-    if (!copied && !warned) {
+    if (!mayClose()) {
       e?.preventDefault();
-      setWarned(true);
       return;
     }
     onDone();

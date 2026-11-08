@@ -12,6 +12,7 @@ import {
   lifetimesUpTo,
   shortToken,
   suggestedProxy,
+  handoffMayClose,
 } from "./sessionForm";
 
 describe("new session form", () => {
@@ -80,5 +81,16 @@ describe("new session form", () => {
     expect(gatewayFor("127.0.0.1:3128")).toBe("http://127.0.0.1:3129");
     expect(gatewayFor("[::1]:13128")).toBe("http://[::1]:13129");
     expect(gatewayFor("proxy.example.test")).toBe("http://proxy.example.test:3129");
+  });
+});
+
+describe("handoffMayClose", () => {
+  test("the first close before copying anything warns instead", () => {
+    expect(handoffMayClose(false, false)).toBe(false);
+  });
+
+  test("closes once something was copied, or after the warning", () => {
+    expect(handoffMayClose(true, false)).toBe(true);
+    expect(handoffMayClose(false, true)).toBe(true);
   });
 });

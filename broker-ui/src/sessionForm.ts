@@ -138,3 +138,12 @@ export function agentEnv(t: AgentTarget): { copy: string; display: string } {
   const build = (token: string) => envLines(t, token, "").join("\n");
   return { copy: `${build(t.token)}\n`, display: build(shortToken(t.token)) };
 }
+
+/**
+ * Whether the session handoff may close. Its token is shown only once, so
+ * the first try before anything was copied warns instead; a second try
+ * leaves anyway.
+ */
+export function handoffMayClose(copied: boolean, warned: boolean): boolean {
+  return copied || warned;
+}

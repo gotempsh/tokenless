@@ -20,7 +20,7 @@ import {
 } from "../api";
 import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
-import { SessionHandoff } from "./SessionHandoff";
+import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
 import {
@@ -575,10 +575,15 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
     }
   };
 
+  const guard = useHandoffGuard();
   const closeMint = (o: boolean) => {
+    // Escape, the close button and an outside click land here too: the
+    // token is shown only once, so the first try before copying warns.
+    if (!o && minted && !guard.mayClose()) return;
     setOpen(o);
     if (!o) {
       setMinted(null);
+      guard.reset();
       mintAction.clearError();
     }
   };
@@ -633,6 +638,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
           <SessionHandoff
             minted={minted}
             reaches={minted.session.bundle ? `${minted.session.bundle.name}'s services` : "the rules you chose"}
+            guard={guard}
             onDone={() => closeMint(false)}
           />
         ) : (

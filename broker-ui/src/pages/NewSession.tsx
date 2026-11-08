@@ -24,7 +24,7 @@ import {
   lifetimesUpTo,
   type LifetimeUnit,
 } from "../sessionForm";
-import { SessionHandoff } from "./SessionHandoff";
+import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 
 interface SessionLimits {
   max_ttl_secs: number;
@@ -72,11 +72,16 @@ export function NewSessionDialog({
   const limit = form.limit.trim();
   const limitProblem = limit && !/^[1-9][0-9]*$/.test(limit) ? "A whole number of requests, at least 1" : null;
 
+  const guard = useHandoffGuard();
   const close = (o: boolean) => {
+    // Escape, the close button and an outside click land here too: the
+    // token is shown only once, so the first try before copying warns.
+    if (!o && minted && !guard.mayClose()) return;
     onOpenChange(o);
     if (!o) {
       setForm(EMPTY);
       setMinted(null);
+      guard.reset();
       action.clearError();
     }
   };
@@ -111,7 +116,12 @@ export function NewSessionDialog({
       title={minted ? "Session created" : fixed ? `New session for ${fixed.name}` : "New session"}
     >
       {minted && bundle ? (
-        <SessionHandoff minted={minted} reaches={`${bundle.name}'s services`} onDone={() => close(false)} />
+        <SessionHandoff
+          minted={minted}
+          reaches={`${bundle.name}'s services`}
+          guard={guard}
+          onDone={() => close(false)}
+        />
       ) : (
         <form className="space-y-4" onSubmit={submit}>
           <ErrorBanner error={limits.error ?? action.error} />
