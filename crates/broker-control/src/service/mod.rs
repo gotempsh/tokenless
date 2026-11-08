@@ -65,6 +65,16 @@ impl Caller {
     pub fn actor(&self) -> &str {
         &self.principal.actor
     }
+
+    /// A program calling for its own users, which it has already
+    /// authorised; see [`Principal::service`].
+    pub fn service(principal: Principal) -> Self {
+        Self {
+            principal,
+            step_up_at: None,
+            second_factor: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -110,14 +120,21 @@ impl Guard {
         Ok(())
     }
 
+    /// People with a second factor prove it again before sensitive
+    /// actions; API keys may not take them at all. A service is exempt: the
+    /// program that embeds the services authenticates its own users.
     pub fn require_step_up(&self, caller: &Caller, action: Action) -> Result<(), ControlError> {
-        if caller.principal.kind != PrincipalKind::User {
-            return Err(ControlError::Forbidden {
-                reason: format!(
-                    "'{action}' needs a person with a second factor; {} is an API key",
-                    caller.actor()
-                ),
-            });
+        match caller.principal.kind {
+            PrincipalKind::User => {}
+            PrincipalKind::Service => return Ok(()),
+            PrincipalKind::ApiKey => {
+                return Err(ControlError::Forbidden {
+                    reason: format!(
+                        "'{action}' needs a person with a second factor; {} is an API key",
+                        caller.actor()
+                    ),
+                });
+            }
         }
         if !caller.second_factor {
             return Ok(());
@@ -165,41 +182,53 @@ impl AuditRecorder {
     }
 }
 
-/// Everything the HTTP layer needs, wired once at startup.
-pub struct ControlPlane {
-    pub auth: auth::AuthService,
+/// The stores [`ControlServices`] needs: everything but accounts.
+#[derive(Clone)]
+pub struct ServiceStores {
+    pub credentials: Arc<dyn CredentialStore>,
+    pub policy: Arc<dyn PolicyStore>,
+    pub audit: Arc<dyn AuditSink>,
+    pub nodes: Arc<dyn NodeStore>,
+}
+
+/// The control services without accounts, sign-in or API keys, for a
+/// program that embeds them: it authenticates its own users, decides what
+/// they may do through its [`Authorizer`], and calls these services as a
+/// [`Caller::service`]. It needs no [`IdentityStore`].
+pub struct ControlServices {
     pub policy: policy::PolicyService,
     pub sessions: sessions::SessionService,
     pub bundles: bundles::BundleService,
     pub nodes: nodes::NodeService,
-    pub users: users::UserService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
 
-impl ControlPlane {
+impl ControlServices {
     pub async fn new(
-        stores: Stores,
+        stores: ServiceStores,
         authorizer: Arc<dyn Authorizer>,
         cipher: Arc<dyn SecretCipher>,
         prober: Arc<dyn CredentialProber>,
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
-        let notifier = Arc::new(PolicyNotifier::new());
         let guard = Guard::new(authorizer, config.step_up_window_secs);
+        Self::wire(stores, guard, cipher, prober, config, keys).await
+    }
+
+    async fn wire(
+        stores: ServiceStores,
+        guard: Guard,
+        cipher: Arc<dyn SecretCipher>,
+        prober: Arc<dyn CredentialProber>,
+        config: ControlConfig,
+        keys: Arc<KeyRing>,
+    ) -> Result<Self, ControlError> {
+        let notifier = Arc::new(PolicyNotifier::new());
         let recorder = AuditRecorder::new(stores.audit.clone());
-        let users = users::UserService::new(stores.identity.clone(), cipher.clone(), guard.clone());
-        let auth = auth::AuthService::new(
-            stores.identity.clone(),
-            cipher.clone(),
-            keys.clone(),
-            guard.clone(),
-            recorder.clone(),
-            config.clone(),
-        )?;
         let policy = policy::PolicyService::new(
             stores.policy.clone(),
             stores.credentials.clone(),
@@ -240,16 +269,76 @@ impl ControlPlane {
         );
         let audit = audit::AuditService::new(stores.audit, guard);
         Ok(Self {
-            auth,
             policy,
             sessions,
             bundles,
             nodes,
-            users,
             variables,
             audit,
             keys,
             notifier,
+        })
+    }
+}
+
+/// Everything the HTTP layer needs, wired once at startup.
+pub struct ControlPlane {
+    pub auth: auth::AuthService,
+    pub policy: policy::PolicyService,
+    pub sessions: sessions::SessionService,
+    pub bundles: bundles::BundleService,
+    pub nodes: nodes::NodeService,
+    pub users: users::UserService,
+    pub variables: variables::VariableService,
+    pub audit: audit::AuditService,
+    pub keys: Arc<KeyRing>,
+    pub notifier: Arc<PolicyNotifier>,
+}
+
+impl ControlPlane {
+    pub async fn new(
+        stores: Stores,
+        authorizer: Arc<dyn Authorizer>,
+        cipher: Arc<dyn SecretCipher>,
+        prober: Arc<dyn CredentialProber>,
+        config: ControlConfig,
+    ) -> Result<Self, ControlError> {
+        let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
+        let guard = Guard::new(authorizer, config.step_up_window_secs);
+        let users = users::UserService::new(stores.identity.clone(), cipher.clone(), guard.clone());
+        let auth = auth::AuthService::new(
+            stores.identity.clone(),
+            cipher.clone(),
+            keys.clone(),
+            guard.clone(),
+            AuditRecorder::new(stores.audit.clone()),
+            config.clone(),
+        )?;
+        let services = ControlServices::wire(
+            ServiceStores {
+                credentials: stores.credentials,
+                policy: stores.policy,
+                audit: stores.audit,
+                nodes: stores.nodes,
+            },
+            guard,
+            cipher,
+            prober,
+            config,
+            keys,
+        )
+        .await?;
+        Ok(Self {
+            auth,
+            policy: services.policy,
+            sessions: services.sessions,
+            bundles: services.bundles,
+            nodes: services.nodes,
+            users,
+            variables: services.variables,
+            audit: services.audit,
+            keys: services.keys,
+            notifier: services.notifier,
         })
     }
 }
@@ -1999,6 +2088,111 @@ mod tests {
             events.items[0].detail.get("forced").map(String::as_str),
             Some("true")
         );
+    }
+
+    /// What an embedding program does: no accounts, a service caller.
+    #[tokio::test]
+    async fn embedded_services_need_no_accounts_and_hold_a_service_to_its_vault() {
+        let store = Arc::new(MemoryStore::new());
+        let cipher = Arc::new(
+            Envelope::open(&AesGcmCipher::generate_key(), store.clone())
+                .await
+                .unwrap(),
+        );
+        let cs = ControlServices::new(
+            ServiceStores {
+                credentials: store.clone(),
+                policy: store.clone(),
+                audit: store.clone(),
+                nodes: store.clone(),
+            },
+            Arc::new(RbacAuthorizer),
+            cipher,
+            Arc::new(crate::probe::DisabledProber),
+            ControlConfig::default(),
+        )
+        .await
+        .unwrap();
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let mine = cs.policy.create_vault(&host, "project-a").await.unwrap();
+        let other = cs.policy.create_vault(&host, "project-b").await.unwrap();
+
+        // Bound to one vault: storing a credential needs no step-up there.
+        let scoped = Caller::service(Principal::service("host", Role::Admin, Some(mine.id)));
+        let cred = cs
+            .policy
+            .create_credential(
+                &scoped,
+                &mine.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap();
+        let rule = cs
+            .policy
+            .create_rule(
+                &scoped,
+                &mine.id,
+                CreateRule {
+                    name: "r".into(),
+                    credential_id: cred.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        let minted = cs
+            .sessions
+            .mint(
+                &scoped,
+                &mine.id,
+                MintSession {
+                    rule_ids: vec![rule.id],
+                    bundle: None,
+                    ttl_secs: Some(600),
+                    longest: false,
+                    request_limit: None,
+                    labels: BTreeMap::new(),
+                    node_id: None,
+                    binding: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(minted.session.created_by, "service:host");
+
+        // The other vault is out of reach.
+        let denied = cs
+            .policy
+            .create_credential(
+                &scoped,
+                &other.id,
+                bearer(&[("token", "t")], &["api.example.com"]),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(denied, ControlError::Forbidden { .. }), "{denied}");
+        let denied = cs
+            .policy
+            .create_vault(&scoped, "project-c")
+            .await
+            .unwrap_err();
+        assert!(matches!(denied, ControlError::Forbidden { .. }), "{denied}");
+
+        let events = cs
+            .audit
+            .query(
+                &host,
+                Some(mine.id),
+                Some("credential.create".into()),
+                PageRequest::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(events.items[0].actor, "service:host");
     }
 
     #[tokio::test]

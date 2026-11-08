@@ -20,4 +20,4 @@ pub mod service;
 pub mod store;
 
 pub use error::{ControlError, StoreError};
-pub use service::{Caller, ControlConfig, ControlPlane, Stores};
+pub use service::{Caller, ControlConfig, ControlPlane, ControlServices, ServiceStores, Stores};

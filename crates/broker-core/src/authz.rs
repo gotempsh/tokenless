@@ -132,16 +132,33 @@ impl fmt::Display for Action {
 pub enum PrincipalKind {
     User,
     ApiKey,
+    /// A program that embeds the control services and calls them for its
+    /// own, already authorised, users. Never created by sign-in.
+    Service,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Principal {
     pub kind: PrincipalKind,
-    /// `user:<id>` or `api_key:<prefix>`; used as the audit actor.
+    /// `user:<id>`, `api_key:<prefix>` or `service:<name>`; used as the
+    /// audit actor.
     pub actor: String,
     pub role: Role,
-    /// API keys are bound to exactly one vault; people are not.
+    /// API keys are bound to exactly one vault and people to none; a
+    /// service may be bound to one.
     pub vault: Option<VaultId>,
+}
+
+impl Principal {
+    /// A service principal, audited as `service:<name>`.
+    pub fn service(name: &str, role: Role, vault: Option<VaultId>) -> Self {
+        Self {
+            kind: PrincipalKind::Service,
+            actor: format!("service:{name}"),
+            role,
+            vault,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,10 +170,28 @@ pub enum Decision {
 pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId>) -> Decision {
     let deny = |reason: String| Decision::Deny { reason };
     if principal.role == Role::Admin {
-        if principal.kind == PrincipalKind::ApiKey {
-            return deny("API keys cannot hold the admin role".into());
+        match principal.kind {
+            PrincipalKind::ApiKey => {
+                return deny("API keys cannot hold the admin role".into());
+            }
+            PrincipalKind::User => return Decision::Allow,
+            // A vault-bound service administers its vault and nothing else.
+            PrincipalKind::Service => {
+                return match (&principal.vault, vault) {
+                    (None, _) => Decision::Allow,
+                    (Some(bound), Some(target)) if bound == target => Decision::Allow,
+                    (Some(bound), Some(target)) => deny(format!(
+                        "{} is bound to vault {bound} and cannot act on vault {target}",
+                        principal.actor
+                    )),
+                    (Some(_), None) if action == Action::TemplateRead => Decision::Allow,
+                    (Some(bound), None) => deny(format!(
+                        "{} is bound to vault {bound}; '{action}' is instance-wide",
+                        principal.actor
+                    )),
+                };
+            }
         }
-        return Decision::Allow;
     }
     if action.instance_level() {
         return deny(format!("'{action}' requires the admin role"));
@@ -238,6 +273,49 @@ mod tests {
             rbac_decide(&admin, Action::NodeManage, None),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn a_service_is_held_to_its_vault_even_as_admin() {
+        let (mine, other) = (VaultId::new(), VaultId::new());
+        let bound = Principal::service("host", Role::Admin, Some(mine));
+        assert_eq!(bound.actor, "service:host");
+        for action in [
+            Action::CredentialWrite,
+            Action::CredentialWiden,
+            Action::VaultDelete,
+        ] {
+            assert_eq!(
+                rbac_decide(&bound, action, Some(&mine)),
+                Decision::Allow,
+                "{action}"
+            );
+        }
+        assert_eq!(
+            rbac_decide(&bound, Action::TemplateRead, None),
+            Decision::Allow
+        );
+        for (action, vault) in [
+            (Action::CredentialWrite, Some(&other)),
+            (Action::SessionMint, Some(&other)),
+            (Action::NodeManage, None),
+            (Action::SettingsWrite, None),
+        ] {
+            assert!(
+                matches!(rbac_decide(&bound, action, vault), Decision::Deny { .. }),
+                "{action} on {vault:?}"
+            );
+        }
+        let unbound = Principal::service("host", Role::Admin, None);
+        assert_eq!(
+            rbac_decide(&unbound, Action::NodeManage, None),
+            Decision::Allow
+        );
+        let editor = Principal::service("host", Role::Editor, Some(mine));
+        assert!(matches!(
+            rbac_decide(&editor, Action::CredentialWrite, Some(&mine)),
+            Decision::Deny { .. }
+        ));
     }
 
     #[test]

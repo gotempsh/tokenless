@@ -1655,6 +1655,25 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
         d == Decision::Allow,
         "an editor key must be able to mint in its vault, got {d:?}"
     );
+    // A service bound to a vault stays in it, whatever role it holds.
+    for role in [Role::Admin, Role::Editor] {
+        let service = Principal::service("conformance", role, Some(vault_a));
+        for (action, target) in [
+            (Action::RuleRead, Some(&vault_b)),
+            (Action::SessionMint, Some(&vault_b)),
+            (Action::CredentialWrite, Some(&vault_b)),
+            (Action::NodeManage, None),
+            (Action::VaultCreate, None),
+        ] {
+            let d = authz.authorize(&service, action, target).await;
+            ensure!(
+                S,
+                "service_vault_binding",
+                matches!(d, Decision::Deny { .. }),
+                "a service bound to one vault must not get {action} on {target:?} (role {role})"
+            );
+        }
+    }
     let admin = Principal {
         kind: PrincipalKind::User,
         actor: "user:conformance".into(),
