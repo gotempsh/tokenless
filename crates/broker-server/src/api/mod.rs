@@ -39,6 +39,8 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/authenticator", post(enable_authenticator))
         .route("/auth/authenticator/remove", post(disable_authenticator))
         .route("/vaults", get(list_vaults).post(create_vault))
+        .route("/vaults/overview", get(vault_overviews))
+        .route("/vaults/{vault_id}/overview", get(vault_overview))
         .route("/vaults/{vault_id}", get(get_vault).delete(delete_vault))
         .route(
             "/vaults/{vault_id}/credentials",

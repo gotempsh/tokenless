@@ -212,6 +212,31 @@ pub async fn list_vaults(
     ))
 }
 
+/// The caller's vaults with what a list shows of each: first services,
+/// live sessions, last request.
+pub async fn vault_overviews(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .vault_overviews(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
+pub async fn vault_overview(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(
+        s.control.vault_overview_by_id(&authed.caller, &id).await?,
+    ))
+}
+
 pub async fn get_vault(
     State(s): St,
     authed: Authed,

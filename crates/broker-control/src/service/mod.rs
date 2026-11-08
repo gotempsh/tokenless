@@ -5,6 +5,7 @@ pub mod audit;
 pub mod auth;
 pub mod bundles;
 pub mod nodes;
+pub mod overview;
 pub mod policy;
 pub(crate) mod render;
 pub mod sessions;
@@ -2449,5 +2450,99 @@ mod tests {
             .unwrap();
         assert!(!result.ok);
         assert!(result.detail.contains("not available"), "{}", result.detail);
+    }
+
+    #[tokio::test]
+    async fn vault_overviews_name_the_first_services_and_count_live_sessions() {
+        let cp = plane().await;
+        let a = admin(0);
+        let main = cp.policy.create_vault(&a, "main").await.unwrap();
+        let empty = cp.policy.create_vault(&a, "empty").await.unwrap();
+        let mut first = None;
+        for name in ["one", "two", "three", "four", "five"] {
+            let mut req = bearer(&[("token", "t")], &["api.example.com"]);
+            req.name = name.into();
+            let cred = cp
+                .policy
+                .create_credential(&a, &main.id, req)
+                .await
+                .unwrap();
+            first.get_or_insert(cred);
+        }
+        let rule = cp
+            .policy
+            .create_rule(
+                &a,
+                &main.id,
+                CreateRule {
+                    name: "read".into(),
+                    credential_id: first.unwrap().id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                },
+            )
+            .await
+            .unwrap();
+        let mint = || MintSession {
+            rule_ids: vec![rule.id],
+            bundle: None,
+            ttl_secs: Some(600),
+            longest: false,
+            request_limit: None,
+            labels: BTreeMap::new(),
+        };
+        cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
+        let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
+        cp.sessions.revoke(&a, &revoked.session.id).await.unwrap();
+
+        let page = cp
+            .vault_overviews(&a, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        let by_name = |name: &str| page.items.iter().find(|o| o.vault.name == name).unwrap();
+        let main = by_name("main");
+        assert_eq!(main.service_count, 5);
+        assert_eq!(main.services.len(), overview::OVERVIEW_SERVICES as usize);
+        // Only the session that is still live counts.
+        assert_eq!(main.live_sessions, 1);
+        assert_eq!(main.last_request_at, None, "nothing was brokered yet");
+        let empty_overview = by_name("empty");
+        assert_eq!(
+            (empty_overview.service_count, empty_overview.live_sessions),
+            (0, 0)
+        );
+
+        // A vault-bound key sees its own vault only.
+        let (plaintext, _) = cp
+            .auth
+            .create_api_key(
+                &a,
+                CreateApiKey {
+                    name: "viewer".into(),
+                    vault_id: empty.id,
+                    role: Role::Viewer,
+                    expires_in_days: 30,
+                },
+            )
+            .await
+            .unwrap();
+        let viewer = cp.auth.authenticate_api_key(&plaintext).await.unwrap();
+        let seen = cp
+            .vault_overviews(&viewer, PageRequest::new(None, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            seen.items.iter().map(|o| o.vault.id).collect::<Vec<_>>(),
+            vec![empty.id]
+        );
+        // And one vault's overview is the same as its entry in the list.
+        let one = cp.vault_overview_by_id(&a, &main.vault.id).await.unwrap();
+        assert_eq!((one.service_count, one.live_sessions), (5, 1));
+        assert!(matches!(
+            cp.vault_overview_by_id(&viewer, &main.vault.id).await,
+            Err(ControlError::Forbidden { .. })
+        ));
     }
 }

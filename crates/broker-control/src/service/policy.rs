@@ -475,6 +475,14 @@ impl PolicyService {
         Ok(self.policy.list_vaults(page).await?)
     }
 
+    /// Sessions of the vault that are neither revoked nor expired.
+    pub async fn live_sessions(&self, caller: &Caller, id: &VaultId) -> Result<u64, ControlError> {
+        self.guard
+            .check(caller, Action::VaultRead, Some(id))
+            .await?;
+        Ok(self.policy.count_live_sessions(id, Utc::now()).await?)
+    }
+
     pub async fn get_vault(&self, caller: &Caller, id: &VaultId) -> Result<Vault, ControlError> {
         self.guard
             .check(caller, Action::VaultRead, Some(id))

@@ -1111,6 +1111,8 @@ async fn end_to_end() {
         format!("/rules/{rule_id}"),
         format!("/vaults/{vault_id}/sessions"),
         format!("/sessions/{session_id}/services"),
+        "/vaults/overview".to_string(),
+        format!("/vaults/{vault_id}/overview"),
         "/templates".to_string(),
         "/audit?page_size=100".to_string(),
         "/nodes".to_string(),
