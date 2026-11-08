@@ -47,6 +47,12 @@ unreachable, the proxy refuses traffic. It refuses to inject a credential
 when it can't record the audit event. A control plane outage therefore
 stops all injection within one lease; that is deliberate.
 
+An audit event is recorded once the control plane has accepted it. Until
+then it waits in a bounded queue in the proxy's memory, so a proxy that
+crashes loses at most that queue (4096 events by default). A proxy that
+stops normally ships what it holds first and logs how many events it
+could not.
+
 ## Accounts
 
 - On first start the server creates the `admin` account with a generated

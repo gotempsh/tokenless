@@ -39,7 +39,8 @@ with `"node_id": "<node id>"`, and to one workload with
 `"binding": {"id": "sbx-42", "generation": 3}`. A bound session works only
 through that workload's binding, never as `HTTPS_PROXY` credentials. A
 binding may hold several sessions, one per group of services that share a
-deadline, as long as no two cover the same host.
+deadline, as long as no two cover the same host. See
+[Embed it in your platform](embedding.md).
 
 The response holds the session token. Send it as the proxy's credentials:
 `HTTPS_PROXY=http://<token>@127.0.0.1:3128`.

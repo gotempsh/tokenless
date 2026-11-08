@@ -20,8 +20,11 @@ credential goes (a header, usually). tokenless ships with templates for
 over 150 APIs and MCP servers; you can import your own under
 **Templates**.
 
-The secret is write-only. You can replace it, never read it. A service can
-also have custom headers and [placeholders](placeholders.md).
+The secret is write-only. You can replace it, never read it. When the
+secret expires upstream, set its **Expires** date: after it the proxy
+stops sending it and refuses requests to the service until you replace
+it. A service can also have custom headers and
+[placeholders](placeholders.md).
 
 ## Rule
 
