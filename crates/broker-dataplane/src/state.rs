@@ -33,7 +33,10 @@ use rustls::pki_types::CertificateDer;
 use rustls::ServerConfig;
 use zeroize::Zeroizing;
 
+use tracing::debug;
+
 use crate::error::DataPlaneError;
+use crate::metrics::Metrics;
 use crate::tls::{leaf_server_config, sha256_hex};
 
 /// Maximum clock skew accepted for a snapshot's `issued_at` in the future.
@@ -159,6 +162,32 @@ fn leaf_configs(
         configs.insert(host, config);
     }
     Ok(configs)
+}
+
+/// Verifies `signed` against the snapshot in force and swaps it in, counting
+/// the outcome. Returns the version now in force. Callers that may run
+/// concurrently serialize around it, so an older snapshot never replaces a
+/// newer one.
+pub fn apply(
+    signed: &SignedSnapshot,
+    keys: &NodeKeys,
+    handle: &SnapshotHandle,
+    metrics: &Metrics,
+) -> Result<u64, DataPlaneError> {
+    let previous = handle.load_full();
+    match build_active(signed, keys, previous.as_deref(), Utc::now()) {
+        Ok(active) => {
+            let version = active.version;
+            debug!(version, rules = active.rules.len(), "applied snapshot");
+            handle.store(Some(Arc::new(active)));
+            Metrics::inc(&metrics.snapshots_applied_total);
+            Ok(version)
+        }
+        Err(e) => {
+            Metrics::inc(&metrics.snapshots_rejected_total);
+            Err(e)
+        }
+    }
 }
 
 /// Verifies `signed` and builds the state to swap in. `previous` supplies

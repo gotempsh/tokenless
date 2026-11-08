@@ -40,7 +40,7 @@ use zeroize::Zeroizing;
 use crate::audit::AuditShipper;
 use crate::error::DataPlaneError;
 use crate::metrics::Metrics;
-use crate::state::{build_active, NodeKeys, SnapshotHandle};
+use crate::state::{apply, NodeKeys, SnapshotHandle};
 use crate::tls::{mtls_client_config, pinned_client_config, sha256_hex};
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -454,25 +454,10 @@ impl NodeClient {
                     continue;
                 }
                 match serde_json::from_slice::<SignedSnapshot>(line) {
-                    Ok(signed) => {
-                        let previous = handle.load_full();
-                        match build_active(&signed, keys, previous.as_deref(), Utc::now()) {
-                            Ok(active) => {
-                                debug!(
-                                    version = active.version,
-                                    rules = active.rules.len(),
-                                    "applied snapshot"
-                                );
-                                handle.store(Some(Arc::new(active)));
-                                Metrics::inc(&metrics.snapshots_applied_total);
-                                on_applied();
-                            }
-                            Err(e) => {
-                                Metrics::inc(&metrics.snapshots_rejected_total);
-                                warn!(error = %e, "rejected snapshot");
-                            }
-                        }
-                    }
+                    Ok(signed) => match apply(&signed, keys, handle, metrics) {
+                        Ok(_) => on_applied(),
+                        Err(e) => warn!(error = %e, "rejected snapshot"),
+                    },
                     Err(e) => {
                         Metrics::inc(&metrics.snapshots_rejected_total);
                         warn!(error = %e, "snapshot line is not valid JSON");

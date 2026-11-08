@@ -7,8 +7,15 @@
 //! The data plane is identical in every deployment mode. It knows only its
 //! node identity, the signed snapshots it receives and the session tokens
 //! clients present.
+//!
+//! [`DataPlane::start`] runs it as a node: snapshots stream from the control
+//! plane's node API and audit batches go back to it. [`DataPlane::start_embedded`]
+//! runs it inside another process, which hands it signed snapshots through a
+//! [`SnapshotInstaller`] and receives its audit batches through an
+//! [`AuditShipper`](audit::AuditShipper). Verification is the same either way.
 
 pub mod audit;
+pub mod embedded;
 pub mod error;
 pub mod gateway;
 pub mod metrics;
@@ -35,14 +42,15 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
+pub use embedded::SnapshotInstaller;
 pub use error::DataPlaneError;
 pub use node::{enroll, NodeIdentity};
 
-use crate::audit::{run_batcher, AuditPipeline, BatcherConfig};
+use crate::audit::{run_batcher, AuditPipeline, AuditShipper, BatcherConfig};
 use crate::metrics::Metrics;
 use crate::node::{run_renewal_loop, run_snapshot_loop, NodeClient};
 use crate::proxy::ProxyShared;
-use crate::state::SnapshotHandle;
+use crate::state::{NodeKeys, SnapshotHandle};
 
 #[derive(Debug, Clone)]
 pub struct DataPlaneConfig {
@@ -62,6 +70,7 @@ pub struct DataPlaneConfig {
     pub connect_timeout: Duration,
     pub max_connections: usize,
     /// Where the node identity is persisted after certificate renewal.
+    /// Unused when embedded: the host owns the node's keys.
     pub state_path: Option<PathBuf>,
 }
 
@@ -93,13 +102,53 @@ pub struct DataPlane {
 }
 
 impl DataPlane {
+    /// Runs the data plane as a node of a control plane: snapshots stream
+    /// from its node API, audit batches go back to it and the client
+    /// certificate is renewed before it expires.
     pub async fn start(
         config: DataPlaneConfig,
         identity: NodeIdentity,
     ) -> Result<Self, DataPlaneError> {
         let keys = Arc::new(identity.keys()?);
-        let node_id = identity.node_id;
         let client = Arc::new(NodeClient::new(identity, config.connect_timeout)?);
+        let state_path = config.state_path.clone();
+        let mut dp = Self::launch(config, keys.clone(), client.clone()).await?;
+        dp.tasks.push(tokio::spawn(run_snapshot_loop(
+            client.clone(),
+            keys,
+            dp.snapshot.clone(),
+            dp.metrics.clone(),
+        )));
+        dp.tasks
+            .push(tokio::spawn(run_renewal_loop(client, state_path)));
+        Ok(dp)
+    }
+
+    /// Runs the data plane inside another process. Nothing is fetched: the
+    /// host installs each signed snapshot through the returned
+    /// [`SnapshotInstaller`], which verifies it exactly as a node does
+    /// (signature, node id, version floor, lease), and audit batches go to
+    /// `audit`. Until a snapshot is installed, and once its lease runs out,
+    /// every request is refused.
+    pub async fn start_embedded(
+        config: DataPlaneConfig,
+        keys: NodeKeys,
+        audit: Arc<dyn AuditShipper>,
+    ) -> Result<(Self, SnapshotInstaller), DataPlaneError> {
+        let keys = Arc::new(keys);
+        let dp = Self::launch(config, keys.clone(), audit).await?;
+        let installer = SnapshotInstaller::new(keys, dp.snapshot.clone(), dp.metrics.clone());
+        Ok((dp, installer))
+    }
+
+    /// The listeners, the proxy, the audit batcher and the optional gateway
+    /// and metrics endpoints: everything but where snapshots come from.
+    async fn launch(
+        config: DataPlaneConfig,
+        keys: Arc<NodeKeys>,
+        shipper: Arc<dyn AuditShipper>,
+    ) -> Result<Self, DataPlaneError> {
+        let node_id = keys.node_id;
         let metrics = Arc::new(Metrics::default());
         let snapshot: SnapshotHandle = Arc::new(ArcSwapOption::empty());
         let (audit, audit_rx) = AuditPipeline::new(config.audit_capacity, metrics.clone());
@@ -145,16 +194,9 @@ impl DataPlane {
         }
         let mut tasks = vec![
             tokio::spawn(proxy::serve(listener, shared, config.max_connections)),
-            tokio::spawn(run_snapshot_loop(
-                client.clone(),
-                keys,
-                snapshot.clone(),
-                metrics.clone(),
-            )),
-            tokio::spawn(run_renewal_loop(client.clone(), config.state_path.clone())),
             tokio::spawn(run_batcher(
                 audit_rx,
-                client,
+                shipper,
                 BatcherConfig {
                     max_batch: config.audit_batch_max,
                     flush_interval: config.audit_flush_interval,
