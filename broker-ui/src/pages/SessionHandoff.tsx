@@ -41,17 +41,19 @@ function Snippet({
   copy,
   display,
   onCopied,
+  onFailed,
 }: {
   title: string;
   copy: string;
   display?: string;
   onCopied?: () => void;
+  onFailed?: () => void;
 }) {
   return (
     <div className="rounded-md border">
       <div className="flex items-center justify-between gap-2 border-b px-3 py-1.5">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
-        <CopyButton value={copy} label="Copy" onCopied={onCopied} />
+        <CopyButton value={copy} label="Copy" onCopied={onCopied} onFailed={onFailed} />
       </div>
       <pre className="whitespace-pre-wrap px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">{display ?? copy}</pre>
     </div>
@@ -119,6 +121,8 @@ export function SessionHandoff({
   const [proxy, setProxy] = useState(() => suggestedProxy(window.location.hostname, rememberedProxy()));
   const [services, setServices] = useState<DiscoveredService[] | null>(null);
   const { copied, warned, markCopied, mayClose } = guard;
+  const [failed, setFailed] = useState(false);
+  const copyFailed = () => setFailed(true);
   const leave = (e?: { preventDefault: () => void }) => {
     if (!mayClose()) {
       e?.preventDefault();
@@ -222,7 +226,7 @@ export function SessionHandoff({
                 onChange={(e) => setOther(e.target.value)}
               />
             )}
-            <Snippet title="Paste in the agent's terminal" copy={script.copy} display={script.display} onCopied={markCopied} />
+            <Snippet title="Paste in the agent's terminal" copy={script.copy} display={script.display} onCopied={markCopied} onFailed={copyFailed} />
           </TabsContent>
 
           <TabsContent value="mcp" className="space-y-3 pt-4">
@@ -252,7 +256,7 @@ export function SessionHandoff({
                   title="Claude Code: paste in a terminal"
                   copy={endpoints.map((e) => claudeMcpCommand(e, minted.token)).join("\n")}
                   display={endpoints.map((e) => claudeMcpCommand(e, short)).join("\n")}
-                  onCopied={markCopied}
+                  onCopied={markCopied} onFailed={copyFailed}
                 />
                 <details className="group rounded-md border">
                   <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
@@ -264,7 +268,7 @@ export function SessionHandoff({
                       title="mcpServers"
                       copy={mcpClientJson(endpoints, minted.token)}
                       display={mcpClientJson(endpoints, short)}
-                      onCopied={markCopied}
+                      onCopied={markCopied} onFailed={copyFailed}
                     />
                   </div>
                 </details>
@@ -277,7 +281,7 @@ export function SessionHandoff({
               title="Environment variables (store them as secrets)"
               copy={env.copy}
               display={env.display}
-              onCopied={markCopied}
+              onCopied={markCopied} onFailed={copyFailed}
             />
             <p className="text-sm text-muted-foreground">
               Then start the job's command with <Mono>tokenless run -- ./your-command</Mono>.
@@ -286,12 +290,23 @@ export function SessionHandoff({
         </Tabs>
       </div>
 
-      <div className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
-        <KeyRound className="size-4 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 text-muted-foreground">Token only</span>
-        <Mono className="min-w-0 flex-1 truncate">{short}</Mono>
-        <CopyButton value={minted.token} label="Copy token" iconOnly onCopied={markCopied} />
+      <div className="flex items-start gap-2 rounded-md border px-3 py-1.5 text-sm">
+        <KeyRound className="mt-1.5 size-4 shrink-0 text-muted-foreground" />
+        <span className="mt-1 shrink-0 text-muted-foreground">Token</span>
+        {/* The whole token, selectable: the way out when copying fails. */}
+        <code
+          className="min-w-0 flex-1 select-all break-all py-1 font-mono text-xs"
+          onCopy={markCopied}
+        >
+          {minted.token}
+        </code>
+        <CopyButton value={minted.token} label="Copy token" iconOnly onCopied={markCopied} onFailed={copyFailed} />
       </div>
+      {failed && (
+        <p role="alert" className="text-sm text-warning-strong">
+          This browser didn't allow copying. Select the token above and copy it by hand.
+        </p>
+      )}
 
       <details className="rounded-md border">
         <summary className="cursor-pointer px-3 py-2 text-sm">First time on that machine?</summary>

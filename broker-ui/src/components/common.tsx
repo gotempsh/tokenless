@@ -5,8 +5,9 @@
 // in ./ui. Pages use these so every list, form and status reads the same.
 
 import { createContext, useContext, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
+import { AlertCircle, Check, ChevronLeft, ChevronRight, Copy, CopyX, KeyRound, MoreHorizontal, type LucideIcon } from "lucide-react";
 import type { Page } from "../api";
+import { copyText } from "../clipboard";
 import { compactTime, exactTime, relativeTime } from "../time";
 import { cn } from "../lib/utils";
 import { hasPager } from "../paging";
@@ -165,21 +166,24 @@ export function Panel({ className, children }: { className?: string; children: R
 
 /**
  * Copies `value`. `iconOnly` is for a value shown right beside it: a small
- * ghost icon that keeps `label` as its accessible name and tooltip.
+ * ghost icon that keeps `label` as its accessible name and tooltip. When
+ * the browser refuses, it says so and calls `onFailed`.
  */
 export function CopyButton({
   value,
   label = "Copy",
   iconOnly = false,
   onCopied,
+  onFailed,
 }: {
   value: string;
   label?: string;
   iconOnly?: boolean;
   onCopied?: () => void;
+  onFailed?: () => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const text = copied ? "Copied" : label;
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const text = state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : label;
   return (
     <Button
       type="button"
@@ -189,14 +193,15 @@ export function CopyButton({
       aria-label={iconOnly ? text : undefined}
       title={iconOnly ? text : undefined}
       onClick={() => {
-        void navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          onCopied?.();
-          window.setTimeout(() => setCopied(false), 2000);
+        void copyText(value).then((ok) => {
+          setState(ok ? "copied" : "failed");
+          if (ok) onCopied?.();
+          else onFailed?.();
+          window.setTimeout(() => setState("idle"), 2000);
         });
       }}
     >
-      {copied ? <Check /> : <Copy />}
+      {state === "copied" ? <Check /> : state === "failed" ? <CopyX /> : <Copy />}
       {!iconOnly && <span className="hidden sm:inline">{text}</span>}
     </Button>
   );
