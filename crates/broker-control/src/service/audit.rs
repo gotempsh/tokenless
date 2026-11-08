@@ -6,6 +6,7 @@ use std::sync::Arc;
 use broker_core::audit::AuditEvent;
 use broker_core::authz::Action;
 use broker_core::ids::{SessionId, VaultId};
+use chrono::{DateTime, Utc};
 
 use super::{Caller, Guard};
 use crate::error::ControlError;
@@ -32,6 +33,19 @@ impl AuditService {
     ) -> Result<Page<AuditEvent>, ControlError> {
         self.query_session(caller, vault_id, action_prefix, None, page)
             .await
+    }
+
+    /// When the vault last recorded `action`, for a list page's summary.
+    pub async fn latest_at(
+        &self,
+        caller: &Caller,
+        vault_id: &VaultId,
+        action: &str,
+    ) -> Result<Option<DateTime<Utc>>, ControlError> {
+        self.guard
+            .check(caller, Action::AuditRead, Some(vault_id))
+            .await?;
+        Ok(self.sink.latest_at(vault_id, action).await?)
     }
 
     /// Like [`query`](Self::query), optionally narrowed to one proxy session.

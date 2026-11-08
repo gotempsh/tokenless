@@ -31,7 +31,8 @@ pub struct VaultOverview {
 
 impl ControlPlane {
     /// The caller's vaults, each with its overview. Each vault costs three
-    /// indexed queries, bounded by the page size.
+    /// indexed lookups: its first services, its live sessions and its newest
+    /// brokered request, none of which grows with the vault's history.
     pub async fn vault_overviews(
         &self,
         caller: &Caller,
@@ -75,17 +76,8 @@ impl ControlPlane {
             )
             .await?;
         let live_sessions = self.policy.live_sessions(caller, &id).await?;
-        let last_request_at = match self
-            .audit
-            .query(
-                caller,
-                Some(id),
-                Some("proxy.inject".to_string()),
-                PageRequest::new(Some(1), Some(1)),
-            )
-            .await
-        {
-            Ok(page) => page.items.first().map(|e| e.at),
+        let last_request_at = match self.audit.latest_at(caller, &id, "proxy.inject").await {
+            Ok(at) => at,
             Err(ControlError::Forbidden { .. }) => None,
             Err(e) => return Err(e),
         };

@@ -287,6 +287,30 @@ pub trait AuditSink: Send + Sync {
     async fn record(&self, events: &[AuditEvent]) -> Result<(), StoreError>;
     /// Newest first.
     async fn query(&self, query: &AuditQuery) -> Result<Page<AuditEvent>, StoreError>;
+
+    /// When the vault last recorded exactly `action`, without counting its
+    /// history. List pages ask this once per vault, so a store should
+    /// answer it from an index. The default reads the newest event with
+    /// `action` as a prefix, so a longer action recorded later hides it.
+    async fn latest_at(
+        &self,
+        vault_id: &VaultId,
+        action: &str,
+    ) -> Result<Option<DateTime<Utc>>, StoreError> {
+        let page = self
+            .query(&AuditQuery {
+                vault_id: Some(*vault_id),
+                action_prefix: Some(action.to_string()),
+                session_id: None,
+                page: PageRequest::new(Some(1), Some(1)),
+            })
+            .await?;
+        Ok(page
+            .items
+            .first()
+            .filter(|e| e.action == action)
+            .map(|e| e.at))
+    }
 }
 
 /// Decides whether a principal may perform an action. Step-up MFA is

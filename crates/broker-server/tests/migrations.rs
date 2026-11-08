@@ -211,3 +211,91 @@ fn uuid_like(name: &str) -> String {
         name.trim_start_matches('e')
     )
 }
+
+#[tokio::test]
+async fn upgrading_finds_a_vaults_last_request_without_counting_its_history() {
+    let (_dir, url, pool) = database_before(11).await;
+    let work = VaultId::new();
+    let idle = VaultId::new();
+    for (vault, name) in [(work, "work"), (idle, "idle")] {
+        sqlx::query("INSERT INTO vaults (id, name, scope, created_at) VALUES (?, ?, ?, ?)")
+            .bind(vault.to_string())
+            .bind(name)
+            .bind(format!("vault:{vault}"))
+            .bind(AT)
+            .execute(&pool)
+            .await
+            .expect("vault");
+    }
+    for (id, at, action, vault) in [
+        ("e1", "2026-01-01T00:00:01.000000Z", "proxy.inject", work),
+        ("e2", "2026-01-01T00:00:03.000000Z", "proxy.inject", work),
+        // Newer, but not brokered requests (e3 shares the prefix), or in
+        // another vault (e5).
+        (
+            "e3",
+            "2026-01-01T00:00:05.000000Z",
+            "proxy.injection_failed",
+            work,
+        ),
+        ("e4", "2026-01-01T00:00:06.000000Z", "rule.create", work),
+        ("e5", "2026-01-01T00:00:07.000000Z", "rule.create", idle),
+    ] {
+        sqlx::query(
+            "INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) \
+             VALUES (?, ?, 'user:test', ?, 'success', ?, 'rule:r1', '{}')",
+        )
+        .bind(uuid_like(id))
+        .bind(at)
+        .bind(action)
+        .bind(vault.to_string())
+        .execute(&pool)
+        .await
+        .expect("audit event");
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    let latest = store
+        .latest_at(&work, "proxy.inject")
+        .await
+        .expect("latest in work");
+    assert_eq!(
+        latest.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+        Some("2026-01-01T00:00:03Z".to_string()),
+        "the newest exact match, not a longer action or another vault's event"
+    );
+    assert_eq!(
+        store
+            .latest_at(&idle, "proxy.inject")
+            .await
+            .expect("latest in idle"),
+        None
+    );
+
+    // One index entry: no scan of the vault's events and no sort.
+    let pool = SqlitePoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("reopen");
+    let plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT at FROM audit_events WHERE vault_id = ? AND action = ? ORDER BY at DESC LIMIT 1",
+    )
+    .bind(work.to_string())
+    .bind("proxy.inject")
+    .fetch_all(&pool)
+    .await
+    .expect("query plan")
+    .iter()
+    .map(|r| sqlx::Row::get::<String, _>(r, "detail"))
+    .collect();
+    assert!(
+        plan.iter()
+            .any(|d| d.contains("audit_events_vault_action_at")),
+        "expected the vault and action index, got {plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|d| d.contains("TEMP B-TREE")),
+        "expected no sort, got {plan:?}"
+    );
+}

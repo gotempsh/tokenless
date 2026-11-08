@@ -781,6 +781,20 @@ impl AuditSink for MemoryStore {
             .collect();
         Ok(query.page.apply(&newest_first(items, |e| e.at)))
     }
+
+    async fn latest_at(
+        &self,
+        vault_id: &VaultId,
+        action: &str,
+    ) -> Result<Option<DateTime<Utc>>, StoreError> {
+        Ok(self
+            .lock()?
+            .audit
+            .iter()
+            .filter(|e| e.vault_id.as_ref() == Some(vault_id) && e.action == action)
+            .map(|e| e.at)
+            .max())
+    }
 }
 
 #[async_trait]

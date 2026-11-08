@@ -1426,6 +1426,23 @@ impl AuditSink for SqliteStore {
             page_size: query.page.page_size,
         })
     }
+
+    async fn latest_at(
+        &self,
+        vault_id: &VaultId,
+        action: &str,
+    ) -> Result<Option<DateTime<Utc>>, StoreError> {
+        // One entry of audit_events_vault_action_at (migration 0011), no count.
+        let row = sqlx::query(
+            "SELECT at FROM audit_events WHERE vault_id = ? AND action = ? ORDER BY at DESC LIMIT 1",
+        )
+        .bind(vault_id.to_string())
+        .bind(action)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db("find the latest audit event", "audit"))?;
+        row.map(|r| get_ts(&r, "at")).transpose()
+    }
 }
 
 fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
