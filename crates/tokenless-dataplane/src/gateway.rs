@@ -167,8 +167,8 @@ pub async fn serve(listener: TcpListener, shared: Arc<ProxyShared>) {
                         served = connection.as_mut() => served,
                         () = closed(&mut lifecycle) => {
                             // A streaming response is cut by its own watch,
-                            // which audits the cut and then ends this
-                            // connection. Dropping the connection first would
+                            // which audits the cut and only then ends the
+                            // body, and with it this connection. Dropping the connection first would
                             // drop that watch before it records anything, so
                             // it gets a moment; a request still waiting on
                             // its upstream is dropped after that.

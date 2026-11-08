@@ -210,7 +210,8 @@ pub(crate) struct CutBody {
 }
 
 impl CutBody {
-    /// `on_cut` runs once if the body is cut while still being read.
+    /// `on_cut` runs once if the body is cut while still being read, and
+    /// before the body ends: once a reader sees the cut, its record exists.
     pub fn wrap(
         inner: ProxyBody,
         watch: SessionWatch,
@@ -220,8 +221,12 @@ impl CutBody {
         let (tx, end) = oneshot::channel();
         let watcher = tokio::spawn(async move {
             let end = session_end(watch).await;
-            if tx.send(end).is_ok() {
+            // Record first, then end the body: whoever sees the stream end
+            // may let the connection go, and a shutdown counting connections
+            // must then find the record already queued.
+            if !tx.is_closed() {
                 on_cut(end);
+                let _ = tx.send(end);
             }
         });
         http_body_util::BodyExt::boxed(Self {
@@ -477,6 +482,47 @@ mod tests {
         assert_eq!(cut.session_id, mine.jti);
         assert!(body.frame().await.is_none());
         assert_eq!(cut_rx.await.unwrap(), SessionEnd::Revoked);
+        drop(tx);
+    }
+
+    /// The cut is recorded before the body ends: whoever sees the stream
+    /// end (and lets its connection go) can rely on the record existing.
+    /// On a multi-thread runtime the reader runs alongside the watcher.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cut_is_recorded_before_the_body_ends() {
+        let s = setup();
+        let mine = claims(600);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(1);
+        let recorded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let on_cut = recorded.clone();
+        let mut body = CutBody::wrap(
+            Channel(rx).boxed(),
+            SessionWatch::new(s.changed.subscribe(), s.handle.clone(), &mine),
+            move |_| {
+                // A slow record: the body must not end while it runs.
+                std::thread::sleep(Duration::from_millis(50));
+                on_cut.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        let mut revoking = s.f.snapshot_body(2, vec![]);
+        revoking.revoked_sessions = vec![mine.jti];
+        apply(
+            &s.f.sign(&revoking),
+            &s.f.keys,
+            &s.handle,
+            &s.changed,
+            &s.metrics,
+        )
+        .unwrap();
+        let ended = timeout(Duration::from_secs(1), body.frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(ended.is_err(), "the body is cut");
+        assert!(
+            recorded.load(std::sync::atomic::Ordering::SeqCst),
+            "the body ended before its cut was recorded"
+        );
         drop(tx);
     }
 
