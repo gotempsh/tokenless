@@ -12,25 +12,6 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use broker_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
-};
-use broker_control::store::{
-    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
-    StoredCiphertext,
-};
-use broker_control::StoreError;
-use broker_core::audit::{AuditEvent, AuditOutcome};
-use broker_core::authz::Role;
-use broker_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
-};
-use broker_core::substitution::Substitution;
-use broker_core::template::ServiceTemplate;
-use broker_core::variables::CustomHeader;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -38,6 +19,25 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use tokenless_control::model::{
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
+    PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
+    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+};
+use tokenless_control::store::{
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
+    StoredCiphertext,
+};
+use tokenless_control::StoreError;
+use tokenless_core::audit::{AuditEvent, AuditOutcome};
+use tokenless_core::authz::Role;
+use tokenless_core::ids::{
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
+    VaultId,
+};
+use tokenless_core::substitution::Substitution;
+use tokenless_core::template::ServiceTemplate;
+use tokenless_core::variables::CustomHeader;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -615,7 +615,7 @@ fn vault_from_row(row: &SqliteRow) -> Result<Vault, StoreError> {
     Ok(Vault {
         id: get_id(row, "id")?,
         name: get(row, "name")?,
-        scope: broker_core::scope::Scope::parse(&scope)
+        scope: tokenless_core::scope::Scope::parse(&scope)
             .map_err(|e| StoreError::backend("decode scope", e))?,
         created_at: get_ts(row, "created_at")?,
     })

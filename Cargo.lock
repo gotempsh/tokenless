@@ -325,115 +325,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "broker-auth"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "base64 0.22.1",
- "hex",
- "hmac",
- "rand 0.8.8",
- "sha2 0.10.9",
- "subtle",
- "thiserror",
- "totp-rs",
- "zeroize",
-]
-
-[[package]]
-name = "broker-conformance"
-version = "0.1.0"
-dependencies = [
- "broker-control",
- "broker-core",
- "chrono",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "broker-control"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "async-trait",
- "base64 0.22.1",
- "broker-auth",
- "broker-core",
- "chrono",
- "ed25519-dalek",
- "hex",
- "rand 0.8.8",
- "rcgen",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror",
- "time",
- "tokio",
- "tracing",
- "uuid",
- "x25519-dalek",
- "x509-parser",
- "zeroize",
-]
-
-[[package]]
-name = "broker-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "base64 0.22.1",
- "chrono",
- "ed25519-dalek",
- "hex",
- "hkdf",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "thiserror",
- "uuid",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
-name = "broker-dataplane"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "async-trait",
- "base64 0.22.1",
- "broker-core",
- "bytes",
- "chrono",
- "ed25519-dalek",
- "hex",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "rand 0.8.8",
- "rcgen",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror",
- "time",
- "tokio",
- "tokio-rustls",
- "tracing",
- "webpki-roots",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
 name = "broker-server"
 version = "0.1.0"
 dependencies = [
@@ -441,11 +332,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "broker-auth",
- "broker-conformance",
- "broker-control",
- "broker-core",
- "broker-dataplane",
  "bytes",
  "chrono",
  "clap",
@@ -469,6 +355,11 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror",
+ "tokenless-auth",
+ "tokenless-conformance",
+ "tokenless-control",
+ "tokenless-core",
+ "tokenless-dataplane",
  "tokio",
  "tokio-rustls",
  "totp-rs",
@@ -2879,6 +2770,115 @@ name = "tinyvec"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
+name = "tokenless-auth"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "rand 0.8.8",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror",
+ "totp-rs",
+ "zeroize",
+]
+
+[[package]]
+name = "tokenless-conformance"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "thiserror",
+ "tokenless-control",
+ "tokenless-core",
+ "tokio",
+]
+
+[[package]]
+name = "tokenless-control"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "rand 0.8.8",
+ "rcgen",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "time",
+ "tokenless-auth",
+ "tokenless-core",
+ "tokio",
+ "tracing",
+ "uuid",
+ "x25519-dalek",
+ "x509-parser",
+ "zeroize",
+]
+
+[[package]]
+name = "tokenless-core"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "hkdf",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "thiserror",
+ "uuid",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
+name = "tokenless-dataplane"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.8",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "time",
+ "tokenless-core",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+ "x25519-dalek",
+ "zeroize",
+]
 
 [[package]]
 name = "tokio"

@@ -15,9 +15,9 @@ publish = false
 [workspace]
 
 [dependencies]
-broker-control = { path = "../../crates/broker-control" }
-broker-core = { path = "../../crates/broker-core" }
-broker-dataplane = { path = "../../crates/broker-dataplane" }
+tokenless-control = { path = "../../crates/tokenless-control" }
+tokenless-core = { path = "../../crates/tokenless-core" }
+tokenless-dataplane = { path = "../../crates/tokenless-dataplane" }
 async-trait = "0.1"
 rand = "0.8"
 rcgen = "0.14"

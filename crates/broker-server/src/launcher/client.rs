@@ -6,11 +6,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use broker_control::model::{Page, ProxySession, Vault};
-use broker_control::service::sessions::{DiscoveredService, SessionDiscovery};
-use broker_core::ids::VaultId;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use tokenless_control::model::{Page, ProxySession, Vault};
+use tokenless_control::service::sessions::{DiscoveredService, SessionDiscovery};
+use tokenless_core::ids::VaultId;
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -159,9 +159,9 @@ impl ApiClient {
             Some(Credentials::Session { token, csrf_token }) => Ok(builder
                 .header(
                     reqwest::header::COOKIE,
-                    format!("{}={}", broker_auth::cookie::SESSION_COOKIE, token.as_str()),
+                    format!("{}={}", tokenless_auth::cookie::SESSION_COOKIE, token.as_str()),
                 )
-                .header(broker_auth::csrf::CSRF_HEADER, csrf_token)),
+                .header(tokenless_auth::csrf::CSRF_HEADER, csrf_token)),
             None => Err(LauncherError::config(format!(
                 "{operation} needs an API key or a signed-in person: set TOKENLESS_API_KEY, pass --api-key-file, or run tokenless login"
             ))),

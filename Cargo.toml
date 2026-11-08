@@ -3,12 +3,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/broker-core",
-    "crates/broker-auth",
-    "crates/broker-control",
-    "crates/broker-dataplane",
+    "crates/tokenless-core",
+    "crates/tokenless-auth",
+    "crates/tokenless-control",
+    "crates/tokenless-dataplane",
     "crates/broker-server",
-    "crates/broker-conformance",
+    "crates/tokenless-conformance",
 ]
 
 [workspace.package]
@@ -19,11 +19,11 @@ rust-version = "1.89"
 publish = false
 
 [workspace.dependencies]
-broker-core = { path = "crates/broker-core" }
-broker-auth = { path = "crates/broker-auth" }
-broker-control = { path = "crates/broker-control" }
-broker-dataplane = { path = "crates/broker-dataplane" }
-broker-conformance = { path = "crates/broker-conformance" }
+tokenless-core = { path = "crates/tokenless-core" }
+tokenless-auth = { path = "crates/tokenless-auth" }
+tokenless-control = { path = "crates/tokenless-control" }
+tokenless-dataplane = { path = "crates/tokenless-dataplane" }
+tokenless-conformance = { path = "crates/tokenless-conformance" }
 
 aes-gcm = "0.10"
 arc-swap = "1.7"

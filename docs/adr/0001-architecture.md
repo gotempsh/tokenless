@@ -34,11 +34,11 @@ depends on Temps.
 
 | Crate | Role | I/O |
 |---|---|---|
-| `broker-core` | Rules, opaque scopes, host/path/method matching, template schema, injection methods, PASETO session claims, snapshot signing, sealed envelopes, RBAC decisions, wire protocol | none |
-| `broker-auth` | argon2id passwords, TOTP, token generation and hashing, CSRF tokens, session cookies | none |
-| `broker-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
-| `broker-conformance` | Behavioural test suites any trait implementation must pass | none |
-| `broker-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
+| `tokenless-core` | Rules, opaque scopes, host/path/method matching, template schema, injection methods, PASETO session claims, snapshot signing, sealed envelopes, RBAC decisions, wire protocol | none |
+| `tokenless-auth` | argon2id passwords, TOTP, token generation and hashing, CSRF tokens, session cookies | none |
+| `tokenless-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
+| `tokenless-conformance` | Behavioural test suites any trait implementation must pass | none |
+| `tokenless-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
 | `broker-server` | axum binary: management API, node API, SQLite store, root key, CLI | network, disk |
 | `broker-ui` | Vite/React console | browser |
 
@@ -54,7 +54,7 @@ flowchart LR
   subgraph CP["Control plane: tokenless serve"]
     API["Management API<br/>/api/v1 (loopback, behind TLS proxy)"]
     NAPI["Node API :8443<br/>TLS, mTLS for enrolled nodes"]
-    SVC["broker-control services<br/>authz, step-up, audit"]
+    SVC["tokenless-control services<br/>authz, step-up, audit"]
     DB[("SQLite<br/>secrets AES-256-GCM<br/>key material encrypted")]
     MK["root key (outside the data dir)"]
     API --> SVC
@@ -65,7 +65,7 @@ flowchart LR
 
   subgraph AgentHost["Agent host"]
     Agent["AI agent<br/>HTTPS_PROXY=http://&lt;session&gt;@127.0.0.1:3128"]
-    DP["broker-dataplane<br/>ArcSwap snapshot, in-memory secrets"]
+    DP["tokenless-dataplane<br/>ArcSwap snapshot, in-memory secrets"]
     Agent -->|CONNECT + Proxy-Authorization| DP
   end
 
@@ -131,7 +131,7 @@ flowchart LR
     end
     S1["Egress sidecar A<br/>adds Proxy-Authorization"]
     S2["Egress sidecar B"]
-    DP["broker-dataplane<br/>(one per host)"]
+    DP["tokenless-dataplane<br/>(one per host)"]
     A1 -->|all egress| S1 --> DP
     A2 -->|all egress| S2 --> DP
   end
@@ -150,7 +150,7 @@ In native mode a per-sandbox egress sidecar attaches the session token,
 so the sandbox itself never sees it, not even in an environment variable.
 There is one data plane per host, shared by every sandbox on it. The
 control plane is a Temps plugin that implements the four traits on Temps'
-own services and passes `broker-conformance`. The data plane binary, the
+own services and passes `tokenless-conformance`. The data plane binary, the
 node protocol and the snapshot format are unchanged.
 
 ### Deployment modes
@@ -349,7 +349,7 @@ checks every read endpoint and the raw database files for the plaintext.
 |---|---|---|---|
 | 1 | Unmatched hosts | Default `passthrough` (blind tunnel); `deny` is one click away in Settings | The broker's guarantee is about credentials, not egress filtering. Nothing is decrypted or injected on unmatched hosts. A deny default pushes operators to bypass the proxy with `NO_PROXY`, which loses the audit trail. |
 | 2 | Plain HTTP | Refused with 403, never forwarded | "Never inject on plain http" is implemented as "never proxy plain http", so there is no cleartext path at all. |
-| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: every mutating store method takes the audit events for the change and writes them in the same transaction, only if the change succeeds. If the audit insert fails, the change rolls back. Events that change nothing (denials, validation requests) are written on their own; a failure there is logged at `error`. | A change can then never be committed without its audit row, and a failed change never leaves one behind. The audit table lives in the same database as the change, so this adds no second failure domain. `broker-conformance::audited_writes_suite` holds every store to it. |
+| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: every mutating store method takes the audit events for the change and writes them in the same transaction, only if the change succeeds. If the audit insert fails, the change rolls back. Events that change nothing (denials, validation requests) are written on their own; a failure there is logged at `error`. | A change can then never be committed without its audit row, and a failed change never leaves one behind. The audit table lives in the same database as the change, so this adds no second failure domain. `tokenless-conformance::audited_writes_suite` holds every store to it. |
 | 4 | Request limits | Counted per node, in memory, carried across snapshots | A shared counter would need a network call per request, which violates the hot-path rule. A session used on N nodes can therefore make up to N×limit requests, and counters reset when a node restarts. Rate-limited sessions are rejected (503) until the snapshot that provisions their counter arrives, rather than allowed unmetered. |
 | 5 | HTTP versions | HTTP/1.1 only inside intercepted tunnels (ALPN `http/1.1` on both sides) | Keeps the header-rewrite surface small and auditable. Passthrough tunnels carry anything. |
 | 6 | Secret lifetime in memory | Secrets are held in zeroize-on-drop buffers. The final `http::HeaderValue` cannot be zeroized and lives for one request. | That is a library limitation; documented rather than worked around with unsafe code (`unsafe_code = forbid`). |
@@ -362,7 +362,7 @@ checks every read endpoint and the raw database files for the plaintext.
 | 13 | Interception CA | One interception CA per control plane, delivered sealed to every node | A compromised node can mint certificates that clients trusting that CA accept. Clients should trust it only inside agent sandboxes. Per-node, name-constrained intermediates are out of scope (see below). |
 | 14 | First admin's password | Generated and printed to the terminal (stderr) once, not to the JSON log | Logs are often shipped elsewhere. A generated password removes the window in which whoever reaches the console first claims the instance, which a setup token only narrowed. |
 | 15 | Login rate limiter | In memory, per process | Sufficient for a single-node standalone server. HA would need a shared limiter. |
-| 16 | PASETO | v4.public implemented in `broker-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
+| 16 | PASETO | v4.public implemented in `tokenless-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
 
 ## Out of scope, with seams left for them
 
@@ -382,7 +382,7 @@ checks every read endpoint and the raw database files for the plaintext.
 - **SAML / SCIM / OIDC.** `IdentityStore` and `AuthService` are the seam;
   `Principal` and `Caller` stay the same.
 - **Temps plugin crate.** It implements the four traits on Temps services,
-  passes `broker-conformance`, and reuses `broker-dataplane` unchanged.
+  passes `tokenless-conformance`, and reuses `tokenless-dataplane` unchanged.
 - **Postgres / HA.** The SQL in `SqliteStore` is portable: bound
   parameters, `ON CONFLICT`, `RETURNING`, and fixed-width UTC timestamps
   that sort lexically. A Postgres store swaps `?` for `$n`, uses

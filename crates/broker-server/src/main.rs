@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use broker_dataplane::node::{enroll, NodeIdentity};
-use broker_dataplane::{DataPlane, DataPlaneConfig};
 use broker_server::launcher::account::{
     self, AddService, ConsoleClient, Prompter, SessionStore, SessionVault, SignIn, Stored,
 };
@@ -30,6 +28,8 @@ use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use messages::{detail, say};
 use serde::Serialize;
+use tokenless_dataplane::node::{enroll, NodeIdentity};
+use tokenless_dataplane::{DataPlane, DataPlaneConfig};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use zeroize::Zeroizing;
@@ -538,7 +538,7 @@ enum CliError {
     #[error(transparent)]
     Server(#[from] broker_server::ServerError),
     #[error(transparent)]
-    DataPlane(#[from] broker_dataplane::DataPlaneError),
+    DataPlane(#[from] tokenless_dataplane::DataPlaneError),
     #[error(transparent)]
     Launcher(#[from] LauncherError),
     #[error("I/O failure while {context}: {source}")]
@@ -557,7 +557,7 @@ fn read_cas(
             context: format!("reading CA file {}", path.display()),
             source: e,
         })?;
-        out.extend(broker_dataplane::tls::certs_from_pem(
+        out.extend(tokenless_dataplane::tls::certs_from_pem(
             &path.display().to_string(),
             &pem,
         )?);
@@ -709,7 +709,7 @@ async fn logout(server: String) -> Result<ExitCode, CliError> {
 /// The template's credential fields, from the terminal without echo, or
 /// from piped input when the template has a single field.
 fn read_fields(
-    template: &broker_control::model::StoredTemplate,
+    template: &tokenless_control::model::StoredTemplate,
     prompter: &dyn Prompter,
 ) -> Result<BTreeMap<String, Zeroizing<String>>, CliError> {
     use std::io::{IsTerminal, Read};
@@ -1160,7 +1160,7 @@ async fn stop_signal() -> Result<&'static str, CliError> {
 #[derive(Serialize)]
 struct CreatedSession<'a> {
     token: &'a str,
-    session: &'a broker_control::model::ProxySession,
+    session: &'a tokenless_control::model::ProxySession,
 }
 
 async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, CliError> {

@@ -19,7 +19,7 @@ macro_rules! suite {
         #[tokio::test]
         async fn $name() {
             let (_dir, store) = store().await;
-            if let Err(failure) = broker_conformance::$name(&store).await {
+            if let Err(failure) = tokenless_conformance::$name(&store).await {
                 panic!("{failure}");
             }
         }
@@ -41,11 +41,11 @@ suite!(vault_deletion_suite);
 /// committed either. A reused event id makes the audit insert fail.
 #[tokio::test]
 async fn a_failed_audit_insert_rolls_back_the_change() {
-    use broker_control::model::{PageRequest, Vault};
-    use broker_control::store::{AuditSink, PolicyStore};
-    use broker_core::audit::{AuditEvent, AuditOutcome};
-    use broker_core::ids::VaultId;
-    use broker_core::scope::Scope;
+    use tokenless_control::model::{PageRequest, Vault};
+    use tokenless_control::store::{AuditSink, PolicyStore};
+    use tokenless_core::audit::{AuditEvent, AuditOutcome};
+    use tokenless_core::ids::VaultId;
+    use tokenless_core::scope::Scope;
 
     let (_dir, store) = store().await;
     let event = AuditEvent::new("user:test", "vault.create", AuditOutcome::Success);
@@ -78,10 +78,10 @@ async fn a_failed_audit_insert_rolls_back_the_change() {
 /// "database is locked" because another write landed in between.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_writers_wait_instead_of_failing() {
-    use broker_control::model::Variable;
-    use broker_control::store::CredentialStore;
-    use broker_core::ids::VariableId;
     use std::sync::Arc;
+    use tokenless_control::model::Variable;
+    use tokenless_control::store::CredentialStore;
+    use tokenless_core::ids::VariableId;
 
     let (_dir, store) = store().await;
     let store = Arc::new(store);

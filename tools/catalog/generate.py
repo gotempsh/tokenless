@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "tools" / "catalog"
 CACHE = HERE / ".cache"
 SOURCE = HERE / "services.toml"
-TEMPLATES = Path("crates/broker-core/templates")
-RUST_LIST = Path("crates/broker-core/src/builtin_catalog.rs")
+TEMPLATES = Path("crates/tokenless-core/templates")
+RUST_LIST = Path("crates/tokenless-core/src/builtin_catalog.rs")
 LOGOS = Path("broker-ui/src/assets/logos")
 
 HEADER = "SPDX-FileCopyrightText: 2026 tokenless contributors\nSPDX-License-Identifier: MIT OR Apache-2.0"

@@ -6,11 +6,11 @@
 //!
 //! A gateway URL is `<gateway>/mcp/<host[:port]><mcp_path>`. The client
 //! sends the session token as a bearer token; the node checks it, drops
-//! it and adds the service's credential (see `broker_dataplane::gateway`).
+//! it and adds the service's credential (see `tokenless_dataplane::gateway`).
 
-use broker_control::service::sessions::DiscoveredService;
-use broker_core::template::ServiceKind;
 use serde::Serialize;
+use tokenless_control::service::sessions::DiscoveredService;
+use tokenless_core::template::ServiceKind;
 
 /// Where `node run` serves the gateway unless told otherwise.
 pub const DEFAULT_GATEWAY: &str = "http://127.0.0.1:3129";
@@ -132,7 +132,7 @@ pub fn client_json(endpoints: &[McpEndpoint], token: &str) -> Result<String, ser
 
 #[cfg(test)]
 mod tests {
-    use broker_core::ids::RuleId;
+    use tokenless_core::ids::RuleId;
 
     use super::*;
 

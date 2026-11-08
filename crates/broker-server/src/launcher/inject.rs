@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use broker_control::service::sessions::{DiscoveredPlaceholder, DiscoveredService};
+use tokenless_control::service::sessions::{DiscoveredPlaceholder, DiscoveredService};
 
 use super::LauncherError;
 
@@ -279,7 +279,7 @@ pub fn agent_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use broker_core::ids::RuleId;
+    use tokenless_core::ids::RuleId;
 
     fn placeholder(field: &str, placeholder: &str) -> DiscoveredPlaceholder {
         DiscoveredPlaceholder {

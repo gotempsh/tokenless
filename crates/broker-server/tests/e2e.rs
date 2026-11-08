@@ -11,8 +11,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use broker_control::ControlConfig;
-use broker_dataplane::{enroll, DataPlane, DataPlaneConfig};
 use broker_server::{RunningServer, Server, ServerConfig};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -25,6 +23,8 @@ use reqwest::{Certificate, StatusCode};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokenless_control::ControlConfig;
+use tokenless_dataplane::{enroll, DataPlane, DataPlaneConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -217,7 +217,7 @@ fn totp(secret: &str, offset_secs: u64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    broker_auth::totp::code_at(secret, now + offset_secs).unwrap()
+    tokenless_auth::totp::code_at(secret, now + offset_secs).unwrap()
 }
 
 /// Signs in as the admin created on first start, sets PASSWORD as its
@@ -372,7 +372,7 @@ async fn end_to_end() {
     };
     config.validation_public_roots = false;
     config.validation_extra_roots =
-        broker_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
+        tokenless_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
     let server = Server::start(config).await.unwrap();
     let (mut api, _totp_secret) = bootstrap_admin(&server).await;
 
@@ -431,7 +431,7 @@ async fn end_to_end() {
     assert!(enroll(&control_url, &join_token, "again").await.is_err());
 
     let upstream_roots =
-        broker_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
+        tokenless_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
     let dp = DataPlane::start(
         DataPlaneConfig {
             listen: "127.0.0.1:0".parse().unwrap(),

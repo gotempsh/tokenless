@@ -365,11 +365,11 @@ The website (`site/`) is deployed separately; see
 
 | Path | Contents |
 |---|---|
-| `crates/broker-core` | Rules, scopes, templates, injection, sessions, snapshots (no I/O) |
-| `crates/broker-auth` | Passwords, TOTP, tokens, CSRF, cookies |
-| `crates/broker-control` | Services and the store / authorizer traits |
-| `crates/broker-conformance` | Suites every trait implementation must pass |
-| `crates/broker-dataplane` | The forward proxy and node client |
+| `crates/tokenless-core` | Rules, scopes, templates, injection, sessions, snapshots (no I/O) |
+| `crates/tokenless-auth` | Passwords, TOTP, tokens, CSRF, cookies |
+| `crates/tokenless-control` | Services and the store / authorizer traits |
+| `crates/tokenless-conformance` | Suites every trait implementation must pass |
+| `crates/tokenless-dataplane` | The forward proxy and node client |
 | `crates/broker-server` | HTTP APIs, SQLite store and the `tokenless` binary |
 | `broker-ui` | Management console |
 | `tools/catalog` | Source of the built-in service catalogue and its logos |
@@ -380,7 +380,7 @@ The website (`site/`) is deployed separately; see
 ### Adding a built-in service
 
 The built-in templates and their logos are generated from
-`tools/catalog/services.toml`; never edit `crates/broker-core/templates/`,
+`tools/catalog/services.toml`; never edit `crates/tokenless-core/templates/`,
 `builtin_catalog.rs` or `broker-ui/src/assets/logos/` by hand.
 
 ```sh

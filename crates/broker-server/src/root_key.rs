@@ -3,7 +3,7 @@
 
 //! The root key: the one secret the operator keeps outside the database.
 //! It wraps the instance key, which wraps the data keys (see
-//! [`broker_control::envelope`]), so whoever holds the data directory but
+//! [`tokenless_control::envelope`]), so whoever holds the data directory but
 //! not the root key decrypts nothing.
 //!
 //! It comes from, in order:
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use broker_control::cipher::AesGcmCipher;
+use tokenless_control::cipher::AesGcmCipher;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
