@@ -7,9 +7,9 @@
 
 use std::borrow::Cow;
 
-use broker_control::model::PageRequest;
-use broker_control::store::{IdentityStore, PolicyStore};
-use broker_core::ids::{ApiKeyId, VaultId};
+use broker_control::model::{AuditQuery, PageRequest};
+use broker_control::store::{AuditSink, IdentityStore, PolicyStore};
+use broker_core::ids::{ApiKeyId, SessionId, VaultId};
 use broker_server::store::SqliteStore;
 use sqlx::sqlite::SqlitePoolOptions;
 
@@ -115,4 +115,99 @@ async fn a_new_instance_allows_week_long_sessions() {
             .max_session_ttl_secs,
         7 * 24 * 3600
     );
+}
+
+#[tokio::test]
+async fn upgrading_indexes_the_audit_log_by_session() {
+    let (_dir, url, pool) = database_before(10).await;
+    let session = SessionId::new().to_string();
+    let other = SessionId::new().to_string();
+    for (id, at, action, target, detail) in [
+        (
+            "e1",
+            "2026-01-01T00:00:01.000000Z",
+            "session.mint",
+            format!("session:{session}"),
+            "{}".to_string(),
+        ),
+        (
+            "e2",
+            "2026-01-01T00:00:02.000000Z",
+            "proxy.inject",
+            "rule:r1".to_string(),
+            format!(r#"{{"session_id":"{session}"}}"#),
+        ),
+        (
+            "e3",
+            "2026-01-01T00:00:03.000000Z",
+            "proxy.inject",
+            "rule:r1".to_string(),
+            format!(r#"{{"session_id":"{other}"}}"#),
+        ),
+        (
+            "e4",
+            "2026-01-01T00:00:04.000000Z",
+            "rule.create",
+            "rule:r1".to_string(),
+            "{}".to_string(),
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) \
+             VALUES (?, ?, 'user:test', ?, 'success', NULL, ?, ?)",
+        )
+        .bind(uuid_like(id))
+        .bind(at)
+        .bind(action)
+        .bind(target)
+        .bind(detail)
+        .execute(&pool)
+        .await
+        .expect("audit event");
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    let found = store
+        .query(&AuditQuery {
+            session_id: Some(session.parse().expect("session id")),
+            ..Default::default()
+        })
+        .await
+        .expect("query by session");
+    let actions: Vec<_> = found.items.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["proxy.inject", "session.mint"],
+        "events recorded before the upgrade are found"
+    );
+    assert_eq!(found.total, 2);
+
+    // Answered from the index, not by reading every event.
+    let pool = SqlitePoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("reopen");
+    let plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM audit_events WHERE 1 = 1 AND session_ref = ?",
+    )
+    .bind(&session)
+    .fetch_all(&pool)
+    .await
+    .expect("query plan")
+    .iter()
+    .map(|r| sqlx::Row::get::<String, _>(r, "detail"))
+    .collect();
+    assert!(
+        plan.iter().any(|d| d.contains("audit_events_session_at")),
+        "expected the session index, got {plan:?}"
+    );
+}
+
+/// A UUID-shaped id, stable per name, for rows written with raw SQL.
+fn uuid_like(name: &str) -> String {
+    format!(
+        "00000000-0000-4000-8000-{:0>12}",
+        name.trim_start_matches('e')
+    )
 }

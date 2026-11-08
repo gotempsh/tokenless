@@ -83,4 +83,19 @@ impl AuditEvent {
         self.detail.insert(key.to_string(), value.into());
         self
     }
+
+    /// The session this event is about: the one it targets (minted,
+    /// relabelled, revoked), else the one that made the request (the
+    /// proxy's `session_id` detail). The SQLite store indexes the same
+    /// rule as `audit_events.session_ref` (migration 0010).
+    pub fn session_ref(&self) -> Option<&str> {
+        match self
+            .target
+            .as_deref()
+            .and_then(|t| t.strip_prefix("session:"))
+        {
+            Some(id) => Some(id),
+            None => self.detail.get("session_id").map(String::as_str),
+        }
+    }
 }

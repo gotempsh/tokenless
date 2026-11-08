@@ -344,7 +344,7 @@ pub struct AuditQuery {
     pub action_prefix: Option<String>,
     /// The session's own history (events targeting `session:<id>`: minted,
     /// relabelled, revoked) and its traffic (events whose `session_id`
-    /// detail is this session).
+    /// detail is this session): `AuditEvent::session_ref`.
     pub session_id: Option<SessionId>,
     pub page: PageRequest,
 }

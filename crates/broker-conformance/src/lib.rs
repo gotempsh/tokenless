@@ -1204,6 +1204,12 @@ pub async fn audit_sink_suite(sink: &dyn AuditSink) -> Result<(), ConformanceFai
     let session = SessionId::new();
     events[2] = events[2].clone().detail("session_id", session.to_string());
     events[3] = events[3].clone().target(format!("session:{session}"));
+    // An event about another session belongs to that session, even when
+    // this one's id appears in its details.
+    events[4] = events[4]
+        .clone()
+        .target(format!("session:{}", SessionId::new()))
+        .detail("session_id", session.to_string());
     sink.record(&events).await.map_err(backend(S, "record"))?;
     let by_session = sink
         .query(&AuditQuery {

@@ -1385,7 +1385,8 @@ impl AuditSink for SqliteStore {
             filter.push_str(" AND substr(action, 1, ?) = ?");
         }
         if query.session_id.is_some() {
-            filter.push_str(" AND (json_extract(detail, '$.session_id') = ? OR target = ?)");
+            // Indexed (migration 0010): a live session's page polls this.
+            filter.push_str(" AND session_ref = ?");
         }
         let count_sql = format!("SELECT COUNT(*) AS n FROM audit_events{filter}");
         let list_sql =
@@ -1402,9 +1403,8 @@ impl AuditSink for SqliteStore {
             list = list.bind(len).bind(prefix.clone());
         }
         if let Some(id) = &query.session_id {
-            let target = format!("session:{id}");
-            count = count.bind(id.to_string()).bind(target.clone());
-            list = list.bind(id.to_string()).bind(target);
+            count = count.bind(id.to_string());
+            list = list.bind(id.to_string());
         }
         let total = to_u64(get::<i64>(
             &count
