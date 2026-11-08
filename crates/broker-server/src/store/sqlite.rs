@@ -26,7 +26,7 @@ use tokenless_control::model::{
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
-    StoredCiphertext,
+    SecretReplaced, StoredCiphertext,
 };
 use tokenless_control::StoreError;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
@@ -230,6 +230,11 @@ async fn finish(
         .map_err(|e| StoreError::backend(&format!("commit {operation}"), e))
 }
 
+fn generation_i64(generation: u64) -> Result<i64, StoreError> {
+    i64::try_from(generation)
+        .map_err(|_| StoreError::backend("store credential generation", "beyond i64"))
+}
+
 fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
     Ok(CredentialMeta {
         id: get_id(row, "id")?,
@@ -243,13 +248,15 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         variable_refs: from_json("variable_refs", &get::<String>(row, "variable_refs")?)?,
         substitutions: from_json("substitutions", &get::<String>(row, "substitutions")?)?,
         not_after: get_opt_ts(row, "not_after")?,
+        secret_generation: u64::try_from(get::<i64>(row, "secret_generation")?).unwrap_or(0),
+        rotation_id: get(row, "rotation_id")?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at";
 
 fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
     Ok(Variable {
@@ -279,7 +286,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -292,6 +299,8 @@ impl CredentialStore for SqliteStore {
         .bind(to_json("variable_refs", &meta.variable_refs)?)
         .bind(to_json("substitutions", &meta.substitutions)?)
         .bind(opt_ts(&meta.not_after))
+        .bind(generation_i64(meta.secret_generation)?)
+        .bind(&meta.rotation_id)
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -354,24 +363,62 @@ impl CredentialStore for SqliteStore {
         secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<SecretReplaced, StoreError> {
         let mut tx = self.begin("replace_secret").await?;
+        let row =
+            sqlx::query("SELECT secret_generation, rotation_id FROM credentials WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db("read credential generation", "credential"))?
+                .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let current = u64::try_from(get::<i64>(&row, "secret_generation")?).unwrap_or(0);
+        let rotation_id: Option<String> = get(&row, "rotation_id")?;
+        if secret.rotation_id.is_some() && secret.rotation_id == rotation_id {
+            return Ok(SecretReplaced::AlreadyApplied {
+                generation: current,
+            });
+        }
+        let stale = |current| StoreError::StaleGeneration {
+            id: id.to_string(),
+            expected: secret.expected_generation.unwrap_or(current),
+            current,
+        };
+        if secret.expected_generation.is_some_and(|e| e != current) {
+            return Err(stale(current));
+        }
+        // Compare and swap on the generation read above, so a rotation
+        // committed in between makes this one stale rather than lost.
         let result = sqlx::query(
-            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, updated_at = ? WHERE id = ?",
+            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, secret_generation = secret_generation + 1, rotation_id = ?, updated_at = ? WHERE id = ? AND secret_generation = ?",
         )
-        .bind(secret.ciphertext)
+        .bind(secret.ciphertext.as_slice())
         .bind(to_json("field_names", &secret.field_names)?)
         .bind(to_json("variable_refs", &secret.variable_refs)?)
         .bind(opt_ts(&secret.not_after))
+        .bind(&secret.rotation_id)
         .bind(ts(&updated_at))
         .bind(id.to_string())
+        .bind(generation_i64(current)?)
         .execute(&mut *tx)
         .await
         .map_err(db("replace credential secret", "credential"))?;
         if result.rows_affected() == 0 {
-            return Err(StoreError::not_found("credential", id));
+            let now: Option<i64> =
+                sqlx::query_scalar("SELECT secret_generation FROM credentials WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db("read credential generation", "credential"))?;
+            return Err(match now {
+                None => StoreError::not_found("credential", id),
+                Some(now) => stale(u64::try_from(now).unwrap_or(0)),
+            });
         }
-        finish(tx, audit, "replace_secret").await
+        finish(tx, audit, "replace_secret").await?;
+        Ok(SecretReplaced::Written {
+            generation: current + 1,
+        })
     }
 
     async fn delete_credential(

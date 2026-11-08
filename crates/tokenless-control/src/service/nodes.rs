@@ -621,11 +621,22 @@ mod tests {
     use tokenless_core::ids::{NodeId, RuleId, VaultId};
 
     use crate::model::Node;
-    use crate::service::policy::{CreateCredential, CreateRule};
+    use crate::service::policy::{CreateCredential, CreateRule, RotateCredential};
     use crate::service::sessions::MintSession;
     use crate::service::testing::{services, vault_with_rule};
     use crate::store::NodeStore;
     use crate::{Caller, ControlError, ControlServices};
+
+    fn rotate(
+        fields: std::collections::BTreeMap<String, String>,
+        not_after: Option<chrono::DateTime<Utc>>,
+    ) -> RotateCredential {
+        RotateCredential {
+            fields,
+            not_after,
+            ..Default::default()
+        }
+    }
 
     /// The snapshot of a new embedded node running one session for `rule`.
     async fn snapshot(
@@ -844,8 +855,11 @@ mod tests {
             .rotate_credential(
                 &host,
                 &credential,
-                [("token".to_string(), "t2".to_string())].into(),
-                Some(Utc::now() + TimeDelta::hours(1)),
+                RotateCredential {
+                    fields: [("token".to_string(), "t2".to_string())].into(),
+                    not_after: Some(Utc::now() + TimeDelta::hours(1)),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
@@ -882,7 +896,7 @@ mod tests {
         let fields = BTreeMap::from([("token".to_string(), "t2".to_string())]);
         let rotated = cs
             .policy
-            .rotate_credential(&host, &credential, fields.clone(), Some(deadline))
+            .rotate_credential(&host, &credential, rotate(fields.clone(), Some(deadline)))
             .await
             .unwrap();
         assert_eq!(rotated.not_after, Some(deadline));
@@ -892,7 +906,7 @@ mod tests {
 
         // A secret with no deadline clears the old one.
         cs.policy
-            .rotate_credential(&host, &credential, fields.clone(), None)
+            .rotate_credential(&host, &credential, rotate(fields.clone(), None))
             .await
             .unwrap();
         let body = snapshot(&cs, &host, vault, rule).await;
@@ -904,7 +918,7 @@ mod tests {
         let past = Utc::now() - TimeDelta::seconds(1);
         let err = cs
             .policy
-            .rotate_credential(&host, &credential, fields, Some(past))
+            .rotate_credential(&host, &credential, rotate(fields, Some(past)))
             .await
             .unwrap_err();
         assert!(matches!(err, ControlError::Validation { .. }), "{err}");

@@ -17,6 +17,13 @@ pub enum StoreError {
         detail: String,
     },
 
+    #[error("credential '{id}' is at secret generation {current}, not {expected}: another rotation replaced the secret first; read the credential again and decide whether yours is still needed")]
+    StaleGeneration {
+        id: String,
+        expected: u64,
+        current: u64,
+    },
+
     #[error("store backend failed during '{operation}': {reason}")]
     Backend { operation: String, reason: String },
 }

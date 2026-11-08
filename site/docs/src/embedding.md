@@ -137,6 +137,43 @@ the service or replace its secret, or **Expires** in the console). After
 it, the proxy stops sending that secret and answers `503` until it is
 replaced.
 
+## Refresh a secret you mint
+
+When the host mints the secret itself (an installation token, an OAuth
+access token), the host owns its refresh: when to refresh (before the
+secret's `not_after`, or after the upstream refuses it) and how to mint
+the new one. Tokenless stores what you give it and keeps two refreshers
+from overwriting each other:
+
+```rust
+let refresher = CredentialRefresher::new(); // one per process
+let outcome = refresher
+    .refresh(&control.policy, &host, &credential.id, credential.secret_generation, |_| async {
+        let token = mint_installation_token().await?;
+        Ok(FreshSecret { fields: [("token".into(), token.value)].into(), not_after: Some(token.expires_at) })
+    })
+    .await?;
+```
+
+- **Generations.** Every secret has a `secret_generation`, 1 when the
+  service is created and one more on each replacement. A refresh names
+  the generation it replaces; if another refresh replaced it first, the
+  newer secret is kept and yours is discarded (`Superseded`; revoke it
+  upstream if you can).
+- **One refresh at a time.** Refreshes of one credential in one process
+  wait for each other and do not mint again once the secret has moved
+  on. Across processes the generation decides.
+- **Retries.** Each refresh has a rotation id; retrying a replacement
+  whose answer was lost returns the credential as the first attempt left
+  it instead of replacing it twice.
+- **Failures.** A failed mint stores nothing. The current secret is used
+  until its `not_after`; then the proxy answers `503`
+  (`credential_expired`) until a refresh succeeds.
+
+Over HTTP the same fence is `PUT /api/v1/credentials/{id}/secret` with
+`expected_generation` and `rotation_id`; a stale one is a `409` with code
+`stale_generation`.
+
 ## Know when it can carry traffic
 
 Read the data plane's state instead of its logs:

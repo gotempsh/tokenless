@@ -28,7 +28,7 @@ use crate::model::{
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
-    StoredCiphertext,
+    SecretReplaced, StoredCiphertext,
 };
 
 #[derive(Default)]
@@ -132,19 +132,36 @@ impl CredentialStore for MemoryStore {
         secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<SecretReplaced, StoreError> {
         let mut inner = self.lock()?;
         let (meta, stored) = inner
             .credentials
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
+        if secret.rotation_id.is_some() && secret.rotation_id == meta.rotation_id {
+            return Ok(SecretReplaced::AlreadyApplied {
+                generation: meta.secret_generation,
+            });
+        }
+        if let Some(expected) = secret.expected_generation {
+            if expected != meta.secret_generation {
+                return Err(StoreError::StaleGeneration {
+                    id: id.to_string(),
+                    expected,
+                    current: meta.secret_generation,
+                });
+            }
+        }
         meta.field_names = secret.field_names;
         meta.variable_refs = secret.variable_refs;
         meta.not_after = secret.not_after;
+        meta.secret_generation += 1;
+        meta.rotation_id = secret.rotation_id;
         meta.updated_at = updated_at;
+        let generation = meta.secret_generation;
         *stored = secret.ciphertext;
         inner.audit.extend_from_slice(audit);
-        Ok(())
+        Ok(SecretReplaced::Written { generation })
     }
 
     async fn update_custom_headers(

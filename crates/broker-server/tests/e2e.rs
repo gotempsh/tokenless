@@ -1224,6 +1224,38 @@ async fn end_to_end() {
         .await;
     assert_eq!(rotated.0, StatusCode::OK, "{}", rotated.2);
     assert!(!rotated.2.to_string().contains(SECRET));
+    // A rotation fenced on the generation it replaces: retried, it is
+    // recognised; on a generation already replaced, it is a 409.
+    let generation = rotated.2["secret_generation"].as_u64().unwrap();
+    let fenced = json!({
+        "fields": { "token": SECRET },
+        "expected_generation": generation,
+        "rotation_id": "refresh-1",
+    });
+    for _ in 0..2 {
+        let (status, _, body) = api
+            .call(
+                reqwest::Method::PUT,
+                &format!("/credentials/{credential_id}/secret"),
+                Some(fenced.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["secret_generation"], generation + 1);
+    }
+    let (status, _, body) = api
+        .call(
+            reqwest::Method::PUT,
+            &format!("/credentials/{credential_id}/secret"),
+            Some(json!({
+                "fields": { "token": SECRET },
+                "expected_generation": generation,
+                "rotation_id": "refresh-2",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "stale_generation", "{body}");
     // And at rest the database holds ciphertext only.
     for entry in std::fs::read_dir(data.path()).unwrap() {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();

@@ -5,7 +5,6 @@
 //! Authorisation, step-up and audit logging live in the services so that an
 //! embedding control plane gets them too.
 
-use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -22,7 +21,9 @@ use tokenless_control::service::auth::{
     LoginRequest, StepUpProof, TotpEnrollment, UserSummary,
 };
 use tokenless_control::service::bundles::{CreateBundle, UpdateBundle};
-use tokenless_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
+use tokenless_control::service::policy::{
+    CreateCredential, CreateRule, RotateCredential, UpdateRule,
+};
 use tokenless_control::service::sessions::MintSession;
 use tokenless_control::service::users::{
     AcceptInviteRequest, CreateInvite, InviteInfo, InviteIssued, UpdateUser,
@@ -362,25 +363,17 @@ pub async fn get_credential(
     ))
 }
 
-#[derive(Deserialize)]
-pub struct RotateRequest {
-    fields: BTreeMap<String, String>,
-    /// When the new secret stops being valid upstream, if it does.
-    #[serde(default)]
-    not_after: Option<chrono::DateTime<chrono::Utc>>,
-}
-
 pub async fn rotate_credential(
     State(s): St,
     authed: Authed,
     Path(credential_id): Path<String>,
-    ApiJson(req): ApiJson<RotateRequest>,
+    ApiJson(req): ApiJson<RotateCredential>,
 ) -> ApiResult<impl IntoResponse> {
     let id: CredentialId = parse_id("credential", &credential_id)?;
     Ok(Json(
         s.control
             .policy
-            .rotate_credential(&authed.caller, &id, req.fields, req.not_after)
+            .rotate_credential(&authed.caller, &id, req)
             .await?,
     ))
 }

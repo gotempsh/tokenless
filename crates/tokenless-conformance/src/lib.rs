@@ -27,7 +27,7 @@ use tokenless_control::model::{
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
-    PolicyStore,
+    PolicyStore, SecretReplaced,
 };
 use tokenless_control::StoreError;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
@@ -106,6 +106,8 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         variable_refs: vec![],
         substitutions: vec![],
         not_after: None,
+        secret_generation: 1,
+        rotation_id: None,
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -252,7 +254,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "ciphertext must round-trip byte for byte"
     );
 
-    store
+    let replaced = store
         .replace_secret(
             &first.id,
             NewSecret {
@@ -260,12 +262,20 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
                 field_names: vec!["token".into(), "extra".into()],
                 variable_refs: vec![],
                 not_after: Some(at(3600)),
+                expected_generation: Some(1),
+                rotation_id: Some("rot-1".into()),
             },
             at(5),
             &[],
         )
         .await
         .map_err(backend(S, "replace"))?;
+    ensure!(
+        S,
+        "replace_generation",
+        replaced == SecretReplaced::Written { generation: 2 },
+        "replacing generation 1 must write generation 2, got {replaced:?}"
+    );
     let ct = store
         .load_secret_ciphertext(&first.id)
         .await
@@ -292,18 +302,118 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         meta.as_ref().and_then(|m| m.not_after) == Some(at(3600)),
         "the new secret's deadline must be stored with it: {meta:?}"
     );
-    let missing = store
+    ensure!(
+        S,
+        "replace_meta_generation",
+        meta.as_ref()
+            .map(|m| (m.secret_generation, m.rotation_id.as_deref()))
+            == Some((2, Some("rot-1"))),
+        "the generation and rotation id must be stored with the secret: {meta:?}"
+    );
+    let secret = |ct: &[u8], expected, rotation: Option<&str>| NewSecret {
+        ciphertext: ct.to_vec(),
+        field_names: vec!["token".into()],
+        variable_refs: vec![],
+        not_after: None,
+        expected_generation: expected,
+        rotation_id: rotation.map(str::to_string),
+    };
+    // A retry of the rotation that set the secret writes nothing.
+    let retried = store
         .replace_secret(
-            &CredentialId::new(),
-            NewSecret {
-                ciphertext: vec![],
-                field_names: vec![],
-                variable_refs: vec![],
-                not_after: None,
-            },
-            at(0),
+            &first.id,
+            secret(b"ct-retry", Some(1), Some("rot-1")),
+            at(6),
             &[],
         )
+        .await
+        .map_err(backend(S, "replace_retry"))?;
+    let ct = store
+        .load_secret_ciphertext(&first.id)
+        .await
+        .map_err(backend(S, "replace_retry_load"))?;
+    ensure!(
+        S,
+        "replace_retry",
+        retried == SecretReplaced::AlreadyApplied { generation: 2 }
+            && ct.as_deref() == Some(b"ct-rotated".as_slice()),
+        "a retried rotation must be recognised and write nothing, got {retried:?}"
+    );
+    // Another rotation of a generation already replaced is refused.
+    let stale = store
+        .replace_secret(
+            &first.id,
+            secret(b"ct-stale", Some(1), Some("rot-2")),
+            at(6),
+            &[],
+        )
+        .await;
+    ensure!(
+        S,
+        "replace_stale",
+        matches!(
+            stale,
+            Err(StoreError::StaleGeneration {
+                expected: 1,
+                current: 2,
+                ..
+            })
+        ),
+        "replacing generation 1 when 2 is current must be StaleGeneration, got {stale:?}"
+    );
+    let ct = store
+        .load_secret_ciphertext(&first.id)
+        .await
+        .map_err(backend(S, "replace_stale_load"))?;
+    ensure!(
+        S,
+        "replace_stale_unchanged",
+        ct.as_deref() == Some(b"ct-rotated".as_slice()),
+        "a stale rotation must leave the secret as it was"
+    );
+    // Without an expected generation the rotation applies to any.
+    let unfenced = store
+        .replace_secret(&first.id, secret(b"ct-3", None, None), at(7), &[])
+        .await
+        .map_err(backend(S, "replace_unfenced"))?;
+    ensure!(
+        S,
+        "replace_unfenced",
+        unfenced == SecretReplaced::Written { generation: 3 },
+        "an unfenced rotation must write generation 3, got {unfenced:?}"
+    );
+    // Concurrent rotations of one generation: exactly one wins.
+    let (a, b) = tokio::join!(
+        store.replace_secret(
+            &first.id,
+            secret(b"ct-a", Some(3), Some("rot-a")),
+            at(8),
+            &[]
+        ),
+        store.replace_secret(
+            &first.id,
+            secret(b"ct-b", Some(3), Some("rot-b")),
+            at(8),
+            &[]
+        ),
+    );
+    let won = [&a, &b]
+        .iter()
+        .filter(|r| matches!(r, Ok(SecretReplaced::Written { generation: 4 })))
+        .count();
+    let lost = [&a, &b]
+        .iter()
+        .filter(|r| matches!(r, Err(StoreError::StaleGeneration { .. })))
+        .count();
+    ensure!(
+        S,
+        "replace_race",
+        (won, lost) == (1, 1),
+        "two rotations of generation 3 must give one write and one StaleGeneration, got {a:?} and {b:?}"
+    );
+
+    let missing = store
+        .replace_secret(&CredentialId::new(), secret(b"", None, None), at(0), &[])
         .await;
     ensure!(
         S,

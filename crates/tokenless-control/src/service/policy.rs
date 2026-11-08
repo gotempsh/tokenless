@@ -33,7 +33,7 @@ use crate::model::{
 };
 use crate::notify::PolicyNotifier;
 use crate::probe::{CredentialProber, ProbeRequest};
-use crate::store::{CredentialStore, NewSecret, PolicyStore};
+use crate::store::{CredentialStore, NewSecret, PolicyStore, SecretReplaced};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCredential {
@@ -56,6 +56,26 @@ pub struct CreateCredential {
     #[serde(default)]
     pub not_after: Option<DateTime<Utc>>,
 }
+
+/// A new secret for a credential; see [`PolicyService::rotate_credential`].
+#[derive(Clone, Default, Deserialize)]
+pub struct RotateCredential {
+    pub fields: BTreeMap<String, String>,
+    /// When the new secret stops being valid upstream, if it does.
+    #[serde(default)]
+    pub not_after: Option<DateTime<Utc>>,
+    /// Replace only the secret of this generation.
+    #[serde(default)]
+    pub expected_generation: Option<u64>,
+    /// The caller's id for this rotation, so a retry is not applied twice.
+    #[serde(default)]
+    pub rotation_id: Option<String>,
+}
+
+tokenless_core::redacted_debug!(RotateCredential {
+    not_after, expected_generation, rotation_id;
+    fields
+});
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateRule {
@@ -736,6 +756,8 @@ impl PolicyService {
             variable_refs,
             substitutions: req.substitutions,
             not_after: req.not_after,
+            secret_generation: 1,
+            rotation_id: None,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -789,14 +811,29 @@ impl PolicyService {
 
     /// Replaces a credential's secret, with the new secret's deadline if it
     /// has one. The old value is never returned.
+    ///
+    /// With `expected_generation`, only the secret of that generation is
+    /// replaced; otherwise it fails with [`StoreError::StaleGeneration`]
+    /// and nothing changes. With `rotation_id`, a retry of a rotation that
+    /// was applied returns the credential as it is instead of applying it
+    /// again (nor auditing it twice). See
+    /// [`CredentialRefresher`](super::refresh::CredentialRefresher).
     pub async fn rotate_credential(
         &self,
         caller: &Caller,
         id: &CredentialId,
-        fields: BTreeMap<String, String>,
-        not_after: Option<DateTime<Utc>>,
+        req: RotateCredential,
     ) -> Result<CredentialMeta, ControlError> {
+        let RotateCredential {
+            fields,
+            not_after,
+            expected_generation,
+            rotation_id,
+        } = req;
         check_not_after(not_after, Utc::now())?;
+        if let Some(rotation_id) = &rotation_id {
+            check_rotation_id(rotation_id)?;
+        }
         let meta = self.credential_meta(id).await?;
         self.guard
             .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
@@ -828,11 +865,16 @@ impl PolicyService {
             .await?;
         let mut event = AuditEvent::new(caller.actor(), "credential.rotate", AuditOutcome::Success)
             .vault(meta.vault_id)
-            .target(format!("credential:{id}"));
+            .target(format!("credential:{id}"))
+            .detail("generation", (meta.secret_generation + 1).to_string());
         if let Some(not_after) = not_after {
             event = event.detail("not_after", not_after.to_rfc3339());
         }
-        self.credentials
+        if let Some(rotation_id) = &rotation_id {
+            event = event.detail("rotation_id", rotation_id.clone());
+        }
+        let replaced = self
+            .credentials
             .replace_secret(
                 id,
                 NewSecret {
@@ -840,12 +882,16 @@ impl PolicyService {
                     field_names: fields.names(),
                     variable_refs,
                     not_after,
+                    expected_generation,
+                    rotation_id,
                 },
                 Utc::now(),
                 &[event],
             )
             .await?;
-        self.notifier.bump_content();
+        if let SecretReplaced::Written { .. } = replaced {
+            self.notifier.bump_content();
+        }
         self.credential_meta(id).await
     }
 
@@ -1257,6 +1303,22 @@ impl PolicyService {
 
 /// A secret's deadline must still be ahead: a secret already past it would
 /// only ever be refused.
+/// A rotation id is the caller's: 1-128 letters, digits, `.`, `_`, `-` or `:`.
+fn check_rotation_id(rotation_id: &str) -> Result<(), ControlError> {
+    let valid = !rotation_id.is_empty()
+        && rotation_id.len() <= 128
+        && rotation_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'));
+    if valid {
+        Ok(())
+    } else {
+        Err(ControlError::validation(
+            "rotation_id must be 1-128 letters, digits, '.', '_', '-' or ':'",
+        ))
+    }
+}
+
 fn check_not_after(
     not_after: Option<DateTime<Utc>>,
     now: DateTime<Utc>,

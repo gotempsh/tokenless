@@ -59,6 +59,21 @@ pub struct NewSecret {
     pub variable_refs: Vec<String>,
     /// The new secret's own deadline; `None` clears the old one.
     pub not_after: Option<DateTime<Utc>>,
+    /// Replace only the secret of this generation; see
+    /// [`CredentialStore::replace_secret`].
+    pub expected_generation: Option<u64>,
+    /// Identifies this rotation, so a retry of it is not applied twice.
+    pub rotation_id: Option<String>,
+}
+
+/// What [`CredentialStore::replace_secret`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretReplaced {
+    /// The secret was replaced; it is now this generation.
+    Written { generation: u64 },
+    /// The current secret was set by a rotation with the same
+    /// `rotation_id`, so this is a retry of it: nothing was written.
+    AlreadyApplied { generation: u64 },
 }
 
 #[async_trait]
@@ -76,15 +91,25 @@ pub trait CredentialStore: Send + Sync {
         vault_id: &VaultId,
         page: PageRequest,
     ) -> Result<Page<CredentialMeta>, StoreError>;
-    /// Replaces the secret and what comes with it; `NotFound` if the
-    /// credential does not exist.
+    /// Replaces the secret and what comes with it, as one atomic step:
+    ///
+    /// 1. `NotFound` if the credential does not exist.
+    /// 2. If `secret.rotation_id` is the one that set the current secret,
+    ///    nothing is written ([`SecretReplaced::AlreadyApplied`]) and
+    ///    `audit` is dropped.
+    /// 3. If `secret.expected_generation` is set and the current
+    ///    generation differs, [`StoreError::StaleGeneration`].
+    /// 4. Otherwise the secret, its deadline and `rotation_id` are stored,
+    ///    the generation goes up by one and `audit` is appended in the same
+    ///    transaction. A concurrent replacement between the check and the
+    ///    write must make this one fail as in 3, never both succeed.
     async fn replace_secret(
         &self,
         id: &CredentialId,
         secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError>;
+    ) -> Result<SecretReplaced, StoreError>;
     /// Replaces the custom headers; `NotFound` if the credential does not exist.
     async fn update_custom_headers(
         &self,

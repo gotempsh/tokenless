@@ -7,6 +7,7 @@ pub mod bundles;
 pub mod nodes;
 pub mod overview;
 pub mod policy;
+pub mod refresh;
 pub(crate) mod render;
 pub mod sessions;
 #[cfg(test)]

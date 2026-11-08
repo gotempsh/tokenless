@@ -109,6 +109,11 @@ fn map_store(e: &StoreError) -> Mapped {
     match e {
         StoreError::NotFound { .. } => mapped(StatusCode::NOT_FOUND, "Not Found", "not_found"),
         StoreError::Conflict { .. } => mapped(StatusCode::CONFLICT, "Conflict", "conflict"),
+        StoreError::StaleGeneration { .. } => mapped(
+            StatusCode::CONFLICT,
+            "Stale Secret Generation",
+            "stale_generation",
+        ),
         StoreError::Backend { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Storage Error",

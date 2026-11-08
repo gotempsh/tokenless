@@ -135,9 +135,22 @@ pub struct CredentialMeta {
     /// will refuse. Set with the secret; replacing the secret replaces it.
     #[serde(default)]
     pub not_after: Option<DateTime<Utc>>,
+    /// Counts the secrets this credential has held: 1 when created, one
+    /// more on each rotation. A rotation can name the generation it
+    /// replaces, so two refreshers cannot overwrite each other.
+    #[serde(default = "first_generation")]
+    pub secret_generation: u64,
+    /// The caller-chosen id of the rotation that set the current secret,
+    /// so a retried rotation is recognised rather than applied twice.
+    #[serde(default)]
+    pub rotation_id: Option<String>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn first_generation() -> u64 {
+    1
 }
 
 /// A named secret referenced as `{{KEY}}`. The value is stored encrypted
