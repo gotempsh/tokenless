@@ -7,11 +7,12 @@ import { GeistSans } from 'geist/font/sans';
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { Provider } from '@/components/provider';
+import { withBasePath } from '@/lib/base-path';
 
 export const metadata: Metadata = {
   title: { default: 'tokenless', template: '%s · tokenless' },
   description: 'Let AI agents use your API keys without holding them.',
-  icons: { icon: '/favicon.svg' },
+  icons: { icon: withBasePath('/favicon.svg') },
 };
 
 export default function Layout({ children }: { children: ReactNode }) {

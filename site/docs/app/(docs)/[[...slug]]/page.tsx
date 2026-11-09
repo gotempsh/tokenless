@@ -14,6 +14,7 @@ import type { Metadata } from 'next';
 import type { ComponentProps } from 'react';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
+import { withBasePath } from '@/lib/base-path';
 import { repo } from '@/lib/layout.shared';
 import { markdownUrl, source } from '@/lib/source';
 
@@ -27,9 +28,14 @@ export default async function Page(props: Props) {
   const md = markdownUrl(page);
   const PageLink = createRelativeLink(source, page);
   // A file such as /llms.txt or /install.md is not a page: the client-side
-  // router would turn /llms.txt into /llms, so load it as a plain link.
+  // router would turn /llms.txt into /llms, so load it as a plain link, under
+  // the base path the router would have added.
   const a = (props: ComponentProps<'a'>) =>
-    /\.(md|txt|sh)(#.*)?$/.test(props.href ?? '') ? <a {...props} /> : <PageLink {...props} />;
+    /\.(md|txt|sh)(#.*)?$/.test(props.href ?? '') ? (
+      <a {...props} href={withBasePath(props.href ?? '')} />
+    ) : (
+      <PageLink {...props} />
+    );
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>

@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# Builds the website (site/docs) under /tokenless and publishes it to GitHub
+# Pages, at https://gotempsh.github.io/tokenless/, on every push to main that
+# touches it. A pull request or a manual run on another branch only builds.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/pages.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+        working-directory: site/docs
+      - run: bun run build
+        working-directory: site/docs
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}
+      - name: Check that no link leaves the base path
+        working-directory: site/docs/out
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}
+        run: |
+          if grep -rEo '(href|src)="/[^"]*"' --include='*.html' . | grep -vE "=\"$BASE_PATH(/|\")"; then
+            echo "these links point outside $BASE_PATH" >&2
+            exit 1
+          fi
+          if grep -rEo '\]\(/[^)]*\)' --include='*.md' --include='*.txt' . | grep -v "](${BASE_PATH}/"; then
+            echo "these Markdown links point outside $BASE_PATH" >&2
+            exit 1
+          fi
+      - run: cp site/install.sh site/docs/out/
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/docs/out
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
