@@ -12,6 +12,7 @@ import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
+import { AuditExportSettings } from "./AuditExport";
 import { SingleSignOnSettings } from "./SingleSignOn";
 
 type Unmatched = SettingsModel["unmatched_host_policy"];
@@ -169,6 +170,7 @@ export function Settings() {
             </form>
           </SettingsSection>
           <SingleSignOnSettings />
+          <AuditExportSettings />
         </div>
       )}
     </PageContainer>

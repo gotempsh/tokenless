@@ -72,6 +72,11 @@ id_type!(
     OidcProviderId,
     "oidc_provider"
 );
+id_type!(
+    /// Where audit events are sent: a webhook receiver.
+    AuditDestinationId,
+    "audit_destination"
+);
 
 #[cfg(test)]
 mod tests {

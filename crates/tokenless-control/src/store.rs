@@ -16,17 +16,17 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
-    VariableId, VaultId,
+    ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId,
+    SessionId, UserId, VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate, UiSession,
-    User, Variable, Vault, VaultDeletion,
+    AccessBundle, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite, JoinTokenRecord,
+    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings,
+    StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -36,6 +36,8 @@ pub enum CiphertextOwner {
     Variable { id: VariableId },
     UserTotp { id: UserId },
     OidcClientSecret { id: OidcProviderId },
+    AuditDestinationSecret { id: AuditDestinationId },
+    AuditDestinationHeader { id: AuditDestinationId },
     KeyMaterial { name: String },
 }
 
@@ -550,6 +552,84 @@ pub trait SsoStore: Send + Sync {
     async fn put_sign_in_settings(
         &self,
         settings: SignInSettings,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+}
+
+/// Audit export (standalone mode): the destinations audit events are sent
+/// to, how far each has got, and the audit log read in the order it was
+/// written.
+///
+/// Every audit event gets a sequence number when it is recorded. Numbers
+/// rise in the order events are committed, without gaps a later commit
+/// could fill: a sender that has read up to `n` will never find a new
+/// event at or below `n`. That is what lets a destination's cursor be a
+/// single number.
+#[async_trait]
+pub trait AuditExportStore: Send + Sync {
+    /// `Conflict` if the name is taken.
+    async fn insert_audit_destination(
+        &self,
+        destination: AuditDestination,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_audit_destination(
+        &self,
+        id: &AuditDestinationId,
+    ) -> Result<Option<AuditDestination>, StoreError>;
+    /// Every destination, oldest first. There are at most
+    /// [`MAX_AUDIT_DESTINATIONS`](crate::model::MAX_AUDIT_DESTINATIONS).
+    async fn list_audit_destinations(&self) -> Result<Vec<AuditDestination>, StoreError>;
+    /// Replaces its settings, never its delivery state (cursor, failures).
+    /// `NotFound` if missing, `Conflict` if the new name is taken.
+    async fn update_audit_destination(
+        &self,
+        destination: AuditDestination,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// `NotFound` if missing.
+    async fn delete_audit_destination(
+        &self,
+        id: &AuditDestinationId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+
+    /// The sequence number of the newest audit event; 0 when there is none.
+    async fn latest_audit_seq(&self) -> Result<u64, StoreError>;
+    /// Up to `limit` events with a sequence number above `after`, oldest
+    /// first, each with its number.
+    async fn audit_events_after(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, AuditEvent)>, StoreError>;
+
+    /// Moves the cursor from `from` to `to` after a batch got through, and
+    /// clears the failures. False, changing nothing, when the cursor is no
+    /// longer at `from` (another sender, or a skip, moved it) or the
+    /// destination is gone.
+    async fn advance_audit_cursor(
+        &self,
+        id: &AuditDestinationId,
+        from: u64,
+        to: u64,
+        at: DateTime<Utc>,
+    ) -> Result<bool, StoreError>;
+    /// Notes a failed attempt: starts the run of failures if none is
+    /// running. Does nothing when the destination is gone.
+    async fn record_audit_delivery_failure(
+        &self,
+        id: &AuditDestinationId,
+        error: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError>;
+    /// Puts the cursor at `to`, wherever it was, and clears the failures:
+    /// an admin skipping a backlog, or a new destination's starting point.
+    /// `NotFound` if missing.
+    async fn set_audit_cursor(
+        &self,
+        id: &AuditDestinationId,
+        to: u64,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
 }

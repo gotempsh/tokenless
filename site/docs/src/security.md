@@ -72,6 +72,14 @@ crashes loses at most that queue (4096 events by default). A proxy that
 stops normally ships what it holds first and logs how many events it
 could not.
 
+To keep the audit trail somewhere the instance's admins can't rewrite,
+[send it to a webhook](settings.md#audit-export) in your own system.
+Delivery is ordered and retried from where it stopped, so a receiver
+outage leaves no gap; requests are signed, and the receiver's token and
+the signing secret are encrypted at rest. Webhooks are an admin's
+choice of destination, so the egress rules for agents' traffic don't
+apply to them, as they don't to identity providers.
+
 ## Accounts
 
 - On first start the server creates the `admin` account with a generated
@@ -82,7 +90,8 @@ could not.
   optional per account, turned on or off under **Account**, and
   recommended for admins. With one, sign-in needs a code as well.
 - With an authenticator, sensitive actions (adding or widening
-  credentials and rules, managing people, API keys, templates and proxies)
+  credentials and rules, managing people, API keys, templates, proxies,
+  single sign-on and audit export)
   need a code entered within the last five minutes. Signing in counts.
 - Changing your password ends your other sessions.
 - With [single sign-on](settings.md#single-sign-on), the identity

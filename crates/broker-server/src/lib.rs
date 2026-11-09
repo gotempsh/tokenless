@@ -13,6 +13,7 @@ pub mod oidc_transport;
 pub mod probe;
 pub mod root_key;
 pub mod store;
+pub mod webhook_transport;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -147,6 +148,7 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
         audit: store.clone(),
         identity: store.clone(),
         sso: store.clone(),
+        audit_export: store.clone(),
         nodes: store,
     };
     let control = Arc::new(
@@ -159,6 +161,10 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
                 &config.validation_extra_roots,
             )?),
             Arc::new(oidc_transport::HttpOidcTransport::new(
+                config.validation_public_roots,
+                &config.validation_extra_roots,
+            )?),
+            Arc::new(webhook_transport::HttpWebhookTransport::new(
                 config.validation_public_roots,
                 &config.validation_extra_roots,
             )?),
@@ -271,6 +277,8 @@ impl Server {
             config.node_api_names.clone(),
             tls,
         )));
+        let export = control.clone();
+        tasks.push(tokio::spawn(async move { export.audit_export.run().await }));
         let purge = control.clone();
         tasks.push(tokio::spawn(async move {
             loop {

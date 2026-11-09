@@ -21,7 +21,9 @@ use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod audit_export;
 mod sso;
+pub use audit_export::*;
 pub use sso::*;
 
 pub const DEFAULT_PAGE_SIZE: u64 = 20;

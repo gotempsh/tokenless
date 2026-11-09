@@ -26,6 +26,7 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
+  { label: "Audit export", prefix: "audit_export." },
 ];
 
 /** Names for the identifiers an actor can carry, from lists the page loaded. */
@@ -145,6 +146,22 @@ export function actionPhrase(event: AuditEvent): string {
       return `approved ${named("template")}`;
     case "settings.update":
       return "changed the settings";
+    case "audit_export.create":
+      return `added ${named("audit webhook")}`;
+    case "audit_export.update":
+      return `changed ${named("audit webhook")}`;
+    case "audit_export.delete":
+      return `deleted ${named("audit webhook")}`;
+    case "audit_export.pause":
+      return `paused ${named("audit webhook")}`;
+    case "audit_export.resume":
+      return `resumed ${named("audit webhook")}`;
+    case "audit_export.rotate_secret":
+      return `made a new signing secret for ${named("audit webhook")}`;
+    case "audit_export.skip":
+      return `skipped ${d.skipped === "1" ? "1 event" : `${d.skipped ?? "the"} events`} for ${named("audit webhook")}`;
+    case "audit_export.test":
+      return event.outcome === "success" ? `sent a test to ${named("audit webhook")}` : `failed to send a test to ${named("audit webhook")}`;
     case "proxy.inject":
       return `added a credential to ${request}`;
     case "proxy.response":
