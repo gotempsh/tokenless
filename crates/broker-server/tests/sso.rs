@@ -234,6 +234,8 @@ async fn a_person_signs_in_with_their_identity_provider() {
     assert_eq!(created.status(), reqwest::StatusCode::CREATED);
     let created: Value = created.json().await.unwrap();
     assert_eq!(created["has_client_secret"], true);
+    // A provider the issuer does not give away gets the OpenID logo.
+    assert_eq!(created["brand"], "openid");
     assert!(!created.to_string().contains("idp-client-secret"));
 
     let options: Value = reqwest::get(format!("{api}/auth/sign-in-options"))
@@ -244,7 +246,7 @@ async fn a_person_signs_in_with_their_identity_provider() {
         .unwrap();
     assert_eq!(
         options["providers"],
-        json!([{ "slug": "corp", "name": "Corp" }])
+        json!([{ "slug": "corp", "name": "Corp", "brand": "openid" }])
     );
     assert_eq!(options["password_sign_in"], "everyone");
 

@@ -15,16 +15,27 @@ const files = import.meta.glob<string>("../assets/logos/*.svg", {
   import: "default",
 });
 
-const LOGOS = new Map<string, { light?: string; dark?: string }>();
-for (const [path, url] of Object.entries(files)) {
-  const file = path.slice(path.lastIndexOf("/") + 1, -".svg".length);
-  const dark = file.endsWith(".dark");
-  const key = dark ? file.slice(0, -".dark".length) : file;
-  const entry = LOGOS.get(key) ?? {};
-  if (dark) entry.dark = url;
-  else entry.light = url;
-  LOGOS.set(key, entry);
+export interface LogoFiles {
+  light?: string;
+  dark?: string;
 }
+
+/** Bundled SVGs by key, from `import.meta.glob` paths to their URLs. */
+export function logoMap(files: Record<string, string>): Map<string, LogoFiles> {
+  const logos = new Map<string, LogoFiles>();
+  for (const [path, url] of Object.entries(files)) {
+    const file = path.slice(path.lastIndexOf("/") + 1, -".svg".length);
+    const dark = file.endsWith(".dark");
+    const key = dark ? file.slice(0, -".dark".length) : file;
+    const entry = logos.get(key) ?? {};
+    if (dark) entry.dark = url;
+    else entry.light = url;
+    logos.set(key, entry);
+  }
+  return logos;
+}
+
+const LOGOS = logoMap(files);
 
 type LogoSource = Pick<ServiceTemplate, "id" | "kind"> & { logo?: string | null };
 

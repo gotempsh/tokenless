@@ -15,6 +15,7 @@
 //! comes from the provider's groups at every sign-in; a person whose groups
 //! map to no role is refused, and told which groups were seen.
 
+pub mod brand;
 pub mod oidc;
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,7 @@ use tokenless_core::ids::{OidcProviderId, UserId};
 use tracing::{info, warn};
 use url::Url;
 
+pub use self::brand::ProviderBrand;
 use self::oidc::{Discovery, Expected, OidcTransport, CALLBACK_PATH};
 use super::auth::{open_ui_session, LoginOutcome, SessionAuth};
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
@@ -77,6 +79,8 @@ pub struct OidcProviderView {
     pub slug: String,
     pub name: String,
     pub issuer: String,
+    /// Read from the issuer, for the logo.
+    pub brand: ProviderBrand,
     pub client_id: String,
     pub has_client_secret: bool,
     pub redirect_uri: String,
@@ -96,6 +100,7 @@ impl From<&OidcProvider> for OidcProviderView {
             slug: p.slug.clone(),
             name: p.name.clone(),
             issuer: p.issuer.clone(),
+            brand: ProviderBrand::of_issuer(&p.issuer),
             client_id: p.client_id.clone(),
             has_client_secret: p.client_secret_enc.is_some(),
             redirect_uri: p.redirect_uri.clone(),
@@ -147,6 +152,7 @@ tokenless_core::redacted_debug!(OidcProviderInput {
 pub struct SignInProvider {
     pub slug: String,
     pub name: String,
+    pub brand: ProviderBrand,
 }
 
 /// How people can sign in here; public, for the sign-in page.
@@ -162,6 +168,7 @@ pub struct SsoSignIn {
     pub provider_id: OidcProviderId,
     pub slug: String,
     pub name: String,
+    pub brand: ProviderBrand,
 }
 
 /// Where to send the browser, with the cookie that ties the answer to it.
@@ -667,6 +674,7 @@ impl SsoService {
             .into_iter()
             .filter(|p| p.enabled)
             .map(|p| SignInProvider {
+                brand: ProviderBrand::of_issuer(&p.issuer),
                 slug: p.slug,
                 name: p.name,
             })
@@ -682,6 +690,7 @@ impl SsoService {
         let id = user_provider?;
         match self.sso.get_oidc_provider(id).await {
             Ok(Some(p)) => Some(SsoSignIn {
+                brand: ProviderBrand::of_issuer(&p.issuer),
                 provider_id: p.id,
                 slug: p.slug,
                 name: p.name,
