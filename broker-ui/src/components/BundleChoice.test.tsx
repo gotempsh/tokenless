@@ -45,6 +45,12 @@ describe("BundleChoice", () => {
     expect(html).not.toContain("6 rules");
   });
 
+  test("a turned-off service is named as off, not only dimmed", () => {
+    const html = render([service("GitHub"), { ...service("Stripe"), off: true }]);
+    expect(html).toContain('title="GitHub, Stripe (off) and 4 more"');
+    expect(html).toContain('<span class="sr-only">GitHub, Stripe (off) and 4 more</span>');
+  });
+
   test("until its services load, a bundle shows how many rules it has", () => {
     const html = render(undefined);
     expect(html).not.toContain("data-logo");

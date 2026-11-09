@@ -89,4 +89,8 @@ describe("bundle choices", () => {
     expect(serviceNames(named, 2)).toBe("GitHub, Stripe");
     expect(serviceNames(named, 5)).toBe("GitHub, Stripe and 3 more");
   });
+
+  test("a turned-off service is named as off", () => {
+    expect(serviceNames([{ name: "GitHub" }, { name: "Stripe", off: true }], 2)).toBe("GitHub, Stripe (off)");
+  });
 });

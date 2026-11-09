@@ -3,6 +3,7 @@
 
 import type { ReactNode } from "react";
 import type { ServiceTemplate } from "../api";
+import { serviceNames } from "../bundleChoice";
 import { cn } from "../lib/utils";
 import { serviceStrip } from "../serviceStrip";
 import { ServiceLogo } from "./ServiceLogo";
@@ -32,14 +33,13 @@ export function ServiceStrip({ services, total, empty }: { services: StripServic
       </div>
     );
   }
-  const names = shown.map((s) => (s.off ? `${s.name} (off)` : s.name)).join(", ");
   return (
     <div className="space-y-2">
       <div className="flex h-8 items-center">
         <ServiceLogos services={services} total={total} />
       </div>
       <p className="h-4 truncate text-xs text-muted-foreground">
-        {shown.length === 0 ? `${more} ${more === 1 ? "service" : "services"}` : more > 0 ? `${names} and ${more} more` : names}
+        {shown.length === 0 ? `${more} ${more === 1 ? "service" : "services"}` : serviceNames(shown, shown.length + more)}
       </p>
     </div>
   );
