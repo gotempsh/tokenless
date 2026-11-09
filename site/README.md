@@ -61,7 +61,11 @@ The `Dockerfile` here builds everything and serves it with Caddy on port
 <https://gotempsh.github.io/tokenless/> on every push to `main` that
 touches `site/`; a pull request only builds it. Pages serves a project
 under `/tokenless`, so the workflow builds with `BASE_PATH=/tokenless`
-and checks that no link leaves it. Pages has no rewrites or redirects:
+and checks that no link leaves it. It also builds with
+`TRAILING_SLASH=1`, which writes each page as `<page>/index.html`:
+Pages serves a folder's `index.html`, and Next.js writes a `<page>/`
+folder of navigation data next to every page, which would shadow a
+`<page>.html`. Pages has no rewrites or redirects:
 the build writes each page's Markdown to `/<page>.md` as a file
 (`docs/scripts/markdown-files.mjs`), and old `/docs/<page>.html` links
 only redirect on the Caddy deployment.
@@ -70,5 +74,5 @@ To try a base-path build locally:
 
 ```sh
 cd site/docs
-BASE_PATH=/tokenless bun run build    # out/, for serving under /tokenless
+BASE_PATH=/tokenless TRAILING_SLASH=1 bun run build    # out/, as Pages serves it
 ```

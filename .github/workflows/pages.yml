@@ -37,11 +37,19 @@ jobs:
         working-directory: site/docs
         env:
           BASE_PATH: /${{ github.event.repository.name }}
-      - name: Check that no link leaves the base path
+          # Pages serves /<page>/ from <page>/index.html; a <page>.html next
+          # to the <page>/ folder Next.js writes its navigation data to would
+          # be shadowed by that folder.
+          TRAILING_SLASH: "1"
+      - name: Check that every page is a folder's index and no link leaves the base path
         working-directory: site/docs/out
         env:
           BASE_PATH: /${{ github.event.repository.name }}
         run: |
+          if find . -name '*.html' ! -name index.html ! -name 404.html ! -path './_not-found*' | grep .; then
+            echo "these pages are not <page>/index.html, which Pages may not serve" >&2
+            exit 1
+          fi
           if grep -rEo '(href|src)="/[^"]*"' --include='*.html' . | grep -vE "=\"$BASE_PATH(/|\")"; then
             echo "these links point outside $BASE_PATH" >&2
             exit 1

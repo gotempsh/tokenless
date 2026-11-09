@@ -12,6 +12,7 @@ const config = {
   // by GitHub Pages under /tokenless (BASE_PATH=/tokenless).
   output: 'export',
   basePath,
+  trailingSlash: process.env.TRAILING_SLASH === '1',
   env: { BASE_PATH: basePath },
   images: { unoptimized: true },
 };
