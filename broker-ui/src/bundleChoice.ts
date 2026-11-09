@@ -28,15 +28,35 @@ export function bundleChoices(
   chosenId: string,
   limit = BUNDLES_SHOWN,
 ): BundleChoices {
-  const q = query.trim().toLowerCase();
-  const matches = q
-    ? bundles.filter((b) => b.name.toLowerCase().includes(q) || b.description.toLowerCase().includes(q))
-    : bundles;
+  const matches = matching(bundles, query);
   let shown = matches.slice(0, limit);
   const chosen = bundles.find((b) => b.id === chosenId);
   if (chosen && !shown.includes(chosen)) shown = [chosen, ...shown.slice(0, limit - 1)];
   const hidden = matches.filter((b) => !shown.includes(b)).length;
   return { shown, hidden, filterable: bundles.length > limit };
+}
+
+function matching(bundles: AccessBundle[], query: string): AccessBundle[] {
+  const q = query.trim().toLowerCase();
+  return q ? bundles.filter((b) => b.name.toLowerCase().includes(q) || b.description.toLowerCase().includes(q)) : bundles;
+}
+
+/**
+ * A key pressed in the filter. Enter would submit the form around it and
+ * create a session with whatever bundle was chosen before, while the person
+ * is still looking for another; it never does. When the filter leaves
+ * exactly one bundle, Enter chooses it, as a search box would.
+ */
+export function onFilterKey(
+  event: { key: string; preventDefault: () => void },
+  bundles: AccessBundle[],
+  query: string,
+  choose: (id: string) => void,
+): void {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const only = query.trim() ? matching(bundles, query) : [];
+  if (only.length === 1 && only[0]) choose(only[0].id);
 }
 
 /**

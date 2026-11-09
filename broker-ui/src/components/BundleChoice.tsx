@@ -7,7 +7,7 @@
 import { useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import type { AccessBundle } from "../api";
-import { bundleChoices, ruleCount } from "../bundleChoice";
+import { bundleChoices, onFilterKey, ruleCount } from "../bundleChoice";
 import { cn } from "../lib/utils";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -59,6 +59,7 @@ export function BundleChoice({
             className="pl-9"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => onFilterKey(e, bundles, query, onChange)}
             placeholder={`Find one of ${total} bundles…`}
           />
         </div>

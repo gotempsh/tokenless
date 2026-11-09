@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle } from "./api";
-import { bundleChoices, chosenIn, ruleCount } from "./bundleChoice";
+import { bundleChoices, chosenIn, onFilterKey, ruleCount } from "./bundleChoice";
 
 function bundle(name: string, rules = 1, description = ""): AccessBundle {
   return {
@@ -60,6 +60,23 @@ describe("bundle choices", () => {
   test("a bundle chosen in another vault is not chosen here", () => {
     expect(chosenIn([bundle("a"), bundle("b")], "b-elsewhere")).toBe("");
     expect(chosenIn([bundle("only")], "b-elsewhere")).toBe("b-only");
+  });
+
+  test("Enter in the filter never submits the form, and chooses the only match", () => {
+    const list = [bundle("billing-agent"), bundle("code-review"), bundle("deploy")];
+    const press = (key: string, query: string) => {
+      let prevented = false;
+      const chosen: string[] = [];
+      onFilterKey({ key, preventDefault: () => (prevented = true) }, list, query, (id) => chosen.push(id));
+      return { prevented, chosen };
+    };
+    expect(press("Enter", "deploy")).toEqual({ prevented: true, chosen: ["b-deploy"] });
+    // Several matches, none, or an empty filter: nothing is chosen, and still no submit.
+    expect(press("Enter", "e")).toEqual({ prevented: true, chosen: [] });
+    expect(press("Enter", "nothing")).toEqual({ prevented: true, chosen: [] });
+    expect(press("Enter", "  ")).toEqual({ prevented: true, chosen: [] });
+    // Other keys type as usual.
+    expect(press("a", "deploy")).toEqual({ prevented: false, chosen: [] });
   });
 
   test("rule counts read naturally", () => {
