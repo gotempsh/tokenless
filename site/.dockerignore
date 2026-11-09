@@ -4,4 +4,8 @@ README.md
 REUSE.toml
 Dockerfile
 .dockerignore
-docs/book
+check.sh
+docs/node_modules
+docs/.next
+docs/.source
+docs/out

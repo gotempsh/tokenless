@@ -1,0 +1,49 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Your account"
+description: "Change your password and turn on an authenticator app. Click your name at the bottom of the sidebar."
+---
+
+Click your name at the bottom of the sidebar for **Account**.
+
+![Account: change the password, and the authenticator app, off, with Set up](../screenshots/console-account.png)
+
+## Password
+
+Enter your current password and a new one of at least 12 characters.
+Changing it signs out your other sessions, in other browsers and the
+CLI; this one stays signed in.
+
+An admin who lost their password resets it on the server's host with
+`tokenless admin reset-password`, which also ends that account's
+sessions ([Accounts](../security.mdx#accounts)).
+
+## Authenticator app
+
+With an authenticator app (such as 1Password or Google Authenticator),
+signing in needs a code from it as well as your password. It is
+optional for everyone and recommended for admins.
+
+1. **Set up** shows a key to enter in the app, with a copy button, and
+   **Open in authenticator** to add it from a phone.
+2. Enter a **code from the app** and **your password**, then **Turn
+   on**.
+
+To stop using it, **Remove** asks for a code and your password again.
+
+With an authenticator on, sensitive actions ask for a code entered
+within the last five minutes, even for an admin; signing in counts.
+That covers adding or changing a service's secret, widening a service's
+hosts or a rule's MCP tools, deleting a vault, and managing people, API
+keys, templates, variables, proxies, single sign-on and audit export. A
+dialog asks for the code when one is due, and the action goes ahead
+once you enter it.
+
+## With single sign-on
+
+If you sign in with [single sign-on](../settings.mdx#single-sign-on), the page
+names the identity provider instead: your password, second factor and
+groups are managed there, and your role follows your groups at each
+sign-in. Sensitive actions send you back to the provider to sign in
+again.

@@ -27,4 +27,4 @@ you can.
 
 Every release archive and container image is signed with Sigstore by the
 release workflow and carries a build provenance attestation. See the
-[install documentation](site/docs/src/install.md#download-a-release-yourself).
+[install documentation](site/docs/content/install.mdx#download-a-release-yourself).

@@ -10,27 +10,42 @@ page, and the install script.
 
 | Path | Served at | |
 |---|---|---|
-| `docs/` | `/` | Markdown, built with [mdBook](https://rust-lang.github.io/mdBook/); the introduction's **Copy prompt** button copies a set-up prompt for coding agents (`docs/copy-prompt.js`) |
-| `fonts/` | `/fonts/` | The docs' typeface |
+| `docs/content/` | `/` | The pages, in MDX; `meta.json` orders the sidebar. Screenshots are in `docs/content/screenshots/` |
+| `docs/` | | A [Next.js](https://nextjs.org) and [Fumadocs](https://fumadocs.dev) app, exported as static files |
 | `install.sh` | `/install.sh` | The install script (also used straight from GitHub) |
+
+Every page is also Markdown at its address plus `.md` (`/install.md`),
+which **Copy Markdown** copies; `/llms.txt` lists the pages and
+`/llms-full.txt` holds them all. The home page's **Copy prompt** button
+copies a set-up prompt for coding agents (`docs/components/prompt.ts`).
+Search runs in the browser on an index built with the site.
 
 Old `/docs/<page>.html` links redirect to the same page at the root; any
 other `/docs/...` path redirects to the home page.
 
-## Preview
+## Write and preview
 
-Build the image:
+```sh
+cd site/docs
+bun install
+bun run dev        # http://localhost:3000, reloads as you edit
+```
+
+A new page is a file in `docs/content/`; add its name to
+`docs/content/meta.json` to place it in the sidebar (a folder has its own
+`meta.json`). Link to other pages by their file (`./quickstart.mdx#next`,
+`../settings.mdx` from a folder), so the links also work on GitHub; the
+site and each page's Markdown turn them into addresses.
+
+To check the image as it is deployed:
 
 ```sh
 docker build -t tokenless-site site
 docker run --rm -p 127.0.0.1:8080:8080 tokenless-site
+site/check.sh http://127.0.0.1:8080
 ```
 
-`site/check.sh http://127.0.0.1:8080` then checks its pages, headers and redirects,
-as CI does.
-
-With mdBook installed, `mdbook serve site/docs` previews the docs with
-live reload (the fonts won't load there).
+`check.sh` checks the pages, headers, Markdown and redirects, as CI does.
 
 ## Deploy on Temps
 
@@ -42,10 +57,24 @@ The `Dockerfile` here builds everything and serves it with Caddy on port
 2. Add the site's domain to the project. Temps terminates TLS.
 3. Deploy on pushes to `main`.
 
-The Dockerfile pins mdBook's version and checks its download against the
-published SHA-256. To upgrade, change `MDBOOK_VERSION` and both digests.
+## GitHub Pages
 
-## Licences
+`.github/workflows/pages.yml` also publishes the site to
+<https://gotempsh.github.io/tokenless/> on every push to `main` that
+touches `site/`; a pull request only builds it. Pages serves a project
+under `/tokenless`, so the workflow builds with `BASE_PATH=/tokenless`
+and checks that no link leaves it. It also builds with
+`TRAILING_SLASH=1`, which writes each page as `<page>/index.html`:
+Pages serves a folder's `index.html`, and Next.js writes a `<page>/`
+folder of navigation data next to every page, which would shadow a
+`<page>.html`. Pages has no rewrites or redirects:
+the build writes each page's Markdown to `/<page>.md` as a file
+(`docs/scripts/markdown-files.mjs`), and old `/docs/<page>.html` links
+only redirect on the Caddy deployment.
 
-The fonts (Public Sans, OFL-1.1) are in `fonts/`; `REUSE.toml` records
-their licence.
+To try a base-path build locally:
+
+```sh
+cd site/docs
+BASE_PATH=/tokenless TRAILING_SLASH=1 bun run build    # out/, as Pages serves it
+```

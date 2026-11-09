@@ -81,7 +81,7 @@ npx skills add gotempsh/tokenless
 ```
 
 The documentation, including production deployment, is in
-[`site/docs`](site/docs/src/SUMMARY.md) and published with the website.
+[`site/docs/content`](site/docs/content) and published with the website.
 
 ## Quickstart
 
@@ -111,7 +111,7 @@ tokenless node run                                # listens on 127.0.0.1:3128
 
 `service add` creates the vault and the bundle when they don't exist,
 stores the token encrypted and write-only, and adds a rule for it to the
-bundle. See [Set up from the terminal](site/docs/src/terminal.md).
+bundle. See [Set up from the terminal](site/docs/content/terminal.mdx).
 
 Or in the console at <http://127.0.0.1:8080/>:
 
@@ -360,7 +360,7 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   `openssl rand -base64 32`) or `TOKENLESS_ROOT_KEY`. Without it, `serve`
   creates `data/root.key` and warns at every start. Back up the database
   and the key separately. See
-  [Deploy → The root key](site/docs/src/deploy.md#the-root-key).
+  [Deploy → The root key](site/docs/content/deploy.mdx#the-root-key).
 - Logs are JSON lines on stdout. Set `RUST_LOG` (for example
   `RUST_LOG=debug`) to change the level.
 - Data plane metrics are exposed in Prometheus format with

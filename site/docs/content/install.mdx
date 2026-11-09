@@ -1,0 +1,112 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Install"
+description: "tokenless is one binary with the web console built in. Releases are built for Linux (x86_64 and arm64, statically linked) and macOS (Apple silicon and Intel)."
+---
+
+## Install script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+```
+
+It downloads the latest release for your platform, checks it against the
+release's `SHA256SUMS`, and installs `tokenless` to `/usr/local/bin` (or
+`~/.local/bin` when that isn't writable). If [cosign](https://docs.sigstore.dev/cosign/)
+is installed, it also verifies the signature on `SHA256SUMS`.
+
+| Variable | Default | |
+|---|---|---|
+| `TOKENLESS_VERSION` | latest | A release tag, e.g. `v0.1.0` |
+| `TOKENLESS_INSTALL_DIR` | `/usr/local/bin` or `~/.local/bin` | Where to put the binary |
+
+Check it:
+
+```sh
+tokenless --version
+```
+
+## Download a release yourself
+
+Each [release](https://github.com/gotempsh/tokenless/releases) has one
+archive per platform:
+
+| Platform | Archive |
+|---|---|
+| Linux x86_64 | `tokenless-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `tokenless-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Apple silicon | `tokenless-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `tokenless-x86_64-apple-darwin.tar.gz` |
+
+Verify it before you run it:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS      # shasum -a 256 -c on macOS
+```
+
+Every file is also signed with [Sigstore](https://www.sigstore.dev/) by
+the release workflow, and has a GitHub build provenance attestation:
+
+```sh
+cosign verify-blob tokenless-x86_64-unknown-linux-musl.tar.gz \
+  --bundle tokenless-x86_64-unknown-linux-musl.tar.gz.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/gotempsh/tokenless/.github/workflows/release.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+gh attestation verify tokenless-x86_64-unknown-linux-musl.tar.gz --repo gotempsh/tokenless
+```
+
+On macOS, a binary downloaded with a browser is quarantined by
+Gatekeeper. Clear it with `xattr -d com.apple.quarantine tokenless`, or use
+the install script, which downloads with `curl` and isn't affected.
+
+## Container image
+
+```sh
+docker run -d --name tokenless \
+  -v tokenless-data:/data \
+  -p 127.0.0.1:8080:8080 -p 8443:8443 \
+  ghcr.io/gotempsh/tokenless
+docker logs tokenless   # prints the admin username and password, once
+```
+
+Lost the password? `docker exec tokenless tokenless admin reset-password --data-dir /data`
+prints a new one.
+
+The image is built for `linux/amd64` and `linux/arm64` from the same
+static binaries as the archives, runs as a non-root user, and is signed
+with cosign:
+
+```sh
+cosign verify ghcr.io/gotempsh/tokenless:latest \
+  --certificate-identity-regexp '^https://github.com/gotempsh/tokenless/.github/workflows/release.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`/data` holds the database: keep it on a volume. Supply
+the root key from outside it, for example
+`-e TOKENLESS_ROOT_KEY="$(cat root.key)"` or a mounted secret with
+`--root-key-file`; otherwise `root.key` is created inside `/data`
+([Deploy → The root key](./deploy.mdx#the-root-key)). Back up the database
+and the key separately (see [Deploy → Backups](./deploy.mdx#backups)). The same image
+runs a proxy: `docker run ... ghcr.io/gotempsh/tokenless node run ...`.
+A proxy that reaches the control plane by a name other than `localhost`
+or `127.0.0.1` (another machine, another container) needs that name in
+the node API's certificate: append
+`serve --data-dir /data --api-listen 0.0.0.0:8080 --node-listen 0.0.0.0:8443 --node-api-name <name>`
+to the `docker run` command.
+
+## Build from source
+
+You need Rust 1.89 or later and [bun](https://bun.sh).
+
+```sh
+git clone https://github.com/gotempsh/tokenless && cd tokenless
+(cd broker-ui && bun install && bun run build)   # the console, embedded at build time
+cargo build --release
+./target/release/tokenless --version
+```
+
+Build the console first: a binary built without it serves the API only,
+and says so when it starts.
