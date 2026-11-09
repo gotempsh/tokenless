@@ -122,7 +122,7 @@ impl AuditExportStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_audit_destination").await?;
         let result = sqlx::query(
-            "UPDATE audit_destinations SET name = ?, url = ?, format = ?, auth_header_name = ?, auth_header_value_enc = ?, signing_secret_enc = ?, filter = ?, paused = ?, updated_at = ?, retry_until = NULL WHERE id = ?",
+            "UPDATE audit_destinations SET name = ?, url = ?, format = ?, auth_header_name = ?, auth_header_value_enc = ?, signing_secret_enc = ?, filter = ?, paused = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&d.name)
         .bind(&d.url)

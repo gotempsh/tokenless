@@ -49,13 +49,15 @@ impl HttpWebhookTransport {
     }
 }
 
-fn describe(e: &reqwest::Error) -> String {
+/// Why a request failed, without its URL: reqwest's messages end with the
+/// full URL, and a receiver's path or query may hold an ingest token.
+fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
         format!("no answer within {}s", TIMEOUT.as_secs())
     } else if e.is_connect() {
-        format!("could not connect: {e}")
+        format!("could not connect: {}", e.without_url())
     } else {
-        e.to_string()
+        e.without_url().to_string()
     }
 }
 
@@ -67,7 +69,7 @@ impl WebhookTransport for HttpWebhookTransport {
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let mut response = builder.send().await.map_err(|e| fail(describe(&e)))?;
+        let mut response = builder.send().await.map_err(|e| fail(describe(e)))?;
         let status = response.status().as_u16();
         // Read a little of the reply so a keep-alive connection can be
         // reused, then stop: a receiver cannot make us buffer more.
@@ -79,5 +81,34 @@ impl WebhookTransport for HttpWebhookTransport {
             }
         }
         Ok(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failure_does_not_quote_the_url() {
+        let transport = HttpWebhookTransport::new(true, &[]).unwrap();
+        // Nothing listens on port 1.
+        let err = transport
+            .post(WebhookRequest {
+                url: "http://127.0.0.1:1/ingest/PATHTOKEN?key=QUERYTOKEN".into(),
+                headers: vec![],
+                body: b"{}".to_vec(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.reason.starts_with("could not connect"),
+            "{}",
+            err.reason
+        );
+        assert!(
+            !err.reason.contains("TOKEN") && !err.reason.contains("127.0.0.1"),
+            "{}",
+            err.reason
+        );
     }
 }

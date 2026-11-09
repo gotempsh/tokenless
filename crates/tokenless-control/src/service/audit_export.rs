@@ -27,6 +27,7 @@ use std::time::Duration as StdDuration;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokenless_auth::webhook;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
@@ -309,6 +310,23 @@ fn origin(url: &str) -> String {
         .unwrap_or_else(|_| "an unreadable URL".to_string())
 }
 
+/// `reason` with the receiver's URL cut down to its [`origin`], wherever a
+/// transport quoted it, as typed or normalized: a failure is logged, kept as
+/// the destination's last error and shown to whoever sends a test.
+fn without_url(reason: String, url: &str) -> String {
+    let mut forms = vec![url.to_string()];
+    if let Ok(parsed) = Url::parse(url) {
+        forms.push(parsed.to_string());
+    }
+    // The longer first, so a form that contains another goes whole.
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    let short = origin(url);
+    forms
+        .iter()
+        .filter(|f| !f.is_empty() && **f != short)
+        .fold(reason, |r, f| r.replace(f.as_str(), &short))
+}
+
 fn validation(message: impl Into<String>) -> ControlError {
     ControlError::validation(message)
 }
@@ -415,12 +433,53 @@ struct Batch {
     to: u64,
     lines: Vec<Vec<u8>>,
     passed_over: usize,
+    /// [`filter_fingerprint`] of the filter that chose the lines.
+    filter: Option<String>,
 }
 
 impl Batch {
+    /// The same for every attempt at the same events: the range, and the
+    /// filter that chose them from it. A retry after pausing, renaming or a
+    /// new secret keeps it; a retry under another filter carries other
+    /// events from the same range, so it gets another.
     fn id(&self, destination: &AuditDestinationId) -> String {
-        format!("{destination}.{}-{}", self.from + 1, self.to)
+        match &self.filter {
+            Some(f) => format!("{destination}.{}-{}.{f}", self.from + 1, self.to),
+            None => format!("{destination}.{}-{}", self.from + 1, self.to),
+        }
     }
+}
+
+/// A short, stable name for a filter, `None` for the empty one that matches
+/// everything. The lists are sorted first, so the order an admin typed them
+/// in does not matter.
+fn filter_fingerprint(filter: &AuditFilter) -> Option<String> {
+    if filter.action_prefixes.is_empty()
+        && filter.outcomes.is_empty()
+        && filter.vault_ids.is_empty()
+    {
+        return None;
+    }
+    let lists: [Vec<String>; 3] = [
+        filter.action_prefixes.clone(),
+        filter
+            .outcomes
+            .iter()
+            .map(|o| o.as_str().to_string())
+            .collect(),
+        filter.vault_ids.iter().map(ToString::to_string).collect(),
+    ];
+    let mut hash = Sha256::new();
+    for mut list in lists {
+        list.sort();
+        for item in list {
+            hash.update(item.as_bytes());
+            hash.update([0]);
+        }
+        hash.update([1]);
+    }
+    let digest = hash.finalize();
+    Some(format!("f{}", hex::encode(&digest[..6])))
 }
 
 fn body(format: PayloadFormat, batch_id: &str, lines: &[Vec<u8>]) -> Vec<u8> {
@@ -972,6 +1031,7 @@ impl AuditExportService {
             to: from,
             lines: Vec::new(),
             passed_over: 0,
+            filter: filter_fingerprint(&d.filter),
         };
         let mut size = 0usize;
         for (seq, event) in &events {
@@ -1037,7 +1097,7 @@ impl AuditExportService {
                 body,
             })
             .await
-            .map_err(|e| SendError::Other(e.reason))?;
+            .map_err(|e| SendError::Other(without_url(e.reason, &d.url)))?;
         if (200..300).contains(&status) {
             Ok(status)
         } else {

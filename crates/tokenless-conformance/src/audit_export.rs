@@ -279,9 +279,9 @@ where
     let edited = get(store, &b.id).await?.delivery;
     ensure!(
         S,
-        "update_forgets_retry",
-        edited.retry_until.is_none() && edited.cursor == 2 && edited.consecutive_failures == 2,
-        "a settings update must forget the pending retry and keep the rest: {edited:?}"
+        "update_keeps_delivery",
+        edited.retry_until == Some(4) && edited.cursor == 2 && edited.consecutive_failures == 2,
+        "a settings update must keep the delivery state, pending retry included: {edited:?}"
     );
     store
         .record_audit_delivery_failure(&b.id, 2, 4, "third", at(25))

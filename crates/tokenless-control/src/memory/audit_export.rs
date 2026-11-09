@@ -80,10 +80,7 @@ impl AuditExportStore for MemoryStore {
             .audit_destinations
             .get_mut(&destination.id)
             .ok_or_else(|| missing(&destination.id))?;
-        let delivery = DeliveryState {
-            retry_until: None,
-            ..std::mem::take(&mut current.delivery)
-        };
+        let delivery = std::mem::take(&mut current.delivery);
         *current = AuditDestination {
             created_at: current.created_at,
             delivery,

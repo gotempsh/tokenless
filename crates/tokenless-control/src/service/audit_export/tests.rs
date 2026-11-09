@@ -337,7 +337,7 @@ async fn a_retry_is_the_same_batch_when_newer_events_were_written_meanwhile() {
 }
 
 #[tokio::test]
-async fn a_settings_change_makes_the_retry_a_new_batch() {
+async fn a_retry_keeps_its_id_across_pausing_renaming_and_a_new_secret() {
     let t = setup().await;
     let id = t
         .export()
@@ -349,22 +349,147 @@ async fn a_settings_change_makes_the_retry_a_new_batch() {
     t.record(2, "proxy.inject").await;
     t.receiver.answer(Ok(503));
     t.export().deliver(&id).await.unwrap();
-    t.record(2, "proxy.inject").await;
-    // Other settings could select other events from the same range, which
-    // must not go out under the id of the batch the receiver may have.
-    let mut narrower = input();
-    narrower.filter.action_prefixes = vec!["proxy.".into()];
-    t.export().update(&admin(), &id, narrower).await.unwrap();
+
+    // None of these changes which events the batch holds.
+    t.export().set_paused(&admin(), &id, true).await.unwrap();
+    t.export().set_paused(&admin(), &id, false).await.unwrap();
+    t.export().rotate_secret(&admin(), &id).await.unwrap();
+    let mut renamed = input();
+    renamed.name = "Renamed".into();
+    t.export().update(&admin(), &id, renamed).await.unwrap();
 
     t.export().deliver(&id).await.unwrap();
     let requests = t.receiver.requests();
-    assert_ne!(
+    assert_eq!(
         header(&requests[0], "webhook-id"),
-        header(&requests[1], "webhook-id")
+        header(&requests[1], "webhook-id"),
+        "the receiver can drop the retry as a duplicate"
     );
-    assert!(t.receiver.events()[1].iter().all(|e| e["action"]
-        .as_str()
-        .is_some_and(|a| a.starts_with("proxy."))));
+    let events = t.receiver.events();
+    assert_eq!(seqs(&events[0]), seqs(&events[1]));
+}
+
+#[tokio::test]
+async fn a_filter_change_makes_the_retry_a_new_batch() {
+    for (before, after) in [
+        (vec![], vec!["proxy.".to_string()]),
+        (vec!["proxy.".to_string()], vec![]),
+    ] {
+        let t = setup().await;
+        let mut settings = input();
+        settings.filter.action_prefixes = before;
+        let id = t
+            .export()
+            .create(
+                &admin(),
+                CreateAuditDestination {
+                    destination: settings.clone(),
+                    start_at: StartAt::Oldest,
+                },
+            )
+            .await
+            .unwrap()
+            .destination
+            .id;
+        t.record(2, "proxy.inject").await;
+        t.receiver.answer(Ok(503));
+        t.export().deliver(&id).await.unwrap();
+        // Another filter selects other events from the same range, which
+        // must not go out under the id of the batch the receiver may have.
+        settings.filter.action_prefixes = after;
+        t.export().update(&admin(), &id, settings).await.unwrap();
+
+        t.export().deliver(&id).await.unwrap();
+        let requests = t.receiver.requests();
+        assert_ne!(
+            header(&requests[0], "webhook-id"),
+            header(&requests[1], "webhook-id")
+        );
+        assert_ne!(seqs(&t.receiver.events()[0]), seqs(&t.receiver.events()[1]));
+    }
+}
+
+#[test]
+fn a_filter_fingerprint_ignores_the_order_it_was_typed_in() {
+    assert_eq!(filter_fingerprint(&AuditFilter::default()), None);
+    let filter = |prefixes: &[&str], outcomes: Vec<AuditOutcome>| AuditFilter {
+        action_prefixes: prefixes.iter().map(ToString::to_string).collect(),
+        outcomes,
+        vault_ids: vec![],
+    };
+    let a = filter(
+        &["proxy.", "credential."],
+        vec![AuditOutcome::Failure, AuditOutcome::Denied],
+    );
+    let b = filter(
+        &["credential.", "proxy."],
+        vec![AuditOutcome::Denied, AuditOutcome::Failure],
+    );
+    assert_eq!(filter_fingerprint(&a), filter_fingerprint(&b));
+    assert!(filter_fingerprint(&a).is_some());
+    // An item cannot move between lists, or merge with its neighbour,
+    // and keep the fingerprint.
+    assert_ne!(
+        filter_fingerprint(&filter(&["proxy."], vec![])),
+        filter_fingerprint(&filter(&["proxy.", ""], vec![]))
+    );
+    assert_ne!(
+        filter_fingerprint(&filter(&["ab"], vec![])),
+        filter_fingerprint(&filter(&["a", "b"], vec![]))
+    );
+}
+
+#[tokio::test]
+async fn failure_reasons_never_quote_the_receivers_url() {
+    let t = setup().await;
+    let mut with_token = input();
+    with_token.url = "https://Ingest.Example.com/receiver/INGESTTOKEN?key=QUERYTOKEN".into();
+    let id = t
+        .export()
+        .create(
+            &admin(),
+            CreateAuditDestination {
+                destination: with_token.clone(),
+                start_at: StartAt::Now,
+            },
+        )
+        .await
+        .unwrap()
+        .destination
+        .id;
+    // Stored, and so sent, normalized; a transport quotes what it was sent,
+    // as reqwest does, and may quote it twice.
+    let sent = t.view(&id).await.url;
+    assert_eq!(sent, Url::parse(&with_token.url).unwrap().to_string());
+    for quoted in [sent.clone(), format!("{sent} (redirected from {sent})")] {
+        let reason = format!("error sending request for url ({quoted})");
+        t.receiver.answer(Err(WebhookError {
+            reason: reason.clone(),
+        }));
+        let pass = t.export().deliver(&id).await.unwrap();
+        t.receiver.answer(Err(WebhookError { reason }));
+        let test = t.export().test(&admin(), &id).await.unwrap();
+        let view = t.view(&id).await;
+        for shown in [pass.error, test.error, view.last_error] {
+            let shown = shown.unwrap();
+            assert!(
+                !shown.contains("TOKEN") && shown.contains("(https://ingest.example.com"),
+                "{shown}"
+            );
+        }
+    }
+}
+
+#[test]
+fn without_url_leaves_other_reasons_alone() {
+    assert_eq!(
+        without_url("the receiver answered 503".into(), URL),
+        "the receiver answered 503"
+    );
+    assert_eq!(
+        without_url("bad: not a url".into(), "not a url"),
+        "bad: an unreadable URL"
+    );
 }
 
 #[tokio::test]

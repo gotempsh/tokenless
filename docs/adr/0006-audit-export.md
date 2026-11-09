@@ -35,10 +35,13 @@ least code; syslog and OpenTelemetry can follow on the same delivery.
 - **At least once.** The batch ID, `{destination}.{first}-{last}`, is the
   same on every retry, so a receiver can drop a repeat. A failure stores
   the batch's last sequence number with the destination, and the retry
-  stops there even when newer events were written meanwhile or the server
-  restarted. Changing the destination's settings forgets it: other
-  settings can select other events from the same range, which must not
-  go out under an ID the receiver may already have. Exactly once
+  stops there even when newer events were written meanwhile, the
+  destination was paused, renamed or given a new secret, or the server
+  restarted. A non-empty filter adds its fingerprint (a truncated SHA-256
+  of its sorted lists) to the ID: another filter selects other events
+  from the same range, which must not go out under an ID the receiver may
+  already have. Storing the fingerprint with the failure instead would
+  mean one more column for the same guarantee. Exactly once
   would need the receiver's cooperation and buys nothing a SIEM's
   deduplication doesn't.
 - **Standard Webhooks signing.** A `whsec_` secret per destination,

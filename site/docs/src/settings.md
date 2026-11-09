@@ -109,8 +109,9 @@ until it arrives. An instance sends to at most 10 webhooks.
 - **URL.** `https`, or `http` only to localhost. Put a receiver's token in
   the **auth header** (for example `Authorization: Bearer …`), not in the
   URL: the header's value is encrypted at rest and never shown again. The
-  audit log records only the URL's scheme and host, since anyone who can
-  read the audit log (viewers too) would see the rest. Requests follow no
+  audit log, the server log and the delivery errors shown here record only
+  the URL's scheme and host, since anyone who can read the audit log
+  (viewers too) would see the rest. Requests follow no
   redirects and give up after 10 seconds.
 - **Format.** *JSON* sends one object per request,
   `{"type":"tokenless.audit","version":1,"batch_id":"…","events":[…]}`.
@@ -130,10 +131,10 @@ doubling to at most 5 minutes, so a receiver that was down for an hour
 gets the hour's events in order when it comes back. A batch that is
 retried is the same batch under the same `webhook-id`, even when newer
 events were written meanwhile and across a restart, so a receiver that
-may see one twice can drop repeats by it. Changing the webhook's settings
-during a retry makes the next attempt a new batch with a new ID, since
-other settings can select other events. Each event's `seq` deduplicates
-in every case. Each webhook shows its status: **Up to date**,
+may see one twice can drop repeats by it. Pausing, renaming or a new
+signing secret keep the ID; changing the filter during a retry makes the
+next attempt a new batch with a new ID, since another filter selects other
+events. Each event's `seq` deduplicates in every case. Each webhook shows its status: **Up to date**,
 **Sending** (with how many events it is behind), **Retrying**, **Failing**
 (after 15 minutes of retries) or **Paused**, with the receiver's last
 error. The **Audit log** page and the sidebar warn while one is failing.

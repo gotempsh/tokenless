@@ -580,10 +580,9 @@ pub trait AuditExportStore: Send + Sync {
     /// Every destination, oldest first. There are at most
     /// [`MAX_AUDIT_DESTINATIONS`](crate::model::MAX_AUDIT_DESTINATIONS).
     async fn list_audit_destinations(&self) -> Result<Vec<AuditDestination>, StoreError>;
-    /// Replaces its settings, never its delivery state (cursor, failures),
-    /// except that a pending retry is forgotten: with other settings it is
-    /// a different batch. `NotFound` if missing, `Conflict` if the new name
-    /// is taken.
+    /// Replaces its settings, never its delivery state (cursor, failures,
+    /// pending retry). `NotFound` if missing, `Conflict` if the new name is
+    /// taken.
     async fn update_audit_destination(
         &self,
         destination: AuditDestination,
