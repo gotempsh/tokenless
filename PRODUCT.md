@@ -70,8 +70,7 @@ means no injection.
 ## Evidence on Hand
 
 No customers, testimonials, benchmarks or usage numbers exist; none may be
-invented. Service logos for supported integrations live in `site/logos` and
-the template catalogue.
+invented. Service logos for supported integrations live in the template catalogue.
 
 ## Product Principles
 

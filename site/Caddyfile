@@ -18,10 +18,17 @@
 		-Server
 	}
 	header /fonts/* Cache-Control "public, max-age=604800"
-	header /logos/* Cache-Control "public, max-age=604800"
 	# Shown as text when opened in a browser; `curl | sh` doesn't care.
 	header /install.sh Content-Type "text/plain; charset=utf-8"
 
-	redir /docs /docs/ 308
+	# The documentation used to live under /docs/; it is the site now.
+	redir /docs / 308
+	@olddocs path_regexp olddocs ^/docs/(.*)$
+	redir @olddocs /{re.olddocs.1} 308
+
 	file_server
+	handle_errors 404 {
+		rewrite * /404.html
+		file_server
+	}
 }

@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-# The website: the landing page, the documentation (built with mdBook) and
-# the install script, served by Caddy on port 8080. Build it from this
-# directory: `docker build -t tokenless-site site`.
+# The website: the documentation (built with mdBook), whose introduction is
+# the home page, and the install script, served by Caddy on port 8080.
+# Build it from this directory: `docker build -t tokenless-site site`.
 
 FROM --platform=$BUILDPLATFORM alpine:3.22 AS docs
 ARG BUILDARCH
@@ -21,7 +21,7 @@ RUN set -eu; \
     echo "$sum  /tmp/mdbook.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/mdbook.tar.gz -C /usr/local/bin mdbook
 COPY docs /book
-RUN mdbook build /book --dest-dir /out/docs
+RUN mdbook build /book --dest-dir /out/site
 
 FROM caddy:2.10-alpine
 # The image grants caddy a file capability to bind ports below 1024. Port
@@ -29,8 +29,7 @@ FROM caddy:2.10-alpine
 # refuses to run a binary that carries one.
 RUN apk add --no-cache libcap && setcap -r /usr/bin/caddy && apk del libcap
 COPY Caddyfile /etc/caddy/Caddyfile
-COPY index.html styles.css favicon.svg install.sh /srv/
+COPY --from=docs /out/site /srv
+COPY install.sh /srv/
 COPY fonts /srv/fonts
-COPY logos /srv/logos
-COPY --from=docs /out/docs /srv/docs
 EXPOSE 8080
