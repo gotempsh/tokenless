@@ -13,7 +13,7 @@ vault and bundle, who created it, when it expires, and whether it is
 
 Sessions started with `tokenless run` appear here on their own, named
 after the command unless it was given `--name`. The rest are created in the console or over the API
-([Automation and API keys](/automation)).
+([Automation and API keys](../automation.mdx)).
 
 ## Create a session
 
@@ -24,7 +24,7 @@ after the command unless it was given `--name`. The rest are created in the cons
 - **Name**: shown on the Sessions page and in the logs, such as
   `laptop-claude`.
 - **Expires after**: how long the token works: one day by default, and
-  at most the instance's [session lifetime](/settings#session-lifetime).
+  at most the instance's [session lifetime](../settings.mdx#session-lifetime).
 - **Request limit** (optional): the proxy refuses the session's
   requests after this many.
 
@@ -66,17 +66,17 @@ seconds after a proxy handles it. It updates on its own.
 | Result | Meaning |
 |---|---|
 | **Credential added · 200** | The proxy added the service's secret and sent the request on. The number is the API's answer: green for success, amber for anything else. A 401 here means the API refused the secret itself, for example an expired token. |
-| **Blocked** | The proxy refused the request, so it never reached the API: for example the path, method or MCP tool is outside the rule, or the session reached its request limit. The agent got the proxy's answer explaining why ([When the proxy says no](/agents#when-the-proxy-says-no)). |
-| **No credential** | No rule covers the host, so the proxy passed it through untouched, without reading it or adding a key ([Other hosts](/settings#other-hosts)). |
+| **Blocked** | The proxy refused the request, so it never reached the API: for example the path, method or MCP tool is outside the rule, or the session reached its request limit. The agent got the proxy's answer explaining why ([When the proxy says no](../agents.mdx#when-the-proxy-says-no)). |
+| **No credential** | No rule covers the host, so the proxy passed it through untouched, without reading it or adding a key ([Other hosts](../settings.mdx#other-hosts)). |
 | **Failed** | The proxy added the credential, but the request failed, for example the API could not be reached. |
 
 Click a request for everything recorded about it: the proxy that
 handled it, the credential used, how long it took, the MCP tool called,
 the placeholders it filled in, and the session's labels at the time.
 
-The same log appears on a [service's page](/console/vaults#a-services-page),
+The same log appears on a [service's page](./vaults.mdx#a-services-page),
 for every session that used that service, and each request is also in
-the [audit log](/console/audit).
+the [audit log](./audit.mdx).
 
 Editors and admins create, change and revoke sessions; viewers can see
 them and their logs.

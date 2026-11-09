@@ -88,8 +88,8 @@ cosign verify ghcr.io/gotempsh/tokenless:latest \
 the root key from outside it, for example
 `-e TOKENLESS_ROOT_KEY="$(cat root.key)"` or a mounted secret with
 `--root-key-file`; otherwise `root.key` is created inside `/data`
-([Deploy → The root key](/deploy#the-root-key)). Back up the database
-and the key separately (see [Deploy → Backups](/deploy#backups)). The same image
+([Deploy → The root key](./deploy.mdx#the-root-key)). Back up the database
+and the key separately (see [Deploy → Backups](./deploy.mdx#backups)). The same image
 runs a proxy: `docker run ... ghcr.io/gotempsh/tokenless node run ...`.
 A proxy that reaches the control plane by a name other than `localhost`
 or `127.0.0.1` (another machine, another container) needs that name in

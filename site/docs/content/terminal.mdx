@@ -4,7 +4,7 @@
 title: "Set up from the terminal"
 ---
 
-Everything in the [Quickstart](/quickstart) can be done without the
+Everything in the [Quickstart](./quickstart.mdx) can be done without the
 console: sign in, add a service and enrol a proxy.
 
 ## Sign in
@@ -15,7 +15,7 @@ tokenless login                 # the admin printed by `tokenless serve`
 
 It asks for the password, and an authenticator code if the account has
 one. People who sign in to the console with
-[single sign-on](/settings#single-sign-on) have no password here; in a
+[single sign-on](./settings.mdx#single-sign-on) have no password here; in a
 terminal they use a session token from an access bundle's page, or an API
 key from an admin. The session is kept in the operating system's keychain (macOS
 Keychain, Windows Credential Manager, the Linux kernel keyring) and lasts
@@ -77,7 +77,7 @@ tokenless run --vault work --bundle code-review -- claude
 Signed in, `run`, `exec`, `session` and `mcp` mint sessions with your
 account, so you don't need an API key on your own machine. Use an API key
 for CI and other unattended runs; see
-[Automation and API keys](/automation).
+[Automation and API keys](./automation.mdx).
 
 ## Sensitive actions
 

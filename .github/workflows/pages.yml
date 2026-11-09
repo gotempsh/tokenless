@@ -58,6 +58,10 @@ jobs:
             echo "these Markdown links point outside $BASE_PATH" >&2
             exit 1
           fi
+          if grep -rEo '(href="|\]\()\.{1,2}/[^")]*\.mdx' --include='*.html' --include='*.md' --include='*.txt' .; then
+            echo "these links name a page's source file, not its address" >&2
+            exit 1
+          fi
       - run: cp site/install.sh site/docs/out/
       - uses: actions/upload-pages-artifact@v5
         with:

@@ -21,7 +21,7 @@ authenticator. The link works once. Anyone holding it can create the
 account until it is accepted, revoked or expires, so send it privately.
 **Revoke** on a pending invite stops the link at once.
 
-With [single sign-on](/settings#single-sign-on), people need no invite:
+With [single sign-on](../settings.mdx#single-sign-on), people need no invite:
 their groups at the identity provider decide their role at every
 sign-in, and the role column says so.
 
@@ -49,12 +49,12 @@ for a code entered within the last five minutes, even for an admin:
 adding or changing a service's secret, widening a service's hosts or a
 rule's MCP tools, deleting a vault, and managing people, API keys,
 templates, variables, proxies, single sign-on and audit export
-([Accounts](/security#accounts)).
+([Accounts](../security.mdx#accounts)).
 
 ## API keys
 
 **API keys** are for scripts and CI that call the console's API, for
-example to mint a session for each job ([Automation and API keys](/automation)).
+example to mint a session for each job ([Automation and API keys](../automation.mdx)).
 Agents get a session instead, from an access bundle's page.
 
 ![API keys: ci-runner and release-bot, each with its prefix, vault, role, expiry and last use](../screenshots/console-api-keys.png)
@@ -73,6 +73,6 @@ shows each key's prefix (the start of the key, enough to recognise it),
 vault, role, expiry and when it was last used. **Revoke**
 refuses anything using it immediately. Sessions it already created keep
 running until they expire; revoke them on the
-[Sessions](/console/sessions) page to end them now.
+[Sessions](./sessions.mdx) page to end them now.
 
 Only admins see and manage API keys.

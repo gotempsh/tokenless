@@ -141,7 +141,7 @@ Git-scoped rules, so it refuses their requests until it is upgraded.
 A **GitLab** service added before GitLab (Git) existed allows every path
 on `gitlab.com`, so in a session with GitLab (Git) the two tie and the
 proxy refuses both. Narrow the GitLab rule's paths to `/api/*`
-([Upgrades](/deploy#upgrades)).
+([Upgrades](./deploy.mdx#upgrades)).
 
 ## The agent skill
 
@@ -189,7 +189,7 @@ plain-text reason.
 | 403 `no rule in this session allows ...` | The host is in the session, but not this method or path. Widen the rule or the bundle. |
 | 403 `rules <a> and <b> in this session both allow ...` | Two services on this host match the request equally and send different credentials. Narrow one rule's paths. |
 | 403 `no rule in this session covers <host>` | Other hosts are blocked and this one isn't in the session. |
-| 403 `<host> resolves to <ip>, which is ...` | Connections to that address range are blocked (see [Settings](/settings#private-addresses)). |
+| 403 `<host> resolves to <ip>, which is ...` | Connections to that address range are blocked (see [Settings](./settings.mdx#private-addresses)). |
 | 407 `proxy session rejected: ...` | The session expired or was revoked. |
 | 429 `session request limit of <n> reached` | The session used all its requests. |
 | 503 with `retry-after` | The proxy hasn't received a brand-new session yet. Retry after the delay. |

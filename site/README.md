@@ -32,8 +32,10 @@ bun run dev        # http://localhost:3000, reloads as you edit
 ```
 
 A new page is a file in `docs/content/`; add its name to
-`docs/content/meta.json` to place it in the sidebar. Link to other pages
-by their address (`/quickstart#next`).
+`docs/content/meta.json` to place it in the sidebar (a folder has its own
+`meta.json`). Link to other pages by their file (`./quickstart.mdx#next`,
+`../settings.mdx` from a folder), so the links also work on GitHub; the
+site and each page's Markdown turn them into addresses.
 
 To check the image as it is deployed:
 

@@ -48,7 +48,7 @@ Pick one, then fill in three things on one page:
 
 When it is saved, **Run an agent with it** takes you to the bundle's
 commands. Only admins add services. From a terminal, the same is
-`tokenless service add` ([Set up from the terminal](/terminal)).
+`tokenless service add` ([Set up from the terminal](../terminal.mdx)).
 
 ## A service's page
 
@@ -66,11 +66,11 @@ Click a service to see where it is used and what it did.
 - **Rules** and **Access bundles** show what uses the service. **Manage
   rules** opens the vault's Rules tab.
 - **Custom headers** are sent with every request the credential is
-  added to. Use a [variable](/console/templates#variables) as
+  added to. Use a [variable](./templates.mdx#variables) as
   `{{NAME}}` to keep a header's value secret.
 - **Placeholders** let an agent send a stand-in value that the proxy
   swaps for the secret on its way to this service's hosts, and nowhere
-  else ([Placeholders and variables](/placeholders)).
+  else ([Placeholders and variables](../placeholders.mdx)).
 - **Logs** lists the requests that used this service, a few seconds
   after a proxy handles them.
 - **Delete service** (in the **⋯** menu) destroys the secret. Delete
@@ -95,7 +95,7 @@ narrows that, never widens it.
   `tools/call` for any other tool is answered with an MCP error naming
   it, and never reaches the server. Allowing more tools is a sensitive
   action: with an authenticator or single sign-on, it asks for a
-  [recent code](/console/account#authenticator-app).
+  [recent code](./account.mdx#authenticator-app).
 
 The switch in the **On** column turns a rule off without deleting it:
 sessions that include it stop getting its credential until it is
@@ -109,4 +109,4 @@ On the vault's **Settings** tab, **Delete vault** deletes its services
 bound to it. The audit trail is kept. It is refused while an agent is
 using the vault unless you tick **End live sessions**. Only admins can
 delete a vault; with an authenticator or single sign-on, it asks for a
-[recent code](/console/account#authenticator-app) first.
+[recent code](./account.mdx#authenticator-app) first.

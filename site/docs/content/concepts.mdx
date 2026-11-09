@@ -24,7 +24,7 @@ The secret is write-only. You can replace it, never read it. When the
 secret expires upstream, set its **Expires** date: after it the proxy
 stops sending it and refuses requests to the service until you replace
 it. A service can also have custom headers and
-[placeholders](/placeholders).
+[placeholders](./placeholders.mdx).
 
 ## Rule
 
@@ -59,7 +59,7 @@ A proxy (a *node*) is the data plane: `tokenless node run`. Agents send
 their HTTPS traffic through it. For hosts a session's rules cover, it
 decrypts the request, adds the credential and forwards it; anything else
 is passed through untouched or refused, depending on
-[Settings](/settings). Proxies enrol once with a join token and then
+[Settings](./settings.mdx). Proxies enrol once with a join token and then
 pull a signed policy snapshot from the control plane.
 
 ## People and API keys
@@ -71,7 +71,7 @@ pull a signed policy snapshot from the control plane.
 | Viewer | Read every vault. |
 
 An API key is an editor or a viewer within its one vault. The full list
-is in [Roles](/console/people#roles).
+is in [Roles](./console/people.mdx#roles).
 
 Invite people under **People**. Create API keys for automation under
 **API keys**. Agents get a session, not an API key: create one on an

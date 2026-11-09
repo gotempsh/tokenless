@@ -33,7 +33,7 @@ This page is the summary an operator needs.
   the root key and the database, can decrypt every secret. Protect it like
   any secret store. A copy of the database alone exposes nothing, provided
   the root key is kept outside it
-  ([Deploy → The root key](/deploy#the-root-key)).
+  ([Deploy → The root key](./deploy.mdx#the-root-key)).
 - **What a service does with a request it accepts.** A rule that allows
   `DELETE` lets an agent delete. Use read-only access and narrow paths
   where you can.
@@ -72,7 +72,7 @@ stops normally ships what it holds first and logs how many events it
 could not.
 
 To keep the audit trail somewhere the instance's admins can't rewrite,
-[send it to a webhook](/settings#audit-export) in your own system.
+[send it to a webhook](./settings.mdx#audit-export) in your own system.
 Delivery is ordered and retried from where it stopped, so a receiver
 outage leaves no gap; requests are signed, and the receiver's token and
 the signing secret are encrypted at rest. Webhooks are an admin's
@@ -94,7 +94,7 @@ apply to them, as they don't to identity providers.
   code entered within the last five minutes. Signing in counts. API keys
   can never take these actions.
 - Changing your password ends your other sessions.
-- With [single sign-on](/settings#single-sign-on), the identity
+- With [single sign-on](./settings.mdx#single-sign-on), the identity
   provider handles passwords and second factors, and the person's groups
   decide their role at every sign-in. A step-up sends them back to the
   provider with `prompt=login`, and only a sign-in there after the
@@ -110,7 +110,7 @@ apply to them, as they don't to identity providers.
 
 Every release archive and image is signed with Sigstore by the release
 workflow and has a build provenance attestation. See
-[Install → Download a release yourself](/install#download-a-release-yourself).
+[Install → Download a release yourself](./install.mdx#download-a-release-yourself).
 
 ## Reporting a vulnerability
 

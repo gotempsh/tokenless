@@ -44,14 +44,14 @@ long it took and the session's labels, such as `agent=claude-code`.
 ![An event's details: a proxy got a 401 for GET api.stripe.com/v1/balance, with its action, actor, target, vault, credential, duration, host and the session's labels](../screenshots/console-audit-event.png)
 
 The same requests appear, per session, on a
-[session's page](/console/sessions#request-logs) and, per service, on a
-[service's page](/console/vaults#a-services-page).
+[session's page](./sessions.mdx#request-logs) and, per service, on a
+[service's page](./vaults.mdx#a-services-page).
 
 ## Send it to your own system
 
 The log lives in the control plane's database. To keep a copy in a SIEM
 or log pipeline, an admin adds a webhook under
-[Settings → Audit export](/settings#audit-export). The button at the top
+[Settings → Audit export](../settings.mdx#audit-export). The button at the top
 of the page says how many webhooks the log is sent to (or **Send to a
 webhook** when it goes nowhere), and the page warns while one is not
 receiving events.

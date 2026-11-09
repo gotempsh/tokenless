@@ -26,9 +26,9 @@ Click a template's **ⓘ** for its details:
 - **Test request**: what **Test** on a service's page sends.
 - **Override**: whether a service may point it at other hosts, for a
   self-hosted instance. Only admins can; with an authenticator or single
-  sign-on, it asks for a [recent code](/console/account#authenticator-app).
+  sign-on, it asks for a [recent code](./account.mdx#authenticator-app).
 
-**Add to a vault** starts [adding a service](/console/vaults#add-a-service)
+**Add to a vault** starts [adding a service](./vaults.mdx#add-a-service)
 from it.
 
 ### Your own templates
@@ -85,7 +85,7 @@ An imported template stays **pending** until an admin approves the
 hosts it binds credentials to: approving lets credentials created from
 it be sent to those hosts. Only admins import and approve templates;
 with an authenticator or single sign-on, both ask for a
-[recent code](/console/account#authenticator-app).
+[recent code](./account.mdx#authenticator-app).
 
 ## Variables
 
@@ -102,6 +102,6 @@ header. Replacing a variable updates every service that uses it.
   those services first.
 - Only admins manage variables.
 
-[Placeholders and variables](/placeholders) explains where variables and
+[Placeholders and variables](../placeholders.mdx) explains where variables and
 placeholders fit when an agent needs a secret in a request body or an
 environment variable.

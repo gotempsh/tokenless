@@ -29,7 +29,7 @@ change the password and turn on an authenticator app, which is
 recommended for admins.
 
 Every step below can also be done from the terminal; see
-[Set up from the terminal](/terminal).
+[Set up from the terminal](./terminal.mdx).
 
 ## 2. Add a service
 
@@ -80,7 +80,7 @@ tokenless run --vault work --bundle code-review -- curl -s https://api.github.co
 
 The request reaches GitHub with your token, and `curl` never had it.
 Try a host outside the bundle and the proxy passes it through untouched
-(or refuses it, depending on [Settings](/settings)).
+(or refuses it, depending on [Settings](./settings.mdx)).
 
 Now start a real agent the same way:
 
@@ -99,12 +99,12 @@ npx skills add gotempsh/tokenless
 
 It teaches the agent to check what it can reach and to read the proxy's
 refusals instead of looking for a key. See
-[Run an agent](/agents#the-agent-skill) for other ways to install it.
+[Run an agent](./agents.mdx#the-agent-skill) for other ways to install it.
 
 ## Next
 
-- [Concepts](/concepts) explains vaults, rules, bundles and sessions.
-- [Run an agent](/agents) covers the options of `run`, `session start`
+- [Concepts](./concepts.mdx) explains vaults, rules, bundles and sessions.
+- [Run an agent](./agents.mdx) covers the options of `run`, `session start`
   and the agent skill.
-- [Deploy to production](/deploy) covers TLS, proxies on other
+- [Deploy to production](./deploy.mdx) covers TLS, proxies on other
   machines and backups.

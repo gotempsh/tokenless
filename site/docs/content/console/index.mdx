@@ -6,31 +6,31 @@ description: "The web console is where you add services, decide what agents may 
 ---
 
 Open the address `tokenless serve` printed and sign in with the admin
-account it created (see the [Quickstart](/quickstart)). The sidebar
+account it created (see the [Quickstart](../quickstart.mdx)). The sidebar
 groups everything into three parts.
 
 ![The console's sidebar: Broker (vaults, access bundles, sessions, templates, variables), Access (people, API keys) and Instance (proxies, audit log, settings)](../screenshots/console-vaults.png)
 
 | Part | Page | What it is for |
 |---|---|---|
-| Broker | [Vaults](/console/vaults) | The services (and their secrets) agents may use, and the rules that allow them |
-| | [Access bundles](/console/bundles) | Named sets of services an agent starts with, such as `code-review` |
-| | [Sessions](/console/sessions) | Every agent that has been given access, and each request it made |
-| | [Templates](/console/templates) | The catalogue of services tokenless knows, and your own |
-| | [Variables](/console/templates#variables) | Secrets stored once and used in any service as `{{NAME}}` |
-| Access | [People](/console/people) | Who can sign in, and their role |
-| | [API keys](/console/people#api-keys) | Keys for scripts and CI to use the console's API |
-| Instance | [Proxies](/console/proxies) | The machines agents send their requests through |
-| | [Audit log](/console/audit) | Everything that happened, who did it and whether it was allowed |
-| | [Settings](/settings) | What agents may reach outside their services, single sign-on, audit export |
+| Broker | [Vaults](./vaults.mdx) | The services (and their secrets) agents may use, and the rules that allow them |
+| | [Access bundles](./bundles.mdx) | Named sets of services an agent starts with, such as `code-review` |
+| | [Sessions](./sessions.mdx) | Every agent that has been given access, and each request it made |
+| | [Templates](./templates.mdx) | The catalogue of services tokenless knows, and your own |
+| | [Variables](./templates.mdx#variables) | Secrets stored once and used in any service as `{{NAME}}` |
+| Access | [People](./people.mdx) | Who can sign in, and their role |
+| | [API keys](./people.mdx#api-keys) | Keys for scripts and CI to use the console's API |
+| Instance | [Proxies](./proxies.mdx) | The machines agents send their requests through |
+| | [Audit log](./audit.mdx) | Everything that happened, who did it and whether it was allowed |
+| | [Settings](../settings.mdx) | What agents may reach outside their services, single sign-on, audit export |
 
-Your name at the bottom of the sidebar opens [your account](/console/account),
+Your name at the bottom of the sidebar opens [your account](./account.mdx),
 where you change your password and add an authenticator app.
 
 ## What you see depends on your role
 
 What you can see and change depends on your
-[role](/console/people#roles). Where your role does not allow
+[role](./people.mdx#roles). Where your role does not allow
 something, the page says so instead of hiding it: "Only admins can add
 services", "Only editors and admins can create sessions".
 
@@ -47,11 +47,11 @@ services", "Only editors and admins can create sessions".
 
 ## A first session in five steps
 
-1. [Add a service](/console/vaults#add-a-service): pick it from the
+1. [Add a service](./vaults.mdx#add-a-service): pick it from the
    catalogue and paste its key.
-2. Put it in an [access bundle](/console/bundles), or create one as you
+2. Put it in an [access bundle](./bundles.mdx), or create one as you
    add the service.
-3. [Add a proxy](/console/proxies) if none is connected yet.
+3. [Add a proxy](./proxies.mdx) if none is connected yet.
 4. On the bundle's **Run an agent** tab, create a session and copy the
    commands to the agent's machine.
-5. Watch its requests on the [session's page](/console/sessions#a-sessions-page).
+5. Watch its requests on the [session's page](./sessions.mdx#a-sessions-page).

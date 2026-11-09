@@ -25,7 +25,7 @@ the proxy:
 
 It shows as **Connected** on this page within seconds. Running it as a
 service, its listeners and how it shuts down are in
-[Deploy to production](/deploy#proxies); from a terminal, an admin can
+[Deploy to production](../deploy.mdx#proxies); from a terminal, an admin can
 also mint the token with `tokenless proxy add`.
 
 ## The interception CA
@@ -35,7 +35,7 @@ agents trust the instance's own certificate authority. The top of the
 page shows its SHA-256 fingerprint (with a copy button) and **Download
 CA** (`broker-ca.pem`). `tokenless run` installs the trust for the
 command it starts; pass `--ca-fingerprint` to refuse a proxy that
-presents a different CA ([Run an agent](/agents)).
+presents a different CA ([Run an agent](../agents.mdx)).
 
 ## Status
 

@@ -5,6 +5,7 @@ import { docs } from 'collections/server';
 import { createGetUrl, llms, loader } from 'fumadocs-core/source';
 import { agentPrompt } from '@/components/prompt';
 import { markdownWithBasePath, withBasePath } from '@/lib/base-path';
+import { resolveFileLinks } from '@/lib/markdown-links';
 
 // The documentation is the site: its introduction is the home page.
 export const source = loader({
@@ -14,7 +15,9 @@ export const source = loader({
 
 export const docsLlms = llms(source, {
   renderPage: async (page) => {
-    const body = plainMarkdown(await page.data.getText('processed'));
+    const body = resolveFileLinks(plainMarkdown(await page.data.getText('processed')), (href) =>
+      source.resolveHref(href, page),
+    );
     return markdownWithBasePath(
       [`# ${page.slugs.length === 0 ? 'tokenless' : page.data.title}`, page.data.description, body].filter(Boolean).join('\n\n'),
     );
@@ -41,7 +44,7 @@ export function llmsIndex(): string {
       .index()
       .replace(
         /^# .*$/m,
-        `# tokenless\n\n> Give AI agents access to APIs without giving them the keys. Every page is also Markdown at its address plus \`.md\`; the home page is at \`${withBasePath('/index.md')}\`.`,
+        `# tokenless\n\n> Give AI agents access to APIs without giving them the keys. Every page is also Markdown at its address with \`.md\` in place of any trailing slash; the home page is at \`${withBasePath('/index.md')}\`.`,
       ),
   );
 }
