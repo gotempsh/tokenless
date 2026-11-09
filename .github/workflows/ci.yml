@@ -113,7 +113,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lint the install script
-        run: shellcheck site/install.sh
+      - name: Lint the install script and the website check
+        run: shellcheck site/install.sh site/check.sh
       - name: Build the website image
         run: docker build --tag tokenless-site site
+      - name: Check its pages and redirects
+        run: |
+          docker run --detach --rm --name tokenless-site --publish 8080:8080 tokenless-site
+          for _ in $(seq 20); do curl -fs -o /dev/null http://127.0.0.1:8080/ && break; sleep 0.5; done
+          site/check.sh http://127.0.0.1:8080

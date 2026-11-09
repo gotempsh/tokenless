@@ -21,10 +21,16 @@
 	# Shown as text when opened in a browser; `curl | sh` doesn't care.
 	header /install.sh Content-Type "text/plain; charset=utf-8"
 
-	# The documentation used to live under /docs/; it is the site now.
-	redir /docs / 308
-	@olddocs path_regexp olddocs ^/docs/(.*)$
-	redir @olddocs /{re.olddocs.1} 308
+	# The documentation used to live under /docs/; it is the site now. Only
+	# page names are carried over: copying the rest of the path into Location
+	# would make /docs/%5Cevil.example a redirect off the site, as browsers
+	# read `/\evil.example` as `//evil.example`. Anything else goes home.
+	@olddocs path /docs /docs/*
+	route @olddocs {
+		@page path_regexp page ^/docs/([a-z0-9_-]+\.html)$
+		redir @page /{re.page.1} 308
+		redir * / 308
+	}
 
 	file_server
 	handle_errors 404 {
