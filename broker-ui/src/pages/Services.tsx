@@ -6,19 +6,18 @@
 
 import { useMemo, useState } from "react";
 import { Braces, KeyRound, Lock, Plus } from "lucide-react";
-import { get, type CredentialMeta, type Page, type ServiceTemplate, type StoredTemplate, type UserSummary } from "../api";
+import { get, type CredentialMeta, type Page, type StoredTemplate, type UserSummary } from "../api";
 import { KIND_LABEL, targetHosts } from "../catalog";
 import { useLoad } from "../hooks";
 import { fromWidth, Empty, ErrorBanner, Loading, Pager, Panel, rowLink, Section, Tags, When } from "../components/common";
 import { cn } from "../lib/utils";
 import { ServiceLogo } from "../components/ServiceLogo";
 import { addServiceHref } from "../addService";
+import { templateOf } from "../bundleServices";
 import { Button } from "../components/ui/button-components";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-export function templateOf(templates: StoredTemplate[], c: CredentialMeta): ServiceTemplate | undefined {
-  return templates.find((t) => t.template.id === c.template_id && t.template.version === c.template_version)?.template;
-}
+export { templateOf };
 
 /** A vault's services. A row opens the service, where it is tested and changed. */
 export function Services({ vaultId, user }: { vaultId: string; user: UserSummary }) {

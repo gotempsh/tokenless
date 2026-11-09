@@ -35,19 +35,46 @@ export function ServiceStrip({ services, total, empty }: { services: StripServic
   const names = shown.map((s) => (s.off ? `${s.name} (off)` : s.name)).join(", ");
   return (
     <div className="space-y-2">
-      <div className="flex h-8 items-center gap-1.5">
-        {shown.map((s) => (
-          <ServiceLogo key={s.key} template={s.logo} size="sm" className={cn(s.off && "opacity-40")} />
-        ))}
-        {more > 0 && (
-          <span className="flex h-8 min-w-8 items-center justify-center rounded-md border px-1.5 text-xs tabular-nums text-muted-foreground">
-            +{more}
-          </span>
-        )}
+      <div className="flex h-8 items-center">
+        <ServiceLogos services={services} total={total} />
       </div>
       <p className="h-4 truncate text-xs text-muted-foreground">
         {shown.length === 0 ? `${more} ${more === 1 ? "service" : "services"}` : more > 0 ? `${names} and ${more} more` : names}
       </p>
     </div>
+  );
+}
+
+/**
+ * Up to four of `services`' logos in a row and "+N" for the rest of
+ * `total`, to tell records apart at a glance. The logos are decorative:
+ * name the services in text nearby.
+ */
+export function ServiceLogos({
+  services,
+  total,
+  size = "sm",
+}: {
+  services: StripService[];
+  total: number;
+  size?: "xs" | "sm";
+}) {
+  const { shown, more } = serviceStrip(services, total);
+  return (
+    <span className={cn("flex items-center", size === "xs" ? "gap-1" : "gap-1.5")}>
+      {shown.map((s) => (
+        <ServiceLogo key={s.key} template={s.logo} size={size} className={cn(s.off && "opacity-40")} />
+      ))}
+      {more > 0 && (
+        <span
+          className={cn(
+            "flex items-center justify-center border px-1.5 text-xs tabular-nums text-muted-foreground",
+            size === "xs" ? "h-6 min-w-6 rounded" : "h-8 min-w-8 rounded-md",
+          )}
+        >
+          +{more}
+        </span>
+      )}
+    </span>
   );
 }

@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle } from "./api";
-import { bundleChoices, chosenIn, onFilterKey, ruleCount } from "./bundleChoice";
+import { bundleChoices, chosenIn, onFilterKey, ruleCount, serviceNames } from "./bundleChoice";
 
 function bundle(name: string, rules = 1, description = ""): AccessBundle {
   return {
@@ -82,5 +82,11 @@ describe("bundle choices", () => {
   test("rule counts read naturally", () => {
     expect(ruleCount(bundle("a", 1))).toBe("1 rule");
     expect(ruleCount(bundle("a", 4))).toBe("4 rules");
+  });
+
+  test("a bundle's services in words, counting the ones not named", () => {
+    const named = [{ name: "GitHub" }, { name: "Stripe" }];
+    expect(serviceNames(named, 2)).toBe("GitHub, Stripe");
+    expect(serviceNames(named, 5)).toBe("GitHub, Stripe and 3 more");
   });
 });

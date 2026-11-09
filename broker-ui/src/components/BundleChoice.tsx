@@ -1,17 +1,20 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-// The access bundles a new session can start from, as radio choices. Past
-// a handful, a filter narrows them; the chosen one always stays listed.
+// The access bundles a new session can start from, as radio choices, each
+// with its services' logos so it is known at a glance. Past a handful, a
+// filter narrows them; the chosen one always stays listed.
 
 import { useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import type { AccessBundle } from "../api";
-import { bundleChoices, onFilterKey, ruleCount } from "../bundleChoice";
+import { bundleChoices, onFilterKey, ruleCount, serviceNames } from "../bundleChoice";
+import { useBundleServices } from "../bundleServices";
 import { cn } from "../lib/utils";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
+import { ServiceLogos } from "./ServiceStrip";
 import { Skeleton } from "./ui/skeleton";
 
 export function BundleChoice({
@@ -39,6 +42,7 @@ export function BundleChoice({
   vaultNames?: Record<string, string>;
 }) {
   const [query, setQuery] = useState("");
+  const services = useBundleServices(bundles);
   if (!bundles) return <Skeleton className="h-16 w-full" />;
   if (bundles.length === 0) return <p className="text-sm text-muted-foreground">{empty}</p>;
   const { shown, hidden, filterable } = bundleChoices(bundles, query, value);
@@ -71,11 +75,12 @@ export function BundleChoice({
           aria-labelledby={`${name}-label`}
           value={value}
           onValueChange={onChange}
-          className="gap-0 divide-y overflow-hidden rounded-md border"
+          className="grid-cols-1 gap-0 divide-y overflow-hidden rounded-md border"
         >
           {shown.map((b) => {
             const id = `${name}-${b.id}`;
             const about = [vaultNames?.[b.vault_id], b.description].filter(Boolean).join(" · ");
+            const reaches = services.servicesOf(b) ?? [];
             return (
               <Label
                 key={b.id}
@@ -89,10 +94,16 @@ export function BundleChoice({
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline justify-between gap-3">
                     <span className="truncate text-sm font-medium">{b.name}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">{ruleCount(b)}</span>
+                    {reaches.length === 0 && <span className="shrink-0 text-xs text-muted-foreground">{ruleCount(b)}</span>}
                   </span>
                   {about && <span className="block truncate text-xs text-muted-foreground">{about}</span>}
                 </span>
+                {reaches.length > 0 && (
+                  <span className="shrink-0 self-center" title={serviceNames(reaches, b.rule_ids.length)}>
+                    <ServiceLogos services={reaches} total={b.rule_ids.length} size="xs" />
+                    <span className="sr-only">{serviceNames(reaches, b.rule_ids.length)}</span>
+                  </span>
+                )}
               </Label>
             );
           })}

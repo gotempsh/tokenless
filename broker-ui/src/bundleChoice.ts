@@ -71,3 +71,13 @@ export function chosenIn(bundles: AccessBundle[], id: string): string {
 export function ruleCount(b: AccessBundle): string {
   return b.rule_ids.length === 1 ? "1 rule" : `${b.rule_ids.length} rules`;
 }
+
+/**
+ * The services a bundle reaches, in words, for what its logos show:
+ * "GitHub, Stripe and 2 more" when only some of `total` are known.
+ */
+export function serviceNames(services: { name: string }[], total: number): string {
+  const names = services.map((s) => s.name).join(", ");
+  const more = total - services.length;
+  return more > 0 ? `${names} and ${more} more` : names;
+}
