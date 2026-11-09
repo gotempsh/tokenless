@@ -406,7 +406,7 @@ The website (`site/`) is deployed separately; see
 | `crates/broker-server` | HTTP APIs, SQLite store and the `tokenless` binary |
 | `broker-ui` | Management console |
 | `tools/catalog` | Source of the built-in service catalogue and its logos |
-| `site` | Website: landing page, documentation (`site/docs`) and `install.sh` |
+| `site` | Website: the documentation (`site/docs`) and `install.sh` |
 | `packaging` | The release container image |
 | `skills/tokenless` | The agent skill (`npx skills add`, `tokenless skill`) |
 

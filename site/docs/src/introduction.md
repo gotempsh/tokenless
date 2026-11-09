@@ -3,9 +3,38 @@ SPDX-FileCopyrightText: 2026 tokenless contributors
 SPDX-License-Identifier: MIT OR Apache-2.0
 -->
 
+<div class="copy-prompt-bar"><button type="button" class="copy-prompt" data-copy-target="agent-prompt" hidden><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/></svg><span>Copy prompt</span></button></div>
+
 # tokenless
 
 tokenless gives AI agents access to APIs without giving them the keys.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+npx skills add gotempsh/tokenless     # the agent skill
+```
+
+Or let your coding agent set it up: **Copy prompt** and paste it into
+Claude Code, Codex or any other agent. It installs tokenless and walks
+you through adding your services, and you type every token into your
+own terminal, never into the chat.
+
+<details class="agent-prompt">
+<summary>The prompt</summary>
+
+<pre id="agent-prompt">Set up tokenless on this machine, so you can call APIs for me without ever seeing my API keys.
+
+tokenless is a credential broker for AI agents: https://github.com/gotempsh/tokenless
+Its documentation: https://github.com/gotempsh/tokenless/tree/main/site/docs/src
+
+1. Install it: curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+2. Install its agent skill and read it: npx skills add gotempsh/tokenless
+3. If no tokenless control plane is running, ask me to start one in a terminal of my own with `tokenless serve --data-dir ./data` and to save the admin password it prints. Then ask me to run `tokenless login`.
+4. Ask me which services you need, such as GitHub or OpenAI. For each one, give me the command to run in my own terminal, for example `tokenless service add github --vault work --bundle my-agent`; it asks me for the token. Never ask me to paste a token into this chat, and never read one from a file or an environment variable.
+5. Enrol this machine as a proxy with `tokenless proxy add --name laptop`, then ask me to keep `tokenless node run` running in a terminal of my own.
+6. Check that it works with `tokenless run --vault work --bundle my-agent -- tokenless session info`. From then on, run anything that calls those services as `tokenless run --vault work --bundle my-agent -- &lt;command&gt;`.</pre>
+
+</details>
 
 You store a credential once, for example a GitHub token. An agent then
 sends its HTTPS traffic through a tokenless proxy with a short-lived

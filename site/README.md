@@ -5,30 +5,32 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Website
 
-The tokenless website: the landing page, the documentation and the install
-script.
+The tokenless website: the documentation, whose introduction is the home
+page, and the install script.
 
 | Path | Served at | |
 |---|---|---|
-| `index.html`, `styles.css`, `fonts/`, `logos/` | `/` | Plain HTML and CSS, no JavaScript, nothing loaded from another host |
-| `docs/` | `/docs/` | Markdown, built with [mdBook](https://rust-lang.github.io/mdBook/) |
+| `docs/` | `/` | Markdown, built with [mdBook](https://rust-lang.github.io/mdBook/); the introduction's **Copy prompt** button copies a set-up prompt for coding agents (`docs/copy-prompt.js`) |
+| `fonts/` | `/fonts/` | The docs' typeface |
 | `install.sh` | `/install.sh` | The install script (also used straight from GitHub) |
+
+Old `/docs/<page>.html` links redirect to the same page at the root; any
+other `/docs/...` path redirects to the home page.
 
 ## Preview
 
-The landing page needs no build: `python3 -m http.server -d site` from the
-repository root, then open <http://localhost:8000/>. It follows the
-system's light or dark setting.
-
-For the whole site, docs included, build the image:
+Build the image:
 
 ```sh
 docker build -t tokenless-site site
 docker run --rm -p 127.0.0.1:8080:8080 tokenless-site
 ```
 
-With mdBook installed, `mdbook serve site/docs` previews the docs alone
-with live reload (the landing page's fonts won't load there).
+`site/check.sh http://127.0.0.1:8080` then checks its pages, headers and redirects,
+as CI does.
+
+With mdBook installed, `mdbook serve site/docs` previews the docs with
+live reload (the fonts won't load there).
 
 ## Deploy on Temps
 
@@ -45,5 +47,5 @@ published SHA-256. To upgrade, change `MDBOOK_VERSION` and both digests.
 
 ## Licences
 
-Fonts (Public Sans, OFL-1.1) are in `fonts/` and service logos (svgl, MIT)
-in `logos/`; `REUSE.toml` records their licences.
+The fonts (Public Sans, OFL-1.1) are in `fonts/`; `REUSE.toml` records
+their licence.
