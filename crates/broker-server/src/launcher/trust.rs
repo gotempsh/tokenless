@@ -17,7 +17,7 @@ use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 
-use broker_control::service::sessions::DiscoveredService;
+use tokenless_control::service::sessions::DiscoveredService;
 use tracing::warn;
 
 use super::LauncherError;
@@ -255,8 +255,8 @@ mod tests {
 
     #[test]
     fn placeholders_of_enabled_services_become_env() {
-        use broker_control::service::sessions::DiscoveredPlaceholder;
-        use broker_core::ids::RuleId;
+        use tokenless_control::service::sessions::DiscoveredPlaceholder;
+        use tokenless_core::ids::RuleId;
         let service = |name: &str, enabled: bool, env: &str, placeholder: &str| DiscoveredService {
             rule_id: RuleId::new(),
             rule: name.into(),

@@ -39,6 +39,7 @@ import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
 import { BreadcrumbContext, trail, type Crumb } from "./breadcrumbs";
 import { parseAddServiceContext } from "./addService";
+import { parseBundleFormContext } from "./bundleForm";
 import { useTheme, type Theme } from "./theme";
 import { useSidebarCollapsed } from "./sidebar";
 import { cn } from "./lib/utils";
@@ -47,9 +48,12 @@ import { BrandMark } from "./components/Brand";
 import { Button } from "./components/ui/button-components";
 import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
-import { AcceptInvite, AuthLayout, Login, StepUpDialog } from "./pages/Auth";
+import { AcceptInvite, AuthLayout, Login, StepUpDialog, StepUpDone } from "./pages/Auth";
+import { ProviderFormPage } from "./pages/SingleSignOn";
+import { STEP_UP_DONE_ROUTE, takeSsoError } from "./sso";
 import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
+import { BundleFormPage } from "./pages/BundleFormPage";
 import { Bundles } from "./pages/Bundles";
 import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
@@ -58,11 +62,12 @@ import { Nodes } from "./pages/Nodes";
 import { ProxyDetail } from "./pages/ProxyDetail";
 import { ServiceDetail } from "./pages/ServiceDetail";
 import { Sessions } from "./pages/Sessions";
+import { SessionPage } from "./pages/SessionPage";
 import { People } from "./pages/People";
 import { Settings } from "./pages/Settings";
 import { Templates } from "./pages/Templates";
 import { Variables } from "./pages/Variables";
-import { VaultDetail } from "./pages/VaultDetail";
+import { VaultDetail, vaultTab } from "./pages/VaultDetail";
 import { Vaults } from "./pages/Vaults";
 
 type Boot =
@@ -114,7 +119,12 @@ const LABELS: Record<string, string> = {
 export function App() {
   const [boot, setBoot] = useState<Boot>({ state: "loading" });
   const [stepUpOpen, setStepUpOpen] = useState(false);
+  // Why a sign-in or step-up at an identity provider failed, read once from
+  // the address the provider sent the browser back to.
+  const [ssoError, setSsoError] = useState(takeSsoError);
   const pending = useRef<((ok: boolean) => void) | null>(null);
+  const ssoErrorRef = useRef(ssoError);
+  ssoErrorRef.current = ssoError;
   const route = useHashRoute();
   const query = useHashQuery();
 
@@ -123,6 +133,9 @@ export function App() {
       const session = await get<SessionInfo>("/auth/me");
       setCsrfToken(session.csrf_token);
       setBoot({ state: "ready", session });
+      // Back from a step-up that failed at the provider: say why where
+      // it would have been confirmed.
+      if (session.sso) setStepUpOpen((open) => open || ssoErrorRef.current !== null);
     } catch (e) {
       if (e instanceof ApiError && e.problem.status === 401) setBoot({ state: "login" });
       else setBoot({ state: "error", message: e instanceof Error ? e.message : String(e) });
@@ -146,6 +159,7 @@ export function App() {
 
   const finishStepUp = (ok: boolean) => {
     setStepUpOpen(false);
+    setSsoError(null);
     pending.current?.(ok);
     pending.current = null;
   };
@@ -155,10 +169,12 @@ export function App() {
       await post<void>("/auth/logout");
     } finally {
       setCsrfToken(null);
+      setSsoError(null);
       setBoot({ state: "login" });
     }
   };
 
+  if (route[0] === STEP_UP_DONE_ROUTE) return <StepUpDone error={ssoError} />;
   if (route[0] === "invite" && route[1])
     return (
       <AcceptInvite
@@ -189,7 +205,9 @@ export function App() {
   if (boot.state === "login")
     return (
       <Login
+        ssoError={ssoError}
         onLogin={(session) => {
+          setSsoError(null);
           setCsrfToken(session.csrf_token);
           setBoot({ state: "ready", session });
         }}
@@ -209,12 +227,19 @@ export function App() {
         <ServiceDetail vaultId={id} credentialId={sub} user={user} />
       )}
       {section === "vaults" && id && !(tab === "services" && sub) && (
-        <VaultDetail vaultId={id} tab={tab === "rules" || tab === "bundles" || tab === "sessions" ? tab : "credentials"} user={user} />
+        <VaultDetail vaultId={id} tab={vaultTab(tab)} user={user} />
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
       {section === "bundles" && !id && <Bundles user={user} />}
-      {section === "bundles" && id && <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />}
-      {section === "sessions" && <Sessions />}
+      {section === "bundles" && id === "new" && <BundleFormPage ctx={parseBundleFormContext(undefined, query)} />}
+      {section === "bundles" && id && id !== "new" && tab === "edit" && (
+        <BundleFormPage key={id} ctx={parseBundleFormContext(id, query)} />
+      )}
+      {section === "bundles" && id && id !== "new" && tab !== "edit" && (
+        <BundleDetail bundleId={id} tab={bundleTab(tab)} user={user} />
+      )}
+      {section === "sessions" && !id && <Sessions me={user} />}
+      {section === "sessions" && id && <SessionPage sessionId={id} user={user} />}
       {section === "variables" && <Variables isAdmin={isAdmin} />}
       {section === "templates" && <Templates user={user} />}
       {section === "people" && <People me={user} />}
@@ -222,9 +247,17 @@ export function App() {
       {section === "proxies" && !id && <Nodes />}
       {section === "proxies" && id && <ProxyDetail nodeId={id} />}
       {section === "audit" && <Audit me={user} />}
-      {section === "settings" && <Settings />}
-      {section === "account" && <Account user={user} onChanged={() => void load()} />}
-      <StepUpDialog open={stepUpOpen} totpEnrolled={user.totp_enrolled} onResult={finishStepUp} />
+      {section === "settings" && !id && <Settings />}
+      {section === "settings" && id === "sso" && tab === "new" && <ProviderFormPage />}
+      {section === "settings" && id === "sso" && tab && tab !== "new" && <ProviderFormPage key={tab} providerId={tab} />}
+      {section === "account" && <Account user={user} sso={boot.session.sso} onChanged={() => void load()} />}
+      <StepUpDialog
+        open={stepUpOpen}
+        totpEnrolled={user.totp_enrolled}
+        sso={boot.session.sso}
+        ssoError={ssoError}
+        onResult={finishStepUp}
+      />
     </Shell>
   );
 }

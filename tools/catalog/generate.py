@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = ROOT / "tools" / "catalog"
 CACHE = HERE / ".cache"
 SOURCE = HERE / "services.toml"
-TEMPLATES = Path("crates/broker-core/templates")
-RUST_LIST = Path("crates/broker-core/src/builtin_catalog.rs")
+TEMPLATES = Path("crates/tokenless-core/templates")
+RUST_LIST = Path("crates/tokenless-core/src/builtin_catalog.rs")
 LOGOS = Path("broker-ui/src/assets/logos")
 
 HEADER = "SPDX-FileCopyrightText: 2026 tokenless contributors\nSPDX-License-Identifier: MIT OR Apache-2.0"
@@ -46,7 +46,7 @@ KEYS = {
     "id", "version", "name", "description", "category", "kind", "hosts", "popular", "aliases",
     "variable", "auth", "field", "label", "field_description", "header", "prefix",
     "username_label", "username_description", "password_label", "password_description",
-    "headers", "validate", "expect", "override", "paths", "methods", "logo", "icon",
+    "username", "headers", "validate", "expect", "override", "paths", "methods", "logo", "icon",
     "icon_dark_fills", "docs", "mcp_path",
 }
 SLUG = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -86,8 +86,10 @@ def check_service(s: dict, seen: set[str]) -> None:
     seen.add(s["id"])
     if s["category"] not in CATEGORIES:
         raise CatalogError(f"service '{sid}': unknown category '{s['category']}'")
-    if s["auth"] not in ("bearer", "header", "basic"):
-        raise CatalogError(f"service '{sid}': auth must be bearer, header or basic")
+    if s["auth"] not in ("bearer", "header", "basic", "basic_token"):
+        raise CatalogError(f"service '{sid}': auth must be bearer, header, basic or basic_token")
+    if (s["auth"] == "basic_token") != ("username" in s):
+        raise CatalogError(f"service '{sid}': 'username' goes with auth = \"basic_token\", and it needs one")
     if s["auth"] == "header" and "header" not in s:
         raise CatalogError(f"service '{sid}': header auth needs 'header'")
     if "variable" in s and not VAR.match(s["variable"]):
@@ -134,6 +136,11 @@ def template_yaml(s: dict) -> str:
         field("username", s.get("username_label", "Username"), s.get("username_description"))
         field("password", s.get("password_label", "Password"), s.get("password_description"))
         y += ["injection:", "  method: basic", "  username_field: username", "  password_field: password"]
+    elif auth == "basic_token":
+        name = s.get("field", "token")
+        field(name, s.get("label", "Token"), s.get("field_description"))
+        y += ["injection:", "  method: basic_token", f"  username: {q(s['username'])}",
+              f"  password_field: {name}"]
     else:
         name = s.get("field", "token" if auth == "bearer" else "api_key")
         field(name, s.get("label", "API key"), s.get("field_description"))

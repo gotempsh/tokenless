@@ -34,11 +34,11 @@ depends on Temps.
 
 | Crate | Role | I/O |
 |---|---|---|
-| `broker-core` | Rules, opaque scopes, host/path/method matching, template schema, injection methods, PASETO session claims, snapshot signing, sealed envelopes, RBAC decisions, wire protocol | none |
-| `broker-auth` | argon2id passwords, TOTP, token generation and hashing, CSRF tokens, session cookies | none |
-| `broker-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
-| `broker-conformance` | Behavioural test suites any trait implementation must pass | none |
-| `broker-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
+| `tokenless-core` | Rules, opaque scopes, host/path/method matching, template schema, injection methods, PASETO session claims, snapshot signing, sealed envelopes, RBAC decisions, wire protocol | none |
+| `tokenless-auth` | argon2id passwords, TOTP, token generation and hashing, CSRF tokens, session cookies | none |
+| `tokenless-control` | Services behind the traits `CredentialStore`, `PolicyStore`, `AuditSink`, `Authorizer` (plus `IdentityStore` and `NodeStore` for standalone), at-rest cipher, internal PKI, key ring | via traits only |
+| `tokenless-conformance` | Behavioural test suites any trait implementation must pass, and one for an embedded data plane | none |
+| `tokenless-dataplane` | hyper + rustls + rcgen forward proxy, node enrolment client, snapshot stream, audit batcher | network |
 | `broker-server` | axum binary: management API, node API, SQLite store, root key, CLI | network, disk |
 | `broker-ui` | Vite/React console | browser |
 
@@ -54,7 +54,7 @@ flowchart LR
   subgraph CP["Control plane: tokenless serve"]
     API["Management API<br/>/api/v1 (loopback, behind TLS proxy)"]
     NAPI["Node API :8443<br/>TLS, mTLS for enrolled nodes"]
-    SVC["broker-control services<br/>authz, step-up, audit"]
+    SVC["tokenless-control services<br/>authz, step-up, audit"]
     DB[("SQLite<br/>secrets AES-256-GCM<br/>key material encrypted")]
     MK["root key (outside the data dir)"]
     API --> SVC
@@ -65,7 +65,7 @@ flowchart LR
 
   subgraph AgentHost["Agent host"]
     Agent["AI agent<br/>HTTPS_PROXY=http://&lt;session&gt;@127.0.0.1:3128"]
-    DP["broker-dataplane<br/>ArcSwap snapshot, in-memory secrets"]
+    DP["tokenless-dataplane<br/>ArcSwap snapshot, in-memory secrets"]
     Agent -->|CONNECT + Proxy-Authorization| DP
   end
 
@@ -109,6 +109,23 @@ Hot path guarantees:
   flushes 256 events or every 500 ms. When the channel is full, injection
   is refused with 503 and `broker_dataplane_audit_dropped_total` is incremented. The broker
   never injects without an audit record.
+- An audit event counts as recorded once the control plane accepts its
+  batch. Until then it lives only in the data plane's memory: a crash
+  loses up to the queue's capacity plus the batch being shipped. The
+  bound is deliberate; a disk queue would add I/O to the request path.
+  What a crash can lose is limited by what the queue may hold, and
+  injection stops once it is full, so a control plane that is down for
+  long stops injection rather than growing the loss.
+- `DataPlane::shutdown(drain)` stops in order. The listeners close and a
+  binding refuses new connections; open tunnels and MCP gateway streams
+  may finish, idle, intercepted and gateway connections close once their
+  requests in flight answer, and
+  snapshots keep arriving, so a revocation still cuts. At the deadline
+  whatever is open is cut and audited as cut, the audit queue gets one
+  last shipping attempt of up to 2 s, and the returned report says how
+  many connections were cut and how many audit events never shipped.
+  `tokenless node run` drains for `--drain-secs` (30 s by default) on
+  Ctrl-C or SIGTERM; a second signal stops at once.
 - Connection count is bounded (default 4096) by a semaphore with
   `try_acquire`. Excess connections are dropped rather than queued.
 
@@ -131,7 +148,7 @@ flowchart LR
     end
     S1["Egress sidecar A<br/>adds Proxy-Authorization"]
     S2["Egress sidecar B"]
-    DP["broker-dataplane<br/>(one per host)"]
+    DP["tokenless-dataplane<br/>(one per host)"]
     A1 -->|all egress| S1 --> DP
     A2 -->|all egress| S2 --> DP
   end
@@ -150,7 +167,7 @@ In native mode a per-sandbox egress sidecar attaches the session token,
 so the sandbox itself never sees it, not even in an environment variable.
 There is one data plane per host, shared by every sandbox on it. The
 control plane is a Temps plugin that implements the four traits on Temps'
-own services and passes `broker-conformance`. The data plane binary, the
+own services and passes `tokenless-conformance`. The data plane binary, the
 node protocol and the snapshot format are unchanged.
 
 ### Deployment modes
@@ -221,8 +238,11 @@ node protocol and the snapshot format are unchanged.
 
 - API keys have the form `cbk_<12-char prefix>_<secret>`. The prefix is
   the lookup key and the secret is stored only as a hash.
-- Each key is bound to one vault and one role (`editor`, `viewer` or
-  `session_issuer`; never admin) and has an expiry.
+- Each key is bound to one vault and one role (`editor` or `viewer`;
+  never admin) and has an expiry. Agents are not given API keys: their
+  credential is a session token (see Sessions). An earlier
+  `session_issuer` role for agents' launchers was removed, and its keys
+  deleted, when sessions became something people create and hand over.
 - A key is returned once, with `Cache-Control: no-store`. Every API
   response is `no-store`.
 - API keys can never satisfy step-up.
@@ -248,6 +268,53 @@ node protocol and the snapshot format are unchanged.
   refuses all traffic (503), both on new CONNECTs and on requests inside
   existing tunnels. The server sends a snapshot on every policy or session
   change, and at least every `lease/3`.
+- Traffic already flowing is cut when its session is taken back: a
+  passthrough tunnel, an intercepted connection (idle or mid-response) and
+  an MCP gateway response that is still streaming are closed when a
+  snapshot lists the session as revoked, when the binding it came through
+  is revoked, when the lease runs out, or one hour
+  (`OPEN_TRAFFIC_GRACE_SECS`) after the session expired. A revocation
+  therefore reaches open traffic within one snapshot push while the node
+  is connected, and within the lease otherwise.
+- Expiry itself stops only new traffic, because the holder has usually
+  renewed (`tokenless run` mints the next session before the current one
+  ends and keeps relaying tunnels opened under the old one). An
+  intercepted connection closes gracefully at expiry once its requests in
+  flight have finished, and the client reconnects with its current
+  session; a passthrough tunnel or a streaming response runs on for up to
+  the grace hour. So that a revocation still reaches that traffic, a
+  revoked session stays in snapshots until an hour after it expires,
+  deleting a vault or bundle revokes its sessions that expired within the
+  hour, and a holder can revoke its own session with an expired token.
+- Snapshot bodies and session claims reject unknown fields. A new field
+  that changes a security decision raises the snapshot `format` (claims
+  rely on the unknown-field refusal), so a node too old to enforce it
+  refuses the snapshot or session instead of ignoring the field: it fails
+  closed. A snapshot is written in the oldest format that carries
+  everything in it, and a node opens the snapshot stream with the newest
+  format it reads (`?reads_format=`, absent on nodes older than format 2,
+  which read format 1). A rule that needs a newer format is left out of
+  that node's snapshot, so an older node stops using that one service and
+  serves the rest, and the control plane logs which node it is. Either
+  upgrade order is therefore safe: the control plane first, as the
+  deploy guide says, costs only the services that use a new feature on
+  the proxies not yet upgraded. Format 2 adds a credential's `not_after`.
+- An embedded data plane is scoped: its snapshot holds only the rules of
+  live sessions minted for it (`node_id`), not every enabled rule, so a
+  compromised worker holds sealed credentials only for the workloads it
+  runs. Minting such a session triggers a new snapshot, and the embedder
+  waits for it with `Binding::ready`. Rules leave when their sessions are
+  revoked or expire. Enrolled nodes still receive every enabled rule, so
+  sessions without a node work on any of them. Because a session's node
+  decides which host receives its credentials, minting one with
+  `node_id` requires node management, not only the right to mint in the
+  vault, and the node must exist and not be revoked.
+- A credential whose secret expires upstream (an installation token, say)
+  carries that deadline, set with the secret and replaced with it. The
+  node stops injecting it then and answers 503 `credential_expired`, so a
+  stale secret is never sent; it works again once whoever manages it
+  replaces the secret. Issuing and refreshing such secrets is the
+  embedder's job.
 - Credentials and the interception CA key are sealed to the node's X25519
   key: ephemeral X25519, then HKDF-SHA256, then AES-256-GCM, with AAD
   binding node, rule and credential. Nodes hold them in memory only;
@@ -273,6 +340,37 @@ checks every read endpoint and the raw database files for the plaintext.
 - Claims: `jti`, the vault scope (opaque), rule ids (a subset of the
   vault's rules), `iat` and `exp` (TTL default 15 min, max 1 h), an
   optional request limit, and audit labels.
+- Two optional claims restrict where a session works. `aud` names the
+  only node that accepts it. `sub` names a binding,
+  `<binding id>/<generation>`: a host that embeds the data plane binds
+  each workload it does not trust to that workload's sessions and serves
+  its connections through the binding. Such a session works only through
+  its binding, never from a `Proxy-Authorization` header, and a binding
+  ignores that header and takes no other session. A workload restarted
+  under the same id gets a new generation, so its old sessions stop
+  working. Revoking a binding cuts every connection it opened.
+- A binding holds one session per group of services that share a
+  deadline, so one service can end while the others keep working. No two
+  of its sessions may cover the same host, so one session's credential is
+  never used under another's rules. `bind` refuses them when the snapshot
+  in force already holds their rules. On a scoped node the rules arrive
+  after the mint, so the binding's status reports `overlapping_sessions`
+  once they do, `Binding::ready` fails with it, and a request to that
+  host is refused. Deadlines are
+  absolute: a mint's `not_after` caps the session's `exp`, and no session
+  is minted once it has passed, so the embedder that owns a grant passes
+  its deadline on every renewal and a renewal never extends it.
+- An embedder reads the data plane's state rather than its logs:
+  `DataPlane::status()` gives the snapshot version, the lease and, for
+  each binding, its connections, each session's expiry and the last
+  upstream failure (unreachable, or a 401 to the injected credential).
+  Every "cannot carry traffic" has a typed reason (provisioning, stale
+  policy, not configured, expired, revoked, binding revoked, invalid
+  session, overlapping sessions) taken from the proxy's own checks. `DataPlane::events()` is a
+  `watch` of the latest status, updated on each change, including a
+  lease or session running out, so nobody polls; `Binding::ready`
+  resolves once a given snapshot is in force and every session of the
+  binding can be used. None of it holds a token or a secret.
 - The data plane verifies sessions locally. Revocations arrive in the next
   snapshot; with the stream, that takes about one round trip.
 - Clients use `HTTPS_PROXY=http://<token>@host:port`. Both the Basic form
@@ -286,6 +384,7 @@ checks every read endpoint and the raw database files for the plaintext.
   | No snapshot yet, lease expired, audit queue full, or a limited session not yet provisioned | 503 |
   | Session missing, malformed, badly signed, expired, or revoked | 407 |
   | Plain HTTP, no rule for the method or path, or unmatched host with policy `deny` | 403 |
+  | Through a binding: no valid session, or two sessions cover the host | 403 |
   | `Host` header does not match the CONNECT target | 421 |
   | Path with dot segments or encoded separators | 400 |
   | Request limit reached | 429 |
@@ -325,7 +424,7 @@ checks every read endpoint and the raw database files for the plaintext.
 |---|---|---|---|
 | 1 | Unmatched hosts | Default `passthrough` (blind tunnel); `deny` is one click away in Settings | The broker's guarantee is about credentials, not egress filtering. Nothing is decrypted or injected on unmatched hosts. A deny default pushes operators to bypass the proxy with `NO_PROXY`, which loses the audit trail. |
 | 2 | Plain HTTP | Refused with 403, never forwarded | "Never inject on plain http" is implemented as "never proxy plain http", so there is no cleartext path at all. |
-| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: every mutating store method takes the audit events for the change and writes them in the same transaction, only if the change succeeds. If the audit insert fails, the change rolls back. Events that change nothing (denials, validation requests) are written on their own; a failure there is logged at `error`. | A change can then never be committed without its audit row, and a failed change never leaves one behind. The audit table lives in the same database as the change, so this adds no second failure domain. `broker-conformance::audited_writes_suite` holds every store to it. |
+| 3 | Audit integrity | Data plane: fail closed (no audit, no injection). Control plane: every mutating store method takes the audit events for the change and writes them in the same transaction, only if the change succeeds. If the audit insert fails, the change rolls back. Events that change nothing (denials, validation requests) are written on their own; a failure there is logged at `error`. | A change can then never be committed without its audit row, and a failed change never leaves one behind. The audit table lives in the same database as the change, so this adds no second failure domain. `tokenless-conformance::audited_writes_suite` holds every store to it. |
 | 4 | Request limits | Counted per node, in memory, carried across snapshots | A shared counter would need a network call per request, which violates the hot-path rule. A session used on N nodes can therefore make up to N×limit requests, and counters reset when a node restarts. Rate-limited sessions are rejected (503) until the snapshot that provisions their counter arrives, rather than allowed unmetered. |
 | 5 | HTTP versions | HTTP/1.1 only inside intercepted tunnels (ALPN `http/1.1` on both sides) | Keeps the header-rewrite surface small and auditable. Passthrough tunnels carry anything. |
 | 6 | Secret lifetime in memory | Secrets are held in zeroize-on-drop buffers. The final `http::HeaderValue` cannot be zeroized and lives for one request. | That is a library limitation; documented rather than worked around with unsafe code (`unsafe_code = forbid`). |
@@ -338,7 +437,7 @@ checks every read endpoint and the raw database files for the plaintext.
 | 13 | Interception CA | One interception CA per control plane, delivered sealed to every node | A compromised node can mint certificates that clients trusting that CA accept. Clients should trust it only inside agent sandboxes. Per-node, name-constrained intermediates are out of scope (see below). |
 | 14 | First admin's password | Generated and printed to the terminal (stderr) once, not to the JSON log | Logs are often shipped elsewhere. A generated password removes the window in which whoever reaches the console first claims the instance, which a setup token only narrowed. |
 | 15 | Login rate limiter | In memory, per process | Sufficient for a single-node standalone server. HA would need a shared limiter. |
-| 16 | PASETO | v4.public implemented in `broker-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
+| 16 | PASETO | v4.public implemented in `tokenless-core` (PAE, Ed25519, footer, implicit assertion) | Keeps the dependency set small and the claims typed. Signing reproduces the official test vectors 4-S-1..3 byte for byte, and failure vector 4-F-2 and other versions/purposes are rejected (`session::tests::paseto_vectors`). |
 
 ## Out of scope, with seams left for them
 
@@ -358,7 +457,7 @@ checks every read endpoint and the raw database files for the plaintext.
 - **SAML / SCIM / OIDC.** `IdentityStore` and `AuthService` are the seam;
   `Principal` and `Caller` stay the same.
 - **Temps plugin crate.** It implements the four traits on Temps services,
-  passes `broker-conformance`, and reuses `broker-dataplane` unchanged.
+  passes `tokenless-conformance`, and reuses `tokenless-dataplane` unchanged.
 - **Postgres / HA.** The SQL in `SqliteStore` is portable: bound
   parameters, `ON CONFLICT`, `RETURNING`, and fixed-width UTC timestamps
   that sort lexically. A Postgres store swaps `?` for `$n`, uses

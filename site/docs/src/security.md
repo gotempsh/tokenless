@@ -39,6 +39,25 @@ This page is the summary an operator needs.
   `DELETE` lets an agent delete. Use read-only access and narrow paths
   where you can.
 
+## What the proxy doesn't carry
+
+A credential is injected only into HTTP/1.1 over TLS, through
+`HTTPS_PROXY`. To a host a session covers, the proxy doesn't carry:
+
+- **HTTP/2 or gRPC.** Clients that negotiate fall back to HTTP/1.1;
+  gRPC, which needs HTTP/2, fails.
+- **WebSockets** and other upgraded connections.
+- **HTTP/3 (QUIC)** or any UDP traffic.
+- **Plain HTTP.** It is refused, so a credential never travels
+  unencrypted.
+- **Raw TCP** to a covered host, such as SSH or a database protocol.
+  Use the HTTPS form of the service (Git over HTTPS instead of SSH).
+- **Clients that pin certificates** or ignore the trust settings `run`
+  provides. They refuse the interception CA's certificate.
+
+Hosts no session covers are tunnelled untouched, or refused when other
+hosts are blocked; the proxy never reads that traffic.
+
 ## Failing closed
 
 Proxies run from an Ed25519-signed policy snapshot with a lease. When the
@@ -46,6 +65,12 @@ lease lapses (60 seconds by default) because the control plane is
 unreachable, the proxy refuses traffic. It refuses to inject a credential
 when it can't record the audit event. A control plane outage therefore
 stops all injection within one lease; that is deliberate.
+
+An audit event is recorded once the control plane has accepted it. Until
+then it waits in a bounded queue in the proxy's memory, so a proxy that
+crashes loses at most that queue (4096 events by default). A proxy that
+stops normally ships what it holds first and logs how many events it
+could not.
 
 ## Accounts
 
@@ -60,6 +85,12 @@ stops all injection within one lease; that is deliberate.
   credentials and rules, managing people, API keys, templates and proxies)
   need a code entered within the last five minutes. Signing in counts.
 - Changing your password ends your other sessions.
+- With [single sign-on](settings.md#single-sign-on), the identity
+  provider handles passwords and second factors, and the person's groups
+  decide their role at every sign-in. A step-up sends them back to the
+  provider with `prompt=login`, and only a sign-in there after the
+  request counts. The provider's client secret is encrypted at rest and
+  never returned by the API. Turning a provider off ends its sessions.
 - The console session cookie is `HttpOnly`, `Secure` and `SameSite=Strict`,
   and every change carries a CSRF token. `tokenless login` keeps its
   session in the OS keychain, or in a file only you can read

@@ -109,7 +109,7 @@ export function Nodes() {
   );
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title="Proxies"
         actions={rows.length === 0 ? undefined : createButton()}

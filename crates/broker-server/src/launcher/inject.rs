@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use broker_control::service::sessions::{DiscoveredPlaceholder, DiscoveredService};
+use tokenless_control::service::sessions::{DiscoveredPlaceholder, DiscoveredService};
 
 use super::LauncherError;
 
@@ -27,13 +27,16 @@ pub const SCHEME: &str = "cb://";
 pub const STRIPPED_ENV: &[&str] = &["TOKENLESS_API_KEY", "TOKENLESS_SESSION_TOKEN"];
 
 /// `NAME=value` as given on the command line or in an env file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Assignment {
     pub name: String,
     pub value: String,
     /// Where it came from, for error messages.
     pub origin: String,
 }
+
+// Values come from env files and the command line, often secrets.
+tokenless_core::redacted_debug!(Assignment { name, origin; value });
 
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -279,7 +282,21 @@ pub fn agent_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use broker_core::ids::RuleId;
+    use tokenless_core::ids::RuleId;
+
+    #[test]
+    fn an_assignment_never_debugs_its_value() {
+        let a = Assignment {
+            name: "GITHUB_TOKEN".into(),
+            value: "SEKRET".into(),
+            origin: "agent.env:3".into(),
+        };
+        let text = format!("{a:?}");
+        assert!(
+            !text.contains("SEKRET") && text.contains("GITHUB_TOKEN"),
+            "{text}"
+        );
+    }
 
     fn placeholder(field: &str, placeholder: &str) -> DiscoveredPlaceholder {
         DiscoveredPlaceholder {

@@ -11,18 +11,18 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use broker_control::cipher::AesGcmCipher;
-use broker_control::model::Page;
-use broker_control::probe::DisabledProber;
-use broker_control::service::policy::CreateCredential;
-use broker_control::store::{NodeStore, RbacAuthorizer};
-use broker_control::{Caller, ControlConfig, ControlPlane, Stores};
-use broker_core::authz::{Principal, PrincipalKind, Role};
 use broker_server::launcher::account::{self, SignIn};
 use broker_server::root_key::{write_new, LEGACY_FILE};
 use broker_server::store::SqliteStore;
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use chrono::Utc;
+use tokenless_control::cipher::AesGcmCipher;
+use tokenless_control::model::Page;
+use tokenless_control::probe::DisabledProber;
+use tokenless_control::service::policy::CreateCredential;
+use tokenless_control::store::{NodeStore, RbacAuthorizer};
+use tokenless_control::{Caller, ControlConfig, ControlPlane, Stores};
+use tokenless_core::authz::{Principal, PrincipalKind, Role};
 
 const TOKEN: &str = "ghp_rootKeyTestToken0123456789abcdefABCD";
 
@@ -70,6 +70,7 @@ fn credential() -> CreateCredential {
         fields: BTreeMap::from([("token".to_string(), TOKEN.to_string())]),
         custom_headers: vec![],
         substitutions: vec![],
+        not_after: None,
     }
 }
 
@@ -189,6 +190,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
         policy: store.clone(),
         audit: store.clone(),
         identity: store.clone(),
+        sso: store.clone(),
         nodes: store.clone(),
     };
     let old = ControlPlane::new(
@@ -196,6 +198,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
         Arc::new(RbacAuthorizer),
         Arc::new(AesGcmCipher::new(&master).unwrap()),
         Arc::new(DisabledProber),
+        Arc::new(tokenless_control::service::sso::oidc::NoTransport),
         ControlConfig::default(),
     )
     .await
@@ -239,7 +242,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
     let store = SqliteStore::connect(&url).await.unwrap();
     for stored in store.list_ciphertexts().await.unwrap() {
         let hierarchy = matches!(&stored.owner,
-            broker_control::store::CiphertextOwner::KeyMaterial { name } if name.starts_with("envelope/"));
+            tokenless_control::store::CiphertextOwner::KeyMaterial { name } if name.starts_with("envelope/"));
         assert!(
             hierarchy || stored.ciphertext[0] == 2,
             "{:?} not migrated",

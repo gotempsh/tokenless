@@ -1,19 +1,26 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { FolderLock as VaultIcon, Plus } from "lucide-react";
-import { get, post, type Page, type Vault } from "../api";
+import { get, post, type StoredTemplate, type Page, type Vault, type VaultOverview } from "../api";
+import { fallbackPage, hasPager } from "../paging";
+import { addServiceHref } from "../addService";
 import { useAction, useLoad } from "../hooks";
-import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Loading, Pager, Panel, rowLink, When } from "../components/common";
+import { DialogActions, Empty, ErrorBanner, Field, FormDialog, Pager, Panel, Relative, Status } from "../components/common";
+import { ServiceStrip } from "../components/ServiceStrip";
+import { PANEL_GRID as GRID } from "../components/layout";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { Skeleton } from "../components/ui/skeleton";
+import { templateOf } from "./Services";
 
 export function Vaults({ canCreate }: { canCreate: boolean }) {
   const [page, setPage] = useState(1);
-  const vaults = useLoad(() => get<Page<Vault>>(`/vaults?page=${page}`), [page]);
+  const vaults = useLoad(() => get<Page<VaultOverview>>(`/vaults/overview?page=${page}`), [page]);
+  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
+  const all = useMemo(() => templates.data ?? [], [templates.data]);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const action = useAction();
@@ -40,49 +47,47 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
     </Button>
   );
 
+  // A page emptied under the list (its vaults deleted elsewhere): go back a page.
+  const back = vaults.data ? fallbackPage(vaults.data) : null;
+  useEffect(() => {
+    if (back !== null) setPage(back);
+  }, [back]);
+
   return (
     <PageContainer>
-      <PageHeader
-        title="Vaults"
-        actions={createButton}
-      />
-      <ErrorBanner error={vaults.error} />
-      <Panel>
-        {vaults.loading && !vaults.data ? (
-          <Loading />
-        ) : vaults.data && vaults.data.items.length === 0 ? (
+      <PageHeader title="Vaults" actions={createButton} />
+      <ErrorBanner error={vaults.error ?? templates.error} />
+      {vaults.loading && !vaults.data ? (
+        <div className={GRID}>
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-56 rounded-lg" />
+          ))}
+        </div>
+      ) : vaults.data && vaults.data.items.length === 0 && back === null ? (
+        <Panel>
           <Empty
             icon={VaultIcon}
             title="No vaults yet"
             description={
               canCreate
-                ? "Create a vault, then add a credential such as a GitHub token, and a rule that allows it."
+                ? "Create a vault, then add a service such as a GitHub token and a rule that allows it."
                 : "An admin has to create the first vault."
             }
             action={canCreate ? createButton : undefined}
           />
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Created</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {vaults.data?.items.map((v) => (
-                <TableRow key={v.id} {...rowLink(`#/vaults/${v.id}/credentials`)}>
-                  <TableCell className="font-medium">{v.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    <When at={v.created_at} />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-        <Pager page={vaults.data} onPage={setPage} />
-      </Panel>
+        </Panel>
+      ) : (
+        <div className={GRID}>
+          {vaults.data?.items.map((v) => (
+            <VaultPanel key={v.id} vault={v} templates={all} />
+          ))}
+        </div>
+      )}
+      {vaults.data && hasPager(vaults.data) && (
+        <Panel>
+          <Pager page={vaults.data} onPage={setPage} />
+        </Panel>
+      )}
       <FormDialog
         open={open}
         onOpenChange={(o) => {
@@ -108,5 +113,54 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
         </form>
       </FormDialog>
     </PageContainer>
+  );
+}
+
+/** One vault: whether it is in use, its first services and its last request. */
+function VaultPanel({ vault, templates }: { vault: VaultOverview; templates: StoredTemplate[] }) {
+  const href = `#/vaults/${vault.id}/credentials`;
+  return (
+    <Panel className="relative flex flex-col transition-colors hover:border-foreground/25 focus-within:border-foreground/40">
+      <div className="flex items-center justify-between gap-2 px-4 pt-4">
+        <h2 className="min-w-0 truncate text-base font-semibold">
+          {/* The name's link covers the whole panel. */}
+          <a href={href} className="after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none">
+            {vault.name}
+          </a>
+        </h2>
+        {vault.live_sessions > 0 ? (
+          <Status tone="success">{vault.live_sessions} live</Status>
+        ) : (
+          <Status tone="neutral">Idle</Status>
+        )}
+      </div>
+      <div className="flex-1 px-4 py-3">
+        <ServiceStrip
+          services={vault.services.map((c) => ({
+            key: c.id,
+            name: c.name,
+            logo: templateOf(templates, c) ?? { id: c.template_id, kind: "http" },
+          }))}
+          total={vault.service_count}
+          empty={
+            <span className="text-warning-strong">
+              No services yet.{" "}
+              <a href={addServiceHref({ vault: vault.id })} className="relative z-10 underline underline-offset-2">
+                Add one
+              </a>
+            </span>
+          }
+        />
+      </div>
+      <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+        {vault.last_request_at ? (
+          <>
+            Last request <Relative at={vault.last_request_at} />
+          </>
+        ) : (
+          "No requests yet"
+        )}
+      </div>
+    </Panel>
   );
 }

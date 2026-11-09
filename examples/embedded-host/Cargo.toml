@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# A program that embeds tokenless the way a host platform would. It sits
+# outside the workspace on purpose: it may use only what the crates make
+# public. CI builds and runs it with --manifest-path.
+[package]
+name = "embedded-host"
+description = "Example: embed tokenless's control services and data plane in one process"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+tokenless-control = { path = "../../crates/tokenless-control" }
+tokenless-core = { path = "../../crates/tokenless-core" }
+tokenless-dataplane = { path = "../../crates/tokenless-dataplane" }
+async-trait = "0.1"
+rand = "0.8"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

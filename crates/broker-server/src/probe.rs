@@ -13,8 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use broker_control::probe::{CredentialProber, ProbeError, ProbeRequest};
-use broker_core::egress::EgressPolicy;
 use bytes::Bytes;
 use http::header::{HeaderName, HeaderValue, HOST, USER_AGENT};
 use http::Request;
@@ -22,6 +20,8 @@ use http_body_util::Empty;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::ClientConfig;
+use tokenless_control::probe::{CredentialProber, ProbeError, ProbeRequest};
+use tokenless_core::egress::EgressPolicy;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::debug;
@@ -39,11 +39,11 @@ impl HttpProber {
         use_public_roots: bool,
         extra_roots: &[CertificateDer<'static>],
     ) -> Result<Self, ServerError> {
-        let tls = broker_dataplane::tls::upstream_client_config(use_public_roots, extra_roots)
+        let tls = tokenless_dataplane::tls::upstream_client_config(use_public_roots, extra_roots)
             .map_err(|e| ServerError::Tls {
-                listener: "validation prober".into(),
-                reason: e.to_string(),
-            })?;
+            listener: "validation prober".into(),
+            reason: e.to_string(),
+        })?;
         Ok(Self { tls })
     }
 
@@ -155,7 +155,7 @@ impl CredentialProber for HttpProber {
 
 #[cfg(test)]
 mod tests {
-    use broker_core::injection::InjectedHeaders;
+    use tokenless_core::injection::InjectedHeaders;
 
     use super::*;
 

@@ -97,12 +97,12 @@ Rules of thumb:
 
 ## 3. Fill environment variables by reference
 
-People start scripts and agents with `tokenless exec`. It mints a
-session from an access bundle, starts the command behind it, and fills
-variables by reference:
+People start scripts and agents with `tokenless exec`. It uses the
+session in `TOKENLESS_SESSION_TOKEN` (or mints one from `--bundle`),
+starts the command behind it, and fills variables by reference:
 
 ```sh
-tokenless exec --bundle deploy \
+tokenless exec \
   GITHUB_TOKEN=cb://github/token \
   REGION=eu-west-1 \
   -- ./release.sh
@@ -131,9 +131,10 @@ tokenless exec --bundle deploy \
 - The command never inherits `TOKENLESS_API_KEY` or
   `TOKENLESS_SESSION_TOKEN` from the shell that started it.
 
-`exec` and `run` are the same command. `exec` needs an API key allowed to
-mint sessions, so you normally can't run it from inside a session yourself.
-In that case, set the variables to the placeholders as in section 2.
+`exec` and `run` are the same command. It needs a session token or a way
+to mint one, and neither reaches the commands it starts, so you normally
+can't run it from inside a session yourself. In that case, set the
+variables to the placeholders as in section 2.
 
 ## 4. When the proxy says no
 
@@ -145,7 +146,7 @@ plain-text reason:
 | 403 `no rule in this session allows <METHOD> <path> on <host>` | The host is brokered, but not for this method or path | Don't retry another way. Tell the user which access is missing (method, path, host) so they can widen the rule or the bundle |
 | 403 `no rule in this session covers <host>` | The host isn't in your session and unmatched hosts are blocked | Ask the user to add the service to the bundle |
 | 403 `<host> resolves to <ip>, which is ...` | Egress to that address range is blocked | Ask an admin; don't work around it |
-| 407 `proxy session rejected: ...` | The session expired or was revoked | Tell the user; a new session comes from restarting the command with `tokenless run`/`exec` |
+| 407 `proxy session rejected: ...` | The session expired or was revoked | Tell the user; they create a new session on the bundle's page, or restart the command with `tokenless run --bundle` |
 | 429 `session request limit of <n> reached` | The session has used all the requests it was minted with | Stop and tell the user; retrying won't help |
 | 503 with `retry-after` | The node hasn't caught up with a new session yet | Retry after the given delay |
 | 502 | The upstream service failed or couldn't be reached | Retrying later may help |

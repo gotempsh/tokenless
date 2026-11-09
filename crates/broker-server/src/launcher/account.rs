@@ -14,16 +14,16 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use broker_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
-use broker_auth::csrf::CSRF_HEADER;
-use broker_control::model::{AccessBundle, CredentialMeta, Page, Rule, StoredTemplate, Vault};
-use broker_control::service::auth::UserSummary;
-use broker_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use chrono::{DateTime, Utc};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
+use tokenless_auth::csrf::CSRF_HEADER;
+use tokenless_control::model::{AccessBundle, CredentialMeta, Page, Rule, StoredTemplate, Vault};
+use tokenless_control::service::auth::UserSummary;
+use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -724,7 +724,8 @@ pub fn pick_template(
     templates
         .into_iter()
         .filter(|t| {
-            t.template.id == wanted && t.status == broker_control::model::TemplateStatus::Approved
+            t.template.id == wanted
+                && t.status == tokenless_control::model::TemplateStatus::Approved
         })
         .max_by_key(|t| t.template.version)
         .ok_or_else(|| {

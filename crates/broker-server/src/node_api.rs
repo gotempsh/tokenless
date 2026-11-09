@@ -15,18 +15,19 @@ use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use broker_control::model::Node;
-use broker_control::pki::{issue_server_cert, node_id_from_cert};
-use broker_control::ControlPlane;
-use broker_core::ids::NodeId;
-use broker_core::protocol::{AuditBatch, EnrollRequest, RenewRequest};
 use bytes::Bytes;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use tokenless_control::model::Node;
+use tokenless_control::pki::{issue_server_cert, node_id_from_cert};
+use tokenless_control::ControlPlane;
+use tokenless_core::ids::NodeId;
+use tokenless_core::protocol::{AuditBatch, EnrollRequest, RenewRequest};
+use tokenless_core::snapshot::MIN_SNAPSHOT_FORMAT;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -34,7 +35,7 @@ use tokio_rustls::TlsAcceptor;
 use tower::ServiceExt;
 use tracing::{debug, info, warn};
 
-use crate::api::{ApiJson, AppState};
+use crate::api::{ApiJson, ApiQuery, AppState};
 use crate::error::{ApiError, ServerError};
 
 /// The node identity proven by the TLS client certificate, if any.
@@ -211,9 +212,25 @@ async fn ingest_audit(
 struct StreamState {
     control: Arc<ControlPlane>,
     node_id: NodeId,
-    changes: tokio::sync::watch::Receiver<broker_control::notify::Generation>,
+    changes: tokio::sync::watch::Receiver<tokenless_control::notify::Generation>,
     refresh: Duration,
     first: bool,
+    /// The newest snapshot format the node reads.
+    reads_format: u32,
+    /// Rules left out of the last snapshot sent, logged when it changes.
+    withheld_rules: usize,
+}
+
+#[derive(Deserialize)]
+struct StreamParams {
+    /// Sent by nodes from the release that added snapshot format 2; older
+    /// nodes send nothing and read format 1.
+    #[serde(default = "first_format")]
+    reads_format: u32,
+}
+
+fn first_format() -> u32 {
+    MIN_SNAPSHOT_FORMAT
 }
 
 /// One signed snapshot per line (NDJSON). A new one is sent whenever policy
@@ -222,18 +239,21 @@ struct StreamState {
 async fn snapshot_stream(
     State(s): State<Arc<AppState>>,
     Extension(peer): Extension<NodePeer>,
+    ApiQuery(params): ApiQuery<StreamParams>,
 ) -> Result<Response, ApiError> {
     let node = require_node(&s.control, peer).await?;
     let mut changes = s.control.nodes.subscribe();
     changes.borrow_and_update();
     let refresh = Duration::from_secs(u64::from((s.control.nodes.lease_secs() / 3).max(1)));
-    info!(node_id = %node.id, "node opened snapshot stream");
+    info!(node_id = %node.id, reads_format = params.reads_format, "node opened snapshot stream");
     let state = StreamState {
         control: s.control.clone(),
         node_id: node.id,
         changes,
         refresh,
         first: true,
+        reads_format: params.reads_format,
+        withheld_rules: 0,
     };
     let stream = futures_util::stream::unfold(state, |mut st| async move {
         if !st.first {
@@ -254,8 +274,28 @@ async fn snapshot_stream(
                 return None;
             }
         };
-        let snapshot = match st.control.nodes.build_snapshot(&node).await {
-            Ok(s) => s,
+        let snapshot = match st
+            .control
+            .nodes
+            .build_snapshot_for(&node, st.reads_format)
+            .await
+        {
+            Ok(built) => {
+                if built.withheld_rules != st.withheld_rules {
+                    if built.withheld_rules > 0 {
+                        warn!(
+                            node_id = %st.node_id,
+                            reads_format = st.reads_format,
+                            withheld_rules = built.withheld_rules,
+                            "this proxy is too old for some services (a secret with an expiry needs a newer proxy); it will not use them until it is upgraded"
+                        );
+                    } else {
+                        info!(node_id = %st.node_id, "this proxy now receives every rule");
+                    }
+                    st.withheld_rules = built.withheld_rules;
+                }
+                built.snapshot
+            }
             Err(e) => {
                 warn!(node_id = %st.node_id, error = %e, "snapshot build failed; closing stream so the node reconnects");
                 return None;

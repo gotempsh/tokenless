@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 #
 # The built-in service catalogue. tools/catalog/generate.py turns each
-# [[service]] into crates/broker-core/templates/<id>.yaml and finds its logo.
+# [[service]] into crates/tokenless-core/templates/<id>.yaml and finds its logo.
 #
 # Keys (only id, name, description, category and auth are required):
 #   id, version         slug; bump version whenever hosts, auth or headers change
@@ -13,6 +13,7 @@
 #   hosts               exact hosts or "*.example.com" (one label); port defaults to 443
 #   paths, methods      default ["/*"] and ["*"]
 #   auth                "bearer" | "header" (needs header, optional prefix) | "basic"
+#                       | "basic_token" (needs username: Basic <username>:<token>, as Git takes it)
 #   field, label        secret field name and label (default token / api_key, "API key")
 #   username_label, password_label (+ _description)   for basic auth
 #   headers             default custom headers, e.g. { "Notion-Version" = "2022-06-28" }
@@ -252,17 +253,52 @@ icon = "svgl:GitHub"
 
 [[service]]
 id = "gitlab"
-version = 2
+version = 3
 name = "GitLab"
 description = "Repos and pipelines on GitLab."
 category = "developer_tools"
 hosts = ["gitlab.com"]
+# The REST and GraphQL APIs; Git over HTTPS is gitlab-git.
+paths = ["/api/*"]
 auth = "bearer"
 label = "Personal access token"
 variable = "GITLAB_TOKEN"
 validate = "GET /api/v4/user"
 override = { required = false, label = "Self-managed GitLab URL (https://host[:port])" }
 icon = "svgl:GitLab"
+
+[[service]]
+id = "github-git"
+version = 1
+name = "GitHub (Git)"
+description = "Clone, fetch and push GitHub repositories over HTTPS."
+category = "developer_tools"
+hosts = ["github.com"]
+methods = ["GET", "POST"]
+auth = "basic_token"
+username = "x-access-token"
+label = "Token"
+field_description = "A personal access token or an installation token with access to the repositories"
+aliases = ["git", "clone", "push"]
+logo = "github"
+docs = "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation"
+
+[[service]]
+id = "gitlab-git"
+version = 1
+name = "GitLab (Git)"
+description = "Clone, fetch and push GitLab repositories over HTTPS."
+category = "developer_tools"
+hosts = ["gitlab.com"]
+methods = ["GET", "POST"]
+auth = "basic_token"
+username = "oauth2"
+label = "Token"
+field_description = "A personal, project or OAuth access token with read_repository (and write_repository to push)"
+override = { required = false, label = "Self-managed GitLab URL (https://host[:port])" }
+aliases = ["git", "clone", "push"]
+logo = "gitlab"
+docs = "https://docs.gitlab.com/user/profile/personal_access_tokens/"
 
 [[service]]
 id = "bitbucket"
@@ -651,11 +687,13 @@ icon = "simple:jira"
 
 [[service]]
 id = "confluence"
-version = 1
+version = 2
 name = "Confluence"
 description = "Atlassian Confluence pages and spaces."
 category = "productivity"
 hosts = ["*.atlassian.net"]
+# Confluence Cloud lives under /wiki; the rest of the site is Jira's.
+paths = ["/wiki/*"]
 auth = "basic"
 username_label = "Email"
 password_label = "API token"

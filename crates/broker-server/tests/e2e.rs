@@ -11,8 +11,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use broker_control::ControlConfig;
-use broker_dataplane::{enroll, DataPlane, DataPlaneConfig};
 use broker_server::{RunningServer, Server, ServerConfig};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -25,6 +23,8 @@ use reqwest::{Certificate, StatusCode};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokenless_control::ControlConfig;
+use tokenless_dataplane::{enroll, DataPlane, DataPlaneConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -217,7 +217,7 @@ fn totp(secret: &str, offset_secs: u64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    broker_auth::totp::code_at(secret, now + offset_secs).unwrap()
+    tokenless_auth::totp::code_at(secret, now + offset_secs).unwrap()
 }
 
 /// Signs in as the admin created on first start, sets PASSWORD as its
@@ -372,7 +372,7 @@ async fn end_to_end() {
     };
     config.validation_public_roots = false;
     config.validation_extra_roots =
-        broker_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
+        tokenless_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
     let server = Server::start(config).await.unwrap();
     let (mut api, _totp_secret) = bootstrap_admin(&server).await;
 
@@ -431,7 +431,7 @@ async fn end_to_end() {
     assert!(enroll(&control_url, &join_token, "again").await.is_err());
 
     let upstream_roots =
-        broker_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
+        tokenless_dataplane::tls::certs_from_pem("upstream CA", &upstream.ca_pem).unwrap();
     let dp = DataPlane::start(
         DataPlaneConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -462,10 +462,22 @@ async fn end_to_end() {
     let session_id = minted["session"]["id"].as_str().unwrap().to_string();
     assert!(session_token.starts_with("v4.public."));
 
+    // Agents get sessions; the old key-for-agents role is gone.
+    let (status, _, _) = api
+        .call(
+            reqwest::Method::POST,
+            "/api-keys",
+            Some(json!({ "name": "ci", "vault_id": vault_id, "role": "session_issuer", "expires_in_days": 1 })),
+        )
+        .await;
+    assert!(
+        status.is_client_error(),
+        "session_issuer keys are refused, got {status}"
+    );
     let created_key = api
         .post(
             "/api-keys",
-            json!({ "name": "ci", "vault_id": vault_id, "role": "session_issuer", "expires_in_days": 1 }),
+            json!({ "name": "ci", "vault_id": vault_id, "role": "editor", "expires_in_days": 1 }),
         )
         .await;
     let raw_key = created_key["api_key"].as_str().unwrap().to_string();
@@ -484,7 +496,7 @@ async fn end_to_end() {
         .as_str()
         .unwrap()
         .starts_with("v4.public."));
-    // A session issuer cannot add credentials.
+    // An editor key cannot add credentials.
     let (status, _, _) = automation
         .call(
             reqwest::Method::POST,
@@ -808,7 +820,7 @@ async fn end_to_end() {
             "127.0.0.1:0".parse().unwrap(),
             &proxy.to_string(),
             live.auth.clone(),
-            live.services_json(),
+            live.listing(),
         )
         .await
         .unwrap();
@@ -840,8 +852,58 @@ async fn end_to_end() {
         );
         assert_eq!(echo.proxy_authorization, None);
 
-        // Ending the session (with the token alone) cuts the port off.
-        assert_eq!(live.end().await, 1);
+        // A service added to the bundle while the agent runs: the next
+        // renewal mints a session that reaches it, and what the agent can
+        // ask the session port about follows.
+        let read_only = api
+            .post(
+                &format!("/vaults/{vault_id}/rules"),
+                json!({ "name": "local-upstream-read", "credential_id": credential_id, "methods": ["GET"] }),
+            )
+            .await;
+        let read_only_id = read_only["id"].as_str().unwrap().to_string();
+        let (status, _, widened) = api
+            .call(
+                reqwest::Method::PATCH,
+                &format!("/bundles/{}", bundle["id"].as_str().unwrap()),
+                Some(json!({ "rule_ids": [rule_id, read_only_id] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{widened}");
+        let listed = |body: Value| -> Vec<String> {
+            body["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["rule"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let ask_port = || async {
+            reqwest::get(format!("http://{}/services", port.addr))
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        };
+        assert_eq!(listed(ask_port().await), ["local-upstream"]);
+        live.renew_now().await.unwrap();
+        assert_eq!(live.current.load().rule_ids.len(), 2);
+        let mut after = listed(ask_port().await);
+        after.sort();
+        assert_eq!(after, ["local-upstream", "local-upstream-read"]);
+
+        // Ending (with the tokens alone) ends both sessions it minted and
+        // cuts the port off.
+        assert_eq!(live.end().await, 2);
+        let (status, _, _) = api
+            .call(
+                reqwest::Method::DELETE,
+                &format!("/rules/{read_only_id}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         let record = api.get(&format!("/vaults/{vault_id}/sessions")).await;
         let ended = record["items"]
             .as_array()
@@ -1090,6 +1152,33 @@ async fn end_to_end() {
     )
     .await;
 
+    // A service's log: what was done to it and the requests that used it,
+    // the API's answers included, and nothing about other services.
+    let log = api
+        .get(&format!(
+            "/audit?vault_id={vault_id}&credential_id={credential_id}&page_size=100"
+        ))
+        .await;
+    let items = log["items"].as_array().cloned().unwrap_or_default();
+    let actions: Vec<&str> = items.iter().filter_map(|e| e["action"].as_str()).collect();
+    for action in [
+        "credential.create",
+        "rule.create",
+        "proxy.inject",
+        "proxy.response",
+    ] {
+        assert!(
+            actions.contains(&action),
+            "{action} missing from the service's log: {actions:?}"
+        );
+    }
+    let ours = format!("credential:{credential_id}");
+    assert!(
+        items.iter().all(|e| e["target"] == ours.as_str()
+            || e["detail"]["credential_id"] == credential_id.as_str()),
+        "the service's log holds another service's events: {items:?}"
+    );
+
     // --- secrets are write-only ------------------------------------------------
     let mut bodies = Vec::new();
     for path in [
@@ -1098,8 +1187,12 @@ async fn end_to_end() {
         format!("/vaults/{vault_id}/rules"),
         format!("/rules/{rule_id}"),
         format!("/vaults/{vault_id}/sessions"),
+        format!("/sessions/{session_id}/services"),
+        "/vaults/overview".to_string(),
+        format!("/vaults/{vault_id}/overview"),
         "/templates".to_string(),
         "/audit?page_size=100".to_string(),
+        format!("/audit?credential_id={credential_id}&page_size=100"),
         "/nodes".to_string(),
         "/settings".to_string(),
         "/api-keys".to_string(),
@@ -1131,6 +1224,38 @@ async fn end_to_end() {
         .await;
     assert_eq!(rotated.0, StatusCode::OK, "{}", rotated.2);
     assert!(!rotated.2.to_string().contains(SECRET));
+    // A rotation fenced on the generation it replaces: retried, it is
+    // recognised; on a generation already replaced, it is a 409.
+    let generation = rotated.2["secret_generation"].as_u64().unwrap();
+    let fenced = json!({
+        "fields": { "token": SECRET },
+        "expected_generation": generation,
+        "rotation_id": "refresh-1",
+    });
+    for _ in 0..2 {
+        let (status, _, body) = api
+            .call(
+                reqwest::Method::PUT,
+                &format!("/credentials/{credential_id}/secret"),
+                Some(fenced.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["secret_generation"], generation + 1);
+    }
+    let (status, _, body) = api
+        .call(
+            reqwest::Method::PUT,
+            &format!("/credentials/{credential_id}/secret"),
+            Some(json!({
+                "fields": { "token": SECRET },
+                "expected_generation": generation,
+                "rotation_id": "refresh-2",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "stale_generation", "{body}");
     // And at rest the database holds ciphertext only.
     for entry in std::fs::read_dir(data.path()).unwrap() {
         let bytes = std::fs::read(entry.unwrap().path()).unwrap();
@@ -1188,7 +1313,7 @@ async fn end_to_end() {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
     assert!(dp.metrics().render().contains("lease_refusals_total"));
-    dp.shutdown();
+    dp.abort();
 }
 
 /// Logs `username` in on a fresh client and returns it with its cookie.

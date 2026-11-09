@@ -5,7 +5,7 @@
 // add the CSRF token. A `step_up_required` problem triggers the step-up
 // prompt and the request is retried once.
 
-export type Role = "admin" | "editor" | "viewer" | "session_issuer";
+export type Role = "admin" | "editor" | "viewer";
 
 export interface Problem {
   title: string;
@@ -37,6 +37,8 @@ export interface UserSummary {
   created_at: string;
   disabled_at: string | null;
   totp_enrolled: boolean;
+  /** Set for people who sign in with an identity provider. */
+  sso_provider_id?: string | null;
 }
 
 export interface Invite {
@@ -60,6 +62,68 @@ export interface SessionInfo {
   csrf_token: string;
   expires_at: string;
   step_up_at: string | null;
+  /** The identity provider this person signs in with, if any. */
+  sso?: SsoSignIn;
+}
+
+export type PasswordSignIn = "everyone" | "admins_only";
+
+export interface SignInSettings {
+  password_sign_in: PasswordSignIn;
+}
+
+export interface SignInProvider {
+  slug: string;
+  name: string;
+}
+
+export interface SignInOptions {
+  providers: SignInProvider[];
+  password_sign_in: PasswordSignIn;
+}
+
+export interface SsoSignIn {
+  provider_id: string;
+  slug: string;
+  name: string;
+}
+
+export interface RoleMapping {
+  group: string;
+  role: Role;
+}
+
+export interface OidcProvider {
+  id: string;
+  slug: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  has_client_secret: boolean;
+  redirect_uri: string;
+  scopes: string[];
+  groups_claim: string;
+  username_claim: string;
+  role_mappings: RoleMapping[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A provider to create or replace. The client secret is write-only. */
+export interface OidcProviderInput {
+  slug: string;
+  name: string;
+  issuer: string;
+  client_id: string;
+  client_secret?: string;
+  clear_client_secret?: boolean;
+  redirect_uri: string;
+  scopes: string[];
+  groups_claim: string;
+  username_claim: string;
+  role_mappings: RoleMapping[];
+  enabled: boolean;
 }
 
 export interface Vault {
@@ -79,6 +143,7 @@ export interface CredentialField {
 export type Injection =
   | { method: "bearer"; field: string }
   | { method: "basic"; username_field: string; password_field: string }
+  | { method: "basic_token"; username: string; password_field: string }
   | { method: "header"; name: string; field: string; prefix?: string };
 
 export type TemplateCategory =
@@ -152,6 +217,8 @@ export interface CredentialMeta {
   custom_headers: CustomHeader[];
   variable_refs: string[];
   substitutions: Substitution[];
+  /** When the secret stops working upstream, if it does. */
+  not_after?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -200,6 +267,16 @@ export interface AccessBundle {
   updated_at: string;
 }
 
+/** A vault with what the vault list shows of it. */
+export interface VaultOverview extends Vault {
+  /** The first few services, in the vault's list order. */
+  services: CredentialMeta[];
+  service_count: number;
+  live_sessions: number;
+  /** When a proxy last added one of its credentials; null if never or not visible. */
+  last_request_at: string | null;
+}
+
 export interface ProxySession {
   id: string;
   vault_id: string;
@@ -222,6 +299,10 @@ export interface DiscoveredService {
   template_id: string;
   service: string;
   hosts: string[];
+  /** Path patterns the rule allows, e.g. `/repos/**`. */
+  paths: string[];
+  /** Empty: any method. */
+  methods: string[];
   enabled: boolean;
   kind?: ServiceKind;
   mcp_path?: string;

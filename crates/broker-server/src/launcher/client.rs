@@ -6,11 +6,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use broker_control::model::{Page, ProxySession, Vault};
-use broker_control::service::sessions::{DiscoveredService, SessionDiscovery};
-use broker_core::ids::VaultId;
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
+use tokenless_control::model::{Page, ProxySession, Vault};
+use tokenless_control::service::sessions::{DiscoveredService, SessionDiscovery};
+use tokenless_core::ids::VaultId;
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -60,9 +60,45 @@ struct Problem {
     detail: String,
 }
 
+/// The error for a request that got an answer other than 2xx. The broker
+/// explains its refusals as Problem Details; a gateway error without one
+/// comes from whatever sits in front of it (a reverse proxy, a tailnet
+/// serve route) and means the broker did not answer at all.
+fn refusal(
+    operation: &'static str,
+    url: &str,
+    status: reqwest::StatusCode,
+    problem: Problem,
+) -> LauncherError {
+    let explained = !problem.title.is_empty() || !problem.detail.is_empty();
+    if !explained && matches!(status.as_u16(), 502..=504) {
+        return LauncherError::Http {
+            operation,
+            url: url.to_string(),
+            reason: format!(
+                "{status} from a proxy in front of the broker, which could not reach it; check that the broker is running and that --server (TOKENLESS_URL) is its address"
+            ),
+        };
+    }
+    LauncherError::Api {
+        operation,
+        status: status.as_u16(),
+        title: if problem.title.is_empty() {
+            status.canonical_reason().unwrap_or_default().to_string()
+        } else {
+            problem.title
+        },
+        detail: if problem.detail.is_empty() {
+            "it gave no reason".to_string()
+        } else {
+            problem.detail
+        },
+    }
+}
+
 /// How the launcher proves who it is to the management API.
 pub enum Credentials {
-    /// An API key (`cbk_...`), usually a session issuer.
+    /// An API key (`cbk_...`), an editor's when it mints sessions.
     ApiKey(Zeroizing<String>),
     /// The person's console session from `tokenless login`.
     Session {
@@ -123,9 +159,9 @@ impl ApiClient {
             Some(Credentials::Session { token, csrf_token }) => Ok(builder
                 .header(
                     reqwest::header::COOKIE,
-                    format!("{}={}", broker_auth::cookie::SESSION_COOKIE, token.as_str()),
+                    format!("{}={}", tokenless_auth::cookie::SESSION_COOKIE, token.as_str()),
                 )
-                .header(broker_auth::csrf::CSRF_HEADER, csrf_token)),
+                .header(tokenless_auth::csrf::CSRF_HEADER, csrf_token)),
             None => Err(LauncherError::config(format!(
                 "{operation} needs an API key or a signed-in person: set TOKENLESS_API_KEY, pass --api-key-file, or run tokenless login"
             ))),
@@ -146,14 +182,9 @@ impl ApiClient {
         if response.status().is_success() {
             return Ok(response);
         }
-        let status = response.status().as_u16();
+        let status = response.status();
         let problem: Problem = response.json().await.unwrap_or_default();
-        Err(LauncherError::Api {
-            operation,
-            status,
-            title: problem.title,
-            detail: problem.detail,
-        })
+        Err(refusal(operation, url, status, problem))
     }
 
     async fn json<T: serde::de::DeserializeOwned>(
@@ -270,5 +301,59 @@ impl ApiClient {
             reason: e.to_string(),
         })?;
         Ok((pem, url))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    const URL: &str = "https://broker.example/api/v1/ca/interception.pem";
+
+    #[test]
+    fn a_gateway_error_without_an_explanation_says_the_broker_did_not_answer() {
+        let err = refusal(
+            "downloading the interception CA",
+            URL,
+            StatusCode::BAD_GATEWAY,
+            Problem::default(),
+        );
+        assert_eq!(
+            err.to_string(),
+            "request to https://broker.example/api/v1/ca/interception.pem while downloading the interception CA failed: 502 Bad Gateway from a proxy in front of the broker, which could not reach it; check that the broker is running and that --server (TOKENLESS_URL) is its address"
+        );
+    }
+
+    #[test]
+    fn the_brokers_own_refusal_is_passed_on() {
+        let problem = Problem {
+            title: "Unauthorized".into(),
+            detail: "the session has ended".into(),
+        };
+        let err = refusal(
+            "reading the session",
+            URL,
+            StatusCode::UNAUTHORIZED,
+            problem,
+        );
+        assert_eq!(
+            err.to_string(),
+            "the broker refused reading the session (401 Unauthorized): the session has ended"
+        );
+    }
+
+    #[test]
+    fn a_refusal_without_a_body_is_named_by_its_status() {
+        let err = refusal(
+            "reading the session",
+            URL,
+            StatusCode::NOT_FOUND,
+            Problem::default(),
+        );
+        assert_eq!(
+            err.to_string(),
+            "the broker refused reading the session (404 Not Found): it gave no reason"
+        );
     }
 }

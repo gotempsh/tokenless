@@ -5,13 +5,30 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 
 # Run an agent
 
-Every client command needs the management API's address and an API key
-that may mint sessions (a **session issuer** key is enough):
+An agent's credential is a **session**: a token that reaches one access
+bundle's services until it expires or is revoked, optionally for a set
+number of requests. Create one under **Sessions → New session**, or on
+the bundle's page (a bundle, a name, how long it lasts, a request limit)
+and copy the
+token; it is shown once. Then, where the agent runs:
+
+```sh
+export TOKENLESS_SESSION_TOKEN=v4.public...
+tokenless run -- claude
+```
+
+Each session has a page under **Sessions** with every request it made and
+its history: who created it, relabelled it or revoked it.
+
+Signed in with `tokenless login` (or with an editor API key), `run` can
+also mint a session itself from `--bundle`, renew it while the agent runs
+and end it when the agent exits.
 
 | Setting | Flag | Environment |
 |---|---|---|
 | Management API | `--server` | `TOKENLESS_URL` (default `http://127.0.0.1:8080`) |
-| API key | `--api-key-file` | `TOKENLESS_API_KEY` |
+| Session token | `--session-token-file` | `TOKENLESS_SESSION_TOKEN` |
+| API key, to mint | `--api-key-file` | `TOKENLESS_API_KEY` (or the `tokenless login` session) |
 | Vault | `--vault <name or id>` | `TOKENLESS_VAULT` (not needed with a vault-bound key) |
 | Bundle | `--bundle <name or id>` | `TOKENLESS_BUNDLE` |
 | Proxy | `--proxy host:port` | `TOKENLESS_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
@@ -19,10 +36,11 @@ that may mint sessions (a **session issuer** key is enough):
 ## `tokenless run`
 
 ```sh
-tokenless run --bundle code-review -- claude
+tokenless run -- claude                          # the session in TOKENLESS_SESSION_TOKEN
+tokenless run --bundle code-review -- claude     # mint one for this run
 ```
 
-`run` mints a session from the bundle and opens a **session port**: a
+`run` opens a **session port**: a
 loopback proxy address that adds the session to every request and relays
 it to the proxy. It starts the command with:
 
@@ -32,8 +50,9 @@ it to the proxy. It starts the command with:
 - `NODE_USE_ENV_PROXY=1`, so Node's built-in `fetch` uses the proxy;
 - no session token and no API key anywhere in its environment.
 
-It renews the session while the command runs, ends it when the command
-exits, and exits with the command's code.
+A session it minted is renewed while the command runs and ended when the
+command exits; a session it was given is used as is, and `run` says so if
+it expires mid-run. `run` exits with the command's code.
 
 Pass `--ca-fingerprint` with the SHA-256 shown on the **Proxies** page to
 refuse to start if the proxy presents a different CA.
@@ -47,8 +66,9 @@ tokenless session start --bundle code-review \
 . ./agent.env && curl https://api.github.com/user
 ```
 
-It prints the same exports, keeps the session renewed and ends it on
-Ctrl-C or SIGTERM. The session port only listens on loopback, because
+It prints the same exports and runs until Ctrl-C or SIGTERM. With
+`--bundle` it mints the session, keeps it renewed and ends it on exit;
+with `TOKENLESS_SESSION_TOKEN` it uses that session. The session port only listens on loopback, because
 anything that reaches it uses the session; on a shared machine, other
 local users can too.
 
@@ -71,6 +91,58 @@ tokenless session info --json
 
 It lists each service's hosts, the allowed methods and paths, and its
 placeholders, never a secret.
+
+## Git over HTTPS
+
+Add the **GitHub (Git)** or **GitLab (Git)** service with a token that
+can reach the repositories. The proxy sends it the way Git hosts expect
+(`x-access-token` or `oauth2` as the username), so the agent clones a
+plain URL with no credential helper:
+
+```sh
+git clone https://github.com/acme/widgets.git
+```
+
+`tokenless run` points Git at the interception CA (`GIT_SSL_CAINFO`).
+Elsewhere, set `http.sslCAInfo` to `broker-ca.pem`.
+
+The template allows every repository the token can reach. To limit an
+agent to some repositories, give the rule a Git scope when you create or
+update it over the API:
+
+```json
+{ "git": { "repositories": ["acme/widgets", "acme/docs"], "push": false } }
+```
+
+The rule then allows only Git's smart HTTP requests for those
+repositories:
+
+| Request | Allowed |
+|---|---|
+| `GET /<repo>/info/refs?service=git-upload-pack` | clone, fetch |
+| `POST /<repo>/git-upload-pack` | clone, fetch |
+| `GET /<repo>/info/refs?service=git-receive-pack` | with `"push": true` |
+| `POST /<repo>/git-receive-pack` | with `"push": true` |
+
+`<repo>` may end in `.git` or not, and case does not matter, as on GitHub
+and GitLab. Everything else under the rule gets a `403`: another
+repository, any other query (a repeated or encoded `service` included), a
+query on the two `POST`s, percent-encoding in the path, the dumb HTTP
+protocol and Git LFS, whose objects come from other hosts and need rules
+of their own. A push without `"push": true` is refused at discovery,
+before Git sends a pack. The proxy never follows a redirect; Git
+follows it and the request it then makes is checked like any other.
+Packs of any size stream through.
+
+Send `"remove_git": true` to drop the scope. Adding repositories or
+`"push": true`, or dropping the scope, widens the rule and needs a recent
+second factor. A node older than this release does not receive
+Git-scoped rules, so it refuses their requests until it is upgraded.
+
+A **GitLab** service added before GitLab (Git) existed allows every path
+on `gitlab.com`, so in a session with GitLab (Git) the two tie and the
+proxy refuses both. Narrow the GitLab rule's paths to `/api/*`
+([Upgrades](deploy.md#upgrades)).
 
 ## The agent skill
 
@@ -102,6 +174,12 @@ tokenless skill --install --dir .claude/skills   # for one project
 tokenless skill                                  # print it
 ```
 
+`tokenless login` offers to install it when Claude Code is set up and
+has no copy, and `tokenless run -- claude` says so in one line when the
+skill is missing, then starts Claude Code anyway. Neither installs
+anything unless you say yes. Turn the line off with `--no-skill-hint` or
+`TOKENLESS_NO_SKILL_HINT=1`.
+
 ## When the proxy says no
 
 Answers from the proxy itself carry the header `x-broker-error: 1` and a
@@ -110,6 +188,7 @@ plain-text reason.
 | Status | Meaning |
 |---|---|
 | 403 `no rule in this session allows ...` | The host is in the session, but not this method or path. Widen the rule or the bundle. |
+| 403 `rules <a> and <b> in this session both allow ...` | Two services on this host match the request equally and send different credentials. Narrow one rule's paths. |
 | 403 `no rule in this session covers <host>` | Other hosts are blocked and this one isn't in the session. |
 | 403 `<host> resolves to <ip>, which is ...` | Connections to that address range are blocked (see [Settings](settings.md#private-addresses)). |
 | 407 `proxy session rejected: ...` | The session expired or was revoked. |

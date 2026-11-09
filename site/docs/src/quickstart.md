@@ -69,11 +69,12 @@ The proxy shows as **Connected** within a few seconds. It listens on
 tokenless login
 ```
 
-`run` then mints sessions with your account. For CI and other unattended
-runs, use an API key instead: open **API keys**, create one for the
-`work` vault with the **Session issuer** role, and
-`export TOKENLESS_API_KEY=cbk_...`. That key can start sessions in that
-vault and do nothing else.
+`run` then mints sessions with your account. For an agent on another
+machine, or a CI job, create a session instead: on the bundle's page,
+**Run an agent → New session**, then
+`export TOKENLESS_SESSION_TOKEN=v4.public...` there and
+`tokenless run -- <command>`. The token reaches the bundle's services
+until it expires or you revoke it, and nothing else.
 
 ## 5. Run something behind it
 

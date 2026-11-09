@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Mail, ShieldCheck, UserPlus } from "lucide-react";
-import { del, get, patch, post, type Invite, type Page, type Role, type UserSummary } from "../api";
+import { del, get, patch, post, type Invite, type OidcProvider, type Page, type Role, type UserSummary } from "../api";
+import { actorName } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
   fromWidth,
@@ -15,7 +16,6 @@ import {
   Field,
   FormDialog,
   Loading,
-  Mono,
   OneTimeSecret,
   Pager,
   Panel,
@@ -72,6 +72,15 @@ export function People({ me }: { me: UserSummary }) {
     () => (isAdmin ? get<Page<Invite>>(`/invites?page=${invitePage}`) : Promise.resolve(undefined)),
     [isAdmin, invitePage],
   );
+  const providers = useLoad(
+    () => (isAdmin ? get<OidcProvider[]>("/identity-providers") : Promise.resolve(undefined)),
+    [isAdmin],
+  );
+  const providerName = (id: string) => providers.data?.find((p) => p.id === id)?.name ?? "single sign-on";
+  const names = useMemo(
+    () => ({ meId: me.id, users: new Map(users.data?.items.map((u) => [u.id, u.username])) }),
+    [me.id, users.data],
+  );
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ role: "editor" as PersonRole, expires_in_hours: 72 });
   const [link, setLink] = useState<string | null>(null);
@@ -122,7 +131,7 @@ export function People({ me }: { me: UserSummary }) {
   );
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title="People"
         actions={inviteButton}
@@ -164,25 +173,33 @@ export function People({ me }: { me: UserSummary }) {
                           <div className="text-xs font-normal text-muted-foreground @2xl:hidden">{u.role}</div>
                         </TableCell>
                         <TableCell className={cn(fromWidth["2xl"], "w-40")}>
-                          <SelectField
-                            value={u.role}
-                            onChange={(role) =>
-                              change.ask({
-                                user: u,
-                                change: { role: role as Role },
-                                title: `Make ${u.username} ${role}?`,
-                                description:
-                                  PERSON_ROLES.find((r) => r.value === role)?.description ?? "Their access changes immediately.",
-                                confirmLabel: `Make ${role}`,
-                                destructive: false,
-                              })
-                            }
-                            options={PERSON_ROLES.map((r) => ({ value: r.value, label: r.value }))}
-                            className="h-9"
-                          />
+                          {u.sso_provider_id ? (
+                            <span title={`Set by their groups at ${providerName(u.sso_provider_id)} at each sign-in`}>
+                              {u.role}
+                            </span>
+                          ) : (
+                            <SelectField
+                              value={u.role}
+                              onChange={(role) =>
+                                change.ask({
+                                  user: u,
+                                  change: { role: role as Role },
+                                  title: `Make ${u.username} ${role}?`,
+                                  description:
+                                    PERSON_ROLES.find((r) => r.value === role)?.description ?? "Their access changes immediately.",
+                                  confirmLabel: `Make ${role}`,
+                                  destructive: false,
+                                })
+                              }
+                              options={PERSON_ROLES.map((r) => ({ value: r.value, label: r.value }))}
+                              className="h-9"
+                            />
+                          )}
                         </TableCell>
                         <TableCell className={fromWidth["3xl"]}>
-                          {u.totp_enrolled ? (
+                          {u.sso_provider_id ? (
+                            <Status tone="success">{providerName(u.sso_provider_id)}</Status>
+                          ) : u.totp_enrolled ? (
                             <Status tone="success">password + authenticator</Status>
                           ) : (
                             <Status tone="warning">password only</Status>
@@ -206,7 +223,7 @@ export function People({ me }: { me: UserSummary }) {
                                     user: u,
                                     change: { disabled: false },
                                     title: `Re-enable ${u.username}?`,
-                                    description: "They can sign in again with their existing password.",
+                                    description: u.sso_provider_id ? "They can sign in again with single sign-on." : "They can sign in again with their existing password.",
                                     confirmLabel: "Enable",
                                     destructive: false,
                                   })
@@ -274,7 +291,7 @@ export function People({ me }: { me: UserSummary }) {
                         <TableRow key={i.id}>
                           <TableCell className="font-medium">{i.role}</TableCell>
                           <TableCell className={fromWidth.xl}>
-                            <Mono>{i.created_by}</Mono>
+                            {actorName(i.created_by, names)}
                           </TableCell>
                           <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
                             <When at={i.expires_at} />

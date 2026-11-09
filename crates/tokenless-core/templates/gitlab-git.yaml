@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+id: gitlab-git
+version: 1
+name: "GitLab (Git)"
+description: "Clone, fetch and push GitLab repositories over HTTPS."
+category: developer_tools
+logo: gitlab
+aliases: [git, clone, push]
+hosts:
+  - gitlab.com
+allow:
+  paths: ["/*"]
+  methods: ["GET", "POST"]
+credential_fields:
+  - name: token
+    label: "Token"
+    description: "A personal, project or OAuth access token with read_repository (and write_repository to push)"
+injection:
+  method: basic_token
+  username: "oauth2"
+  password_field: token
+host_override:
+  allowed: true
+  required: false
+  label: "Self-managed GitLab URL (https://host[:port])"

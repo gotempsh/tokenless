@@ -16,36 +16,44 @@ import {
   type Rule,
   type UserSummary,
   type Vault,
+  type VaultOverview,
 } from "../api";
+import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
-import { Bundles, CommandSnippet, runCommand } from "./Bundles";
+import { minutesUpTo, type SessionLimits } from "../sessionForm";
+import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
+import { Bundles } from "./Bundles";
 import { Services } from "./Services";
 import {
   fromWidth,
   CheckField,
   ChoiceCards,
   ConfirmDialog,
+  CopyButton,
   DialogActions,
   Empty,
   ErrorBanner,
+  Exact,
   Field,
   FormDialog,
   lines,
   Loading,
   Mono,
-  OneTimeSecret,
   Pager,
   Panel,
+  Relative,
   RowActions,
   RowMenu,
   Section,
   SelectField,
   Status,
+  TabSections,
   Tags,
   useConfirm,
-  When,
 } from "../components/common";
-import { cn } from "../lib/utils";
+import { allowsLabel, EVERYTHING } from "../rules";
+import { useActorNames } from "./Audit";
+import { SessionTable } from "./Sessions";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -56,13 +64,18 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 
-type Tab = "credentials" | "rules" | "bundles" | "sessions";
+export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "settings";
 const TABS: { value: Tab; label: string }[] = [
   { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
   { value: "bundles", label: "Access bundles" },
   { value: "sessions", label: "Sessions" },
+  { value: "settings", label: "Settings" },
 ];
+
+export function vaultTab(raw: string | undefined): Tab {
+  return TABS.find((t) => t.value === raw)?.value ?? "credentials";
+}
 
 interface VaultDeletion {
   credentials: number;
@@ -119,61 +132,99 @@ function DeleteVaultForm({ vault, onCancel }: { vault: Vault; onCancel: () => vo
 }
 
 export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab; user: UserSummary }) {
-  const vault = useLoad(() => get<Vault>(`/vaults/${vaultId}`), [vaultId]);
+  const vault = useLoad(() => get<VaultOverview>(`/vaults/${vaultId}/overview`), [vaultId]);
+  const v = vault.data && vault.data.id === vaultId ? vault.data : undefined;
   const [deleting, setDeleting] = useState(false);
   const isAdmin = user.role === "admin";
   useBreadcrumbs([
     { label: "Vaults", href: "#/vaults" },
-    { label: vault.data?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
+    { label: v?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
     { label: TABS.find((t) => t.value === tab)?.label ?? null },
   ]);
   return (
     <PageContainer>
       <PageHeader
-        title={vault.data ? vault.data.name : <Skeleton className="h-8 w-48" />}
-        description={vault.data ? <Mono>{vault.data.scope}</Mono> : undefined}
-        actions={
-          <Button
-            type="button"
-            variant="outline"
-            className="text-destructive hover:text-destructive"
-            disabled={!isAdmin || !vault.data}
-            title={isAdmin ? undefined : "Only admins can delete a vault"}
-            onClick={() => setDeleting(true)}
-          >
-            <Trash2 />
-            <span className="hidden sm:inline">Delete vault</span>
-          </Button>
+        title={v ? v.name : <Skeleton className="h-8 w-48" />}
+        verdict={
+          v &&
+          (v.live_sessions > 0 ? (
+            <a href={`#/vaults/${vaultId}/sessions`}>
+              <Status tone="success">{v.live_sessions} live</Status>
+            </a>
+          ) : (
+            <Status tone="neutral">Idle</Status>
+          ))
+        }
+        description={
+          v &&
+          (v.last_request_at ? (
+            <>
+              Last request <Relative at={v.last_request_at} />
+            </>
+          ) : (
+            "No requests yet"
+          ))
         }
       />
       <ErrorBanner error={vault.error} />
       <Tabs
         value={tab}
-        onValueChange={(v) => {
-          window.location.hash = `#/vaults/${vaultId}/${v}`;
+        onValueChange={(t) => {
+          window.location.hash = `#/vaults/${vaultId}/${t}`;
         }}
       >
         <TabsList>
           {TABS.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
+            <TabsTrigger key={t.value} value={t.value} count={t.value === "credentials" ? v?.service_count : undefined}>
               {t.label}
             </TabsTrigger>
           ))}
         </TabsList>
       </Tabs>
-      {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-      {tab === "rules" && <Rules vaultId={vaultId} />}
-      {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-      {tab === "sessions" && <Sessions vaultId={vaultId} />}
+      <TabSections>
+        {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
+        {tab === "rules" && <Rules vaultId={vaultId} />}
+        {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
+        {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
+      </TabSections>
+      {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin} onDelete={() => setDeleting(true)} />}
       <FormDialog
         open={deleting}
         onOpenChange={setDeleting}
-        title={vault.data ? `Delete vault "${vault.data.name}"?` : "Delete vault"}
+        title={v ? `Delete vault "${v.name}"?` : "Delete vault"}
         description="Admins only, with a recent sign-in confirmation."
       >
-        {vault.data && <DeleteVaultForm vault={vault.data} onCancel={() => setDeleting(false)} />}
+        {v && <DeleteVaultForm vault={v} onCancel={() => setDeleting(false)} />}
       </FormDialog>
     </PageContainer>
+  );
+}
+
+/** A vault's own facts and the one thing done to the vault itself: deleting it. */
+function VaultSettings({ vault, isAdmin, onDelete }: { vault: VaultOverview; isAdmin: boolean; onDelete: () => void }) {
+  return (
+    <div className="max-w-[1040px]">
+      <SettingsSection title="Vault ID">
+        <span className="flex items-center gap-1">
+          <Mono>{vault.id}</Mono>
+          <CopyButton value={vault.id} label="Copy vault ID" iconOnly />
+        </span>
+      </SettingsSection>
+      <SettingsSection title="Created">
+        <p className="text-sm">
+          <Exact at={vault.created_at} />
+        </p>
+      </SettingsSection>
+      <SettingsSection title="Delete vault" hint="Deletes its services, rules and access bundles. The audit trail is kept.">
+        <div className="space-y-2">
+          <Button type="button" variant="outline" className="text-destructive" onClick={onDelete} disabled={!isAdmin}>
+            <Trash2 />
+            Delete vault
+          </Button>
+          {!isAdmin && <p className="text-xs text-muted-foreground">Only admins can delete a vault.</p>}
+        </div>
+      </SettingsSection>
+    </div>
   );
 }
 
@@ -311,12 +362,9 @@ function Rules({ vaultId }: { vaultId: string }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead className={fromWidth.xl}>Credential</TableHead>
-                <TableHead className={fromWidth["2xl"]}>Hosts</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Paths</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Methods</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead>Rule</TableHead>
+                <TableHead className={fromWidth.xl}>Hosts</TableHead>
+                <TableHead>On</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -325,35 +373,26 @@ function Rules({ vaultId }: { vaultId: string }) {
                 <TableRow key={r.id}>
                   <TableCell>
                     <div className="font-medium">{r.name}</div>
-                    <div className="text-xs text-muted-foreground @xl:hidden">{credName(r.credential_id)}</div>
+                    {credName(r.credential_id) !== r.name && (
+                      <div className="text-xs text-muted-foreground">{credName(r.credential_id)}</div>
+                    )}
                   </TableCell>
-                  <TableCell className={fromWidth.xl}>{credName(r.credential_id)}</TableCell>
-                  <TableCell className={fromWidth["2xl"]}>
+                  <TableCell className={fromWidth.xl}>
                     <Tags values={r.allow.hosts} />
-                  </TableCell>
-                  <TableCell className={fromWidth["4xl"]}>
-                    <Tags values={r.allow.paths} />
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>
-                    <Tags values={r.allow.methods} />
+                    {allowsLabel(r) !== EVERYTHING && <p className="mt-1 text-xs text-muted-foreground">{allowsLabel(r)}</p>}
                     {r.allow.mcp_tools !== undefined && (
-                      <p className="mt-1 max-w-48 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
+                      <p className="mt-1 max-w-64 truncate text-xs text-muted-foreground" title={toolsLabel(r.allow.mcp_tools)}>
                         MCP: {toolsLabel(r.allow.mcp_tools)}
                       </p>
                     )}
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        checked={r.enabled}
-                        disabled={action.busy}
-                        onCheckedChange={() => void toggle(r)}
-                        aria-label={`${r.enabled ? "Disable" : "Enable"} ${r.name}`}
-                      />
-                      <span className="hidden @lg:inline">
-                        <Status tone={r.enabled ? "success" : "neutral"}>{r.enabled ? "enabled" : "disabled"}</Status>
-                      </span>
-                    </div>
+                    <Switch
+                      checked={r.enabled}
+                      disabled={action.busy}
+                      onCheckedChange={() => void toggle(r)}
+                      aria-label={`${r.enabled ? "Turn off" : "Turn on"} ${r.name}`}
+                    />
                   </TableCell>
                   <TableCell>
                     <RowActions>
@@ -496,13 +535,9 @@ interface Minted {
   session: ProxySession;
 }
 
-function sessionStatus(s: ProxySession) {
-  if (s.revoked_at) return <Status tone="destructive">revoked</Status>;
-  if (new Date(s.expires_at) <= new Date()) return <Status tone="neutral">expired</Status>;
-  return <Status tone="success">active</Status>;
-}
-
-function Sessions({ vaultId }: { vaultId: string }) {
+function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
+  const actors = useActorNames(user);
+  const canChange = user.role === "admin" || user.role === "editor";
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/vaults/${vaultId}/sessions?page=${page}`), [vaultId, page]);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
@@ -512,6 +547,12 @@ function Sessions({ vaultId }: { vaultId: string }) {
   const [bundleId, setBundleId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [ttlMinutes, setTtlMinutes] = useState(15);
+  // The vault's lifetime cap, as the bundle page's New session reads it.
+  const limits = useLoad(
+    () => (open ? get<SessionLimits>(`/vaults/${vaultId}/sessions/limits`) : Promise.resolve(undefined)),
+    [open, vaultId],
+  );
+  const ttl = minutesUpTo(limits.data?.max_ttl_secs);
   const [limit, setLimit] = useState("");
   const [labels, setLabels] = useState("");
   const [minted, setMinted] = useState<Minted | null>(null);
@@ -541,10 +582,15 @@ function Sessions({ vaultId }: { vaultId: string }) {
     }
   };
 
+  const guard = useHandoffGuard();
   const closeMint = (o: boolean) => {
+    // Escape, the close button and an outside click land here too: the
+    // token is shown only once, so the first try before copying warns.
+    if (!o && minted && !guard.mayClose()) return;
     setOpen(o);
     if (!o) {
       setMinted(null);
+      guard.reset();
       mintAction.clearError();
     }
   };
@@ -558,7 +604,7 @@ function Sessions({ vaultId }: { vaultId: string }) {
   const mintButton = (
     <Button type="button" onClick={() => setOpen(true)}>
       <Plus />
-      Mint session
+      New session
     </Button>
   );
 
@@ -575,57 +621,16 @@ function Sessions({ vaultId }: { vaultId: string }) {
           <Empty
             icon={Timer}
             title="No sessions yet"
-            description="Mint a short-lived session and hand its token to an agent as its HTTPS proxy."
+            description="Create a session and give its token to an agent."
             action={mintButton}
           />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Session</TableHead>
-                <TableHead className={fromWidth.xl}>Bundle</TableHead>
-                <TableHead className={fromWidth["3xl"]}>Labels</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Limit</TableHead>
-                <TableHead className={fromWidth["4xl"]}>Created by</TableHead>
-                <TableHead className={fromWidth.lg}>Expires</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sessions.data?.items.map((s) => (
-                <TableRow key={s.id}>
-                  <TableCell>
-                    <Mono>{s.id.slice(0, 8)}</Mono>
-                    {s.bundle && <div className="text-xs text-muted-foreground @xl:hidden">{s.bundle.name}</div>}
-                  </TableCell>
-                  <TableCell className={fromWidth.xl}>
-                    {s.bundle ? s.bundle.name : <span className="text-muted-foreground">—</span>}
-                  </TableCell>
-                  <TableCell className={fromWidth["3xl"]}>
-                    <Tags values={Object.entries(s.labels).map(([k, v]) => `${k}=${v}`)} />
-                  </TableCell>
-                  <TableCell className={cn(fromWidth["4xl"], "tabular-nums")}>{s.request_limit ?? "—"}</TableCell>
-                  <TableCell className={fromWidth["4xl"]}>
-                    <Mono>{s.created_by}</Mono>
-                  </TableCell>
-                  <TableCell className={cn(fromWidth.lg, "text-muted-foreground")}>
-                    <When at={s.expires_at} />
-                  </TableCell>
-                  <TableCell>{sessionStatus(s)}</TableCell>
-                  <TableCell>
-                    <RowActions>
-                      {!s.revoked_at && (
-                        <Button type="button" variant="outline" size="sm" onClick={() => confirm.ask(s)}>
-                          Revoke
-                        </Button>
-                      )}
-                    </RowActions>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <SessionTable
+            sessions={sessions.data?.items ?? []}
+            actors={actors}
+            canRevoke={canChange}
+            onRevoke={confirm.ask}
+          />
         )}
         <Pager page={sessions.data} onPage={setPage} />
       </Panel>
@@ -633,42 +638,16 @@ function Sessions({ vaultId }: { vaultId: string }) {
         open={open}
         onOpenChange={closeMint}
         wide
-        title={minted ? "Session minted" : "Mint a proxy session"}
+        title={minted ? "Session created" : "New session"}
         description={minted ? undefined : "Choose the rules the agent may use and how long the session lives."}
       >
         {minted ? (
-          <div className="space-y-4">
-            <OneTimeSecret
-              label="Proxy session token"
-              value={minted.token}
-              hint={
-                <div className="space-y-2">
-                  <p>Point the agent at the data plane:</p>
-                  <code className="block break-all rounded-md border bg-background px-3 py-2 font-mono text-xs">
-                    HTTPS_PROXY=http://{minted.token.slice(0, 18)}…@&lt;data-plane-host&gt;:3128
-                  </code>
-                  <p>
-                    and trust the{" "}
-                    <a href="/api/v1/ca/interception.pem" className="font-medium underline underline-offset-4">
-                      interception CA certificate
-                    </a>
-                    .
-                  </p>
-                  {minted.session.bundle && (
-                    <>
-                      <p>Or let the CLI mint, renew and end sessions from this bundle for each run:</p>
-                      <CommandSnippet command={runCommand(minted.session.bundle.name)} />
-                    </>
-                  )}
-                </div>
-              }
-            />
-            <DialogActions>
-              <Button type="button" onClick={() => closeMint(false)}>
-                Done
-              </Button>
-            </DialogActions>
-          </div>
+          <SessionHandoff
+            minted={minted}
+            reaches={minted.session.bundle ? `${minted.session.bundle.name}'s services` : "the rules you chose"}
+            guard={guard}
+            onDone={() => closeMint(false)}
+          />
         ) : (
           <form className="space-y-4" onSubmit={mint}>
             <ErrorBanner error={mintAction.error} />
@@ -748,13 +727,13 @@ function Sessions({ vaultId }: { vaultId: string }) {
               <Field
                 label="Lifetime (minutes)"
                 htmlFor="mint-ttl"
-                hint="Up to the cap an admin sets in Settings → Session lifetime (60 by default)."
+                hint={ttl.hint}
               >
                 <Input
                   id="mint-ttl"
                   type="number"
                   min={1}
-                  max={7 * 24 * 60}
+                  max={ttl.max}
                   value={ttlMinutes}
                   onChange={(e) => setTtlMinutes(Number(e.target.value))}
                 />

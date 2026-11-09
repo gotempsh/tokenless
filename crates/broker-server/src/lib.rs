@@ -9,6 +9,7 @@ pub mod api_tls;
 pub mod error;
 pub mod launcher;
 pub mod node_api;
+pub mod oidc_transport;
 pub mod probe;
 pub mod root_key;
 pub mod store;
@@ -19,10 +20,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use broker_control::envelope::Envelope;
-pub use broker_control::service::auth::GeneratedCredentials;
-use broker_control::store::RbacAuthorizer;
-use broker_control::{ControlConfig, ControlPlane, Stores};
+use tokenless_control::envelope::Envelope;
+pub use tokenless_control::service::auth::GeneratedCredentials;
+use tokenless_control::store::RbacAuthorizer;
+use tokenless_control::{ControlConfig, ControlPlane, Stores};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -145,6 +146,7 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
         policy: store.clone(),
         audit: store.clone(),
         identity: store.clone(),
+        sso: store.clone(),
         nodes: store,
     };
     let control = Arc::new(
@@ -153,6 +155,10 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
             Arc::new(RbacAuthorizer),
             cipher,
             Arc::new(probe::HttpProber::new(
+                config.validation_public_roots,
+                &config.validation_extra_roots,
+            )?),
+            Arc::new(oidc_transport::HttpOidcTransport::new(
                 config.validation_public_roots,
                 &config.validation_extra_roots,
             )?),
@@ -191,7 +197,7 @@ pub async fn rotate_root_key(
     // Creates the hierarchy, or finishes moving secrets into it, under the
     // current key before it is replaced.
     Envelope::open(&current.key, store.clone()).await?;
-    let new_key = broker_control::cipher::AesGcmCipher::generate_key();
+    let new_key = tokenless_control::cipher::AesGcmCipher::generate_key();
     root_key::write_new(new_key_file, &new_key)?;
     if let Err(e) = Envelope::rotate_root(store.as_ref(), &current.key, &new_key).await {
         // The new key was never used; don't leave a file that looks valid.

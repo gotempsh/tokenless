@@ -5,11 +5,11 @@
 
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use broker_auth::AuthError;
-use broker_control::{ControlError, StoreError};
-use broker_core::CoreError;
 use serde::Serialize;
 use thiserror::Error;
+use tokenless_auth::AuthError;
+use tokenless_control::{ControlError, StoreError};
+use tokenless_core::CoreError;
 use tracing::error;
 
 /// Startup and runtime failures of the server process itself.
@@ -109,6 +109,11 @@ fn map_store(e: &StoreError) -> Mapped {
     match e {
         StoreError::NotFound { .. } => mapped(StatusCode::NOT_FOUND, "Not Found", "not_found"),
         StoreError::Conflict { .. } => mapped(StatusCode::CONFLICT, "Conflict", "conflict"),
+        StoreError::StaleGeneration { .. } => mapped(
+            StatusCode::CONFLICT,
+            "Stale Secret Generation",
+            "stale_generation",
+        ),
         StoreError::Backend { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Storage Error",
@@ -131,7 +136,10 @@ fn map_core(e: &CoreError) -> Mapped {
         | CoreError::InvalidFieldValue { .. }
         | CoreError::InvalidHeaderName { .. }
         | CoreError::InvalidLabel { .. }
+        | CoreError::InvalidBinding { .. }
         | CoreError::InvalidTtl { .. }
+        | CoreError::InvalidRuleDeadline { .. }
+        | CoreError::InvalidGitScope { .. }
         | CoreError::InvalidVariableKey { .. }
         | CoreError::InvalidVariableReference { .. }
         | CoreError::UnknownVariable { .. }
@@ -160,7 +168,9 @@ fn map_auth(e: &AuthError) -> Mapped {
             "Authentication Required",
             "unauthenticated",
         ),
-        AuthError::Hashing { .. } | AuthError::MalformedHash { .. } => mapped(
+        AuthError::Hashing { .. }
+        | AuthError::MalformedHash { .. }
+        | AuthError::KeyDerivation { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Error",
             "internal",
@@ -201,6 +211,16 @@ fn map_control(e: &ControlError) -> Mapped {
                 "rate_limited",
             )
         },
+        ControlError::IdentityProvider { .. } => mapped(
+            StatusCode::BAD_GATEWAY,
+            "Identity Provider Failed",
+            "identity_provider_failed",
+        ),
+        ControlError::SsoRefused { .. } => mapped(
+            StatusCode::FORBIDDEN,
+            "Single Sign-On Refused",
+            "sso_refused",
+        ),
         ControlError::Crypto { .. } => mapped(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Cryptographic Error",

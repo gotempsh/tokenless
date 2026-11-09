@@ -105,34 +105,38 @@ Or in the console at <http://127.0.0.1:8080/>:
 
 ### Run an agent with an access bundle
 
+An agent's credential is a **session**: a token that reaches one bundle's
+services until it expires (up to **Settings → Session lifetime**, 7 days
+by default) or is revoked, optionally capped at a number of requests.
+Create one under **Sessions → New session** (or on the bundle's page), give the
+token to the agent's machine, and start the agent:
+
+```sh
+export TOKENLESS_SESSION_TOKEN=v4.public...   # or --session-token-file
+tokenless run -- claude
+```
+
+Signed in with `tokenless login`, `run` can instead mint a session from
+the bundle for this one run, renew it while the agent runs and end it when
+the agent exits:
+
 ```sh
 tokenless run --vault work --bundle code-review -- claude
 ```
 
-Signed in with `tokenless login`, `run` mints sessions with your account.
-For CI and other unattended runs, create an API key for the vault with
-the `session_issuer` role (**API keys → Create API key**); it can mint
-sessions in that vault and nothing else:
-
-```sh
-export TOKENLESS_API_KEY=cbk_...    # or --api-key-file key.txt
-tokenless run --bundle code-review -- claude
-```
-
-`run` mints a session from the bundle and opens a **session port**: a
+`run` opens a **session port**: a
 loopback proxy address (a free port by default, `--listen` to choose)
 that adds the session to every request and relays it to the proxy. The
 agent is started with `HTTPS_PROXY=http://127.0.0.1:<port>`, trust files
 that include the broker's interception CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others), and no session
-token anywhere in its environment. Sessions are capped at an hour unless
-an admin raises it (**Settings → Session lifetime**, up to 7 days), so the
-port renews the session before it expires. When the agent exits, every
-session the run minted is ended and `run` exits with the agent's code.
+token anywhere in its environment. A session it minted is renewed before
+it expires and ended when the agent exits; a session it was given is used
+as is. `run` exits with the agent's code.
 `run` prints nothing of its own, so what you read is only the agent's
 output; add `-v` to see the session, the session port and the proxy it
 used.
-The agent never inherits `TOKENLESS_API_KEY` or
+The agent never inherits `TOKENLESS_SESSION_TOKEN`, `TOKENLESS_API_KEY` or
 `TOKENLESS_SESSION_TOKEN` from your shell.
 
 #### Filling environment variables
@@ -227,7 +231,8 @@ uses `GET /api/v1/sessions/self` and `TOKENLESS_SESSION_TOKEN`.
 | Setting | Flag | Environment |
 |---|---|---|
 | Management API | `--server` | `TOKENLESS_URL` (default `http://127.0.0.1:8080`) |
-| API key | `--api-key-file` | `TOKENLESS_API_KEY` |
+| Session token | `--session-token-file` | `TOKENLESS_SESSION_TOKEN` (instead of minting from `--bundle`) |
+| API key | `--api-key-file` | `TOKENLESS_API_KEY` (or the `tokenless login` session) |
 | Vault | `--vault <name or id>` | `TOKENLESS_VAULT` (not needed with a vault-bound key) |
 | Bundle | `--bundle <name or id>` | `TOKENLESS_BUNDLE` |
 | Proxy | `--proxy host:port` | `TOKENLESS_PROXY_ADDRESS` (default `127.0.0.1:3128`) |
@@ -244,8 +249,11 @@ disable the rule, or delete the bundle, which also ends every live
 session minted from it. Session labels can be changed afterwards
 (`PATCH /api/v1/sessions/{id}`); traffic records keep the labels the
 session was minted with. Holding a session's token is enough to end that
-session (`POST /api/v1/sessions/revoke-self`), which is how `run` cleans
-up with only a `session_issuer` key.
+session (`POST /api/v1/sessions/revoke-self`).
+
+Each session has its own page (**Sessions**, or the bundle's Sessions
+tab): every request it made, what the proxy did with it and what the API
+answered, and its history (who created it, relabelled it or revoked it).
 
 ### Connect an MCP client
 
@@ -282,7 +290,9 @@ supported; the older SSE transport's endpoint URLs would bypass the
 
 ### Automation
 
-Mint over the API with the `session_issuer` key, by bundle or by rules:
+Scripts that manage a vault use an API key (`editor` or `viewer`, one
+vault, **API keys → Create API key**). An editor key can create sessions
+over the API, by bundle or by rules:
 
 ```sh
 curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
@@ -355,11 +365,11 @@ The website (`site/`) is deployed separately; see
 
 | Path | Contents |
 |---|---|
-| `crates/broker-core` | Rules, scopes, templates, injection, sessions, snapshots (no I/O) |
-| `crates/broker-auth` | Passwords, TOTP, tokens, CSRF, cookies |
-| `crates/broker-control` | Services and the store / authorizer traits |
-| `crates/broker-conformance` | Suites every trait implementation must pass |
-| `crates/broker-dataplane` | The forward proxy and node client |
+| `crates/tokenless-core` | Rules, scopes, templates, injection, sessions, snapshots (no I/O) |
+| `crates/tokenless-auth` | Passwords, TOTP, tokens, CSRF, cookies |
+| `crates/tokenless-control` | Services and the store / authorizer traits |
+| `crates/tokenless-conformance` | Suites every trait implementation must pass |
+| `crates/tokenless-dataplane` | The forward proxy and node client |
 | `crates/broker-server` | HTTP APIs, SQLite store and the `tokenless` binary |
 | `broker-ui` | Management console |
 | `tools/catalog` | Source of the built-in service catalogue and its logos |
@@ -370,7 +380,7 @@ The website (`site/`) is deployed separately; see
 ### Adding a built-in service
 
 The built-in templates and their logos are generated from
-`tools/catalog/services.toml`; never edit `crates/broker-core/templates/`,
+`tools/catalog/services.toml`; never edit `crates/tokenless-core/templates/`,
 `builtin_catalog.rs` or `broker-ui/src/assets/logos/` by hand.
 
 ```sh

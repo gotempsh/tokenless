@@ -80,6 +80,14 @@ the control plane fails closed.
 For upstreams with a private CA, pass `--upstream-ca ca.pem` (repeatable).
 `--no-public-roots` trusts only those.
 
+On Ctrl-C or `SIGTERM` (what systemd and Docker send to stop it) the
+proxy stops taking new connections and gives open tunnels `--drain-secs`
+(30 by default) to finish before it cuts them. A second signal stops it at
+once. It logs a warning if it had to cut traffic or could not ship audit
+events. Keep the stop timeout above the drain time: systemd waits 90
+seconds, Docker only 10, so give a proxy container
+`stop_grace_period: 40s` or a shorter `--drain-secs`.
+
 ## systemd
 
 ```ini
@@ -204,7 +212,26 @@ them, by design.
 
 Replace the binary (or the image tag) and restart. Database migrations run
 on start. The console is part of the binary, so it upgrades with it.
-Upgrade the control plane before the proxies.
+Upgrade the control plane before the proxies. A proxy older than the
+control plane keeps working, but it does not use a service that needs a
+newer proxy (for now, one whose secret has an expiry date, or a rule
+with a Git scope) until it is upgraded; the control plane logs a warning naming that proxy.
+
+**Upgrading past the removal of `session_issuer` keys.** API keys with
+the `session_issuer` role are deleted on upgrade, and whatever used one
+gets `401 API key is unknown`. Give each agent a session instead: create
+one on its access bundle's page, or with `tokenless session create`, and
+pass the token in `TOKENLESS_SESSION_TOKEN`. A job that needs a fresh
+session per run mints it with an `editor` key.
+
+**Two services on one host.** When a session holds two rules for one host,
+the proxy now uses the one whose path matches most specifically, and
+refuses requests both match equally if their credentials differ (it used
+to take whichever came first). New GitLab and Confluence services are
+scoped so this never happens (`/api/*` and `/wiki/*`), but ones created
+before allow every path: in a session with GitLab (Git), or with Jira on
+the same site using another token, narrow their rule's paths to `/api/*`
+or `/wiki/*`. The proxy's `403` names both rules.
 
 ## Logs and metrics
 

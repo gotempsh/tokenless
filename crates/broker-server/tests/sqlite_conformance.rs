@@ -19,7 +19,7 @@ macro_rules! suite {
         #[tokio::test]
         async fn $name() {
             let (_dir, store) = store().await;
-            if let Err(failure) = broker_conformance::$name(&store).await {
+            if let Err(failure) = tokenless_conformance::$name(&store).await {
                 panic!("{failure}");
             }
         }
@@ -33,19 +33,81 @@ suite!(bundle_store_suite);
 suite!(audit_sink_suite);
 suite!(identity_store_suite);
 suite!(user_management_suite);
+suite!(sso_store_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
 suite!(vault_deletion_suite);
+
+/// An embedded data plane whose control services run on the SQLite store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_embedded_data_plane_on_sqlite_passes_the_dataplane_suite() {
+    use std::sync::Arc;
+
+    use tokenless_control::cipher::AesGcmCipher;
+    use tokenless_control::envelope::Envelope;
+    use tokenless_control::probe::DisabledProber;
+    use tokenless_control::store::RbacAuthorizer;
+    use tokenless_control::{Caller, ControlConfig, ControlServices, ServiceStores};
+    use tokenless_core::authz::{Principal, Role};
+
+    let (_dir, store) = store().await;
+    let store = Arc::new(store);
+    let cipher = Arc::new(
+        Envelope::open(&AesGcmCipher::generate_key(), store.clone())
+            .await
+            .expect("envelope"),
+    );
+    let control = Arc::new(
+        ControlServices::new(
+            ServiceStores {
+                credentials: store.clone(),
+                policy: store.clone(),
+                audit: store.clone(),
+                nodes: store.clone(),
+            },
+            Arc::new(RbacAuthorizer),
+            cipher,
+            Arc::new(DisabledProber),
+            ControlConfig {
+                lease_secs: 3,
+                ..ControlConfig::default()
+            },
+        )
+        .await
+        .expect("control services"),
+    );
+    let host = Caller::service(Principal::service("conformance-host", Role::Admin, None));
+    if let Err(failure) =
+        tokenless_conformance::dataplane::dataplane_suite(control.clone(), &host).await
+    {
+        panic!("{failure}");
+    }
+    // It leaves nothing behind in the embedder's stores.
+    let page = tokenless_control::model::PageRequest::new(None, Some(100));
+    let nodes = control.nodes.list_nodes(&host, page).await.unwrap().items;
+    assert!(!nodes.is_empty());
+    assert!(
+        nodes.iter().all(|n| n.revoked_at.is_some()),
+        "a node left enrolled"
+    );
+    let vaults = control.policy.list_vaults(&host, page).await.unwrap().items;
+    assert!(
+        vaults
+            .iter()
+            .all(|v| !v.name.starts_with("conformance-dataplane")),
+        "a vault left behind"
+    );
+}
 
 /// If the audit row cannot be written the change it describes must not be
 /// committed either. A reused event id makes the audit insert fail.
 #[tokio::test]
 async fn a_failed_audit_insert_rolls_back_the_change() {
-    use broker_control::model::{PageRequest, Vault};
-    use broker_control::store::{AuditSink, PolicyStore};
-    use broker_core::audit::{AuditEvent, AuditOutcome};
-    use broker_core::ids::VaultId;
-    use broker_core::scope::Scope;
+    use tokenless_control::model::{PageRequest, Vault};
+    use tokenless_control::store::{AuditSink, PolicyStore};
+    use tokenless_core::audit::{AuditEvent, AuditOutcome};
+    use tokenless_core::ids::VaultId;
+    use tokenless_core::scope::Scope;
 
     let (_dir, store) = store().await;
     let event = AuditEvent::new("user:test", "vault.create", AuditOutcome::Success);
@@ -78,10 +140,10 @@ async fn a_failed_audit_insert_rolls_back_the_change() {
 /// "database is locked" because another write landed in between.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_writers_wait_instead_of_failing() {
-    use broker_control::model::Variable;
-    use broker_control::store::CredentialStore;
-    use broker_core::ids::VariableId;
     use std::sync::Arc;
+    use tokenless_control::model::Variable;
+    use tokenless_control::store::CredentialStore;
+    use tokenless_core::ids::VariableId;
 
     let (_dir, store) = store().await;
     let store = Arc::new(store);

@@ -13,6 +13,8 @@ function service(credential: string, host: string, extra: Partial<DiscoveredServ
     template_id: "github-mcp",
     service: "GitHub MCP",
     hosts: [host],
+    paths: [],
+    methods: [],
     enabled: true,
     kind: "mcp",
     ...extra,

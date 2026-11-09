@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "tokenless-conformance"
+description = "Conformance suites for the broker store traits and an embedded data plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokenless-control.workspace = true
+tokenless-core.workspace = true
+tokenless-dataplane.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rand.workspace = true
+rustls.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true

@@ -12,8 +12,8 @@ import {
   Empty,
   ErrorBanner,
   Exact,
-  Fact,
-  Facts,
+  FactRow,
+  FactRows,
   Mono,
   Panel,
   Relative,
@@ -64,7 +64,7 @@ export function ProxyDetail({ nodeId }: { nodeId: string }) {
   const problem = n ? problemText(n, now) : null;
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader
         title={n ? n.name : node.error || missing ? "Proxy" : <Skeleton className="h-8 w-48" />}
         verdict={n ? <ProxyStatus node={n} now={now} /> : undefined}
@@ -103,34 +103,34 @@ export function ProxyDetail({ nodeId }: { nodeId: string }) {
         <Skeleton className="h-72 w-full rounded-lg" />
       ) : (
         n && (
-          <Facts>
-            <Fact label="Last seen">
+          <FactRows>
+            <FactRow label="Last seen">
               <Relative at={n.last_seen_at} />
-            </Fact>
-            <Fact label="Enrolled">
+            </FactRow>
+            <FactRow label="Enrolled">
               <Exact at={n.enrolled_at} />
-            </Fact>
+            </FactRow>
             {n.revoked_at && (
-              <Fact label="Revoked">
+              <FactRow label="Revoked">
                 <Exact at={n.revoked_at} />
-              </Fact>
+              </FactRow>
             )}
-            <Fact label="Certificate">
+            <FactRow label="Certificate">
               Valid until <Exact at={n.cert_not_after} />, renewed automatically
-            </Fact>
-            <Fact label="Proxy ID">
+            </FactRow>
+            <FactRow label="Proxy ID">
               <span className="flex min-w-0 items-center gap-1">
                 <Mono className="min-w-0">{n.id}</Mono>
                 <CopyButton value={n.id} label="Copy proxy ID" iconOnly />
               </span>
-            </Fact>
-            <Fact label="Certificate serial">
+            </FactRow>
+            <FactRow label="Certificate serial">
               <Mono>{n.cert_serial}</Mono>
-            </Fact>
-            <Fact label="Sealing key">
+            </FactRow>
+            <FactRow label="Sealing key">
               <Mono>{n.seal_public_key}</Mono>
-            </Fact>
-          </Facts>
+            </FactRow>
+          </FactRows>
         )
       )}
       <ConfirmDialog

@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! A session that outlives the session lifetime cap: it is minted from a
-//! bundle, renewed before it expires, and every token it minted is ended
-//! when it stops.
+//! The session behind a session port. Either minted from a bundle, renewed
+//! before it expires and ended when it stops, or a token someone handed
+//! over, used as is until it expires.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use broker_control::model::ProxySession;
-use broker_control::service::sessions::DiscoveredService;
-use broker_core::ids::VaultId;
 use chrono::{DateTime, Utc};
+use tokenless_control::model::ProxySession;
+use tokenless_control::service::sessions::DiscoveredService;
+use tokenless_core::ids::VaultId;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
@@ -50,7 +50,13 @@ pub struct LiveSession {
     /// The services the session reaches, as seen when it started. Empty if
     /// the broker could not be asked (the agent then gets no placeholders).
     pub services: Vec<DiscoveredService>,
+    /// What the session port serves at `/services`, kept current: a
+    /// renewal mints from the bundle again, so it may reach other services.
+    listing: Arc<ArcSwap<String>>,
     minted: Minted,
+    /// How a minted session is renewed; `None` for a given one.
+    renewal: Option<Arc<Renewal>>,
+    /// Renews a minted session, or reports when a given one runs out.
     renewer: JoinHandle<()>,
 }
 
@@ -71,34 +77,80 @@ impl LiveSession {
                 Vec::new()
             }
         };
+        let listing = Arc::new(ArcSwap::from_pointee(listing_json(
+            &first.session,
+            &services,
+        )));
         let current = Arc::new(ArcSwap::from_pointee(first.session));
-        let renewer = tokio::spawn(renew_loop(
-            client.clone(),
+        let renewal = Arc::new(Renewal {
+            client: client.clone(),
             vault,
             request,
-            auth.clone(),
-            current.clone(),
-            minted.clone(),
-        ));
+            auth: auth.clone(),
+            current: current.clone(),
+            listing: listing.clone(),
+            minted: minted.clone(),
+        });
+        let renewer = tokio::spawn(renew_loop(renewal.clone()));
         Ok(Self {
             client,
             auth,
             current,
             services,
+            listing,
             minted,
+            renewal: Some(renewal),
             renewer,
         })
     }
 
-    /// What the session port serves at `/services`: the bundle and the
-    /// services it reaches, with no token and no secret.
-    pub fn services_json(&self) -> String {
-        let current = self.current.load();
-        serde_json::to_string(&PortServices {
-            bundle: current.bundle.as_ref().map(|b| b.name.clone()),
-            services: self.services.clone(),
+    /// Uses a session token minted elsewhere (the console's New session,
+    /// `session create`). It is checked before anything starts, never
+    /// renewed and never ended here: it lasts until it expires or is
+    /// revoked, like any token handed to an agent.
+    pub async fn adopt(client: Arc<ApiClient>, token: &str) -> Result<Self, LauncherError> {
+        let discovery = client.discover(token).await?;
+        let auth = Arc::new(ArcSwap::from_pointee(proxy_authorization(token)));
+        let expires_at = discovery.session.expires_at;
+        let listing = Arc::new(ArcSwap::from_pointee(listing_json(
+            &discovery.session,
+            &discovery.services,
+        )));
+        let current = Arc::new(ArcSwap::from_pointee(discovery.session));
+        let renewer = tokio::spawn(async move {
+            let left = (expires_at - Utc::now()).to_std().unwrap_or_default();
+            tokio::time::sleep(left).await;
+            eprintln!(
+                "tokenless: the session expired at {expires_at}, so the proxy now refuses requests; create a new one"
+            );
+        });
+        Ok(Self {
+            client,
+            auth,
+            current,
+            services: discovery.services,
+            listing,
+            minted: Arc::new(Mutex::new(Vec::new())),
+            renewal: None,
+            renewer,
         })
-        .unwrap_or_else(|_| r#"{"bundle":null,"services":[]}"#.to_string())
+    }
+
+    /// What the session port serves at `/services`, kept current across
+    /// renewals.
+    pub fn listing(&self) -> Arc<ArcSwap<String>> {
+        self.listing.clone()
+    }
+
+    /// Renews a minted session now instead of when it is due. A given
+    /// session cannot be renewed here.
+    pub async fn renew_now(&self) -> Result<(), LauncherError> {
+        match &self.renewal {
+            Some(renewal) => renewal.once().await.map(|_| ()),
+            None => Err(LauncherError::config(
+                "a given session token is used as is; create a new session to renew it",
+            )),
+        }
     }
 
     /// Stops renewing and ends every unexpired session it minted. Returns
@@ -128,30 +180,67 @@ impl LiveSession {
     }
 }
 
-async fn renew_loop(
+/// The bundle and the services a session reaches, as the session port
+/// serves them: no token and no secret.
+fn listing_json(session: &ProxySession, services: &[DiscoveredService]) -> String {
+    serde_json::to_string(&PortServices {
+        bundle: session.bundle.as_ref().map(|b| b.name.clone()),
+        services: services.to_vec(),
+    })
+    .unwrap_or_else(|_| r#"{"bundle":null,"services":[]}"#.to_string())
+}
+
+/// What renewing a minted session needs, and where it puts the result.
+struct Renewal {
     client: Arc<ApiClient>,
     vault: VaultId,
     request: MintRequest,
     auth: Arc<ArcSwap<String>>,
     current: Arc<ArcSwap<ProxySession>>,
+    listing: Arc<ArcSwap<String>>,
     minted: Minted,
-) {
+}
+
+impl Renewal {
+    /// Mints the next session from the bundle and switches to it. Returns
+    /// when the new one expires.
+    async fn once(&self) -> Result<DateTime<Utc>, LauncherError> {
+        let next = self.client.mint(&self.vault, &self.request).await?;
+        let previous = self.current.load().id;
+        remember(&self.minted, next.session.expires_at, &next.token);
+        self.auth.store(Arc::new(proxy_authorization(&next.token)));
+        info!(previous = %previous, session_id = %next.session.id, expires_at = %next.session.expires_at, "session renewed");
+        // The bundle may hold other services by now; what the agent can ask
+        // about follows. Placeholders already exported to its environment
+        // cannot change.
+        match self.client.discover(&next.token).await {
+            Ok(discovery) => {
+                self.listing
+                    .store(Arc::new(listing_json(&next.session, &discovery.services)));
+            }
+            Err(e) => {
+                warn!(error = %e, "could not list the renewed session's services; keeping the previous list");
+            }
+        }
+        let expires_at = next.session.expires_at;
+        self.current.store(Arc::new(next.session));
+        Ok(expires_at)
+    }
+}
+
+async fn renew_loop(renewal: Arc<Renewal>) {
+    let ttl_secs = renewal.request.ttl_secs;
     let mut backoff = Duration::from_secs(5);
-    let mut wait = renew_in(Utc::now(), current.load().expires_at, request.ttl_secs);
+    let mut wait = renew_in(Utc::now(), renewal.current.load().expires_at, ttl_secs);
     loop {
         tokio::time::sleep(wait).await;
-        match client.mint(&vault, &request).await {
-            Ok(next) => {
-                let previous = current.load().id;
-                remember(&minted, next.session.expires_at, &next.token);
-                auth.store(Arc::new(proxy_authorization(&next.token)));
-                info!(previous = %previous, session_id = %next.session.id, expires_at = %next.session.expires_at, "session renewed");
-                wait = renew_in(Utc::now(), next.session.expires_at, request.ttl_secs);
-                current.store(Arc::new(next.session));
+        match renewal.once().await {
+            Ok(expires_at) => {
+                wait = renew_in(Utc::now(), expires_at, ttl_secs);
                 backoff = Duration::from_secs(5);
             }
             Err(e) => {
-                let expires_at = current.load().expires_at;
+                let expires_at = renewal.current.load().expires_at;
                 let expired = expires_at <= Utc::now();
                 warn!(error = %e, expired, "session renewal failed; retrying");
                 eprintln!(

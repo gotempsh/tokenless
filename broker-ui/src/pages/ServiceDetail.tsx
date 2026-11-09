@@ -4,7 +4,7 @@
 // One service (a credential and how it is sent): what it reaches, the rules
 // and bundles that let agents use it, and everything that changes it.
 
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import {
   ApiError,
@@ -24,6 +24,7 @@ import {
   type UserSummary,
   type Vault,
 } from "../api";
+import { serviceHistoryPhrase } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { KIND_LABEL, targetHosts } from "../catalog";
 import { useAction, useLoad } from "../hooks";
@@ -33,8 +34,7 @@ import {
   Empty,
   ErrorBanner,
   Exact,
-  Fact,
-  Facts,
+  Field,
   FormDialog,
   Mono,
   Panel,
@@ -46,6 +46,7 @@ import {
   useConfirm,
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { DetailLayout, Fact, FactList } from "../components/layout";
 import {
   EMPTY_SECRET,
   initialSecrets,
@@ -58,9 +59,13 @@ import { SubstitutionsEditor, substitutionProblem } from "../components/Substitu
 import { CustomHeadersEditor, referencedKeys } from "../components/VariableInput";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
+import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
+import { useActorNames } from "./Audit";
+import { RequestLog } from "./RequestLog";
 import { SecretSummary, templateOf } from "./Services";
+import { expiryToSend, secretExpired } from "../secretExpiry";
 
 type Editing = "secret" | "headers" | "placeholders" | null;
 
@@ -86,6 +91,7 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const [result, setResult] = useState<CredentialValidation | null>(null);
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
+  const names = useActorNames(user);
 
   // Ignore what is still loaded for another service while this one loads.
   const c = cred.data && cred.data.id === credentialId ? cred.data : undefined;
@@ -101,6 +107,16 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const usedBy = (rules.data?.items ?? []).filter((r) => r.credential_id === credentialId);
   const ruleIds = new Set(usedBy.map((r) => r.id));
   const inBundles = (bundles.data?.items ?? []).filter((b) => b.rule_ids.some((id) => ruleIds.has(id)));
+  const serviceName = c?.name ?? "";
+  const logRules = useMemo(
+    () =>
+      new Map(
+        (rules.data?.items ?? [])
+          .filter((r) => r.credential_id === credentialId)
+          .map((r) => [r.id, { credential: serviceName, rule: r.name }]),
+      ),
+    [rules.data, credentialId, serviceName],
+  );
 
   const test = async (target: CredentialMeta) => {
     setResult(null);
@@ -200,6 +216,24 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         !cred.error && <Skeleton className="h-64 w-full rounded-lg" />
       ) : (
         <>
+          {secretExpired(c.not_after, new Date()) && (
+            <Alert variant="warning">
+              <AlertTriangle className="size-4" />
+              <AlertTitle>The secret expired</AlertTitle>
+              <AlertDescription>
+                The proxy refuses requests to this service until the secret is replaced.{" "}
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className="font-medium underline underline-offset-4"
+                    onClick={() => setEditing("secret")}
+                  >
+                    Replace secret
+                  </button>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           {rules.data && usedBy.length === 0 && (
             <Alert variant="warning">
               <AlertTriangle className="size-4" />
@@ -212,77 +246,96 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
               </AlertDescription>
             </Alert>
           )}
-          <Facts>
-            <Fact label="Type">{KIND_LABEL[template?.kind ?? "http"]}</Fact>
-            <Fact label="Hosts">
-              <Tags values={targetHosts(template, c.host_override)} />
-            </Fact>
-            <Fact label="Secret">
-              <SecretSummary credential={c} />
-            </Fact>
-            <Fact label="Created">
-              <Exact at={c.created_at} />
-            </Fact>
-            <Fact label="Updated">
-              <Relative at={c.updated_at} />
-            </Fact>
-          </Facts>
-          <Section
-            title="Custom headers"
-            actions={<EditButton onClick={() => setEditing("headers")} isAdmin={isAdmin} />}
-          >
-            <ItemList empty="No custom headers.">
-              {c.custom_headers.map((h) => (
-                <li key={h.name} className="flex flex-wrap items-baseline gap-x-2 px-4 py-3 text-sm">
-                  <span className="font-medium">{h.name}</span>
-                  <Mono>{h.value}</Mono>
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section
-            title="Placeholders"
-            actions={<EditButton onClick={() => setEditing("placeholders")} isAdmin={isAdmin} />}
-          >
-            <ItemList empty="No placeholders.">
-              {c.substitutions.map((s) => (
-                <li key={s.placeholder} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3 text-sm">
-                  <Mono>{s.placeholder}</Mono>
-                  <span className="text-muted-foreground">becomes {s.field}</span>
-                  {s.env && <span className="text-muted-foreground">· sets {s.env}</span>}
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section
-            title="Rules"
-            actions={
-              <Button type="button" variant="outline" size="sm" asChild>
-                <a href={`#/vaults/${vaultId}/rules`}>Manage rules</a>
-              </Button>
+          <DetailLayout
+            facts={
+              <FactList>
+                <Fact label="Type">{KIND_LABEL[template?.kind ?? "http"]}</Fact>
+                <Fact label="Hosts">
+                  <Tags values={targetHosts(template, c.host_override)} />
+                </Fact>
+                <Fact label="Secret">
+                  <SecretSummary credential={c} />
+                </Fact>
+                {c.not_after && (
+                  <Fact label="Expires">
+                    <Exact at={c.not_after} />
+                  </Fact>
+                )}
+                <Fact label="Created">
+                  <Exact at={c.created_at} />
+                </Fact>
+                <Fact label="Updated">
+                  <Relative at={c.updated_at} />
+                </Fact>
+              </FactList>
             }
           >
-            <ItemList empty="No rule uses this service.">
-              {usedBy.map((r) => (
-                <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
-                  <span className="font-medium">{r.name}</span>
-                  <Tags values={r.allow.hosts} />
-                  {!r.enabled && <Status tone="neutral">Disabled</Status>}
-                </li>
-              ))}
-            </ItemList>
-          </Section>
-          <Section title="Access bundles">
-            <ItemList empty="Not in any access bundle.">
-              {inBundles.map((b) => (
-                <li key={b.id}>
-                  <a href={`#/bundles/${b.id}`} className="block px-4 py-3 text-sm font-medium hover:bg-muted/50">
-                    {b.name}
-                  </a>
-                </li>
-              ))}
-            </ItemList>
-          </Section>
+            <Section
+              title="Rules"
+              actions={
+                <Button type="button" variant="outline" size="sm" asChild>
+                  <a href={`#/vaults/${vaultId}/rules`}>Manage rules</a>
+                </Button>
+              }
+            >
+              <ItemList empty="No rule uses this service.">
+                {usedBy.map((r) => (
+                  <li key={r.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm">
+                    <span className="font-medium">{r.name}</span>
+                    <Tags values={r.allow.hosts} />
+                    {!r.enabled && <Status tone="neutral">Disabled</Status>}
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section title="Access bundles">
+              <ItemList empty="Not in any access bundle.">
+                {inBundles.map((b) => (
+                  <li key={b.id}>
+                    <a href={`#/bundles/${b.id}`} className="block px-4 py-3 text-sm font-medium hover:bg-muted/50">
+                      {b.name}
+                    </a>
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section
+              title="Custom headers"
+              actions={<EditButton onClick={() => setEditing("headers")} isAdmin={isAdmin} />}
+            >
+              <ItemList empty="No custom headers.">
+                {c.custom_headers.map((h) => (
+                  <li key={h.name} className="flex flex-wrap items-baseline gap-x-2 px-4 py-3 text-sm">
+                    <span className="font-medium">{h.name}</span>
+                    <Mono>{h.value}</Mono>
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <Section
+              title="Placeholders"
+              actions={<EditButton onClick={() => setEditing("placeholders")} isAdmin={isAdmin} />}
+            >
+              <ItemList empty="No placeholders.">
+                {c.substitutions.map((s) => (
+                  <li key={s.placeholder} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3 text-sm">
+                    <Mono>{s.placeholder}</Mono>
+                    <span className="text-muted-foreground">becomes {s.field}</span>
+                    {s.env && <span className="text-muted-foreground">· sets {s.env}</span>}
+                  </li>
+                ))}
+              </ItemList>
+            </Section>
+            <RequestLog
+              query={`vault_id=${vaultId}&credential_id=${credentialId}`}
+              deps={[c.updated_at]}
+              names={names}
+              rules={logRules}
+              phrase={serviceHistoryPhrase}
+              empty="Requests that use this service appear here a few seconds after a proxy handles them."
+              showSession
+            />
+          </DetailLayout>
         </>
       )}
       <FormDialog
@@ -419,11 +472,17 @@ function RotateForm({
     template?.credential_fields ??
     credential.field_names.map((n) => ({ name: n, label: n, required: true, description: "" }));
   const [secrets, setSecrets] = useState(() => initialSecrets(fields, [], null));
+  const [expires, setExpires] = useState("");
+  const expiry = expiryToSend(expires, new Date());
   const action = useAction();
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (expiry.problem) return;
     const ok = await action.run(() =>
-      put<CredentialMeta>(`/credentials/${credential.id}/secret`, { fields: secretValues(secrets) }),
+      put<CredentialMeta>(`/credentials/${credential.id}/secret`, {
+        fields: secretValues(secrets),
+        not_after: expiry.value ?? null,
+      }),
     );
     setSecrets(initialSecrets(fields, [], null));
     if (ok) onDone();
@@ -441,11 +500,25 @@ function RotateForm({
           labelPrefix="New "
         />
       ))}
+      <Field
+        label="Expires (optional)"
+        htmlFor="rotate-expires"
+        hint="When the new secret stops working upstream. The proxy stops sending it then."
+        error={expiry.problem}
+      >
+        <Input
+          id="rotate-expires"
+          type="datetime-local"
+          value={expires}
+          onChange={(e) => setExpires(e.target.value)}
+          aria-invalid={Boolean(expiry.problem)}
+        />
+      </Field>
       <DialogActions>
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={action.busy}>
+        <Button type="submit" disabled={action.busy || Boolean(expiry.problem)}>
           Replace secret
         </Button>
       </DialogActions>

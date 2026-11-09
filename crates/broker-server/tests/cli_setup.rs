@@ -130,7 +130,7 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
     // A join token enrols a proxy.
     let join = client.create_join_token().await.unwrap();
     let control_url = format!("https://{}", server.node_addr);
-    let identity = broker_dataplane::node::enroll(&control_url, &join.token, "laptop")
+    let identity = tokenless_dataplane::node::enroll(&control_url, &join.token, "laptop")
         .await
         .unwrap();
     let state = data.path().join("node.json");

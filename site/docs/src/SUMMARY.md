@@ -20,6 +20,7 @@ SPDX-License-Identifier: MIT OR Apache-2.0
 - [Placeholders and variables](placeholders.md)
 - [Connect an MCP client](mcp.md)
 - [Automation and API keys](automation.md)
+- [Embed it in your platform](embedding.md)
 
 # Operating it
 

@@ -20,14 +20,24 @@ credential goes (a header, usually). tokenless ships with templates for
 over 150 APIs and MCP servers; you can import your own under
 **Templates**.
 
-The secret is write-only. You can replace it, never read it. A service can
-also have custom headers and [placeholders](placeholders.md).
+The secret is write-only. You can replace it, never read it. When the
+secret expires upstream, set its **Expires** date: after it the proxy
+stops sending it and refuses requests to the service until you replace
+it. A service can also have custom headers and
+[placeholders](placeholders.md).
 
 ## Rule
 
 A rule lets a service's credential be used. It says for which hosts,
 paths and methods, and, for an MCP server, which tools. It can only
 narrow what the template allows. A service with no rule is never used.
+
+When several rules of a session allow a request, the proxy uses the one
+whose path matches it most specifically: an exact path, then the longest
+prefix. GitLab's API rule (`/api/*`) therefore takes API calls and the
+GitLab (Git) rule (`/*`) everything else; Confluence (`/wiki/*`) and Jira
+(`/*`) share an Atlassian site the same way. Two rules that match equally
+and would send different credentials are refused, never picked at random.
 
 ## Access bundle
 
@@ -59,7 +69,7 @@ pull a signed policy snapshot from the control plane.
 | Admin | Everything. Only people can be admins. |
 | Editor | Manage rules, bundles and sessions in one vault. |
 | Viewer | Read one vault. |
-| Session issuer | Mint sessions in one vault, nothing else. API keys only. |
 
 Invite people under **People**. Create API keys for automation under
-**API keys**; give agents' launchers a session issuer key.
+**API keys**. Agents get a session, not an API key: create one on an
+access bundle's page and give the agent its token.

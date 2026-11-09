@@ -5,7 +5,6 @@
 //! Authorisation, step-up and audit logging live in the services so that an
 //! embedding control plane gets them too.
 
-use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -13,27 +12,30 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use broker_auth::cookie::clear_session_cookie;
-use broker_control::model::{Page, PageRequest, Settings};
-use broker_control::service::auth::{
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tokenless_auth::cookie::clear_session_cookie;
+use tokenless_control::model::{AuditQuery, Page, PageRequest, Settings};
+use tokenless_control::service::auth::{
     AuthService, ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator,
     LoginRequest, StepUpProof, TotpEnrollment, UserSummary,
 };
-use broker_control::service::bundles::{CreateBundle, UpdateBundle};
-use broker_control::service::policy::{CreateCredential, CreateRule, UpdateRule};
-use broker_control::service::sessions::MintSession;
-use broker_control::service::users::{
+use tokenless_control::service::bundles::{CreateBundle, UpdateBundle};
+use tokenless_control::service::policy::{
+    CreateCredential, CreateRule, RotateCredential, UpdateRule,
+};
+use tokenless_control::service::sessions::MintSession;
+use tokenless_control::service::sso::SsoSignIn;
+use tokenless_control::service::users::{
     AcceptInviteRequest, CreateInvite, InviteInfo, InviteIssued, UpdateUser,
 };
-use broker_control::service::variables::{CreateVariable, ReplaceVariable};
-use broker_core::ids::{
+use tokenless_control::service::variables::{CreateVariable, ReplaceVariable};
+use tokenless_core::ids::{
     ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
     VaultId,
 };
-use broker_core::substitution::Substitution;
-use broker_core::variables::CustomHeader;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use tokenless_core::substitution::Substitution;
+use tokenless_core::variables::CustomHeader;
 
 use super::{ApiJson, ApiQuery, AppState, Authed};
 use crate::error::ApiError;
@@ -59,7 +61,7 @@ impl PageQuery {
 }
 
 pub async fn not_found() -> ApiError {
-    ApiError::Control(broker_control::ControlError::not_found(
+    ApiError::Control(tokenless_control::ControlError::not_found(
         "route",
         "requested path",
     ))
@@ -73,6 +75,10 @@ pub struct SessionInfo {
     csrf_token: String,
     expires_at: DateTime<Utc>,
     step_up_at: Option<DateTime<Utc>>,
+    /// The provider the person signs in and steps up with, when they use
+    /// single sign-on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sso: Option<SsoSignIn>,
 }
 
 pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResult<Response> {
@@ -84,13 +90,14 @@ pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResu
         csrf_token: outcome.csrf_token.clone(),
         expires_at: outcome.expires_at,
         step_up_at: Some(Utc::now()),
+        sso: None,
     };
     let mut response = Json(body).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(response)
 }
 
-fn require_session(authed: &Authed) -> ApiResult<&broker_control::service::auth::SessionAuth> {
+fn require_session(authed: &Authed) -> ApiResult<&tokenless_control::service::auth::SessionAuth> {
     authed.session.as_ref().ok_or_else(|| ApiError::Forbidden {
         reason: "this endpoint requires an interactive UI session, not an API key".into(),
     })
@@ -115,6 +122,11 @@ pub async fn me(State(s): St, authed: Authed) -> ApiResult<Json<SessionInfo>> {
         csrf_token: s.control.auth.csrf_token(&session.token_hash),
         expires_at: session.expires_at,
         step_up_at: session.caller.step_up_at,
+        sso: s
+            .control
+            .sso
+            .sign_in_of(session.user.sso_provider_id.as_ref())
+            .await,
     }))
 }
 
@@ -209,6 +221,31 @@ pub async fn list_vaults(
             .policy
             .list_vaults(&authed.caller, q.request())
             .await?,
+    ))
+}
+
+/// The caller's vaults with what a list shows of each: first services,
+/// live sessions, last request.
+pub async fn vault_overviews(
+    State(s): St,
+    authed: Authed,
+    ApiQuery(q): ApiQuery<PageQuery>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(
+        s.control
+            .vault_overviews(&authed.caller, q.request())
+            .await?,
+    ))
+}
+
+pub async fn vault_overview(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(
+        s.control.vault_overview_by_id(&authed.caller, &id).await?,
     ))
 }
 
@@ -337,22 +374,17 @@ pub async fn get_credential(
     ))
 }
 
-#[derive(Deserialize)]
-pub struct RotateRequest {
-    fields: BTreeMap<String, String>,
-}
-
 pub async fn rotate_credential(
     State(s): St,
     authed: Authed,
     Path(credential_id): Path<String>,
-    ApiJson(req): ApiJson<RotateRequest>,
+    ApiJson(req): ApiJson<RotateCredential>,
 ) -> ApiResult<impl IntoResponse> {
     let id: CredentialId = parse_id("credential", &credential_id)?;
     Ok(Json(
         s.control
             .policy
-            .rotate_credential(&authed.caller, &id, req.fields)
+            .rotate_credential(&authed.caller, &id, req)
             .await?,
     ))
 }
@@ -549,7 +581,7 @@ fn session_bearer(headers: &axum::http::HeaderMap) -> Result<&str, ApiError> {
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|t| t.trim_start().starts_with("v4.public."))
         .ok_or_else(|| {
-            ApiError::Control(broker_control::ControlError::Unauthenticated {
+            ApiError::Control(tokenless_control::ControlError::Unauthenticated {
                 reason: "send the proxy session token as 'Authorization: Bearer v4.public...'"
                     .into(),
             })
@@ -661,6 +693,16 @@ pub async fn mint_session(
     Ok((StatusCode::CREATED, Json(minted)))
 }
 
+/// `GET /vaults/{id}/sessions/limits`: the lifetimes a new session may have.
+pub async fn session_limits(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    Ok(Json(s.control.sessions.limits(&authed.caller, &id).await?))
+}
+
 pub async fn list_sessions(
     State(s): St,
     authed: Authed,
@@ -706,6 +748,27 @@ pub async fn list_bundle_sessions(
     ))
 }
 
+pub async fn get_session(
+    State(s): St,
+    authed: Authed,
+    Path(session_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: SessionId = parse_id("session", &session_id)?;
+    Ok(Json(s.control.sessions.get(&authed.caller, &id).await?))
+}
+
+/// What a session reaches, for the people who manage it.
+pub async fn session_services(
+    State(s): St,
+    authed: Authed,
+    Path(session_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id: SessionId = parse_id("session", &session_id)?;
+    Ok(Json(
+        s.control.sessions.services(&authed.caller, &id).await?,
+    ))
+}
+
 pub async fn revoke_session(
     State(s): St,
     authed: Authed,
@@ -743,7 +806,7 @@ pub async fn update_session(
 pub struct CreatedApiKey {
     /// Shown exactly once; only a hash is stored.
     api_key: String,
-    key: broker_control::model::ApiKey,
+    key: tokenless_control::model::ApiKey,
 }
 
 pub async fn create_api_key(
@@ -889,6 +952,7 @@ pub struct AuditParams {
     vault_id: Option<String>,
     action_prefix: Option<String>,
     session_id: Option<String>,
+    credential_id: Option<String>,
     page: Option<u64>,
     page_size: Option<u64>,
 }
@@ -897,7 +961,7 @@ pub async fn query_audit(
     State(s): St,
     authed: Authed,
     ApiQuery(q): ApiQuery<AuditParams>,
-) -> ApiResult<Json<Page<broker_core::audit::AuditEvent>>> {
+) -> ApiResult<Json<Page<tokenless_core::audit::AuditEvent>>> {
     let vault_id = q
         .vault_id
         .as_deref()
@@ -911,15 +975,24 @@ pub async fn query_audit(
         .filter(|v| !v.is_empty())
         .map(|v| parse_id::<SessionId>("session", v))
         .transpose()?;
+    let credential_id = q
+        .credential_id
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| parse_id::<CredentialId>("credential", v))
+        .transpose()?;
     Ok(Json(
         s.control
             .audit
-            .query_session(
+            .query_events(
                 &authed.caller,
-                vault_id,
-                prefix,
-                session_id,
-                PageRequest::new(q.page, q.page_size),
+                AuditQuery {
+                    vault_id,
+                    action_prefix: prefix,
+                    session_id,
+                    credential_id,
+                    page: PageRequest::new(q.page, q.page_size),
+                },
             )
             .await?,
     ))

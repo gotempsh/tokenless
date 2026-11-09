@@ -30,7 +30,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 const OUTCOME_LABEL: Record<string, string> = { denied: "Denied", failure: "Failed" };
 
 /** Names for the users, API keys and proxies events refer to; admins only. */
-function useActorNames(me: UserSummary): ActorNames {
+export function useActorNames(me: UserSummary): ActorNames {
   const isAdmin = me.role === "admin";
   const none = () => Promise.resolve(undefined);
   const users = useLoad(() => (isAdmin ? get<Page<UserSummary>>("/users?page_size=100") : none()), [isAdmin]);
@@ -60,7 +60,7 @@ export function Audit({ me }: { me: UserSummary }) {
   const filtered = category.prefix !== "";
 
   return (
-    <PageContainer>
+    <PageContainer width="settings">
       <PageHeader title="Audit log" />
       <Select
         value={category.label}
@@ -146,7 +146,7 @@ export function Audit({ me }: { me: UserSummary }) {
 }
 
 /** Everything the event recorded, including the raw identifiers the list leaves out. */
-function EventDetails({ event, names, onClose }: { event: AuditEvent; names: ActorNames; onClose: () => void }) {
+export function EventDetails({ event, names, onClose }: { event: AuditEvent; names: ActorNames; onClose?: () => void }) {
   return (
     <div className="space-y-4">
       <p className="text-sm">
@@ -183,11 +183,13 @@ function EventDetails({ event, names, onClose }: { event: AuditEvent; names: Act
           </Fact>
         ))}
       </dl>
-      <DialogActions>
-        <Button type="button" variant="outline" onClick={onClose}>
-          Close
-        </Button>
-      </DialogActions>
+      {onClose && (
+        <DialogActions>
+          <Button type="button" variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogActions>
+      )}
     </div>
   );
 }

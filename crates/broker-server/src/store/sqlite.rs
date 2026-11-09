@@ -12,25 +12,6 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use broker_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
-};
-use broker_control::store::{
-    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NodeStore, PolicyStore,
-    StoredCiphertext,
-};
-use broker_control::StoreError;
-use broker_core::audit::{AuditEvent, AuditOutcome};
-use broker_core::authz::Role;
-use broker_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
-};
-use broker_core::substitution::Substitution;
-use broker_core::template::ServiceTemplate;
-use broker_core::variables::CustomHeader;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -38,6 +19,28 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use tokenless_control::model::{
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
+    PageRequest, ProxySession, Rule, SessionBundle, Settings, SsoIdentity, StoredTemplate,
+    TemplateSource, TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+};
+use tokenless_control::store::{
+    AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
+    SecretReplaced, StoredCiphertext,
+};
+use tokenless_control::StoreError;
+use tokenless_core::audit::{AuditEvent, AuditOutcome};
+use tokenless_core::authz::Role;
+use tokenless_core::ids::{
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
+    VariableId, VaultId,
+};
+use tokenless_core::session::open_traffic_horizon;
+use tokenless_core::substitution::Substitution;
+use tokenless_core::template::ServiceTemplate;
+use tokenless_core::variables::CustomHeader;
+
+mod sso;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -109,6 +112,19 @@ where
     raw.parse().map_err(|e: T::Err| {
         StoreError::backend(&format!("decode {column}"), format!("'{raw}': {e}"))
     })
+}
+
+fn get_opt_id<T: FromStr>(row: &SqliteRow, column: &str) -> Result<Option<T>, StoreError>
+where
+    T::Err: std::fmt::Display,
+{
+    get::<Option<String>>(row, column)?
+        .map(|raw| {
+            raw.parse().map_err(|e: T::Err| {
+                StoreError::backend(&format!("decode {column}"), format!("'{raw}': {e}"))
+            })
+        })
+        .transpose()
 }
 
 fn role(row: &SqliteRow) -> Result<Role, StoreError> {
@@ -216,6 +232,11 @@ async fn finish(
         .map_err(|e| StoreError::backend(&format!("commit {operation}"), e))
 }
 
+fn generation_i64(generation: u64) -> Result<i64, StoreError> {
+    i64::try_from(generation)
+        .map_err(|_| StoreError::backend("store credential generation", "beyond i64"))
+}
+
 fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
     Ok(CredentialMeta {
         id: get_id(row, "id")?,
@@ -228,13 +249,16 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         custom_headers: from_json("custom_headers", &get::<String>(row, "custom_headers")?)?,
         variable_refs: from_json("variable_refs", &get::<String>(row, "variable_refs")?)?,
         substitutions: from_json("substitutions", &get::<String>(row, "substitutions")?)?,
+        not_after: get_opt_ts(row, "not_after")?,
+        secret_generation: u64::try_from(get::<i64>(row, "secret_generation")?).unwrap_or(0),
+        rotation_id: get(row, "rotation_id")?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at";
 
 fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
     Ok(Variable {
@@ -264,7 +288,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -276,6 +300,9 @@ impl CredentialStore for SqliteStore {
         .bind(to_json("custom_headers", &meta.custom_headers)?)
         .bind(to_json("variable_refs", &meta.variable_refs)?)
         .bind(to_json("substitutions", &meta.substitutions)?)
+        .bind(opt_ts(&meta.not_after))
+        .bind(generation_i64(meta.secret_generation)?)
+        .bind(&meta.rotation_id)
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -335,28 +362,65 @@ impl CredentialStore for SqliteStore {
     async fn replace_secret(
         &self,
         id: &CredentialId,
-        ciphertext: Vec<u8>,
-        field_names: Vec<String>,
-        variable_refs: Vec<String>,
+        secret: NewSecret,
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<SecretReplaced, StoreError> {
         let mut tx = self.begin("replace_secret").await?;
+        let row =
+            sqlx::query("SELECT secret_generation, rotation_id FROM credentials WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db("read credential generation", "credential"))?
+                .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let current = u64::try_from(get::<i64>(&row, "secret_generation")?).unwrap_or(0);
+        let rotation_id: Option<String> = get(&row, "rotation_id")?;
+        if secret.rotation_id.is_some() && secret.rotation_id == rotation_id {
+            return Ok(SecretReplaced::AlreadyApplied {
+                generation: current,
+            });
+        }
+        let stale = |current| StoreError::StaleGeneration {
+            id: id.to_string(),
+            expected: secret.expected_generation.unwrap_or(current),
+            current,
+        };
+        if secret.expected_generation.is_some_and(|e| e != current) {
+            return Err(stale(current));
+        }
+        // Compare and swap on the generation read above, so a rotation
+        // committed in between makes this one stale rather than lost.
         let result = sqlx::query(
-            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
+            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, secret_generation = secret_generation + 1, rotation_id = ?, updated_at = ? WHERE id = ? AND secret_generation = ?",
         )
-        .bind(ciphertext)
-        .bind(to_json("field_names", &field_names)?)
-        .bind(to_json("variable_refs", &variable_refs)?)
+        .bind(secret.ciphertext.as_slice())
+        .bind(to_json("field_names", &secret.field_names)?)
+        .bind(to_json("variable_refs", &secret.variable_refs)?)
+        .bind(opt_ts(&secret.not_after))
+        .bind(&secret.rotation_id)
         .bind(ts(&updated_at))
         .bind(id.to_string())
+        .bind(generation_i64(current)?)
         .execute(&mut *tx)
         .await
         .map_err(db("replace credential secret", "credential"))?;
         if result.rows_affected() == 0 {
-            return Err(StoreError::not_found("credential", id));
+            let now: Option<i64> =
+                sqlx::query_scalar("SELECT secret_generation FROM credentials WHERE id = ?")
+                    .bind(id.to_string())
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db("read credential generation", "credential"))?;
+            return Err(match now {
+                None => StoreError::not_found("credential", id),
+                Some(now) => stale(u64::try_from(now).unwrap_or(0)),
+            });
         }
-        finish(tx, audit, "replace_secret").await
+        finish(tx, audit, "replace_secret").await?;
+        Ok(SecretReplaced::Written {
+            generation: current + 1,
+        })
     }
 
     async fn delete_credential(
@@ -615,7 +679,7 @@ fn vault_from_row(row: &SqliteRow) -> Result<Vault, StoreError> {
     Ok(Vault {
         id: get_id(row, "id")?,
         name: get(row, "name")?,
-        scope: broker_core::scope::Scope::parse(&scope)
+        scope: tokenless_core::scope::Scope::parse(&scope)
             .map_err(|e| StoreError::backend("decode scope", e))?,
         created_at: get_ts(row, "created_at")?,
     })
@@ -678,6 +742,7 @@ fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
         bundle,
         labels: from_json("labels", &get::<String>(row, "labels")?)?,
         request_limit: get::<Option<i64>>(row, "request_limit")?.map(to_u64),
+        node_id: get_opt_id(row, "node_id")?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         expires_at: get_ts(row, "expires_at")?,
@@ -687,7 +752,7 @@ fn session_from_row(row: &SqliteRow) -> Result<ProxySession, StoreError> {
 
 const RULE_COLUMNS: &str =
     "id, vault_id, credential_id, name, allow, enabled, created_by, created_at, updated_at";
-const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
+const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
 
 /// Bundle columns plus its rule ids as a JSON array, in one statement.
 const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
@@ -790,7 +855,7 @@ impl PolicyStore for SqliteStore {
         )
         .bind(ts(&at))
         .bind(&vault)
-        .bind(ts(&at))
+        .bind(ts(&open_traffic_horizon(at)))
         .execute(&mut *tx)
         .await
         .map_err(db("revoke vault sessions", "vault"))?
@@ -1165,7 +1230,7 @@ impl PolicyStore for SqliteStore {
         )
         .bind(ts(&at))
         .bind(id.to_string())
-        .bind(ts(&at))
+        .bind(ts(&open_traffic_horizon(at)))
         .execute(&mut *tx)
         .await
         .map_err(db("revoke access bundle sessions", "session"))?
@@ -1179,12 +1244,13 @@ impl PolicyStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_session").await?;
-        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO proxy_sessions (id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(s.id.to_string())
             .bind(s.vault_id.to_string())
             .bind(to_json("rule_ids", &s.rule_ids)?)
             .bind(to_json("labels", &s.labels)?)
             .bind(s.request_limit.map(to_i64))
+            .bind(s.node_id.map(|n| n.to_string()))
             .bind(&s.created_by)
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
@@ -1322,6 +1388,23 @@ impl PolicyStore for SqliteStore {
             .collect()
     }
 
+    async fn list_live_sessions_for_node(
+        &self,
+        node: &NodeId,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE node_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY id");
+        sqlx::query(&sql)
+            .bind(node.to_string())
+            .bind(ts(&now))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list a node's live sessions", "session"))?
+            .iter()
+            .map(session_from_row)
+            .collect()
+    }
+
     async fn get_settings(&self) -> Result<Settings, StoreError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = 'instance'")
             .fetch_optional(&self.pool)
@@ -1379,13 +1462,25 @@ impl AuditSink for SqliteStore {
     async fn query(&self, query: &AuditQuery) -> Result<Page<AuditEvent>, StoreError> {
         let mut filter = String::from(" WHERE 1 = 1");
         if query.vault_id.is_some() {
-            filter.push_str(" AND vault_id = ?");
+            // Narrowed to a session or a service, the vault only confirms
+            // the caller may read it: `+` keeps SQLite on the narrower
+            // index instead of walking the whole vault's history.
+            if query.session_id.is_some() || query.credential_id.is_some() {
+                filter.push_str(" AND +vault_id = ?");
+            } else {
+                filter.push_str(" AND vault_id = ?");
+            }
         }
         if query.action_prefix.is_some() {
             filter.push_str(" AND substr(action, 1, ?) = ?");
         }
         if query.session_id.is_some() {
-            filter.push_str(" AND json_extract(detail, '$.session_id') = ?");
+            // Indexed (migration 0010): a live session's page polls this.
+            filter.push_str(" AND session_ref = ?");
+        }
+        if query.credential_id.is_some() {
+            // Indexed (migration 0012): a service's page lists its log.
+            filter.push_str(" AND credential_ref = ?");
         }
         let count_sql = format!("SELECT COUNT(*) AS n FROM audit_events{filter}");
         let list_sql =
@@ -1402,6 +1497,10 @@ impl AuditSink for SqliteStore {
             list = list.bind(len).bind(prefix.clone());
         }
         if let Some(id) = &query.session_id {
+            count = count.bind(id.to_string());
+            list = list.bind(id.to_string());
+        }
+        if let Some(id) = &query.credential_id {
             count = count.bind(id.to_string());
             list = list.bind(id.to_string());
         }
@@ -1425,6 +1524,23 @@ impl AuditSink for SqliteStore {
             page_size: query.page.page_size,
         })
     }
+
+    async fn latest_at(
+        &self,
+        vault_id: &VaultId,
+        action: &str,
+    ) -> Result<Option<DateTime<Utc>>, StoreError> {
+        // One entry of audit_events_vault_action_at (migration 0011), no count.
+        let row = sqlx::query(
+            "SELECT at FROM audit_events WHERE vault_id = ? AND action = ? ORDER BY at DESC LIMIT 1",
+        )
+        .bind(vault_id.to_string())
+        .bind(action)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db("find the latest audit event", "audit"))?;
+        row.map(|r| get_ts(&r, "at")).transpose()
+    }
 }
 
 fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
@@ -1437,6 +1553,13 @@ fn user_from_row(row: &SqliteRow) -> Result<User, StoreError> {
         role: role(row)?,
         created_at: get_ts(row, "created_at")?,
         disabled_at: get_opt_ts(row, "disabled_at")?,
+        sso: match get_opt_id::<OidcProviderId>(row, "sso_provider_id")? {
+            Some(provider_id) => Some(SsoIdentity {
+                provider_id,
+                subject: get(row, "sso_subject")?,
+            }),
+            None => None,
+        },
     })
 }
 
@@ -1460,7 +1583,7 @@ fn invite_from_row(row: &SqliteRow) -> Result<Invite, StoreError> {
 }
 
 async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at, disabled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO users (id, username, password_hash, totp_secret_enc, totp_last_step, role, created_at, disabled_at, sso_provider_id, sso_subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(u.id.to_string())
         .bind(&u.username)
         .bind(&u.password_hash)
@@ -1469,6 +1592,8 @@ async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Resu
         .bind(u.role.as_str())
         .bind(ts(&u.created_at))
         .bind(opt_ts(&u.disabled_at))
+        .bind(u.sso.as_ref().map(|s| s.provider_id.to_string()))
+        .bind(u.sso.as_ref().map(|s| s.subject.clone()))
         .execute(&mut **tx)
         .await
         .map_err(db("insert user", "user"))?;
@@ -1929,6 +2054,7 @@ fn node_from_row(row: &SqliteRow) -> Result<Node, StoreError> {
         enrolled_at: get_ts(row, "enrolled_at")?,
         last_seen_at: get_opt_ts(row, "last_seen_at")?,
         revoked_at: get_opt_ts(row, "revoked_at")?,
+        scoped_rules: get::<i64>(row, "scoped_rules")? != 0,
     })
 }
 
@@ -1973,7 +2099,7 @@ impl NodeStore for SqliteStore {
 
     async fn insert_node(&self, n: Node, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_node").await?;
-        sqlx::query("INSERT INTO nodes (id, name, seal_public_key, cert_serial, cert_not_after, enrolled_at, last_seen_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO nodes (id, name, seal_public_key, cert_serial, cert_not_after, enrolled_at, last_seen_at, revoked_at, scoped_rules) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(n.id.to_string())
             .bind(&n.name)
             .bind(&n.seal_public_key)
@@ -1982,6 +2108,7 @@ impl NodeStore for SqliteStore {
             .bind(ts(&n.enrolled_at))
             .bind(opt_ts(&n.last_seen_at))
             .bind(opt_ts(&n.revoked_at))
+            .bind(i64::from(n.scoped_rules))
             .execute(&mut *tx)
             .await
             .map_err(db("insert node", "node"))?;
@@ -2158,6 +2285,20 @@ impl NodeStore for SqliteStore {
                 ciphertext: get(&row, "totp_secret_enc")?,
             });
         }
+        for row in sqlx::query(
+            "SELECT id, client_secret_enc FROM oidc_providers WHERE client_secret_enc IS NOT NULL",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db("list identity provider ciphertexts", "oidc_provider"))?
+        {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::OidcClientSecret {
+                    id: get_id(&row, "id")?,
+                },
+                ciphertext: get(&row, "client_secret_enc")?,
+            });
+        }
         for row in sqlx::query("SELECT name, value FROM key_material")
             .fetch_all(&self.pool)
             .await
@@ -2197,6 +2338,10 @@ impl NodeStore for SqliteStore {
                 CiphertextOwner::KeyMaterial { name } => (
                     "UPDATE key_material SET value = ? WHERE name = ? AND value = ?",
                     name.clone(),
+                ),
+                CiphertextOwner::OidcClientSecret { id } => (
+                    "UPDATE oidc_providers SET client_secret_enc = ? WHERE id = ? AND client_secret_enc = ?",
+                    id.to_string(),
                 ),
             };
             let result = sqlx::query(sql)

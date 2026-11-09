@@ -74,6 +74,23 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  embedded-host:
+    name: Embedded host example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/embedded-host
+      # Outside the workspace: it can use only what the crates make public.
+      - name: Clippy
+        run: cargo clippy --manifest-path examples/embedded-host/Cargo.toml --locked -- -D warnings
+      - name: Run
+        run: cargo run --manifest-path examples/embedded-host/Cargo.toml --locked
+
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest

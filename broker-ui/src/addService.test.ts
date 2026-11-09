@@ -4,6 +4,11 @@
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
 import {
+  sessionsWithout,
+  bundlesToJoin,
+  chosenBundlesProblem,
+  newBundleProblem,
+  unlistedBundles,
   addService,
   freeName,
   nameTaken,
@@ -21,6 +26,7 @@ function fakeApi(failOnce?: keyof AddServiceApi) {
   const calls: string[] = [];
   const bundles = new Map<string, AccessBundle>([
     ["b1", { id: "b1", vault_id: "v1", name: "code-review", description: "", rule_ids: ["r0"], created_by: "u", created_at: at, updated_at: at }],
+    ["b2", { id: "b2", vault_id: "v1", name: "research", description: "", rule_ids: [], created_by: "u", created_at: at, updated_at: at }],
   ]);
   let failed = false;
   const guard = (name: keyof AddServiceApi) => {
@@ -107,13 +113,46 @@ describe("addService", () => {
       vault: { kind: "existing", id: "v1", name: "main" },
       credential,
       access: "read_only",
-      bundle: { kind: "existing", id: "b1", name: "code-review" },
+      bundles: { join: [{ id: "b1", name: "code-review" }] },
     };
     const done = await addService(plan, api);
     expect(calls).toEqual(["createCredential", "createRule", "getBundle", "setBundleRules"]);
     expect(done.rule?.allow.methods).toEqual(["GET", "HEAD"]);
     expect(done.rule?.name).toBe("Example API");
-    expect(done.bundle?.rule_ids).toEqual(["r0", "r1"]);
+    expect(done.bundles?.map((b) => b.rule_ids)).toEqual([["r0", "r1"]]);
+  });
+
+  test("adds the service to several bundles and a new one", async () => {
+    const { api, calls } = fakeApi();
+    const done = await addService(
+      {
+        vault: { kind: "existing", id: "v1", name: "main" },
+        credential,
+        access: "full",
+        bundles: {
+          join: [
+            { id: "b1", name: "code-review" },
+            { id: "b2", name: "research" },
+          ],
+          create: { name: " triage ", description: "" },
+        },
+      },
+      api,
+    );
+    expect(calls).toEqual([
+      "createCredential",
+      "createRule",
+      "getBundle",
+      "setBundleRules",
+      "getBundle",
+      "setBundleRules",
+      "createBundle",
+    ]);
+    expect(done.bundles?.map((b) => [b.name, b.rule_ids])).toEqual([
+      ["code-review", ["r0", "r1"]],
+      ["research", ["r1"]],
+      ["triage", ["r1"]],
+    ]);
   });
 
   test("creates the vault and a new bundle", async () => {
@@ -123,24 +162,50 @@ describe("addService", () => {
         vault: { kind: "new", name: "  agents  " },
         credential,
         access: "full",
-        bundle: { kind: "new", name: "research", description: "" },
+        bundles: { join: [], create: { name: "research", description: "" } },
       },
       api,
     );
     expect(calls).toEqual(["createVault", "createCredential", "createRule", "createBundle"]);
     expect(done.vault).toEqual({ id: "v-new", name: "agents", created: true });
     expect(done.rule?.allow.methods).toEqual(["*"]);
-    expect(done.bundle).toMatchObject({ vault_id: "v-new", name: "research", rule_ids: ["r1"] });
+    expect(done.bundles).toEqual([expect.objectContaining({ vault_id: "v-new", name: "research", rule_ids: ["r1"] })]);
   });
 
-  test("skips the bundle when none is chosen", async () => {
+  test("adds the service to no bundle when none is chosen", async () => {
     const { api, calls } = fakeApi();
     const done = await addService(
-      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundle: { kind: "none" } },
+      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundles: { join: [] } },
       api,
     );
     expect(calls).toEqual(["createCredential", "createRule"]);
-    expect(done.bundle).toBeUndefined();
+    expect(done.bundles).toBeUndefined();
+  });
+
+  test("a bundle that fails is named, and a retry does not join the others again", async () => {
+    const { api, calls } = fakeApi("createBundle");
+    const plan: AddServicePlan = {
+      vault: { kind: "existing", id: "v1", name: "main" },
+      credential,
+      access: "full",
+      bundles: { join: [{ id: "b1", name: "code-review" }], create: { name: "triage", description: "" } },
+    };
+    let error: unknown;
+    try {
+      await addService(plan, api);
+    } catch (e) {
+      error = e;
+    }
+    const failure = error as AddServiceError;
+    expect(failure.step).toBe("bundle");
+    expect(failure.message).toBe(
+      'Created service "Example API", rule "Example API", but creating access bundle "triage" failed: createBundle refused. Try again to continue from that step; nothing is created twice.',
+    );
+    expect(failure.progress.bundles?.map((b) => b.name)).toEqual(["code-review"]);
+
+    const done = await addService(plan, api, failure.progress);
+    expect(calls.filter((c) => c === "setBundleRules")).toHaveLength(1);
+    expect(done.bundles?.map((b) => b.name)).toEqual(["code-review", "triage"]);
   });
 
   test("a failed step names what exists, and a retry resumes without duplicates", async () => {
@@ -149,7 +214,7 @@ describe("addService", () => {
       vault: { kind: "existing", id: "v1", name: "main" },
       credential,
       access: "full",
-      bundle: { kind: "existing", id: "b1", name: "code-review" },
+      bundles: { join: [{ id: "b1", name: "code-review" }] },
     };
     let error: unknown;
     try {
@@ -167,13 +232,13 @@ describe("addService", () => {
 
     const done = await addService(plan, api, failure.progress);
     expect(calls.filter((c) => c === "createCredential")).toHaveLength(1);
-    expect(done.bundle?.rule_ids).toEqual(["r0", "r1"]);
+    expect(done.bundles?.[0]?.rule_ids).toEqual(["r0", "r1"]);
   });
 
   test("a failure on the first step reads as a plain error", async () => {
     const { api } = fakeApi("createVault");
     const run = addService(
-      { vault: { kind: "new", name: "x" }, credential, access: "full", bundle: { kind: "none" } },
+      { vault: { kind: "new", name: "x" }, credential, access: "full", bundles: { join: [] } },
       api,
     );
     await expect(run).rejects.toThrow("Creating the vault failed: createVault refused");
@@ -188,11 +253,41 @@ describe("addService", () => {
         vault: { kind: "existing", id: "v1", name: "main" },
         credential,
         access: "full",
-        bundle: { kind: "existing", id: "b1", name: "code-review" },
+        bundles: { join: [{ id: "b1", name: "code-review" }] },
       },
       api,
     );
     expect(calls).not.toContain("setBundleRules");
+  });
+});
+
+describe("sessionsWithout", () => {
+  const session = (id: string, rules: string[], expires: string, revoked: string | null = null) => ({
+    id,
+    vault_id: "v1",
+    rule_ids: rules,
+    bundle: { id: "b1", name: "code-review" },
+    labels: {},
+    request_limit: null,
+    created_by: "u",
+    created_at: at,
+    expires_at: expires,
+    revoked_at: revoked,
+  });
+  const now = new Date("2026-01-01T12:00:00Z");
+
+  test("counts running sessions minted before the service joined", () => {
+    const sessions = [
+      session("old", ["r0"], "2026-01-01T13:00:00Z"),
+      session("new", ["r0", "r1"], "2026-01-01T13:00:00Z"),
+      session("ended", ["r0"], "2026-01-01T13:00:00Z", "2026-01-01T11:00:00Z"),
+      session("expired", ["r0"], "2026-01-01T11:59:59Z"),
+    ];
+    expect(sessionsWithout(sessions, "r1", now)).toBe(1);
+  });
+
+  test("is zero when nothing is running", () => {
+    expect(sessionsWithout([], "r1", now)).toBe(0);
   });
 });
 
@@ -231,5 +326,43 @@ describe("service names", () => {
     expect(freeName("GitHub", [])).toBe("GitHub");
     expect(freeName("GitHub", ["GitHub"])).toBe("GitHub 2");
     expect(freeName("GitHub", ["GitHub", "GitHub 2", "GitHub1"])).toBe("GitHub 3");
+  });
+});
+
+describe("bundles a service joins", () => {
+  const b = (id: string, name: string) => ({ id, name }) as AccessBundle;
+
+  test("a chosen bundle joins even when the vault's list hasn't loaded or doesn't show it", () => {
+    expect(bundlesToJoin(["b1"], undefined)).toEqual([{ id: "b1", name: "the access bundle" }]);
+    expect(bundlesToJoin(["b1", "b2"], [b("b2", "triage")])).toEqual([
+      { id: "b1", name: "the access bundle" },
+      { id: "b2", name: "triage" },
+    ]);
+    expect(bundlesToJoin([], [b("b2", "triage")])).toEqual([]);
+  });
+
+  test("a chosen bundle the list doesn't show can be seen and unchecked", () => {
+    expect(unlistedBundles(["b1"], undefined)).toEqual([]);
+    expect(unlistedBundles(["b1", "b2"], [b("b2", "triage")])).toEqual(["b1"]);
+    expect(unlistedBundles(["b2"], [b("b2", "triage")])).toEqual([]);
+  });
+
+  test("a chosen bundle missing from the vault's whole list stops the add before anything is created", () => {
+    // Deleted since the link was made, or of another vault.
+    expect(chosenBundlesProblem(["gone"], [b("b2", "triage")], true)).toContain("Uncheck it to continue");
+    // The list is only a first page: it may be further on, so it joins.
+    expect(chosenBundlesProblem(["gone"], [b("b2", "triage")], false)).toBeNull();
+    // Still loading.
+    expect(chosenBundlesProblem(["b1"], undefined, false)).toBeNull();
+    expect(chosenBundlesProblem(["b2"], [b("b2", "triage")], true)).toBeNull();
+    expect(chosenBundlesProblem([], [], true)).toBeNull();
+  });
+
+  test("a new bundle's name waits for the list it must not repeat", () => {
+    expect(newBundleProblem("triage", undefined)).toContain("haven't loaded");
+    expect(newBundleProblem("triage", [b("b2", "triage")])).toBe("Check triage above instead of creating it again.");
+    expect(newBundleProblem(" review ", [b("b2", "triage")])).toBeNull();
+    expect(newBundleProblem("", [])).toBe("Name the new access bundle first.");
+    expect(newBundleProblem("no spaces", [])).toBe("Fix the bundle name first.");
   });
 });

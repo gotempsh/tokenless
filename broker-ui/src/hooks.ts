@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "./api";
 
 export interface Loaded<T> {
@@ -39,6 +39,19 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[]): Loaded<T> {
     };
   }, [run, tick]);
   return { data, error, loading, reload: () => setTick((t) => t + 1) };
+}
+
+/** Calls `reload` every `ms` while `enabled` and the page is visible. */
+export function usePolling(reload: () => void, ms: number, enabled: boolean) {
+  const latest = useRef(reload);
+  latest.current = reload;
+  useEffect(() => {
+    if (!enabled) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") latest.current();
+    }, ms);
+    return () => window.clearInterval(timer);
+  }, [ms, enabled]);
 }
 
 /** Runs a mutation, tracking busy and error state. */
