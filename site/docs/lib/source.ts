@@ -35,7 +35,7 @@ export function plainMarkdown(md: string): string {
 export function llmsIndex(): string {
   return docsLlms
     .index()
-    .replace(/^# .*$/m, '# tokenless\n\n> Give AI agents access to APIs without giving them the keys. Every page is also Markdown at its address plus `.md`.');
+    .replace(/^# .*$/m, '# tokenless\n\n> Give AI agents access to APIs without giving them the keys. Every page is also Markdown at its address plus `.md`; the home page is at `/index.md`.');
 }
 
 const contentUrl = createGetUrl('/llms.mdx');

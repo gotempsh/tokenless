@@ -7,8 +7,9 @@
 	auto_https off
 }
 
-# Every response's headers, the 404 page's included: errors are handled by
-# their own routes, which the site's `header` does not reach.
+# Every response's headers, the 404 page's included. A header block that
+# deletes one is deferred, and deferred headers don't reach the error route,
+# so it imports them again.
 (headers) {
 	header {
 		X-Content-Type-Options nosniff
@@ -36,14 +37,21 @@
 	# read `/\evil.example` as `//evil.example`. Anything else goes home.
 	@olddocs path /docs /docs/*
 	route @olddocs {
+		redir /docs/introduction.html / 308
 		@page path_regexp page ^/docs/([a-z0-9_-]+)\.html$
 		redir @page /{re.page.1} 308
 		redir * / 308
 	}
 
+	# The introduction was a page of its own; it is the home page now.
+	@introduction path /introduction /introduction.html
+	redir @introduction / 308
+
 	# Every page is also Markdown, for agents: /install.md is the install
-	# page's. The build writes them under /llms.mdx/.
-	rewrite /index.md /llms.mdx/content.md
+	# page's, and the home page's is /.md as well as /index.md. The build
+	# writes them under /llms.mdx/.
+	@homemd path /.md /index.md /introduction.md
+	rewrite @homemd /llms.mdx/content.md
 	@md path_regexp md ^/([a-z0-9_-]+(?:/[a-z0-9_-]+)*)\.md$
 	rewrite @md /llms.mdx/{re.md.1}/content.md
 
@@ -52,6 +60,11 @@
 	file_server
 	handle_errors 404 {
 		import headers
+		# The page is HTML whatever was asked for, and a missing file may
+		# appear with the next deploy: replace the type and caching set above
+		# for a .md or a /_next/static/ path.
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-cache"
 		rewrite * /404.html
 		file_server
 	}

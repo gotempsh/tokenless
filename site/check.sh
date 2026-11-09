@@ -52,6 +52,26 @@ type() {
 	esac
 }
 
+# cache <path> <text>: the response's Cache-Control contains it, and a
+# missing file's is never "immutable".
+cache() {
+	got=$(curl -s --path-as-is -o /dev/null -D - "$base$1" | tr -d '\r' | grep -i '^cache-control:' || true)
+	case "$got" in
+	*"$2"*)
+		if [ "$2" != immutable ] && printf '%s' "$got" | grep -q immutable; then
+			echo "FAIL $1: '$got' is immutable"
+			failed=1
+		else
+			echo "ok   $1 $got"
+		fi
+		;;
+	*)
+		echo "FAIL $1: got '$got', want '$2'"
+		failed=1
+		;;
+	esac
+}
+
 # body <path> <text>: the response contains it.
 body() {
 	if curl -s --path-as-is "$base$1" | grep -qF "$2"; then
@@ -68,6 +88,8 @@ expect /quickstart.html 200
 expect /install.sh 200
 expect /no-such-page 404
 expect /no-such-page.md 404
+# A missing page is HTML however it was asked for.
+type /no-such-page.md text/html
 headers /
 headers /no-such-page
 body / 'Copy prompt'
@@ -80,12 +102,28 @@ type /install.md text/markdown
 body /install.md '# Install'
 expect /index.md 200
 body /index.md 'Set up tokenless on this machine'
+# llms.txt lists the home page as /, so /.md is its Markdown too.
+expect /.md 200
+type /.md text/markdown
+body /.md 'Set up tokenless on this machine'
+expect /introduction.md 200
 type /llms.txt text/plain
 body /llms.txt '[Quickstart](/quickstart)'
 body /llms-full.txt '# Concepts'
 type /api/search application/json
 type /install.sh text/plain
 
+# Built files never change, so they are cached for good; a missing one
+# must not be.
+asset=$(curl -s "$base/" | grep -oE '/_next/static/[^"]+\.js' | head -n 1)
+cache "$asset" immutable
+cache /_next/static/chunks/no-such-chunk.js no-cache
+type /_next/static/chunks/no-such-chunk.js text/html
+
+# The introduction was its own page before it became the home page.
+expect /introduction 308 /
+expect /introduction.html 308 /
+expect /docs/introduction.html 308 /
 expect /docs 308 /
 expect /docs/ 308 /
 expect /docs/quickstart.html 308 /quickstart

@@ -11,6 +11,7 @@ import {
   ViewOptionsPopover,
 } from 'fumadocs-ui/layouts/notebook/page';
 import type { Metadata } from 'next';
+import type { ComponentProps } from 'react';
 import { notFound } from 'next/navigation';
 import { getMDXComponents } from '@/components/mdx';
 import { repo } from '@/lib/layout.shared';
@@ -24,6 +25,11 @@ export default async function Page(props: Props) {
   if (!page) notFound();
   const MDX = page.data.body;
   const md = markdownUrl(page);
+  const PageLink = createRelativeLink(source, page);
+  // A file such as /llms.txt or /install.md is not a page: the client-side
+  // router would turn /llms.txt into /llms, so load it as a plain link.
+  const a = (props: ComponentProps<'a'>) =>
+    /\.(md|txt|sh)(#.*)?$/.test(props.href ?? '') ? <a {...props} /> : <PageLink {...props} />;
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
@@ -35,7 +41,7 @@ export default async function Page(props: Props) {
         <ViewOptionsPopover markdownUrl={md} githubUrl={`${repo}/blob/main/site/docs/content/${page.path}`} />
       </div>
       <DocsBody>
-        <MDX components={getMDXComponents({ a: createRelativeLink(source, page) })} />
+        <MDX components={getMDXComponents({ a })} />
       </DocsBody>
     </DocsPage>
   );
