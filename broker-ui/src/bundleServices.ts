@@ -38,17 +38,58 @@ export interface BundleServices {
   rulesOf: (b: AccessBundle) => Rule[];
   /** A bundle's services, or undefined until they have loaded. */
   servicesOf: (b: AccessBundle) => StripService[] | undefined;
-  loading: boolean;
+  /** Why the vaults' rules and credentials could not be loaded. */
   error: string | null;
 }
 
-/** Loads what naming `bundles`' services takes: their vaults' rules and credentials, and the templates. */
+export interface VaultServices {
+  /** The vaults these were loaded for: their IDs, sorted, joined with commas. */
+  key: string;
+  rules: Rule[];
+  credentials: CredentialMeta[];
+}
+
+interface Loading<T> {
+  data: T | undefined;
+  error: string | null;
+}
+
+/** The vaults `bundles` belong to, as the key their services are loaded under. */
+export function vaultsKey(bundles: AccessBundle[] | undefined): string {
+  return [...new Set((bundles ?? []).map((b) => b.vault_id))].sort().join(",");
+}
+
+/**
+ * Bundles' services from what has loaded so far for the vaults in `key`.
+ * They stay undefined while loading. A failed load still settles them, as
+ * well as it can: without templates, every service gets a generic logo;
+ * without the vaults' rules, a bundle's services are only counted.
+ */
+export function bundleServices(key: string, vaults: Loading<VaultServices>, templates: Loading<StoredTemplate[]>): BundleServices {
+  // Until the bundles' own vaults have loaded, what is there belongs to others.
+  const data = vaults.data?.key === key ? vaults.data : undefined;
+  const ruleById = new Map((data?.rules ?? []).map((r) => [r.id, r]));
+  const rulesOf = (b: AccessBundle) => bundleRules(b, ruleById);
+  const settled = (data !== undefined || vaults.error !== null) && (templates.data !== undefined || templates.error !== null);
+  return {
+    rulesOf,
+    servicesOf: (b) => (settled ? ruleServices(rulesOf(b), data?.credentials ?? [], templates.data ?? []) : undefined),
+    error: data ? null : vaults.error,
+  };
+}
+
+/**
+ * Loads what naming `bundles`' services takes: their vaults' rules and
+ * credentials, and the templates. Nothing is loaded while `bundles` is
+ * undefined, for a form that is closed or not choosing a bundle.
+ */
 export function useBundleServices(bundles: AccessBundle[] | undefined): BundleServices {
-  const vaultIds = [...new Set((bundles ?? []).map((b) => b.vault_id))].sort();
-  const key = vaultIds.join(",");
-  const vaults = useLoad(async () => {
+  const key = vaultsKey(bundles);
+  const wanted = bundles !== undefined;
+  const vaults = useLoad(async (): Promise<VaultServices> => {
+    const ids = key ? key.split(",") : [];
     const per = await Promise.all(
-      vaultIds.map((id) =>
+      ids.map((id) =>
         Promise.all([
           get<Page<Rule>>(`/vaults/${id}/rules?page_size=100`),
           get<Page<CredentialMeta>>(`/vaults/${id}/credentials?page_size=100`),
@@ -61,18 +102,13 @@ export function useBundleServices(bundles: AccessBundle[] | undefined): BundleSe
       credentials: per.flatMap(([, credentials]) => credentials.items),
     };
   }, [key]);
-  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
-  return useMemo(() => {
-    // Until the bundles' own vaults have loaded, what is there belongs to others.
-    const data = vaults.data?.key === key ? vaults.data : undefined;
-    const ruleById = new Map((data?.rules ?? []).map((r) => [r.id, r]));
-    const rulesOf = (b: AccessBundle) => bundleRules(b, ruleById);
-    const all = templates.data;
-    return {
-      rulesOf,
-      servicesOf: (b) => (data && all ? ruleServices(rulesOf(b), data.credentials, all) : undefined),
-      loading: (!data && !vaults.error) || (!all && !templates.error),
-      error: vaults.error ?? templates.error,
-    };
-  }, [key, vaults.data, vaults.error, templates.data, templates.error]);
+  const templates = useLoad(
+    () => (wanted ? get<StoredTemplate[]>("/templates") : Promise.resolve(undefined)),
+    [wanted],
+  );
+  return useMemo(
+    () => bundleServices(key, vaults, templates),
+    // `vaults` and `templates` are new objects on every render; what matters is in them.
+    [key, vaults.data, vaults.error, templates.data, templates.error],
+  );
 }

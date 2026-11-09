@@ -6,12 +6,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AccessBundle } from "../api";
 import type { StripService } from "./ServiceStrip";
 
-// The real logos are found with Vite's import.meta.glob; the services come from the API.
+// The real logos are found with Vite's import.meta.glob.
 mock.module("./ServiceLogo", () => ({ ServiceLogo: () => <span data-logo="" /> }));
-let services: StripService[] | undefined;
-mock.module("../bundleServices", () => ({
-  useBundleServices: () => ({ servicesOf: () => services, rulesOf: () => [], loading: !services, error: null }),
-}));
 const { BundleChoice } = await import("./BundleChoice");
 
 const bundle = {
@@ -27,15 +23,22 @@ const bundle = {
 
 const service = (name: string): StripService => ({ key: name, name, logo: { id: name, kind: "http" } });
 
-const render = () =>
+const render = (services: StripService[] | undefined) =>
   renderToStaticMarkup(
-    <BundleChoice name="t" bundles={[bundle]} total={1} value="" onChange={() => {}} empty="none" />,
+    <BundleChoice
+      name="t"
+      bundles={[bundle]}
+      total={1}
+      value=""
+      onChange={() => {}}
+      empty="none"
+      servicesOf={() => services}
+    />,
   );
 
 describe("BundleChoice", () => {
   test("a bundle shows its first four services' logos and how many more", () => {
-    services = ["GitHub", "Stripe", "Slack", "OpenAI", "Notion"].map(service);
-    const html = render();
+    const html = render(["GitHub", "Stripe", "Slack", "OpenAI", "Notion"].map(service));
     expect(html.match(/data-logo/g)).toHaveLength(4);
     expect(html).toContain("+2");
     expect(html).toContain("GitHub, Stripe, Slack, OpenAI, Notion and 1 more");
@@ -43,8 +46,7 @@ describe("BundleChoice", () => {
   });
 
   test("until its services load, a bundle shows how many rules it has", () => {
-    services = undefined;
-    const html = render();
+    const html = render(undefined);
     expect(html).not.toContain("data-logo");
     expect(html).toContain("6 rules");
   });

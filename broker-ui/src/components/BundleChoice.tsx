@@ -9,12 +9,11 @@ import { useState, type ReactNode } from "react";
 import { Search } from "lucide-react";
 import type { AccessBundle } from "../api";
 import { bundleChoices, onFilterKey, ruleCount, serviceNames } from "../bundleChoice";
-import { useBundleServices } from "../bundleServices";
 import { cn } from "../lib/utils";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { RadioGroup, RadioGroupItem } from "./ui/radio-group";
-import { ServiceLogos } from "./ServiceStrip";
+import { ServiceLogos, type StripService } from "./ServiceStrip";
 import { Skeleton } from "./ui/skeleton";
 
 export function BundleChoice({
@@ -26,6 +25,7 @@ export function BundleChoice({
   empty,
   hint,
   vaultNames,
+  servicesOf,
 }: {
   /** Prefix for element IDs, unique on the page. */
   name: string;
@@ -40,9 +40,10 @@ export function BundleChoice({
   hint?: ReactNode;
   /** Names each bundle's vault, when the bundles come from several. */
   vaultNames?: Record<string, string>;
+  /** Each bundle's services, shown as logos (`useBundleServices`); undefined until known. */
+  servicesOf?: (b: AccessBundle) => StripService[] | undefined;
 }) {
   const [query, setQuery] = useState("");
-  const services = useBundleServices(bundles);
   if (!bundles) return <Skeleton className="h-16 w-full" />;
   if (bundles.length === 0) return <p className="text-sm text-muted-foreground">{empty}</p>;
   const { shown, hidden, filterable } = bundleChoices(bundles, query, value);
@@ -80,7 +81,7 @@ export function BundleChoice({
           {shown.map((b) => {
             const id = `${name}-${b.id}`;
             const about = [vaultNames?.[b.vault_id], b.description].filter(Boolean).join(" · ");
-            const reaches = services.servicesOf(b) ?? [];
+            const reaches = servicesOf?.(b) ?? [];
             return (
               <Label
                 key={b.id}
