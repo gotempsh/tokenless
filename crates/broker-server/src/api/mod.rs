@@ -3,6 +3,7 @@
 
 //! The management HTTP API (`/api/v1`) used by the UI and automation.
 
+mod audit_export;
 mod console;
 mod extract;
 mod handlers;
@@ -55,6 +56,36 @@ fn api_routes() -> Router<Arc<AppState>> {
             get(sso::get_provider)
                 .put(sso::update_provider)
                 .delete(sso::delete_provider),
+        )
+        .route(
+            "/audit-export/destinations",
+            get(audit_export::list).post(audit_export::create),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}",
+            get(audit_export::get)
+                .put(audit_export::update)
+                .delete(audit_export::delete),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}/test",
+            post(audit_export::test),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}/rotate-secret",
+            post(audit_export::rotate_secret),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}/pause",
+            post(audit_export::pause),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}/resume",
+            post(audit_export::resume),
+        )
+        .route(
+            "/audit-export/destinations/{destination_id}/skip",
+            post(audit_export::skip),
         )
         .route("/vaults", get(list_vaults).post(create_vault))
         .route("/vaults/overview", get(vault_overviews))

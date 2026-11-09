@@ -40,6 +40,7 @@ use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod audit_export;
 mod sso;
 
 pub struct SqliteStore {
@@ -203,8 +204,19 @@ async fn write_audit(
     tx: &mut Transaction<'static, Sqlite>,
     events: &[AuditEvent],
 ) -> Result<(), StoreError> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    // Under the write lock every transaction takes up front, so numbers
+    // follow commit order (see migration 0017).
+    let row = sqlx::query("SELECT COALESCE(MAX(seq), 0) AS seq FROM audit_events")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db("read audit sequence", "audit"))?;
+    let mut seq = get::<i64>(&row, "seq")?;
     for e in events {
-        sqlx::query("INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        seq += 1;
+        sqlx::query("INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(e.id.to_string())
             .bind(ts(&e.at))
             .bind(&e.actor)
@@ -213,6 +225,7 @@ async fn write_audit(
             .bind(e.vault_id.map(|v| v.to_string()))
             .bind(&e.target)
             .bind(to_json("detail", &e.detail)?)
+            .bind(seq)
             .execute(&mut **tx)
             .await
             .map_err(db("insert audit event", "audit"))?;
@@ -2299,6 +2312,27 @@ impl NodeStore for SqliteStore {
                 ciphertext: get(&row, "client_secret_enc")?,
             });
         }
+        for row in sqlx::query(
+            "SELECT id, signing_secret_enc, auth_header_value_enc FROM audit_destinations",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db(
+            "list audit destination ciphertexts",
+            "audit_destination",
+        ))? {
+            let id = get_id(&row, "id")?;
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::AuditDestinationSecret { id },
+                ciphertext: get(&row, "signing_secret_enc")?,
+            });
+            if let Some(value) = get::<Option<Vec<u8>>>(&row, "auth_header_value_enc")? {
+                out.push(StoredCiphertext {
+                    owner: CiphertextOwner::AuditDestinationHeader { id },
+                    ciphertext: value,
+                });
+            }
+        }
         for row in sqlx::query("SELECT name, value FROM key_material")
             .fetch_all(&self.pool)
             .await
@@ -2341,6 +2375,14 @@ impl NodeStore for SqliteStore {
                 ),
                 CiphertextOwner::OidcClientSecret { id } => (
                     "UPDATE oidc_providers SET client_secret_enc = ? WHERE id = ? AND client_secret_enc = ?",
+                    id.to_string(),
+                ),
+                CiphertextOwner::AuditDestinationSecret { id } => (
+                    "UPDATE audit_destinations SET signing_secret_enc = ? WHERE id = ? AND signing_secret_enc = ?",
+                    id.to_string(),
+                ),
+                CiphertextOwner::AuditDestinationHeader { id } => (
+                    "UPDATE audit_destinations SET auth_header_value_enc = ? WHERE id = ? AND auth_header_value_enc = ?",
                     id.to_string(),
                 ),
             };

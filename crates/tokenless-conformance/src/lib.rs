@@ -2655,7 +2655,9 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
     Ok(())
 }
 
-// After `ensure!`, which it uses.
+// After `ensure!`, which they use.
+mod audit_export;
 mod sso;
 
+pub use audit_export::audit_export_store_suite;
 pub use sso::sso_store_suite;

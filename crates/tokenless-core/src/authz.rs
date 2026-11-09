@@ -82,6 +82,8 @@ pub enum Action {
     /// Add, change and remove single sign-on providers and the sign-in
     /// settings.
     IdentityProviderManage,
+    /// Add, change and remove the destinations audit events are sent to.
+    AuditExportManage,
 }
 
 impl Action {
@@ -99,6 +101,7 @@ impl Action {
                 | Action::UserManage
                 | Action::VariableManage
                 | Action::IdentityProviderManage
+                | Action::AuditExportManage
         )
     }
 
@@ -118,6 +121,7 @@ impl Action {
                 | Action::VariableRead
                 | Action::VariableManage
                 | Action::IdentityProviderManage
+                | Action::AuditExportManage
         )
     }
 }

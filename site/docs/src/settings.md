@@ -96,3 +96,89 @@ password (and authenticator) to get in when the provider is down: the
 sign-in page offers **Sign in with a local admin account** under the
 provider buttons. Invites can then only create admins. The last provider
 that is on can't be turned off or deleted while this is set.
+
+## Audit export
+
+The audit log lives in the control plane's database. To keep a copy in
+your own system (a SIEM, a log pipeline, any HTTPS endpoint), add a
+webhook under **Settings → Audit export → Add a webhook**, or follow
+**Send to a webhook** on the **Audit log** page. Every audit event is then
+sent to it as it is written, in order, in signed batches, and retried
+until it arrives. An instance sends to at most 10 webhooks.
+
+- **URL.** `https`, or `http` only to localhost. Put a receiver's token in
+  the **auth header** (for example `Authorization: Bearer …`), not in the
+  URL: the header's value is encrypted at rest and never shown again. The
+  audit log, the server log and the delivery errors shown here record only
+  the URL's scheme and host, since anyone who can read the audit log
+  (viewers too) would see the rest. Requests follow no
+  redirects and give up after 10 seconds.
+- **Format.** *JSON* sends one object per request,
+  `{"type":"tokenless.audit","version":1,"batch_id":"…","events":[…]}`.
+  *NDJSON* (`application/x-ndjson`) sends one event per line, for
+  pipelines such as Vector or Fluent Bit. Each event is the audit event as
+  the API returns it, plus `seq`, its position in this instance's audit
+  log. A batch holds at most 500 events and 1 MiB.
+- **Which events.** Filter by action (a prefix: `credential.` sends every
+  credential change), by outcome, and by vault. An empty filter sends
+  everything. Events the filter leaves out are passed over, not held back.
+- **Start from.** A new webhook gets events written from now on, or the
+  whole audit log this instance holds, oldest first.
+
+Delivery is at least once. Any 2xx answer counts as delivered; anything
+else, or no answer, is retried from the same batch after 1 second,
+doubling to at most 5 minutes, so a receiver that was down for an hour
+gets the hour's events in order when it comes back. A batch that is
+retried is the same batch under the same `webhook-id`, even when newer
+events were written meanwhile and across a restart, so a receiver that
+may see one twice can drop repeats by it. Pausing, renaming or a new
+signing secret keep the ID; changing the filter during a retry makes the
+next attempt a new batch with a new ID, since another filter selects other
+events. Each event's `seq` deduplicates in every case. Each webhook shows its status: **Up to date**,
+**Sending** (with how many events it is behind), **Retrying**, **Failing**
+(after 15 minutes of retries) or **Paused**, with the receiver's last
+error. The **Audit log** page and the sidebar warn while one is failing.
+
+From a webhook's menu you can **send a test** (one sample event, which is
+not added to the audit log), **pause** it (nothing is lost: it resumes
+from where it stopped), **skip to now** (the events not yet sent stay in
+the audit log but are never sent to it; the skip itself is audited), make
+a **new signing secret**, or delete it. Managing webhooks is for admins
+and needs a fresh confirmation, like other sensitive actions; every
+change is in the audit log.
+
+### Verifying a request
+
+Requests are signed as in the
+[Standard Webhooks](https://www.standardwebhooks.com) specification, so
+its libraries verify them. The signing secret (`whsec_…`) is shown once,
+when the webhook is added or given a new secret. Each request carries:
+
+| Header | Value |
+|---|---|
+| `webhook-id` | The batch's ID, the same on every retry of it |
+| `webhook-timestamp` | Seconds since the Unix epoch when it was sent |
+| `webhook-signature` | `v1,` followed by the base64 HMAC-SHA256 of `{id}.{timestamp}.{body}` |
+
+The HMAC key is the base64-decoded part of the secret after `whsec_`.
+Compare signatures in constant time, and refuse a timestamp more than a
+few minutes away from your clock. In Python:
+
+```python
+import base64, hashlib, hmac, time
+
+def verify(secret: str, headers, body: bytes) -> bool:
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    msg_id, ts = headers["webhook-id"], headers["webhook-timestamp"]
+    if abs(time.time() - int(ts)) > 300:
+        return False
+    signed = f"{msg_id}.{ts}.".encode() + body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+    return any(
+        hmac.compare_digest(f"v1,{expected}", sig)
+        for sig in headers["webhook-signature"].split()
+    )
+```
+
+A new signing secret replaces the old one at once, from the next batch:
+update the receiver right after.

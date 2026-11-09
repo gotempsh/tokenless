@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 pub mod audit;
+pub mod audit_export;
 pub mod auth;
 pub mod bundles;
 pub mod nodes;
@@ -30,7 +31,8 @@ use crate::keys::KeyRing;
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
-    AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore, PolicyStore, SsoStore,
+    AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
+    PolicyStore, SsoStore,
 };
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ pub struct Stores {
     pub audit: Arc<dyn AuditSink>,
     pub identity: Arc<dyn IdentityStore>,
     pub sso: Arc<dyn SsoStore>,
+    pub audit_export: Arc<dyn AuditExportStore>,
     pub nodes: Arc<dyn NodeStore>,
 }
 
@@ -293,6 +296,7 @@ impl ControlServices {
 pub struct ControlPlane {
     pub auth: auth::AuthService,
     pub sso: sso::SsoService,
+    pub audit_export: audit_export::AuditExportService,
     pub policy: policy::PolicyService,
     pub sessions: sessions::SessionService,
     pub bundles: bundles::BundleService,
@@ -311,6 +315,7 @@ impl ControlPlane {
         cipher: Arc<dyn SecretCipher>,
         prober: Arc<dyn CredentialProber>,
         oidc: Arc<dyn sso::oidc::OidcTransport>,
+        webhooks: Arc<dyn audit_export::WebhookTransport>,
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
@@ -331,6 +336,14 @@ impl ControlPlane {
             config.clone(),
             oidc,
         )?;
+        let audit_export = audit_export::AuditExportService::new(
+            stores.audit_export.clone(),
+            stores.policy.clone(),
+            cipher.clone(),
+            guard.clone(),
+            AuditRecorder::new(stores.audit.clone()),
+            webhooks,
+        );
         let auth = auth::AuthService::new(
             stores.identity.clone(),
             stores.sso.clone(),
@@ -357,6 +370,7 @@ impl ControlPlane {
         Ok(Self {
             auth,
             sso,
+            audit_export,
             policy: services.policy,
             sessions: services.sessions,
             bundles: services.bundles,
@@ -410,6 +424,7 @@ mod tests {
             audit: store.clone(),
             identity: store.clone(),
             sso: store.clone(),
+            audit_export: store.clone(),
             nodes: store.clone(),
         }
     }
@@ -427,6 +442,7 @@ mod tests {
             cipher,
             prober,
             Arc::new(sso::oidc::NoTransport),
+            Arc::new(audit_export::DisabledWebhookTransport),
             ControlConfig::default(),
         )
         .await
@@ -523,6 +539,7 @@ mod tests {
             Arc::new(AesGcmCipher::new(&root).unwrap()),
             Arc::new(crate::probe::DisabledProber),
             Arc::new(sso::oidc::NoTransport),
+            Arc::new(audit_export::DisabledWebhookTransport),
             ControlConfig::default(),
         )
         .await
@@ -572,6 +589,7 @@ mod tests {
             envelope.clone(),
             Arc::new(crate::probe::DisabledProber),
             Arc::new(sso::oidc::NoTransport),
+            Arc::new(audit_export::DisabledWebhookTransport),
             ControlConfig::default(),
         )
         .await

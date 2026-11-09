@@ -42,6 +42,16 @@ describe("actionPhrase", () => {
     expect(actionPhrase(event({ action: "rule.delete" }))).toBe("deleted a rule");
   });
 
+  test("audit export changes name the webhook", () => {
+    expect(actionPhrase(event({ action: "audit_export.create", detail: { name: "SIEM" } }))).toBe("added audit webhook SIEM");
+    expect(actionPhrase(event({ action: "audit_export.skip", detail: { name: "SIEM", skipped: "12" } }))).toBe(
+      "skipped 12 events for audit webhook SIEM",
+    );
+    expect(actionPhrase(event({ action: "audit_export.test", outcome: "failure", detail: { name: "SIEM" } }))).toBe(
+      "failed to send a test to audit webhook SIEM",
+    );
+  });
+
   test("a refused sign-in says who it tried to be", () => {
     expect(actionPhrase(event({ action: "auth.login", outcome: "denied", detail: { username: "kim" } }))).toBe(
       "failed to sign in as kim",
