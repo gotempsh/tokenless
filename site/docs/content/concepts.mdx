@@ -8,7 +8,8 @@ title: "Concepts"
 
 A vault groups services, the rules that use them, and the sessions minted
 from those rules. Use one per team or environment, for example `work`
-and `staging`. API keys, editors and viewers are bound to one vault.
+and `staging`. An API key is bound to one vault; a person's role applies
+to every vault.
 
 ## Service
 
@@ -65,9 +66,12 @@ pull a signed policy snapshot from the control plane.
 
 | Role | Can |
 |---|---|
-| Admin | Everything. Only people can be admins. |
-| Editor | Manage rules, bundles and sessions in one vault. |
-| Viewer | Read one vault. |
+| Admin | Everything, including services and their secrets, people, API keys, proxies and settings. Only people can be admins. |
+| Editor | Read every vault; manage rules, bundles and sessions. |
+| Viewer | Read every vault. |
+
+An API key is an editor or a viewer within its one vault. The full list
+is in [Roles](/console/people#roles).
 
 Invite people under **People**. Create API keys for automation under
 **API keys**. Agents get a session, not an API key: create one on an

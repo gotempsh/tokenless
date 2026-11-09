@@ -5,6 +5,8 @@ title: "Settings"
 description: "Instance-wide settings, under Settings in the console (admins only). Changes reach every proxy at its next policy refresh."
 ---
 
+![Settings: other hosts allowed, a 7-day session lifetime, the always reachable hosts and private addresses blocked](./screenshots/console-settings.png)
+
 ## Other hosts
 
 Agents send all their HTTPS traffic through the proxy. This decides what
@@ -55,7 +57,8 @@ provider**:
    from `/.well-known/openid-configuration`), the **client ID** and,
    for a confidential client, the **client secret**. The secret is
    encrypted at rest and never shown again; leave the field empty when
-   editing to keep it.
+   editing to keep it. Saving reads the discovery document, so the
+   issuer must be reachable from the server when you save.
 3. Map the provider's **groups** to roles. Someone in several mapped
    groups gets the highest role; someone in none is refused, and the
    message names the groups the provider sent so you can fix the mapping.
@@ -63,6 +66,8 @@ provider**:
    user info when the token leaves it out; set another claim, or a dotted
    path such as `realm_access.roles`, for providers that put them
    elsewhere. Some providers send groups only for an extra scope.
+
+![Editing a single sign-on provider: its name and slug, the issuer URL, and the redirect URI to register at the provider](./screenshots/console-sso-provider.png)
 
 The sign-in page then shows **Continue with *name***. The first sign-in
 creates the account, named by the `preferred_username` claim unless you
@@ -121,6 +126,8 @@ until it arrives. An instance sends to at most 10 webhooks.
   everything. Events the filter leaves out are passed over, not held back.
 - **Start from.** A new webhook gets events written from now on, or the
   whole audit log this instance holds, oldest first.
+
+![An audit webhook: up to date, sending NDJSON to its receiver with a stored Authorization header](./screenshots/console-audit-export.png)
 
 Delivery is at least once. Any 2xx answer counts as delivered; anything
 else, or no answer, is retried from the same batch after 1 second,

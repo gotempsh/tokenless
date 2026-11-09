@@ -22,6 +22,8 @@ async function builtSite(name) {
   await mkdir(join(site, 'out', 'llms.mdx', 'install'), { recursive: true });
   await writeFile(join(site, 'out', 'llms.mdx', 'content.md'), '# tokenless\n');
   await writeFile(join(site, 'out', 'llms.mdx', 'install', 'content.md'), '# Install\n');
+  await mkdir(join(site, 'out', 'llms.mdx', 'console', 'vaults'), { recursive: true });
+  await writeFile(join(site, 'out', 'llms.mdx', 'console', 'vaults', 'content.md'), '# Vaults\n');
   return site;
 }
 
@@ -37,6 +39,8 @@ for (const name of ['site', 'My Projects ü #1']) {
     expect(result.exitCode).toBe(0);
     expect(await readFile(join(dir, 'out', 'index.md'), 'utf8')).toBe('# tokenless\n');
     expect(await readFile(join(dir, 'out', 'install.md'), 'utf8')).toBe('# Install\n');
+    // A page in a folder.
+    expect(await readFile(join(dir, 'out', 'console', 'vaults.md'), 'utf8')).toBe('# Vaults\n');
   });
 }
 

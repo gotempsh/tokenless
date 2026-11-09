@@ -104,14 +104,17 @@ refuses, is in the audit log, which can also be sent to a webhook.
 </Step>
 </Steps>
 
+[Tour of the console](/console) goes through every page of the console.
+
 ## What you get
 
 - **Secrets are write-only.** They are encrypted at rest with AES-256-GCM.
   Nobody can read one back, admins included. They only ever travel,
   sealed, to enrolled proxies.
 - **Sessions are scoped and short-lived.** A session is bound to one vault,
-  a set of rules, a lifetime (15 minutes by default) and optionally a
-  request limit. Revoking one reaches the proxy within seconds.
+  a set of rules, a lifetime and optionally a request limit. The ones
+  `tokenless run` starts last 15 minutes and are renewed while the agent
+  runs. Revoking one reaches the proxy within seconds.
 - **Agents start with one command.** `tokenless run --bundle code-review -- claude`
   starts the agent behind a local proxy address with the right CA trusted
   and no token in its environment.

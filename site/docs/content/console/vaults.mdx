@@ -1,0 +1,112 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Vaults and services"
+description: "A vault holds services (an API or MCP server with its secret) and the rules that let sessions use them. Use one vault per team or environment."
+---
+
+**Vaults** shows each vault with its services, whether an agent is
+using it right now (**1 live**, or **Idle**) and when it last carried a
+request. Admins create vaults here; adding a service can also create
+one for you.
+
+![Vaults: work and personal, each with its services, live sessions and last request](../screenshots/console-vaults.png)
+
+## A vault's tabs
+
+Open a vault to see it in five tabs:
+
+| Tab | What it holds |
+|---|---|
+| **Services** | Each service, its hosts and whether its secret works or has expired |
+| **Rules** | What each service may be used for: hosts, paths, methods and MCP tools |
+| **Access bundles** | The bundles built from this vault's rules |
+| **Sessions** | The sessions minted in this vault; you can mint a one-off session here |
+| **Settings** | The vault's ID, and deleting the vault |
+
+![A vault's services: Slack, Stripe, OpenAI and GitHub, each with its hosts and a stored, unreadable secret](../screenshots/console-vault-services.png)
+
+## Add a service
+
+**Add a service** (on **Vaults**, **Access bundles** or a vault)
+opens the catalogue: over 150 built-in APIs and MCP servers, searchable
+and grouped by category, plus a custom HTTP API or MCP server for
+anything else.
+
+![Add a service: a searchable catalogue of built-in services, grouped by category](../screenshots/console-add-service-catalogue.png)
+
+Pick one, then fill in three things on one page:
+
+1. **Credential**: the key or token, in the fields the service needs.
+   It is encrypted on save and can never be read back, only replaced.
+2. **Who can use it**: the vault (or a new one), and which access
+   bundles get it (or a new bundle). Agents started with a checked
+   bundle can use the service straight away.
+3. **What will be created**: a summary to check before saving. The
+   service is stored, given a rule that allows its hosts, and put in
+   the bundles you checked, in one step.
+
+When it is saved, **Run an agent with it** takes you to the bundle's
+commands. Only admins add services. From a terminal, the same is
+`tokenless service add` ([Set up from the terminal](/terminal)).
+
+## A service's page
+
+Click a service to see where it is used and what it did.
+
+![A service's page: its rules, the access bundles that include it, custom headers, placeholders and its request log](../screenshots/console-service.png)
+
+- **Test** sends the template's test request (for GitHub,
+  `GET /user`) with the secret, and says whether the credential works.
+  Templates without a test request say so. Only admins can test.
+- **Replace secret** stores a new value, optionally with the date it
+  stops working upstream; the proxy stops sending it then. Proxies use
+  the new value at their next policy refresh, within seconds. The old
+  value cannot be recovered.
+- **Rules** and **Access bundles** show what uses the service. **Manage
+  rules** opens the vault's Rules tab.
+- **Custom headers** are sent with every request the credential is
+  added to. Use a [variable](/console/templates#variables) as
+  `{{NAME}}` to keep a header's value secret.
+- **Placeholders** let an agent send a stand-in value that the proxy
+  swaps for the secret on its way to this service's hosts, and nowhere
+  else ([Placeholders and variables](/placeholders)).
+- **Logs** lists the requests that used this service, a few seconds
+  after a proxy handles them.
+- **Delete service** (in the **⋯** menu) destroys the secret. Delete
+  the rules that use it first.
+
+## Rules
+
+A rule lets sessions use one service. With no hosts, paths or methods
+it allows everything the service's template allows; anything you enter
+narrows that, never widens it.
+
+![A vault's rules: slack-post-and-read is limited to GET and POST on three Slack API paths; the others allow their service's hosts](../screenshots/console-vault-rules.png)
+
+**Add rule** asks for:
+
+- **Name** and **Credential** (the service it uses).
+- **Hosts**, one per line, for example `api.example.com`.
+- **Paths**, one per line, with `*` as a wildcard: `/v1/*`.
+- **Methods**, comma separated: `GET, POST`.
+- **MCP tools**, for MCP servers: the tools a session may call, one
+  per line. Leave it empty to allow every tool; otherwise a
+  `tools/call` for any other tool is answered with an MCP error naming
+  it, and never reaches the server. Allowing more tools is a sensitive
+  action: with an authenticator or single sign-on, it asks for a
+  [recent code](/console/account#authenticator-app).
+
+The switch in the **On** column turns a rule off without deleting it:
+sessions that include it stop getting its credential until it is
+turned back on. **⋯ › Delete rule** deletes it: sessions that included
+it can no longer use it. Editors and admins manage rules.
+
+## Delete a vault
+
+On the vault's **Settings** tab, **Delete vault** deletes its services
+(and their secrets), rules and access bundles, and revokes the API keys
+bound to it. The audit trail is kept. It is refused while an agent is
+using the vault unless you tick **End live sessions**. Only admins can
+delete a vault; with an authenticator or single sign-on, it asks for a
+[recent code](/console/account#authenticator-app) first.

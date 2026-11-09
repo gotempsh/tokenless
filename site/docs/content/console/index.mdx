@@ -1,0 +1,57 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Tour of the console"
+description: "The web console is where you add services, decide what agents may reach, run them and read what they did. It is built into the binary and served by tokenless serve."
+---
+
+Open the address `tokenless serve` printed and sign in with the admin
+account it created (see the [Quickstart](/quickstart)). The sidebar
+groups everything into three parts.
+
+![The console's sidebar: Broker (vaults, access bundles, sessions, templates, variables), Access (people, API keys) and Instance (proxies, audit log, settings)](../screenshots/console-vaults.png)
+
+| Part | Page | What it is for |
+|---|---|---|
+| Broker | [Vaults](/console/vaults) | The services (and their secrets) agents may use, and the rules that allow them |
+| | [Access bundles](/console/bundles) | Named sets of services an agent starts with, such as `code-review` |
+| | [Sessions](/console/sessions) | Every agent that has been given access, and each request it made |
+| | [Templates](/console/templates) | The catalogue of services tokenless knows, and your own |
+| | [Variables](/console/templates#variables) | Secrets stored once and used in any service as `{{NAME}}` |
+| Access | [People](/console/people) | Who can sign in, and their role |
+| | [API keys](/console/people#api-keys) | Keys for scripts and CI to use the console's API |
+| Instance | [Proxies](/console/proxies) | The machines agents send their requests through |
+| | [Audit log](/console/audit) | Everything that happened, who did it and whether it was allowed |
+| | [Settings](/settings) | What agents may reach outside their services, single sign-on, audit export |
+
+Your name at the bottom of the sidebar opens [your account](/console/account),
+where you change your password and add an authenticator app.
+
+## What you see depends on your role
+
+What you can see and change depends on your
+[role](/console/people#roles). Where your role does not allow
+something, the page says so instead of hiding it: "Only admins can add
+services", "Only editors and admins can create sessions".
+
+## Finding your way
+
+- The breadcrumb at the top shows where you are (**Vaults › work ›
+  github**) and takes you back up.
+- Collapse the sidebar to icons with the button beside the breadcrumb,
+  or with ⌘B (Ctrl+B on Linux and Windows).
+- The three buttons at the top right choose a light or dark theme, or
+  follow your system's.
+- Every page has its own address, so you can bookmark it or send it to
+  someone.
+
+## A first session in five steps
+
+1. [Add a service](/console/vaults#add-a-service): pick it from the
+   catalogue and paste its key.
+2. Put it in an [access bundle](/console/bundles), or create one as you
+   add the service.
+3. [Add a proxy](/console/proxies) if none is connected yet.
+4. On the bundle's **Run an agent** tab, create a session and copy the
+   commands to the agent's machine.
+5. Watch its requests on the [session's page](/console/sessions#a-sessions-page).
