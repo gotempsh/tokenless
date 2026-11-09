@@ -21,6 +21,8 @@ import {
 import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
+import { chosenIn } from "../bundleChoice";
+import { BundleChoice } from "../components/BundleChoice";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
@@ -560,6 +562,9 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
   const action = useAction();
   const mintAction = useAction();
   const enabledRules = (rules.data?.items ?? []).filter((r) => r.enabled);
+  // Only a bundle of this vault counts as chosen: the choice survives moving
+  // to another vault's page. With a single bundle, it is chosen.
+  const chosenBundle = chosenIn(bundles.data?.items ?? [], bundleId);
 
   const mint = async (e: FormEvent) => {
     e.preventDefault();
@@ -570,7 +575,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
     }
     const result = await mintAction.run(() =>
       post<Minted>(`/vaults/${vaultId}/sessions`, {
-        ...(mode === "bundle" ? { bundle: bundleId } : { rule_ids: selected }),
+        ...(mode === "bundle" ? { bundle: chosenBundle } : { rule_ids: selected }),
         ttl_secs: ttlMinutes * 60,
         request_limit: limit ? Number(limit) : undefined,
         labels: labelMap,
@@ -665,32 +670,22 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
               ]}
             />
             {mode === "bundle" ? (
-              <Field
-                label="Access bundle"
-                htmlFor="mint-bundle"
-                hint={
-                  bundles.data?.items.length === 0 ? (
-                    <>
-                      No bundles in this vault yet.{" "}
-                      <a href={`#/vaults/${vaultId}/bundles`} className="underline" onClick={() => closeMint(false)}>
-                        Create one
-                      </a>
-                      .
-                    </>
-                  ) : undefined
+              <BundleChoice
+                name="mint-bundle"
+                bundles={bundles.data?.items}
+                total={bundles.data?.total ?? 0}
+                value={chosenBundle}
+                onChange={setBundleId}
+                empty={
+                  <>
+                    No bundles in this vault yet.{" "}
+                    <a href={`#/vaults/${vaultId}/bundles`} className="underline" onClick={() => closeMint(false)}>
+                      Create one
+                    </a>
+                    .
+                  </>
                 }
-              >
-                <SelectField
-                  id="mint-bundle"
-                  value={bundleId}
-                  onChange={setBundleId}
-                  placeholder="Choose…"
-                  options={(bundles.data?.items ?? []).map((b) => ({
-                    value: b.id,
-                    label: `${b.name} (${b.rule_ids.length} rule${b.rule_ids.length === 1 ? "" : "s"})`,
-                  }))}
-                />
-              </Field>
+              />
             ) : (
               <div className="space-y-3">
                 <p className="text-sm font-medium">Rules</p>
@@ -758,7 +753,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
               </Button>
               <Button
                 type="submit"
-                disabled={mintAction.busy || (mode === "bundle" ? !bundleId : selected.length === 0)}
+                disabled={mintAction.busy || (mode === "bundle" ? !chosenBundle : selected.length === 0)}
               >
                 Mint session
               </Button>

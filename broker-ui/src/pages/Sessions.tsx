@@ -212,6 +212,7 @@ export function Sessions({ me }: { me: UserSummary }) {
       </Panel>
       <NewSessionDialog
         choices={bundles.data?.items}
+        choicesTotal={bundles.data?.total}
         vaultNames={names}
         open={creating}
         onOpenChange={setCreating}

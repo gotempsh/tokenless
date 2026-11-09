@@ -14,6 +14,7 @@ import {
   FormDialog,
   SelectField,
 } from "../components/common";
+import { BundleChoice } from "../components/BundleChoice";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import {
@@ -35,6 +36,7 @@ const EMPTY = { bundle: "", name: "", ttl: "", amount: "", unit: "hours" as Life
 export function NewSessionDialog({
   bundle: fixed,
   choices,
+  choicesTotal,
   vaultNames = {},
   open,
   onOpenChange,
@@ -44,6 +46,8 @@ export function NewSessionDialog({
   /** The bundle the session is for; without it the form asks, from `choices`. */
   bundle?: AccessBundle;
   choices?: AccessBundle[];
+  /** How many bundles there are, when more than `choices` holds. */
+  choicesTotal?: number;
   vaultNames?: Record<string, string>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -100,10 +104,6 @@ export function NewSessionDialog({
     }
   };
 
-  const bundleOptions = (choices ?? []).map((b) => ({
-    value: b.id,
-    label: vaultNames[b.vault_id] ? `${b.name} · ${vaultNames[b.vault_id]}` : b.name,
-  }));
   return (
     <FormDialog
       open={open}
@@ -122,31 +122,24 @@ export function NewSessionDialog({
         <form className="space-y-4" onSubmit={submit}>
           <ErrorBanner error={limits.error ?? action.error} />
           {!fixed && (
-            <Field
-              label="Access bundle"
-              htmlFor="session-bundle"
-              hint={
-                choices && choices.length === 0 ? (
-                  <>
-                    No access bundles yet.{" "}
-                    <a href="#/bundles" className="underline">
-                      Create one
-                    </a>{" "}
-                    first.
-                  </>
-                ) : (
-                  "The services the session reaches."
-                )
+            <BundleChoice
+              name="session-bundle"
+              bundles={choices}
+              total={choicesTotal ?? choices?.length ?? 0}
+              value={bundle?.id ?? ""}
+              onChange={(v) => setForm({ ...form, bundle: v, ttl: "" })}
+              vaultNames={vaultNames}
+              hint="The services the session reaches."
+              empty={
+                <>
+                  No access bundles yet.{" "}
+                  <a href="#/bundles" className="underline">
+                    Create one
+                  </a>{" "}
+                  first.
+                </>
               }
-            >
-              <SelectField
-                id="session-bundle"
-                value={bundle?.id ?? ""}
-                onChange={(v) => setForm({ ...form, bundle: v, ttl: "" })}
-                options={bundleOptions}
-                placeholder={choices ? "Choose a bundle" : "Loading…"}
-              />
-            </Field>
+            />
           )}
           <Field label="Name" htmlFor="session-name" hint="Shown on the Sessions page and in its logs.">
             <Input
