@@ -30,11 +30,13 @@ import {
   post,
   setCsrfToken,
   setStepUpHandler,
+  type AuditDestination,
   type NodeInfo,
   type Page,
   type SessionInfo,
   type UserSummary,
 } from "./api";
+import { failingDestinations } from "./auditExport";
 import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
 import { BreadcrumbContext, trail, type Crumb } from "./breadcrumbs";
@@ -50,6 +52,7 @@ import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 import { AcceptInvite, AuthLayout, Login, StepUpDialog, StepUpDone } from "./pages/Auth";
 import { ProviderFormPage } from "./pages/SingleSignOn";
+import { DestinationFormPage } from "./pages/AuditExport";
 import { STEP_UP_DONE_ROUTE, takeSsoError } from "./sso";
 import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
@@ -250,6 +253,10 @@ export function App() {
       {section === "settings" && !id && <Settings />}
       {section === "settings" && id === "sso" && tab === "new" && <ProviderFormPage />}
       {section === "settings" && id === "sso" && tab && tab !== "new" && <ProviderFormPage key={tab} providerId={tab} />}
+      {section === "settings" && id === "audit-export" && tab === "new" && <DestinationFormPage />}
+      {section === "settings" && id === "audit-export" && tab && tab !== "new" && (
+        <DestinationFormPage key={tab} destinationId={tab} />
+      )}
       {section === "account" && <Account user={user} sso={boot.session.sso} onChanged={() => void load()} />}
       <StepUpDialog
         open={stepUpOpen}
@@ -270,7 +277,7 @@ const ALERT_POLL_MS = 30_000;
 
 /**
  * Sections that need someone to act, so the sidebar can say so from any
- * page. Only admins manage proxies, so only they are asked.
+ * page. Only admins manage proxies and audit export, so only they are asked.
  */
 function useSectionAlerts(isAdmin: boolean): Alerts {
   const [alerts, setAlerts] = useState<Alerts>({});
@@ -278,13 +285,20 @@ function useSectionAlerts(isAdmin: boolean): Alerts {
     if (!isAdmin) return;
     let cancelled = false;
     const check = async () => {
-      try {
-        const nodes = await get<Page<NodeInfo>>("/nodes?page_size=100");
-        const attention = proxyAttention(nodes.items, new Date());
-        if (!cancelled) setAlerts(attention.level === "ok" ? {} : { proxies: attention.level });
-      } catch {
-        // The Proxies page reports its own errors; the sidebar stays quiet.
+      // Each page reports its own errors; a check that fails stays quiet.
+      const [nodes, destinations] = await Promise.allSettled([
+        get<Page<NodeInfo>>("/nodes?page_size=100"),
+        get<AuditDestination[]>("/audit-export/destinations"),
+      ]);
+      const next: Alerts = {};
+      if (nodes.status === "fulfilled") {
+        const attention = proxyAttention(nodes.value.items, new Date());
+        if (attention.level !== "ok") next.proxies = attention.level;
       }
+      if (destinations.status === "fulfilled" && failingDestinations(destinations.value).length > 0) {
+        next.audit = "warning";
+      }
+      if (!cancelled) setAlerts(next);
     };
     void check();
     const timer = window.setInterval(() => void check(), ALERT_POLL_MS);

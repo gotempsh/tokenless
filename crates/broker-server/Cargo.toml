@@ -58,6 +58,7 @@ zeroize.workspace = true
 tokenless-auth = { workspace = true, features = ["test-signing"] }
 tokenless-conformance.workspace = true
 rcgen.workspace = true
+ring.workspace = true
 totp-rs.workspace = true
 
 [lints]

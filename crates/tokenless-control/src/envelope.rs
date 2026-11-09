@@ -87,7 +87,10 @@ fn legacy_binding(owner: &CiphertextOwner) -> Option<(KeyScope, Vec<u8>)> {
             Some((KeyScope::Instance, crate::keys::aad(name)))
         }
         // Written only under the hierarchy, never by an older version.
-        CiphertextOwner::KeyMaterial { .. } | CiphertextOwner::OidcClientSecret { .. } => None,
+        CiphertextOwner::KeyMaterial { .. }
+        | CiphertextOwner::OidcClientSecret { .. }
+        | CiphertextOwner::AuditDestinationSecret { .. }
+        | CiphertextOwner::AuditDestinationHeader { .. } => None,
     }
 }
 

@@ -14,5 +14,6 @@ pub mod password;
 pub mod sealed;
 pub mod token;
 pub mod totp;
+pub mod webhook;
 
 pub use error::AuthError;

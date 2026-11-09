@@ -191,6 +191,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
         audit: store.clone(),
         identity: store.clone(),
         sso: store.clone(),
+        audit_export: store.clone(),
         nodes: store.clone(),
     };
     let old = ControlPlane::new(
@@ -199,6 +200,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
         Arc::new(AesGcmCipher::new(&master).unwrap()),
         Arc::new(DisabledProber),
         Arc::new(tokenless_control::service::sso::oidc::NoTransport),
+        Arc::new(tokenless_control::service::audit_export::DisabledWebhookTransport),
         ControlConfig::default(),
     )
     .await

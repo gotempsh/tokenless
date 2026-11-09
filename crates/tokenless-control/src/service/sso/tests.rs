@@ -269,12 +269,14 @@ async fn setup() -> T {
             audit: store.clone(),
             identity: store.clone(),
             sso: store.clone(),
+            audit_export: store.clone(),
             nodes: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,
         Arc::new(crate::probe::DisabledProber),
         idp.clone(),
+        Arc::new(crate::service::audit_export::DisabledWebhookTransport),
         ControlConfig::default(),
     )
     .await
