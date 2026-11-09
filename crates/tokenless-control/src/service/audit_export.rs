@@ -773,7 +773,11 @@ impl AuditExportService {
             .target(format!("audit_destination:{id}"))
             .detail("name", updated.name.clone())
             .detail("url", origin(&updated.url));
-        self.store_update(updated, &[event]).await
+        let view = self.store_update(updated, &[event]).await?;
+        // New settings are usually the fix for a failing receiver: try them
+        // now, not after the last backoff ran out.
+        self.forget_backoff(id);
+        Ok(view)
     }
 
     async fn store_update(
@@ -884,6 +888,9 @@ impl AuditExportService {
             ..current
         };
         self.store_update(updated, &[event]).await?;
+        // As for new settings: a receiver that refused the old signature
+        // may take the new one.
+        self.forget_backoff(id);
         Ok(RotatedSigningSecret {
             signing_secret: secret.to_string(),
         })

@@ -1067,6 +1067,37 @@ async fn the_sender_delivers_in_the_background_and_backs_off() {
     );
 }
 
+#[tokio::test]
+async fn new_settings_or_a_new_secret_are_tried_without_waiting_out_the_backoff() {
+    let t = setup().await;
+    let id = t
+        .export()
+        .create(&admin(), create(StartAt::Now))
+        .await
+        .unwrap()
+        .destination
+        .id;
+    let backed_off = || {
+        for _ in 0..10 {
+            t.export().note_result(&id, true);
+        }
+        assert!(!t.export().due(&id, Instant::now()));
+    };
+
+    backed_off();
+    t.export().update(&admin(), &id, input()).await.unwrap();
+    assert!(t.export().due(&id, Instant::now()), "after new settings");
+
+    backed_off();
+    t.export().rotate_secret(&admin(), &id).await.unwrap();
+    assert!(t.export().due(&id, Instant::now()), "after a new secret");
+
+    // A test request changes nothing the sender uses.
+    backed_off();
+    t.export().test(&admin(), &id).await.unwrap();
+    assert!(!t.export().due(&id, Instant::now()));
+}
+
 #[test]
 fn backoff_doubles_up_to_five_minutes() {
     let secs: Vec<u64> = [1, 2, 3, 4, 9, 10, 30]

@@ -50,15 +50,32 @@ impl HttpWebhookTransport {
 }
 
 /// Why a request failed, without its URL: reqwest's messages end with the
-/// full URL, and a receiver's path or query may hold an ingest token.
+/// full URL, and a receiver's path or query may hold an ingest token. Its
+/// message names only the kind of failure, so the causes beneath it follow:
+/// a refused port, a failed lookup and an untrusted certificate read
+/// differently.
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() {
-        format!("no answer within {}s", TIMEOUT.as_secs())
-    } else if e.is_connect() {
-        format!("could not connect: {}", e.without_url())
-    } else {
-        e.without_url().to_string()
+        return format!("no answer within {}s", TIMEOUT.as_secs());
     }
+    let e = e.without_url();
+    let mut reason = if e.is_connect() {
+        "could not connect".to_string()
+    } else {
+        e.to_string()
+    };
+    let mut last = String::new();
+    let mut source = std::error::Error::source(&e);
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if text != last {
+            reason.push_str(": ");
+            reason.push_str(&text);
+            last = text;
+        }
+        source = cause.source();
+    }
+    reason
 }
 
 #[async_trait]
@@ -102,6 +119,12 @@ mod tests {
             .unwrap_err();
         assert!(
             err.reason.starts_with("could not connect"),
+            "{}",
+            err.reason
+        );
+        // The cause, not only the kind of failure.
+        assert!(
+            err.reason.to_ascii_lowercase().contains("refused"),
             "{}",
             err.reason
         );
