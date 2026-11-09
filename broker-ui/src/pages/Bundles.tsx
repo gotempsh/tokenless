@@ -6,16 +6,14 @@
 // Mint session dialog. Shown for one vault (its tab) or for every vault
 // (the sidebar page).
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Boxes, Pencil, Plus, Terminal, Trash2 } from "lucide-react";
 import {
   api,
   get,
   type AccessBundle,
-  type CredentialMeta,
   type Page,
   type Rule,
-  type StoredTemplate,
   type UserSummary,
   type Vault,
 } from "../api";
@@ -23,6 +21,7 @@ import { fallbackPage, hasPager } from "../paging";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import { bundleFormHref } from "../bundleForm";
+import { useBundleServices } from "../bundleServices";
 import {
   ConfirmDialog,
   CopyButton,
@@ -40,9 +39,8 @@ import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
-import { ServiceStrip } from "../components/ServiceStrip";
+import { ServiceStrip, type StripService } from "../components/ServiceStrip";
 import { PANEL_GRID } from "../components/layout";
-import { templateOf } from "./Services";
 
 /** A command with a copy button. `display` shortens what is shown; the copy is always `command`. */
 export function CommandSnippet({ command, display }: { command: string; display?: string }) {
@@ -54,25 +52,6 @@ export function CommandSnippet({ command, display }: { command: string; display?
       <CopyButton value={command} label="Copy command" />
     </div>
   );
-}
-
-/** The rules and credentials of the given vaults, for naming a bundle's services. */
-function useVaultServices(vaultIds: string[]) {
-  const key = vaultIds.join(",");
-  return useLoad(async () => {
-    const per = await Promise.all(
-      vaultIds.map((id) =>
-        Promise.all([
-          get<Page<Rule>>(`/vaults/${id}/rules?page_size=100`),
-          get<Page<CredentialMeta>>(`/vaults/${id}/credentials?page_size=100`),
-        ]),
-      ),
-    );
-    return {
-      rules: per.flatMap(([rules]) => rules.items),
-      credentials: per.flatMap(([, credentials]) => credentials.items),
-    };
-  }, [key]);
 }
 
 /** One vault's bundles when `vaultId` is given, every vault's otherwise. */
@@ -87,12 +66,7 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
     () => (scoped ? Promise.resolve(undefined) : get<Page<Vault>>("/vaults?page_size=100")),
     [scoped],
   );
-  const vaultIds = useMemo(
-    () => (vaultId ? [vaultId] : [...new Set((bundles.data?.items ?? []).map((b) => b.vault_id))].sort()),
-    [vaultId, bundles.data],
-  );
-  const services = useVaultServices(vaultIds);
-  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
+  const services = useBundleServices(bundles.data?.items);
   const here = vaultId ? `vaults/${vaultId}/bundles` : "bundles";
   const goAdd = (vault?: string, bundle?: string) => {
     window.location.hash = addServiceHref({ vault, bundle, back: here });
@@ -100,7 +74,6 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
   const confirm = useConfirm<AccessBundle>();
   const action = useAction();
 
-  const ruleById = useMemo(() => new Map((services.data?.rules ?? []).map((r) => [r.id, r])), [services.data]);
   const vaultName = (id: string) => vaults.data?.items.find((v) => v.id === id)?.name ?? id.slice(0, 8);
   const noVaults = !scoped && vaults.data?.items.length === 0;
 
@@ -189,10 +162,8 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                 key={b.id}
                 bundle={b}
                 vaultName={scoped ? undefined : vaultName(b.vault_id)}
-                rules={b.rule_ids.map((id) => ruleById.get(id)).filter((r) => r !== undefined)}
-                credentials={services.data?.credentials ?? []}
-                templates={templates.data ?? []}
-                loading={services.loading && !services.data}
+                rules={services.rulesOf(b)}
+                services={services.servicesOf(b)}
                 menu={
                   <RowMenu
                     label={b.name}
@@ -261,18 +232,15 @@ function BundlePanel({
   bundle: b,
   vaultName,
   rules,
-  credentials,
-  templates,
-  loading,
+  services,
   menu,
 }: {
   bundle: AccessBundle;
   /** Shown when the list spans vaults. */
   vaultName?: string;
   rules: Rule[];
-  credentials: CredentialMeta[];
-  templates: StoredTemplate[];
-  loading: boolean;
+  /** Undefined while loading. */
+  services: StripService[] | undefined;
   menu: ReactNode;
 }) {
   const href = `#/bundles/${b.id}`;
@@ -295,22 +263,14 @@ function BundlePanel({
         <div className="relative z-10 -mr-2">{menu}</div>
       </div>
       <div className="flex-1 px-4 py-3">
-        {loading && b.rule_ids.length > 0 ? (
+        {!services && b.rule_ids.length > 0 ? (
           <div className="space-y-2">
             <Skeleton className="h-8 w-36" />
             <Skeleton className="h-4 w-48" />
           </div>
         ) : (
           <ServiceStrip
-            services={rules.map((r) => {
-              const c = credentials.find((x) => x.id === r.credential_id);
-              return {
-                key: r.id,
-                name: c?.name ?? r.name,
-                logo: (c && templateOf(templates, c)) ?? { id: c?.template_id ?? "", kind: "http" },
-                off: !r.enabled,
-              };
-            })}
+            services={services ?? []}
             total={b.rule_ids.length}
             empty={<span className="text-warning-strong">No services yet</span>}
           />

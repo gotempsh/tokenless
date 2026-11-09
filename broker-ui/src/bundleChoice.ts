@@ -71,3 +71,14 @@ export function chosenIn(bundles: AccessBundle[], id: string): string {
 export function ruleCount(b: AccessBundle): string {
   return b.rule_ids.length === 1 ? "1 rule" : `${b.rule_ids.length} rules`;
 }
+
+/**
+ * The services a bundle reaches, in words, for what its logos show:
+ * "GitHub, Stripe (off) and 2 more" when only some of `total` are known.
+ * A turned-off rule's logo is only dimmed, so the words say it is off.
+ */
+export function serviceNames(services: { name: string; off?: boolean }[], total: number): string {
+  const names = services.map((s) => (s.off ? `${s.name} (off)` : s.name)).join(", ");
+  const more = total - services.length;
+  return more > 0 ? `${names} and ${more} more` : names;
+}

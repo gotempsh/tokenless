@@ -23,6 +23,7 @@ import { useAction, useLoad } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { chosenIn } from "../bundleChoice";
 import { BundleChoice } from "../components/BundleChoice";
+import { useBundleServices } from "../bundleServices";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
@@ -546,6 +547,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
   const bundles = useLoad(() => get<Page<AccessBundle>>(`/vaults/${vaultId}/bundles?page_size=100`), [vaultId]);
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"bundle" | "rules">("bundle");
+  const bundleServices = useBundleServices(open && mode === "bundle" ? bundles.data?.items : undefined);
   const [bundleId, setBundleId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [ttlMinutes, setTtlMinutes] = useState(15);
@@ -676,6 +678,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
                 total={bundles.data?.total ?? 0}
                 value={chosenBundle}
                 onChange={setBundleId}
+                servicesOf={bundleServices.servicesOf}
                 empty={
                   <>
                     No bundles in this vault yet.{" "}

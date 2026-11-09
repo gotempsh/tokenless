@@ -40,6 +40,7 @@ const LOGOS = logoMap(files);
 type LogoSource = Pick<ServiceTemplate, "id" | "kind"> & { logo?: string | null };
 
 const SIZES = {
+  xs: { tile: "size-6 rounded", img: "size-3.5", icon: "size-3" },
   sm: { tile: "size-8 rounded-md", img: "size-4.5", icon: "size-4" },
   md: { tile: "size-10 rounded-lg", img: "size-6", icon: "size-5" },
   lg: { tile: "size-12 rounded-lg", img: "size-7", icon: "size-6" },

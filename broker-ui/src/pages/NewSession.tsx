@@ -15,6 +15,7 @@ import {
   SelectField,
 } from "../components/common";
 import { BundleChoice } from "../components/BundleChoice";
+import { useBundleServices } from "../bundleServices";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import {
@@ -58,6 +59,7 @@ export function NewSessionDialog({
   // With a single bundle to choose from, it is chosen.
   const bundle = fixed ?? choices?.find((b) => b.id === form.bundle) ?? (choices?.length === 1 ? choices[0] : undefined);
   const vaultId = bundle?.vault_id;
+  const services = useBundleServices(open && !fixed ? choices : undefined);
   const limits = useLoad(
     () => (open && vaultId ? get<SessionLimits>(`/vaults/${vaultId}/sessions/limits`) : Promise.resolve(undefined)),
     [open, vaultId],
@@ -129,6 +131,7 @@ export function NewSessionDialog({
               value={bundle?.id ?? ""}
               onChange={(v) => setForm({ ...form, bundle: v, ttl: "" })}
               vaultNames={vaultNames}
+              servicesOf={services.servicesOf}
               hint="The services the session reaches."
               empty={
                 <>
