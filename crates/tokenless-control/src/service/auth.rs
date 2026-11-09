@@ -991,7 +991,7 @@ impl AuthService {
         caller: &Caller,
         page: PageRequest,
     ) -> Result<Page<ApiKey>, ControlError> {
-        self.guard.check(caller, Action::ApiKeyManage, None).await?;
+        self.guard.check(caller, Action::ApiKeyRead, None).await?;
         Ok(self.identity.list_api_keys(page).await?)
     }
 

@@ -577,13 +577,13 @@ impl NodeService {
         caller: &Caller,
         page: PageRequest,
     ) -> Result<Page<Node>, ControlError> {
-        self.guard.check(caller, Action::NodeManage, None).await?;
+        self.guard.check(caller, Action::NodeRead, None).await?;
         Ok(self.nodes.list_nodes(page).await?)
     }
 
     /// One proxy, for its detail page.
     pub async fn get_node(&self, caller: &Caller, id: &NodeId) -> Result<Node, ControlError> {
-        self.guard.check(caller, Action::NodeManage, None).await?;
+        self.guard.check(caller, Action::NodeRead, None).await?;
         self.nodes
             .get_node(id)
             .await?

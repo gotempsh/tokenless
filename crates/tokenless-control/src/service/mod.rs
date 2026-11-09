@@ -1185,6 +1185,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admins_see_proxies_and_api_keys_without_a_fresh_step_up() {
+        // The console polls the proxy list on every page; an admin who
+        // signed in a while ago must not be asked to confirm just to look.
+        let cp = plane().await;
+        let stale = admin(3600);
+        let page = || PageRequest::new(Some(1), Some(20));
+        cp.nodes.list_nodes(&stale, page()).await.unwrap();
+        cp.auth.list_api_keys(&stale, page()).await.unwrap();
+        let missing = tokenless_core::ids::NodeId::new();
+        assert!(matches!(
+            cp.nodes.get_node(&stale, &missing).await,
+            Err(ControlError::NotFound { .. })
+        ));
+        // Changing them still needs one.
+        assert!(matches!(
+            cp.nodes.revoke_node(&stale, &missing).await,
+            Err(ControlError::StepUpRequired { .. })
+        ));
+        assert!(matches!(
+            cp.auth
+                .revoke_api_key(&stale, &tokenless_core::ids::ApiKeyId::new())
+                .await,
+            Err(ControlError::StepUpRequired { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn credential_writes_need_fresh_step_up_and_stay_write_only() {
         let cp = plane().await;
         let vault = cp.policy.create_vault(&admin(0), "main").await.unwrap();

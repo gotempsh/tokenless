@@ -213,7 +213,11 @@ node protocol and the snapshot format are unchanged.
   gated, so enrolling an authenticator is what makes these actions need a
   fresh second factor.
   `POST /auth/step-up` refreshes it, and the UI prompts for the code and
-  retries the blocked request.
+  retries the blocked request. Reading never needs it (listing proxies or
+  API keys is `node_read` / `api_key_read`, not the manage actions): the
+  console reads in the background on every page, and would otherwise ask
+  someone to confirm while they were only looking. For the same reason
+  the UI never prompts for a blocked read.
 - The first admin, `admin`, is created on first start with a generated
   password (four groups of five characters, about 99 bits). It is printed
   to the terminal once (deliberately not to the structured log) and stored
