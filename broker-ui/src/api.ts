@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 // Typed client for /api/v1. Cookies carry the session; mutating requests
-// add the CSRF token. A `step_up_required` problem triggers the step-up
-// prompt and the request is retried once.
+// add the CSRF token. A `step_up_required` problem on a change triggers
+// the step-up prompt and the request is retried once; a read never prompts,
+// since pages read in the background and nobody asked to confirm anything.
 
 export type Role = "admin" | "editor" | "viewer";
 
@@ -473,7 +474,7 @@ export async function api<T>(method: string, path: string, body?: unknown, retri
   const text = await response.text();
   if (!response.ok) {
     const problem = toProblem(response.status, response.statusText, text);
-    if (problem.code === "step_up_required" && !retried && stepUpHandler) {
+    if (problem.code === "step_up_required" && method !== "GET" && !retried && stepUpHandler) {
       if (await stepUpHandler()) return api<T>(method, path, body, true);
     }
     throw new ApiError(problem);

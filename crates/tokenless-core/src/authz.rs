@@ -67,8 +67,12 @@ pub enum Action {
     SessionRead,
     SessionMint,
     SessionRevoke,
+    /// List API keys (never their secrets).
+    ApiKeyRead,
     ApiKeyManage,
     AuditRead,
+    /// List proxies and their status.
+    NodeRead,
     NodeManage,
     SettingsWrite,
     /// List people and invitations.
@@ -113,7 +117,9 @@ impl Action {
                 | Action::TemplateImport
                 | Action::TemplateApprove
                 | Action::CredentialWiden
+                | Action::ApiKeyRead
                 | Action::ApiKeyManage
+                | Action::NodeRead
                 | Action::NodeManage
                 | Action::SettingsWrite
                 | Action::UserRead
@@ -359,6 +365,38 @@ mod tests {
             ),
             Decision::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn reading_never_needs_step_up() {
+        // The console reads these in the background on every page: a
+        // read that needed a recent second factor would ask an admin to
+        // confirm while they were only looking.
+        for action in [
+            Action::VaultRead,
+            Action::TemplateRead,
+            Action::CredentialRead,
+            Action::RuleRead,
+            Action::SessionRead,
+            Action::ApiKeyRead,
+            Action::AuditRead,
+            Action::NodeRead,
+            Action::UserRead,
+            Action::VariableRead,
+        ] {
+            assert!(!action.requires_step_up(), "{action}");
+        }
+        // Still admin only.
+        let vault = VaultId::new();
+        for action in [Action::NodeRead, Action::ApiKeyRead] {
+            assert!(
+                matches!(
+                    rbac_decide(&key(Role::Editor, vault), action, None),
+                    Decision::Deny { .. }
+                ),
+                "{action}"
+            );
+        }
     }
 
     #[test]
