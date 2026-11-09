@@ -1807,7 +1807,9 @@ pub async fn authorizer_suite(authz: &dyn Authorizer) -> Result<(), ConformanceF
             "a key bound to one vault must not act on another (role {role})"
         );
         for action in [
+            Action::ApiKeyRead,
             Action::ApiKeyManage,
+            Action::NodeRead,
             Action::NodeManage,
             Action::TemplateApprove,
             Action::CredentialWiden,

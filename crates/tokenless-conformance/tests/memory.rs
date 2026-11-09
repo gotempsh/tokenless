@@ -68,6 +68,39 @@ async fn rbac_authorizer_passes_authorizer_suite() {
 }
 
 #[tokio::test]
+async fn an_authorizer_that_lets_api_keys_list_proxies_or_keys_fails_the_authorizer_suite() {
+    use tokenless_control::store::Authorizer;
+    use tokenless_core::authz::{Action, Decision, Principal, PrincipalKind};
+    use tokenless_core::ids::VaultId;
+
+    /// The built-in rules, except that API keys may take the one action.
+    struct LetsKeysRead(Action);
+
+    #[async_trait::async_trait]
+    impl Authorizer for LetsKeysRead {
+        async fn authorize(
+            &self,
+            principal: &Principal,
+            action: Action,
+            vault: Option<&VaultId>,
+        ) -> Decision {
+            if principal.kind == PrincipalKind::ApiKey && action == self.0 {
+                Decision::Allow
+            } else {
+                RbacAuthorizer.authorize(principal, action, vault).await
+            }
+        }
+    }
+
+    for read in [Action::NodeRead, Action::ApiKeyRead] {
+        let failure = authorizer_suite(&LetsKeysRead(read))
+            .await
+            .expect_err("a key reading instance-wide data must fail the suite");
+        assert_eq!(failure.check, "instance_actions", "{read}: {failure}");
+    }
+}
+
+#[tokio::test]
 async fn memory_store_passes_vault_deletion_suite() {
     vault_deletion_suite(&MemoryStore::new()).await.unwrap();
 }
