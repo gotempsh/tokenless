@@ -93,9 +93,9 @@ export function RequestLog({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className={fromWidth.xl}>Time</TableHead>
+                <TableHead className={fromWidth["2xl"]}>Time</TableHead>
                 <TableHead>What happened</TableHead>
-                {showSession && <TableHead className={fromWidth["2xl"]}>Session</TableHead>}
+                {showSession && <TableHead className={fromWidth["4xl"]}>Session</TableHead>}
                 <TableHead className={fromWidth.md}>Result</TableHead>
                 <TableHead className={cn(fromWidth.lg, "text-right")}>Took</TableHead>
               </TableRow>
@@ -262,25 +262,29 @@ function LogLine({
   const time = <When at={at} />;
   return (
     <TableRow title="Show everything recorded" {...rowOpener(onOpen)}>
-      <TableCell className={cn(fromWidth.xl, "w-32 text-muted-foreground")}>{time}</TableCell>
+      <TableCell className={cn(fromWidth["2xl"], "w-32 whitespace-nowrap text-muted-foreground")}>{time}</TableCell>
       {entry.kind === "request" ? (
         <>
-          <TableCell className="max-w-96">
-            <Mono className="inline-block max-w-full truncate align-bottom">{entry.row.request}</Mono>
+          {/* Takes the width the other columns leave, and never sets the
+              table's width: a long request is cut short, not scrolled to. */}
+          <TableCell className="w-full max-w-0">
+            <span className="block truncate" title={entry.row.request}>
+              <Mono>{entry.row.request}</Mono>
+            </span>
             {entry.row.mcp && <p className="mt-1 text-xs">MCP {entry.row.mcp}</p>}
             {entry.row.reason && <p className="mt-1 text-xs text-muted-foreground">{entry.row.reason}</p>}
             {entry.row.substituted && (
               <p className="mt-1 text-xs text-muted-foreground">Filled in {entry.row.substituted}</p>
             )}
             {showSession && entry.row.session && (
-              <p className="mt-1 text-xs text-muted-foreground @2xl:hidden">By {sessionName(entry.row.session)}</p>
+              <p className="mt-1 truncate text-xs text-muted-foreground @4xl:hidden">By {sessionName(entry.row.session)}</p>
             )}
             <div className="mt-1 @md:hidden">{outcomeBadge(entry.row)}</div>
-            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
+            <p className="mt-1 text-xs text-muted-foreground @2xl:hidden">{time}</p>
           </TableCell>
           {showSession && (
-            <TableCell className={cn(fromWidth["2xl"], "max-w-48 truncate text-muted-foreground")}>
-              {entry.row.session ? sessionName(entry.row.session) : ""}
+            <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
+              <span className="block max-w-48 truncate">{entry.row.session ? sessionName(entry.row.session) : ""}</span>
             </TableCell>
           )}
           <TableCell className={fromWidth.md}>{outcomeBadge(entry.row)}</TableCell>
@@ -292,9 +296,9 @@ function LogLine({
         <>
           <TableCell>
             <span className="font-medium">{actorLabel(entry.event, names)}</span> {phrase(entry.event)}
-            <p className="mt-1 text-xs text-muted-foreground @xl:hidden">{time}</p>
+            <p className="mt-1 text-xs text-muted-foreground @2xl:hidden">{time}</p>
           </TableCell>
-          {showSession && <TableCell className={fromWidth["2xl"]} />}
+          {showSession && <TableCell className={fromWidth["4xl"]} />}
           <TableCell className={fromWidth.md} />
           <TableCell className={fromWidth.lg} />
         </>
