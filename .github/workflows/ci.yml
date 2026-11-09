@@ -117,7 +117,7 @@ jobs:
         run: shellcheck site/install.sh site/check.sh
       - name: Build the website image
         run: docker build --tag tokenless-site site
-      - name: Check its pages and redirects
+      - name: Check its pages, headers and redirects
         run: |
           docker run --detach --rm --name tokenless-site --publish 8080:8080 tokenless-site
           for _ in $(seq 20); do curl -fs -o /dev/null http://127.0.0.1:8080/ && break; sleep 0.5; done

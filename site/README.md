@@ -26,7 +26,7 @@ docker build -t tokenless-site site
 docker run --rm -p 127.0.0.1:8080:8080 tokenless-site
 ```
 
-`site/check.sh http://127.0.0.1:8080` then checks its pages and redirects,
+`site/check.sh http://127.0.0.1:8080` then checks its pages, headers and redirects,
 as CI does.
 
 With mdBook installed, `mdbook serve site/docs` previews the docs with
