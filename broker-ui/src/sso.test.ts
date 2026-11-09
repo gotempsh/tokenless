@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+import { existsSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import type { OidcProvider } from "./api";
+import type { OidcProvider, ProviderBrand } from "./api";
 import {
   callbackUri,
   newProviderForm,
@@ -102,6 +103,7 @@ describe("the provider form", () => {
       slug: "corp",
       name: "Corp",
       issuer: "https://idp.example",
+      brand: "openid",
       client_id: "tokenless",
       has_client_secret: true,
       redirect_uri: "https://broker.example/api/v1/auth/oidc/callback",
@@ -135,6 +137,26 @@ describe("the provider form", () => {
   test("a slug the server would refuse is caught first", () => {
     for (const slug of ["x", "-corp", "Corp", "corp_eu", "a".repeat(33)]) {
       expect(providerFormProblem({ ...filled(), slug })).toContain("slug");
+    }
+  });
+});
+
+describe("provider logos", () => {
+  // Every brand the server can report, which the type checker holds to the type.
+  const brands: Record<ProviderBrand, true> = {
+    keycloak: true,
+    okta: true,
+    microsoft: true,
+    google: true,
+    auth0: true,
+    authentik: true,
+    gitlab: true,
+    openid: true,
+  };
+
+  test("every provider brand has a bundled logo", () => {
+    for (const brand of Object.keys(brands)) {
+      expect(existsSync(new URL(`./assets/sign-in/${brand}.svg`, import.meta.url))).toBe(true);
     }
   });
 });

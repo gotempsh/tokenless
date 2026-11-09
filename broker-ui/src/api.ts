@@ -72,9 +72,13 @@ export interface SignInSettings {
   password_sign_in: PasswordSignIn;
 }
 
+/** The product an identity provider is, read from its issuer; `openid` for any other. */
+export type ProviderBrand = "keycloak" | "okta" | "microsoft" | "google" | "auth0" | "authentik" | "gitlab" | "openid";
+
 export interface SignInProvider {
   slug: string;
   name: string;
+  brand: ProviderBrand;
 }
 
 export interface SignInOptions {
@@ -86,6 +90,7 @@ export interface SsoSignIn {
   provider_id: string;
   slug: string;
   name: string;
+  brand: ProviderBrand;
 }
 
 export interface RoleMapping {
@@ -98,6 +103,7 @@ export interface OidcProvider {
   slug: string;
   name: string;
   issuer: string;
+  brand: ProviderBrand;
   client_id: string;
   has_client_secret: boolean;
   redirect_uri: string;

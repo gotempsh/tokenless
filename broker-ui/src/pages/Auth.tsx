@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ChevronLeft, ExternalLink, LogIn, Smartphone } from "lucide-react";
+import { ChevronLeft, ExternalLink, Smartphone } from "lucide-react";
 import { ApiError, get, post, type InviteInfo, type SessionInfo, type SignInOptions, type SsoSignIn, type UserSummary } from "../api";
 import {
   returnToHere,
@@ -14,6 +14,7 @@ import {
 import { useAction, useLoad } from "../hooks";
 import { CheckField, CopyButton, DialogActions, ErrorBanner, Field, When } from "../components/common";
 import { BrandMark } from "../components/Brand";
+import { ProviderLogo } from "../components/ProviderLogo";
 import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog";
@@ -251,7 +252,7 @@ function ProviderButtons({ options }: { options: SignInOptions }) {
       {options.providers.map((p) => (
         <Button key={p.slug} asChild variant="outline" className="w-full">
           <a href={ssoStartHref(p.slug, back)}>
-            <LogIn />
+            <ProviderLogo brand={p.brand} />
             Continue with {p.name}
           </a>
         </Button>

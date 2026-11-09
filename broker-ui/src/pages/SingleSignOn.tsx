@@ -38,6 +38,7 @@ import {
   useConfirm,
 } from "../components/common";
 import { SettingsSection } from "../components/layout";
+import { ProviderLogo } from "../components/ProviderLogo";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
@@ -136,9 +137,16 @@ export function SingleSignOnSettings() {
                 {list.map((p) => (
                   <TableRow key={p.id} {...rowLink(providerHref(p.id))}>
                     <TableCell>
-                      <div className="font-medium">{p.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {p.role_mappings.length === 1 ? "1 group mapped" : `${p.role_mappings.length} groups mapped`}
+                      <div className="flex items-center gap-3">
+                        <span className="flex size-8 shrink-0 items-center justify-center rounded-md border bg-background">
+                          <ProviderLogo brand={p.brand} className="size-4.5" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="font-medium">{p.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {p.role_mappings.length === 1 ? "1 group mapped" : `${p.role_mappings.length} groups mapped`}
+                          </div>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell className={fromWidth.xl}>
