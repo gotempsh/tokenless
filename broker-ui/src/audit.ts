@@ -26,6 +26,7 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
+  { label: "Single sign-on", prefix: "identity_provider." },
   { label: "Audit export", prefix: "audit_export." },
 ];
 
@@ -80,6 +81,10 @@ export function actionPhrase(event: AuditEvent): string {
       return "set up this console";
     case "auth.step_up":
       return "confirmed their sign-in";
+    case "auth.totp_enable":
+      return event.outcome === "success" ? "turned on an authenticator app" : "tried to turn on an authenticator app";
+    case "auth.totp_disable":
+      return event.outcome === "success" ? "removed their authenticator app" : "tried to remove their authenticator app";
     case "credential.create":
       return `added ${named("service")}`;
     case "credential.rotate":
@@ -128,6 +133,12 @@ export function actionPhrase(event: AuditEvent): string {
       return "withdrew an invite";
     case "user.update":
       return `changed ${d.username ? `${d.username}'s account` : "an account"}`;
+    case "user.create":
+      return `created ${d.username ? `${d.username}'s account` : "an account"}${d.provider ? ` at their first sign-in with ${d.provider}` : ""}`;
+    case "user.password_change":
+      return event.outcome === "success" ? "changed their password" : "tried to change their password";
+    case "user.password_reset":
+      return `reset ${d.username ? `${d.username}'s` : "a"} password from the server's host`;
     case "api_key.create":
       return `created ${named("API key")}`;
     case "api_key.revoke":
@@ -140,12 +151,24 @@ export function actionPhrase(event: AuditEvent): string {
       return "renewed its certificate";
     case "node.revoke":
       return `revoked ${named("proxy")}`;
+    case "node.register_embedded":
+      return `registered ${named("embedded proxy")}`;
     case "template.import":
       return `imported ${named("template")}`;
     case "template.approve":
       return `approved ${named("template")}`;
     case "settings.update":
       return "changed the settings";
+    case "settings.sign_in":
+      return d.password_sign_in === "admins_only"
+        ? "limited password sign-in to local admins"
+        : "let everyone sign in with a password";
+    case "identity_provider.create":
+      return `added ${named("single sign-on provider", d.slug)}`;
+    case "identity_provider.update":
+      return `changed ${named("single sign-on provider", d.slug)}`;
+    case "identity_provider.delete":
+      return `deleted ${named("single sign-on provider", d.slug)}`;
     case "audit_export.create":
       return `added ${named("audit webhook")}`;
     case "audit_export.update":
@@ -176,6 +199,8 @@ export function actionPhrase(event: AuditEvent): string {
       return `blocked a connection to ${hostOnly(d.host)}, a private address`;
     case "proxy.tunnel":
       return `passed a connection to ${hostOnly(d.host)} through untouched`;
+    case "proxy.tunnel_cut":
+      return `cut an open connection to ${hostOnly(d.host)}${d.reason ? `: ${d.reason}` : ""}`;
     default:
       return event.action;
   }

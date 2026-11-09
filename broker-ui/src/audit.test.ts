@@ -3,7 +3,15 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AuditEvent } from "./api";
-import { actionPhrase, actorLabel, actorName, hostOnly, serviceHistoryPhrase, sessionHistoryPhrase } from "./audit";
+import {
+  AUDIT_CATEGORIES,
+  actionPhrase,
+  actorLabel,
+  actorName,
+  hostOnly,
+  serviceHistoryPhrase,
+  sessionHistoryPhrase,
+} from "./audit";
 
 const event = (over: Partial<AuditEvent>): AuditEvent => ({
   id: "e1",
@@ -66,6 +74,63 @@ describe("actionPhrase", () => {
 
   test("an unknown action is shown as recorded", () => {
     expect(actionPhrase(event({ action: "future.thing" }))).toBe("future.thing");
+  });
+
+  test("single sign-on, sign-in and account changes read as sentences", () => {
+    expect(actionPhrase(event({ action: "identity_provider.update", detail: { slug: "keycloak" } }))).toBe(
+      "changed single sign-on provider keycloak",
+    );
+    expect(actionPhrase(event({ action: "settings.sign_in", detail: { password_sign_in: "admins_only" } }))).toBe(
+      "limited password sign-in to local admins",
+    );
+    expect(
+      actionPhrase(event({ action: "user.create", actor: "system", detail: { username: "kim", provider: "keycloak" } })),
+    ).toBe("created kim's account at their first sign-in with keycloak");
+    expect(actionPhrase(event({ action: "auth.totp_disable", outcome: "denied" }))).toBe(
+      "tried to remove their authenticator app",
+    );
+    expect(
+      actionPhrase(event({ action: "proxy.tunnel_cut", detail: { host: "api.example.com:443", reason: "the session was revoked" } })),
+    ).toBe("cut an open connection to api.example.com: the session was revoked");
+  });
+
+  // Every action the control plane and the proxies record. A new one goes
+  // here, with a phrase in audit.ts, so the log never shows a raw name.
+  const RECORDED = [
+    "api_key.create", "api_key.revoke",
+    "audit_export.create", "audit_export.delete", "audit_export.pause", "audit_export.resume",
+    "audit_export.rotate_secret", "audit_export.skip", "audit_export.test", "audit_export.update",
+    "auth.login", "auth.logout", "auth.setup", "auth.step_up", "auth.totp_disable", "auth.totp_enable",
+    "bundle.create", "bundle.delete", "bundle.update",
+    "credential.create", "credential.delete", "credential.rotate", "credential.update_headers",
+    "credential.update_substitutions", "credential.validate",
+    "identity_provider.create", "identity_provider.delete", "identity_provider.update",
+    "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
+    "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
+    "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
+    "rule.create", "rule.delete", "rule.update",
+    "session.mint", "session.revoke", "session.update_labels",
+    "settings.sign_in", "settings.update",
+    "template.approve", "template.import",
+    "user.create", "user.invite", "user.invite.accept", "user.invite.revoke", "user.password_change",
+    "user.password_reset", "user.update",
+    "variable.create", "variable.delete", "variable.update",
+    "vault.create", "vault.delete",
+  ];
+
+  test("every recorded action reads as a sentence, never its raw name", () => {
+    for (const action of RECORDED) {
+      for (const outcome of ["success", "denied"] as const) {
+        expect(actionPhrase(event({ action, outcome }))).not.toBe(action);
+      }
+    }
+  });
+
+  test("every recorded action can be found with the filter", () => {
+    const categories = AUDIT_CATEGORIES.filter((c) => c.prefix !== "");
+    for (const action of RECORDED) {
+      expect(categories.some((c) => action.startsWith(c.prefix))).toBe(true);
+    }
   });
 });
 
