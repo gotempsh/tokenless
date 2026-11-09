@@ -17,22 +17,28 @@ export interface StripService {
 
 /**
  * A record panel's services: up to four logos in one row and "+N", their
- * names on one line below. One height however many services there are, so
- * panels in a grid line up. `empty` takes the names line when there are none.
+ * names on one line below, the same height however many there are, so
+ * panels in a grid line up. With none, only `empty` is shown, in the same
+ * height: a placeholder where logos would go reads as a service that failed
+ * to load.
  */
 export function ServiceStrip({ services, total, empty }: { services: StripService[]; total: number; empty: ReactNode }) {
   const { shown, more } = serviceStrip(services, total);
+  if (shown.length === 0 && more === 0) {
+    // As tall as a strip with logos (h-8, the gap, h-4), so panels in a grid still line up.
+    return (
+      <div className="flex h-14 items-center">
+        <p className="truncate text-xs text-muted-foreground">{empty}</p>
+      </div>
+    );
+  }
   const names = shown.map((s) => (s.off ? `${s.name} (off)` : s.name)).join(", ");
   return (
     <div className="space-y-2">
       <div className="flex h-8 items-center gap-1.5">
-        {shown.length === 0 ? (
-          <span className="size-8 rounded-md border border-dashed" aria-hidden="true" />
-        ) : (
-          shown.map((s) => (
-            <ServiceLogo key={s.key} template={s.logo} size="sm" className={cn(s.off && "opacity-40")} />
-          ))
-        )}
+        {shown.map((s) => (
+          <ServiceLogo key={s.key} template={s.logo} size="sm" className={cn(s.off && "opacity-40")} />
+        ))}
         {more > 0 && (
           <span className="flex h-8 min-w-8 items-center justify-center rounded-md border px-1.5 text-xs tabular-nums text-muted-foreground">
             +{more}
@@ -40,7 +46,7 @@ export function ServiceStrip({ services, total, empty }: { services: StripServic
         )}
       </div>
       <p className="h-4 truncate text-xs text-muted-foreground">
-        {shown.length === 0 ? empty : more > 0 ? `${names} and ${more} more` : names}
+        {shown.length === 0 ? `${more} ${more === 1 ? "service" : "services"}` : more > 0 ? `${names} and ${more} more` : names}
       </p>
     </div>
   );
