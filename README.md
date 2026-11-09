@@ -31,6 +31,39 @@ denied, depending on policy).
 The design, the threat model and the trade-offs are in
 [docs/adr/0001-architecture.md](docs/adr/0001-architecture.md).
 
+## A tour of the console
+
+**1. Pick a service.** Over 150 are built in, from LLM providers to
+payments, each knowing its hosts and how to send the key. Anything else
+is a custom HTTP API or MCP server.
+
+![Add a service: a searchable catalogue of built-in services, grouped by category](docs/images/console-add-service.png)
+
+**2. Paste the token, once.** It is encrypted and write-only from then on.
+A vault lists each service and the hosts it covers; nobody, admins
+included, sees the secret again.
+
+![A vault's services: Slack, Stripe, OpenAI and GitHub, each with its hosts and a stored, unreadable secret](docs/images/console-vault.png)
+
+**3. Run an agent.** Group the services a job needs into an access bundle
+and copy the commands that start the agent behind it
+(`tokenless run -- claude`). The agent gets a local proxy address, never
+a token. MCP clients get a URL instead.
+
+![Run an agent: create a session, choose Claude Code, Codex or another command, and copy the commands](docs/images/console-run-agent.png)
+
+**4. Watch what it does.** Each session's page lists its requests as they
+happen: the credential added and the API's answer, or why the proxy
+blocked a request outside the bundle's rules.
+
+![A live session: chat.postMessage and conversations.history went through with the credential added; users.list and conversations.archive were blocked](docs/images/console-session.png)
+
+**5. Keep the record.** Every change, and every request the proxy adds a
+credential to or refuses, is in the audit log, which can also be sent to
+a webhook.
+
+![The audit log: sign-ins, credentials added, requests refused by the proxy](docs/images/console-audit.png)
+
 ## Install
 
 ```sh
