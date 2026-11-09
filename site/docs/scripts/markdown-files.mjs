@@ -6,8 +6,11 @@
 // serves files (GitHub Pages) has no rewrites to map one onto the other.
 import { cp, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const out = new URL('../out/', import.meta.url).pathname;
+// A file path, not the URL's percent-encoded pathname: a checkout under
+// `My Projects/` would otherwise be looked for under `My%20Projects/`.
+const out = fileURLToPath(new URL('../out/', import.meta.url));
 const built = join(out, 'llms.mdx');
 
 let written = 0;
