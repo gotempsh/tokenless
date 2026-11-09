@@ -14,7 +14,8 @@ page, and the install script.
 | `fonts/` | `/fonts/` | The docs' typeface |
 | `install.sh` | `/install.sh` | The install script (also used straight from GitHub) |
 
-Old `/docs/...` links redirect to the same page at the root.
+Old `/docs/<page>.html` links redirect to the same page at the root; any
+other `/docs/...` path redirects to the home page.
 
 ## Preview
 
@@ -24,6 +25,9 @@ Build the image:
 docker build -t tokenless-site site
 docker run --rm -p 127.0.0.1:8080:8080 tokenless-site
 ```
+
+`site/check.sh http://127.0.0.1:8080` then checks its pages and redirects,
+as CI does.
 
 With mdBook installed, `mdbook serve site/docs` previews the docs with
 live reload (the fonts won't load there).
