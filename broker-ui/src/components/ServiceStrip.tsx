@@ -46,7 +46,7 @@ export function ServiceStrip({ services, total, empty }: { services: StripServic
         )}
       </div>
       <p className="h-4 truncate text-xs text-muted-foreground">
-        {shown.length === 0 ? `${more} services` : more > 0 ? `${names} and ${more} more` : names}
+        {shown.length === 0 ? `${more} ${more === 1 ? "service" : "services"}` : more > 0 ? `${names} and ${more} more` : names}
       </p>
     </div>
   );

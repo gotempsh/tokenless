@@ -26,4 +26,13 @@ describe("ServiceStrip", () => {
     expect(html).toContain("GitHub, Stripe and 1 more");
     expect(html).not.toContain("No services yet.");
   });
+
+  test("with services it cannot name, how many there are", () => {
+    const one = renderToStaticMarkup(<ServiceStrip services={[]} total={1} empty="No services yet." />);
+    expect(one).toContain("+1");
+    expect(one).toContain("1 service<");
+    const three = renderToStaticMarkup(<ServiceStrip services={[]} total={3} empty="No services yet." />);
+    expect(three).toContain("3 services<");
+    expect(three).not.toContain("No services yet.");
+  });
 });
