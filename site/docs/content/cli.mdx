@@ -1,0 +1,98 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Command line"
+description: "Every command takes --help for its full list of options."
+---
+
+| Command | What it does |
+|---|---|
+| `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](/deploy). |
+| `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](/terminal). |
+| `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
+| `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
+| `tokenless admin reset-password` | On the server's host: replace a lost password. |
+| `tokenless admin rotate-root-key` | On the server's host: replace the root key. |
+| `tokenless node join` | Enrol this machine as a proxy with a one-time join token. |
+| `tokenless node run` | Run the proxy and the MCP gateway. |
+| `tokenless run` | Run a command behind a session from an access bundle. See [Run an agent](/agents). |
+| `tokenless exec` | `run`, with environment variables filled by reference. See [Placeholders](/placeholders). |
+| `tokenless session start` | Open a session port for agents you start yourself. |
+| `tokenless session create` | Mint a session and print its token. |
+| `tokenless session info` | Show what a session can reach and the placeholders it accepts. |
+| `tokenless session revoke` | End a session. |
+| `tokenless mcp` | Print MCP client configuration for a bundle's MCP servers. See [MCP](/mcp). |
+| `tokenless skill` | Print or install the agent skill. |
+
+## `serve`
+
+| Option | Default | |
+|---|---|---|
+| `--data-dir` | `./data` | SQLite database, and `root.key` when none is supplied |
+| `--root-key-file` | `TOKENLESS_ROOT_KEY_FILE`; or the key itself in `TOKENLESS_ROOT_KEY` | The root key, kept outside the data directory. See [Deploy → The root key](/deploy#the-root-key) |
+| `--database-url` | `sqlite://<data-dir>/broker.db` | |
+| `--api-listen` | `127.0.0.1:8080` | Console and management API |
+| `--api-tls-cert`, `--api-tls-key` | | Serve the API over HTTPS; reloaded on change |
+| `--node-listen` | `127.0.0.1:8443` | Node API (mutual TLS) |
+| `--node-api-name` | `localhost`, `127.0.0.1` | Names in the node API certificate (repeatable) |
+| `--validation-ca` | | Extra CAs for credential tests (repeatable) |
+| `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
+| `--ui-dir` | | Serve the console from a directory instead of the built-in one |
+
+## `service add <template>`
+
+| Option | Default | |
+|---|---|---|
+| `--vault` | `default` | Created when missing |
+| `--bundle` | | Access bundle to add the rule to, created when missing |
+| `--name` | the template's ID | Credential name |
+| `--read-only` | | Rule allows only `GET` and `HEAD` |
+
+The template is matched by ID or name. A single-field credential can be
+piped in on standard input.
+
+## `proxy add`
+
+| Option | Default | |
+|---|---|---|
+| `--name` | `node` | Shown under **Proxies** |
+| `--state` | `./node.json` | Where the identity is written |
+| `--control-url` | the server's host, port 8443 | Node API |
+
+## `admin reset-password`
+
+| Option | Default | |
+|---|---|---|
+| `--username` | `admin` | |
+| `--data-dir`, `--database-url` | as for `serve` | |
+
+## `node run`
+
+| Option | Default | |
+|---|---|---|
+| `--state` | `./node.json` | The identity written by `node join` |
+| `--listen` | `127.0.0.1:3128` | Proxy listener |
+| `--mcp-listen` | `127.0.0.1:3129` | MCP gateway |
+| `--no-mcp-gateway` | | Don't start the MCP gateway |
+| `--metrics-listen` | | Prometheus metrics |
+| `--upstream-ca` | | Extra CAs for upstream TLS (repeatable) |
+| `--no-public-roots` | | Trust only `--upstream-ca` |
+| `--drain-secs` | `30` | On Ctrl-C or SIGTERM, how long open tunnels get to finish before they are cut |
+
+## Client commands
+
+`login`, `service`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; the last four also take the rest. Without an API key they use the session from `tokenless login`.
+
+| Flag | Environment | Default |
+|---|---|---|
+| `--server` | `TOKENLESS_URL` | `http://127.0.0.1:8080` |
+| `--api-key-file` | `TOKENLESS_API_KEY` (the key itself) | |
+| `--vault` | `TOKENLESS_VAULT` | the API key's vault |
+| `--bundle` | `TOKENLESS_BUNDLE` | |
+| `--session-token-file` (`run`, `exec`, `session start`, `session revoke`) | `TOKENLESS_SESSION_TOKEN` (the token itself) | used when no bundle is given |
+| `--name` (when minting) | | the session's name on the Sessions page |
+| `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
+| `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` says when the skill isn't installed |
+
+Inside `run` or behind `session start`, `TOKENLESS_PROXY` is set to the
+session port and `HTTPS_PROXY` points at it.

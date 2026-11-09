@@ -23,9 +23,12 @@
 	encode zstd gzip
 
 	import headers
-	header /fonts/* Cache-Control "public, max-age=604800"
+	header /_next/static/* Cache-Control "public, max-age=31536000, immutable"
 	# Shown as text when opened in a browser; `curl | sh` doesn't care.
 	header /install.sh Content-Type "text/plain; charset=utf-8"
+	@markdown path *.md /llms.mdx/*
+	header @markdown Content-Type "text/markdown; charset=utf-8"
+	header /api/search Content-Type "application/json"
 
 	# The documentation used to live under /docs/; it is the site now. Only
 	# page names are carried over: copying the rest of the path into Location
@@ -33,11 +36,19 @@
 	# read `/\evil.example` as `//evil.example`. Anything else goes home.
 	@olddocs path /docs /docs/*
 	route @olddocs {
-		@page path_regexp page ^/docs/([a-z0-9_-]+\.html)$
+		@page path_regexp page ^/docs/([a-z0-9_-]+)\.html$
 		redir @page /{re.page.1} 308
 		redir * / 308
 	}
 
+	# Every page is also Markdown, for agents: /install.md is the install
+	# page's. The build writes them under /llms.mdx/.
+	rewrite /index.md /llms.mdx/content.md
+	@md path_regexp md ^/([a-z0-9_-]+(?:/[a-z0-9_-]+)*)\.md$
+	rewrite @md /llms.mdx/{re.md.1}/content.md
+
+	# Pages are exported as /install.html, served at /install.
+	try_files {path} {path}.html
 	file_server
 	handle_errors 404 {
 		import headers

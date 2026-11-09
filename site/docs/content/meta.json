@@ -1,0 +1,22 @@
+{
+  "pages": [
+    "index",
+    "---Get started---",
+    "install",
+    "quickstart",
+    "terminal",
+    "concepts",
+    "---Use it---",
+    "agents",
+    "placeholders",
+    "mcp",
+    "automation",
+    "embedding",
+    "---Run it in production---",
+    "deploy",
+    "settings",
+    "security",
+    "---Reference---",
+    "cli"
+  ]
+}

@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+/node_modules
+/.next
+/.source
+/out
+next-env.d.ts
+*.tsbuildinfo
