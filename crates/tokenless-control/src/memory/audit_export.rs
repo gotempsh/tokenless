@@ -80,7 +80,10 @@ impl AuditExportStore for MemoryStore {
             .audit_destinations
             .get_mut(&destination.id)
             .ok_or_else(|| missing(&destination.id))?;
-        let delivery = std::mem::take(&mut current.delivery);
+        let delivery = DeliveryState {
+            retry_until: None,
+            ..std::mem::take(&mut current.delivery)
+        };
         *current = AuditDestination {
             created_at: current.created_at,
             delivery,
@@ -146,6 +149,7 @@ impl AuditExportStore for MemoryStore {
             failing_since: None,
             last_error: None,
             consecutive_failures: 0,
+            retry_until: None,
         };
         Ok(true)
     }
@@ -153,11 +157,16 @@ impl AuditExportStore for MemoryStore {
     async fn record_audit_delivery_failure(
         &self,
         id: &AuditDestinationId,
+        from: u64,
+        to: u64,
         error: &str,
         at: DateTime<Utc>,
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         if let Some(d) = inner.audit_destinations.get_mut(id) {
+            if d.delivery.cursor == from {
+                d.delivery.retry_until = Some(to);
+            }
             d.delivery.last_attempt_at = Some(at);
             d.delivery.failing_since.get_or_insert(at);
             d.delivery.last_error = Some(error.to_string());
@@ -181,6 +190,7 @@ impl AuditExportStore for MemoryStore {
         d.delivery.failing_since = None;
         d.delivery.last_error = None;
         d.delivery.consecutive_failures = 0;
+        d.delivery.retry_until = None;
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

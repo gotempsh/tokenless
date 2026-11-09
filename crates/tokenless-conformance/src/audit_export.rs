@@ -250,11 +250,13 @@ where
 
     // -- Delivery state -----------------------------------------------------
     store
-        .record_audit_delivery_failure(&b.id, "first", at(10))
+        .record_audit_delivery_failure(&b.id, 2, 4, "first", at(10))
         .await
         .map_err(backend(S, "failure"))?;
+    // From a cursor that is no longer the current one: counted, but it
+    // does not move the end of the retry.
     store
-        .record_audit_delivery_failure(&b.id, "second", at(20))
+        .record_audit_delivery_failure(&b.id, 1, 9, "second", at(20))
         .await
         .map_err(backend(S, "failure"))?;
     let failing = get(store, &b.id).await?.delivery;
@@ -265,11 +267,28 @@ where
             && failing.last_attempt_at == Some(at(20))
             && failing.last_error.as_deref() == Some("second")
             && failing.consecutive_failures == 2
-            && failing.cursor == 2,
-        "two failures must keep the first's start, the second's error, count 2 and the cursor: {failing:?}"
+            && failing.cursor == 2
+            && failing.retry_until == Some(4),
+        "two failures must keep the first's start, the second's error, count 2, the cursor and the retry's end from the current cursor: {failing:?}"
+    );
+    let current = get(store, &b.id).await?;
+    store
+        .update_audit_destination(current, &[])
+        .await
+        .map_err(backend(S, "update"))?;
+    let edited = get(store, &b.id).await?.delivery;
+    ensure!(
+        S,
+        "update_forgets_retry",
+        edited.retry_until.is_none() && edited.cursor == 2 && edited.consecutive_failures == 2,
+        "a settings update must forget the pending retry and keep the rest: {edited:?}"
     );
     store
-        .record_audit_delivery_failure(&AuditDestinationId::new(), "x", at(0))
+        .record_audit_delivery_failure(&b.id, 2, 4, "third", at(25))
+        .await
+        .map_err(backend(S, "failure"))?;
+    store
+        .record_audit_delivery_failure(&AuditDestinationId::new(), 0, 1, "x", at(0))
         .await
         .map_err(backend(S, "failure_missing"))?;
 
@@ -300,8 +319,9 @@ where
                     failing_since: None,
                     last_error: None,
                     consecutive_failures: 0,
+                    retry_until: None,
                 },
-        "advancing must move the cursor and clear the failures: {delivered:?}"
+        "advancing must move the cursor and clear the failures and the retry: {delivered:?}"
     );
     let gone = store
         .advance_audit_cursor(&AuditDestinationId::new(), 0, 1, at(0))
@@ -315,7 +335,7 @@ where
     );
 
     store
-        .record_audit_delivery_failure(&b.id, "down", at(40))
+        .record_audit_delivery_failure(&b.id, 5, 7, "down", at(40))
         .await
         .map_err(backend(S, "failure"))?;
     let before_skip = store
@@ -338,8 +358,9 @@ where
             && skipped.failing_since.is_none()
             && skipped.last_error.is_none()
             && skipped.consecutive_failures == 0
+            && skipped.retry_until.is_none()
             && after_skip == before_skip + 1,
-        "set_audit_cursor must put the cursor anywhere, clear the failures and record its event: {skipped:?}"
+        "set_audit_cursor must put the cursor anywhere, clear the failures and the retry, and record its event: {skipped:?}"
     );
     let res = store
         .set_audit_cursor(&AuditDestinationId::new(), 0, &[])

@@ -108,8 +108,10 @@ until it arrives. An instance sends to at most 10 webhooks.
 
 - **URL.** `https`, or `http` only to localhost. Put a receiver's token in
   the **auth header** (for example `Authorization: Bearer …`), not in the
-  URL: the header's value is encrypted at rest and never shown again.
-  Requests follow no redirects and give up after 10 seconds.
+  URL: the header's value is encrypted at rest and never shown again. The
+  audit log records only the URL's scheme and host, since anyone who can
+  read the audit log (viewers too) would see the rest. Requests follow no
+  redirects and give up after 10 seconds.
 - **Format.** *JSON* sends one object per request,
   `{"type":"tokenless.audit","version":1,"batch_id":"…","events":[…]}`.
   *NDJSON* (`application/x-ndjson`) sends one event per line, for
@@ -126,8 +128,12 @@ Delivery is at least once. Any 2xx answer counts as delivered; anything
 else, or no answer, is retried from the same batch after 1 second,
 doubling to at most 5 minutes, so a receiver that was down for an hour
 gets the hour's events in order when it comes back. A batch that is
-retried keeps its `webhook-id`; a receiver that may see one twice can
-drop repeats by it. Each webhook shows its status: **Up to date**,
+retried is the same batch under the same `webhook-id`, even when newer
+events were written meanwhile and across a restart, so a receiver that
+may see one twice can drop repeats by it. Changing the webhook's settings
+during a retry makes the next attempt a new batch with a new ID, since
+other settings can select other events. Each event's `seq` deduplicates
+in every case. Each webhook shows its status: **Up to date**,
 **Sending** (with how many events it is behind), **Retrying**, **Failing**
 (after 15 minutes of retries) or **Paused**, with the receiver's last
 error. The **Audit log** page and the sidebar warn while one is failing.
@@ -149,7 +155,7 @@ when the webhook is added or given a new secret. Each request carries:
 
 | Header | Value |
 |---|---|
-| `webhook-id` | The batch's ID, the same on every retry |
+| `webhook-id` | The batch's ID, the same on every retry of it |
 | `webhook-timestamp` | Seconds since the Unix epoch when it was sent |
 | `webhook-signature` | `v1,` followed by the base64 HMAC-SHA256 of `{id}.{timestamp}.{body}` |
 

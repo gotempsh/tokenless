@@ -294,6 +294,118 @@ async fn a_failed_batch_is_retried_from_the_same_cursor_with_the_same_id() {
 }
 
 #[tokio::test]
+async fn a_retry_is_the_same_batch_when_newer_events_were_written_meanwhile() {
+    let t = setup().await;
+    let id = t
+        .export()
+        .create(&admin(), create(StartAt::Now))
+        .await
+        .unwrap()
+        .destination
+        .id;
+    t.record(2, "proxy.inject").await;
+    t.receiver.answer(Ok(503));
+    t.export().deliver(&id).await.unwrap();
+
+    // The receiver may have stored the first attempt; more events arrive
+    // before the retry.
+    t.record(4, "proxy.inject").await;
+    let retry = t.export().deliver(&id).await.unwrap();
+    assert_eq!((retry.batches, retry.events, retry.error), (2, 7, None));
+    let requests = t.receiver.requests();
+    let ids: Vec<_> = requests.iter().map(|r| header(r, "webhook-id")).collect();
+    assert_eq!(ids[0], ids[1], "the retry keeps its id: {ids:?}");
+    assert_ne!(ids[1], ids[2], "the newer events are a batch of their own");
+    let events = t.receiver.events();
+    assert_eq!(seqs(&events[0]), seqs(&events[1]));
+    let all: Vec<u64> = events[1..].iter().flat_map(|b| seqs(b)).collect();
+    assert_eq!(
+        all.len(),
+        7,
+        "nothing skipped or repeated after the retry: {all:?}"
+    );
+    assert_eq!(
+        t.store
+            .get_audit_destination(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .delivery
+            .retry_until,
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_settings_change_makes_the_retry_a_new_batch() {
+    let t = setup().await;
+    let id = t
+        .export()
+        .create(&admin(), create(StartAt::Now))
+        .await
+        .unwrap()
+        .destination
+        .id;
+    t.record(2, "proxy.inject").await;
+    t.receiver.answer(Ok(503));
+    t.export().deliver(&id).await.unwrap();
+    t.record(2, "proxy.inject").await;
+    // Other settings could select other events from the same range, which
+    // must not go out under the id of the batch the receiver may have.
+    let mut narrower = input();
+    narrower.filter.action_prefixes = vec!["proxy.".into()];
+    t.export().update(&admin(), &id, narrower).await.unwrap();
+
+    t.export().deliver(&id).await.unwrap();
+    let requests = t.receiver.requests();
+    assert_ne!(
+        header(&requests[0], "webhook-id"),
+        header(&requests[1], "webhook-id")
+    );
+    assert!(t.receiver.events()[1].iter().all(|e| e["action"]
+        .as_str()
+        .is_some_and(|a| a.starts_with("proxy."))));
+}
+
+#[tokio::test]
+async fn audit_details_name_the_receiver_without_its_path_or_query() {
+    let t = setup().await;
+    let mut with_token = input();
+    with_token.url =
+        "https://ingest.example.com/receiver/v1/http/INGESTTOKEN?key=QUERYTOKEN".into();
+    let id = t
+        .export()
+        .create(
+            &admin(),
+            CreateAuditDestination {
+                destination: with_token.clone(),
+                start_at: StartAt::Now,
+            },
+        )
+        .await
+        .unwrap()
+        .destination
+        .id;
+    with_token.name = "Renamed".into();
+    t.export().update(&admin(), &id, with_token).await.unwrap();
+    for action in ["audit_export.create", "audit_export.update"] {
+        let events = t.audit(action).await;
+        assert_eq!(events.len(), 1, "{action}");
+        assert_eq!(
+            events[0].detail.get("url").map(String::as_str),
+            Some("https://ingest.example.com")
+        );
+        let all = format!("{:?}", events[0]);
+        assert!(
+            !all.contains("INGESTTOKEN") && !all.contains("QUERYTOKEN"),
+            "{all}"
+        );
+    }
+    // The admin-only view still shows the whole URL, so it can be checked.
+    assert!(t.view(&id).await.url.contains("INGESTTOKEN"));
+}
+
+#[tokio::test]
 async fn a_receiver_failing_for_long_shows_as_failing() {
     let t = setup().await;
     let id = t
@@ -305,7 +417,7 @@ async fn a_receiver_failing_for_long_shows_as_failing() {
         .id;
     let long_ago = Utc::now() - Duration::seconds(FAILING_AFTER_SECS + 1);
     t.store
-        .record_audit_delivery_failure(&id, "the receiver answered 500", long_ago)
+        .record_audit_delivery_failure(&id, 0, 1, "the receiver answered 500", long_ago)
         .await
         .unwrap();
     assert_eq!(t.view(&id).await.status, DeliveryStatus::Failing);

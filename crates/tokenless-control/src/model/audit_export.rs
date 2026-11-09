@@ -88,6 +88,10 @@ pub struct DeliveryState {
     pub failing_since: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
+    /// The last sequence number of the batch that failed, while the cursor
+    /// is still where it was. Its retry covers the same events, so it goes
+    /// out under the same ID even when newer events were written meanwhile.
+    pub retry_until: Option<u64>,
 }
 
 /// A webhook receiver audit events are sent to.

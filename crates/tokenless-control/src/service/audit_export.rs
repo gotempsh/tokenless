@@ -35,6 +35,7 @@ use tokenless_core::ids::{AuditDestinationId, VaultId};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{info, warn};
+use url::Url;
 use zeroize::Zeroizing;
 
 use super::sso::oidc::check_url;
@@ -296,6 +297,16 @@ struct Backoff {
 fn backoff_delay(failures: u32) -> StdDuration {
     let exp = failures.saturating_sub(1).min(16);
     StdDuration::from_secs(1u64 << exp).min(MAX_BACKOFF)
+}
+
+/// A receiver's scheme, host and port, for audit details and logs. Some
+/// receivers carry an ingest token in the path or query (it cannot always go
+/// in a header), and the audit log is readable beyond the admins who manage
+/// destinations, and is itself exported.
+fn origin(url: &str) -> String {
+    Url::parse(url)
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_else(|_| "an unreadable URL".to_string())
 }
 
 fn validation(message: impl Into<String>) -> ControlError {
@@ -649,7 +660,7 @@ impl AuditExportService {
         let event = AuditEvent::new(caller.actor(), "audit_export.create", AuditOutcome::Success)
             .target(format!("audit_destination:{id}"))
             .detail("name", destination.name.clone())
-            .detail("url", destination.url.clone())
+            .detail("url", origin(&destination.url))
             .detail(
                 "start_at",
                 match req.start_at {
@@ -670,7 +681,7 @@ impl AuditExportService {
             }
             Err(e) => return Err(e.into()),
         }
-        info!(destination = %destination.name, url = %destination.url, "audit destination added");
+        info!(destination = %destination.name, url = %origin(&destination.url), "audit destination added");
         Ok(CreatedAuditDestination {
             destination: self.view(&destination).await?,
             signing_secret: secret.to_string(),
@@ -702,7 +713,7 @@ impl AuditExportService {
         let event = AuditEvent::new(caller.actor(), "audit_export.update", AuditOutcome::Success)
             .target(format!("audit_destination:{id}"))
             .detail("name", updated.name.clone())
-            .detail("url", updated.url.clone());
+            .detail("url", origin(&updated.url));
         self.store_update(updated, &[event]).await
     }
 
@@ -942,9 +953,17 @@ impl AuditExportService {
     /// The events after the cursor that fit one request: up to
     /// [`BATCH_EVENTS`], and up to [`MAX_BODY`] bytes unless the first alone
     /// is larger. Events the filter passes over still move the cursor.
+    ///
+    /// A retry stops where the failed batch did, so it is the same batch
+    /// under the same ID even when newer events were written meanwhile.
+    /// Events are numbered in commit order, so the events up to that point
+    /// are still the first ones after the cursor.
     async fn next_batch(&self, d: &AuditDestination) -> Result<Option<Batch>, ControlError> {
         let from = d.delivery.cursor;
-        let events = self.store.audit_events_after(from, BATCH_EVENTS).await?;
+        let mut events = self.store.audit_events_after(from, BATCH_EVENTS).await?;
+        if let Some(until) = d.delivery.retry_until.filter(|&until| until > from) {
+            events.retain(|(seq, _)| *seq <= until);
+        }
         if events.is_empty() {
             return Ok(None);
         }
@@ -1055,7 +1074,13 @@ impl AuditExportService {
                         "audit export failed; it will be retried"
                     );
                     self.store
-                        .record_audit_delivery_failure(id, &reason, Utc::now())
+                        .record_audit_delivery_failure(
+                            id,
+                            batch.from,
+                            batch.to,
+                            &reason,
+                            Utc::now(),
+                        )
                         .await?;
                     pass.error = Some(reason);
                     break;

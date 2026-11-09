@@ -32,5 +32,7 @@ CREATE TABLE audit_destinations (
     last_attempt_at        TEXT,
     failing_since          TEXT,
     last_error             TEXT,
-    consecutive_failures   INTEGER NOT NULL DEFAULT 0
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    -- The end of the batch that failed, so its retry is the same batch.
+    retry_until            INTEGER
 );

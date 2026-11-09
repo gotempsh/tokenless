@@ -580,8 +580,10 @@ pub trait AuditExportStore: Send + Sync {
     /// Every destination, oldest first. There are at most
     /// [`MAX_AUDIT_DESTINATIONS`](crate::model::MAX_AUDIT_DESTINATIONS).
     async fn list_audit_destinations(&self) -> Result<Vec<AuditDestination>, StoreError>;
-    /// Replaces its settings, never its delivery state (cursor, failures).
-    /// `NotFound` if missing, `Conflict` if the new name is taken.
+    /// Replaces its settings, never its delivery state (cursor, failures),
+    /// except that a pending retry is forgotten: with other settings it is
+    /// a different batch. `NotFound` if missing, `Conflict` if the new name
+    /// is taken.
     async fn update_audit_destination(
         &self,
         destination: AuditDestination,
@@ -605,7 +607,7 @@ pub trait AuditExportStore: Send + Sync {
     ) -> Result<Vec<(u64, AuditEvent)>, StoreError>;
 
     /// Moves the cursor from `from` to `to` after a batch got through, and
-    /// clears the failures. False, changing nothing, when the cursor is no
+    /// clears the failures and the pending retry. False, changing nothing, when the cursor is no
     /// longer at `from` (another sender, or a skip, moved it) or the
     /// destination is gone.
     async fn advance_audit_cursor(
@@ -615,15 +617,20 @@ pub trait AuditExportStore: Send + Sync {
         to: u64,
         at: DateTime<Utc>,
     ) -> Result<bool, StoreError>;
-    /// Notes a failed attempt: starts the run of failures if none is
-    /// running. Does nothing when the destination is gone.
+    /// Notes a failed attempt at the batch `(from, to]`: starts the run of
+    /// failures if none is running and, while the cursor is still at
+    /// `from`, keeps `to` as the end of the retry. Does nothing when the
+    /// destination is gone.
     async fn record_audit_delivery_failure(
         &self,
         id: &AuditDestinationId,
+        from: u64,
+        to: u64,
         error: &str,
         at: DateTime<Utc>,
     ) -> Result<(), StoreError>;
-    /// Puts the cursor at `to`, wherever it was, and clears the failures:
+    /// Puts the cursor at `to`, wherever it was, and clears the failures
+    /// and the pending retry:
     /// an admin skipping a backlog, or a new destination's starting point.
     /// `NotFound` if missing.
     async fn set_audit_cursor(

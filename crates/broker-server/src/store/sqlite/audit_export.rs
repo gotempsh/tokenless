@@ -18,7 +18,7 @@ use super::{
     to_json, to_u64, ts, SqliteStore,
 };
 
-const COLUMNS: &str = "id, name, url, format, auth_header_name, auth_header_value_enc, signing_secret_enc, filter, paused, created_at, updated_at, cursor, last_success_at, last_attempt_at, failing_since, last_error, consecutive_failures";
+const COLUMNS: &str = "id, name, url, format, auth_header_name, auth_header_value_enc, signing_secret_enc, filter, paused, created_at, updated_at, cursor, last_success_at, last_attempt_at, failing_since, last_error, consecutive_failures, retry_until";
 
 fn destination_from_row(row: &SqliteRow) -> Result<AuditDestination, StoreError> {
     let format: String = get(row, "format")?;
@@ -44,6 +44,7 @@ fn destination_from_row(row: &SqliteRow) -> Result<AuditDestination, StoreError>
             last_error: get(row, "last_error")?,
             consecutive_failures: u32::try_from(get::<i64>(row, "consecutive_failures")?)
                 .unwrap_or(u32::MAX),
+            retry_until: get::<Option<i64>>(row, "retry_until")?.map(to_u64),
         },
     })
 }
@@ -61,7 +62,7 @@ impl AuditExportStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_audit_destination").await?;
         sqlx::query(&format!(
-            "INSERT INTO audit_destinations ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO audit_destinations ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(d.id.to_string())
         .bind(&d.name)
@@ -80,6 +81,7 @@ impl AuditExportStore for SqliteStore {
         .bind(opt_ts(&d.delivery.failing_since))
         .bind(&d.delivery.last_error)
         .bind(i64::from(d.delivery.consecutive_failures))
+        .bind(d.delivery.retry_until.map(to_i64))
         .execute(&mut *tx)
         .await
         .map_err(db("insert audit destination", "audit_destination"))?;
@@ -120,7 +122,7 @@ impl AuditExportStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_audit_destination").await?;
         let result = sqlx::query(
-            "UPDATE audit_destinations SET name = ?, url = ?, format = ?, auth_header_name = ?, auth_header_value_enc = ?, signing_secret_enc = ?, filter = ?, paused = ?, updated_at = ? WHERE id = ?",
+            "UPDATE audit_destinations SET name = ?, url = ?, format = ?, auth_header_name = ?, auth_header_value_enc = ?, signing_secret_enc = ?, filter = ?, paused = ?, updated_at = ?, retry_until = NULL WHERE id = ?",
         )
         .bind(&d.name)
         .bind(&d.url)
@@ -192,7 +194,7 @@ impl AuditExportStore for SqliteStore {
         at: DateTime<Utc>,
     ) -> Result<bool, StoreError> {
         let result = sqlx::query(
-            "UPDATE audit_destinations SET cursor = ?, last_success_at = ?, last_attempt_at = ?, failing_since = NULL, last_error = NULL, consecutive_failures = 0 WHERE id = ? AND cursor = ?",
+            "UPDATE audit_destinations SET cursor = ?, last_success_at = ?, last_attempt_at = ?, failing_since = NULL, last_error = NULL, consecutive_failures = 0, retry_until = NULL WHERE id = ? AND cursor = ?",
         )
         .bind(to_i64(to))
         .bind(ts(&at))
@@ -208,15 +210,19 @@ impl AuditExportStore for SqliteStore {
     async fn record_audit_delivery_failure(
         &self,
         id: &AuditDestinationId,
+        from: u64,
+        to: u64,
         error: &str,
         at: DateTime<Utc>,
     ) -> Result<(), StoreError> {
         sqlx::query(
-            "UPDATE audit_destinations SET last_attempt_at = ?, failing_since = COALESCE(failing_since, ?), last_error = ?, consecutive_failures = consecutive_failures + 1 WHERE id = ?",
+            "UPDATE audit_destinations SET last_attempt_at = ?, failing_since = COALESCE(failing_since, ?), last_error = ?, consecutive_failures = consecutive_failures + 1, retry_until = CASE WHEN cursor = ? THEN ? ELSE retry_until END WHERE id = ?",
         )
         .bind(ts(&at))
         .bind(ts(&at))
         .bind(error)
+        .bind(to_i64(from))
+        .bind(to_i64(to))
         .bind(id.to_string())
         .execute(&self.pool)
         .await
@@ -232,7 +238,7 @@ impl AuditExportStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("set_audit_cursor").await?;
         let result = sqlx::query(
-            "UPDATE audit_destinations SET cursor = ?, failing_since = NULL, last_error = NULL, consecutive_failures = 0 WHERE id = ?",
+            "UPDATE audit_destinations SET cursor = ?, failing_since = NULL, last_error = NULL, consecutive_failures = 0, retry_until = NULL WHERE id = ?",
         )
         .bind(to_i64(to))
         .bind(id.to_string())

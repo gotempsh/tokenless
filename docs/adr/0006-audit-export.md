@@ -33,7 +33,12 @@ least code; syslog and OpenTelemetry can follow on the same delivery.
   moves nothing: the same batch is retried after 1 second, doubling to 5
   minutes. A receiver that was down gets everything it missed, in order.
 - **At least once.** The batch ID, `{destination}.{first}-{last}`, is the
-  same on every retry, so a receiver can drop a repeat. Exactly once
+  same on every retry, so a receiver can drop a repeat. A failure stores
+  the batch's last sequence number with the destination, and the retry
+  stops there even when newer events were written meanwhile or the server
+  restarted. Changing the destination's settings forgets it: other
+  settings can select other events from the same range, which must not
+  go out under an ID the receiver may already have. Exactly once
   would need the receiver's cooperation and buys nothing a SIEM's
   deduplication doesn't.
 - **Standard Webhooks signing.** A `whsec_` secret per destination,
@@ -50,7 +55,10 @@ least code; syslog and OpenTelemetry can follow on the same delivery.
   failure count show what happened.
 - **Managing destinations** is the instance-level `audit_export_manage`
   action, admin-only and behind step-up, and every change, skip, test and
-  new secret is audited. At most 10 destinations.
+  new secret is audited. At most 10 destinations. Audit details and logs
+  name a receiver by its scheme and host only: some receivers carry an
+  ingest token in the URL's path, and the audit log is readable by viewers
+  and exported itself.
 - **Receiver traffic** trusts what credential validation trusts, follows
   no redirects, times out after 10 seconds and reads at most 64 KiB of a
   reply. As for identity providers, the agents' egress policy doesn't
