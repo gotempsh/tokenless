@@ -34,6 +34,7 @@ suite!(audit_sink_suite);
 suite!(identity_store_suite);
 suite!(user_management_suite);
 suite!(sso_store_suite);
+suite!(audit_export_store_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
 suite!(vault_deletion_suite);

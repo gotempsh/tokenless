@@ -48,6 +48,11 @@ async fn memory_store_passes_sso_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_audit_export_suite() {
+    audit_export_store_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn memory_store_passes_node_suite() {
     node_store_suite(&MemoryStore::new()).await.unwrap();
 }

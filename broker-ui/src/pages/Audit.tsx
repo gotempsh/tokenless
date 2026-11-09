@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useMemo, useState, type ReactNode } from "react";
-import { ScrollText } from "lucide-react";
-import { get, type ApiKey, type AuditEvent, type NodeInfo, type Page, type UserSummary } from "../api";
+import { ScrollText, Webhook } from "lucide-react";
+import { get, type ApiKey, type AuditDestination, type AuditEvent, type NodeInfo, type Page, type UserSummary } from "../api";
 import { ALL_EVENTS, AUDIT_CATEGORIES, actionPhrase, actorLabel, type ActorNames } from "../audit";
+import { failingDestinations } from "../auditExport";
 import { useLoad } from "../hooks";
 import {
   fromWidth,
@@ -22,12 +23,51 @@ import {
   When,
 } from "../components/common";
 import { cn } from "../lib/utils";
+import { destinationHref, NEW_DESTINATION_HREF } from "./AuditExport";
+import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
 const OUTCOME_LABEL: Record<string, string> = { denied: "Denied", failure: "Failed" };
+
+/**
+ * Where the log is sent: a way to start when it goes nowhere, and how many
+ * webhooks get it otherwise.
+ */
+function ExportAction({ destinations }: { destinations: AuditDestination[] }) {
+  const n = destinations.length;
+  return (
+    <Button asChild variant="outline" size="sm">
+      <a href={n === 0 ? NEW_DESTINATION_HREF : "#/settings"}>
+        <Webhook />
+        {n === 0 ? "Send to a webhook" : n === 1 ? "Sent to 1 webhook" : `Sent to ${n} webhooks`}
+      </a>
+    </Button>
+  );
+}
+
+/** A warning while a webhook the log is sent to keeps failing. */
+function ExportFailing({ destinations }: { destinations: AuditDestination[] }) {
+  const failing = failingDestinations(destinations);
+  const only = failing.length === 1 ? failing[0] : undefined;
+  if (failing.length === 0) return null;
+  return (
+    <Alert variant="warning">
+      <Webhook className="size-4" />
+      <AlertTitle>
+        {only ? `${only.name} is not receiving events` : `${failing.length} webhooks are not receiving events`}
+      </AlertTitle>
+      <AlertDescription>
+        {only?.last_error && <p className="[overflow-wrap:anywhere]">{only.last_error}</p>}
+        <a className="underline" href={only ? destinationHref(only.id) : "#/settings"}>
+          {only ? "See the webhook" : "See them in Settings"}
+        </a>
+      </AlertDescription>
+    </Alert>
+  );
+}
 
 /** Names for the users, API keys and proxies events refer to; admins only. */
 export function useActorNames(me: UserSummary): ActorNames {
@@ -58,10 +98,20 @@ export function Audit({ me }: { me: UserSummary }) {
     [page, category],
   );
   const filtered = category.prefix !== "";
+  // Managing audit export is for admins, as reading its destinations is.
+  const isAdmin = me.role === "admin";
+  const destinations = useLoad(
+    () => (isAdmin ? get<AuditDestination[]>("/audit-export/destinations") : Promise.resolve(undefined)),
+    [isAdmin],
+  );
 
   return (
     <PageContainer width="settings">
-      <PageHeader title="Audit log" />
+      <PageHeader
+        title="Audit log"
+        actions={destinations.data && <ExportAction destinations={destinations.data} />}
+      />
+      {destinations.data && <ExportFailing destinations={destinations.data} />}
       <Select
         value={category.label}
         onValueChange={(label) => {

@@ -132,6 +132,62 @@ export interface OidcProviderInput {
   enabled: boolean;
 }
 
+export type PayloadFormat = "json" | "ndjson";
+export type AuditOutcome = "success" | "denied" | "failure";
+export type DeliveryStatus = "up_to_date" | "sending" | "retrying" | "failing" | "paused";
+
+/** Which audit events a destination receives. Empty lists match everything. */
+export interface AuditFilter {
+  action_prefixes: string[];
+  outcomes: AuditOutcome[];
+  vault_ids: string[];
+}
+
+/** A webhook the audit log is sent to. The auth header's value is never returned. */
+export interface AuditDestination {
+  id: string;
+  name: string;
+  url: string;
+  format: PayloadFormat;
+  auth_header_name: string | null;
+  has_auth_header: boolean;
+  filter: AuditFilter;
+  paused: boolean;
+  status: DeliveryStatus;
+  /** Events written since the last one delivered, before filtering. */
+  behind: number;
+  last_success_at: string | null;
+  last_attempt_at: string | null;
+  failing_since: string | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A destination's settings. The auth header's value is write-only. */
+export interface AuditDestinationInput {
+  name: string;
+  url: string;
+  format: PayloadFormat;
+  auth_header_name?: string | null;
+  auth_header_value?: string;
+  clear_auth_header?: boolean;
+  filter: AuditFilter;
+}
+
+export interface CreatedAuditDestination {
+  destination: AuditDestination;
+  /** Shown once: receivers verify each request's signature with it. */
+  signing_secret: string;
+}
+
+export interface DeliveryTest {
+  delivered: boolean;
+  status: number | null;
+  error: string | null;
+}
+
 export interface Vault {
   id: string;
   name: string;

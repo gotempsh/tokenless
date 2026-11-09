@@ -410,3 +410,42 @@ async fn upgrading_indexes_the_audit_log_by_service() {
         "expected the service index, got {plan:?}"
     );
 }
+
+#[tokio::test]
+async fn upgrading_numbers_the_audit_log_for_export_in_write_order() {
+    use tokenless_control::store::AuditExportStore;
+    use tokenless_core::audit::{AuditEvent, AuditOutcome};
+
+    let (_dir, url, pool) = database_before(17).await;
+    let mut written = Vec::new();
+    for i in 0..3 {
+        let id = tokenless_core::ids::AuditEventId::new().to_string();
+        sqlx::query(
+            "INSERT INTO audit_events (id, at, actor, action, outcome, vault_id, target, detail) \
+             VALUES (?, ?, 'system', ?, 'success', NULL, NULL, '{}')",
+        )
+        .bind(&id)
+        .bind(AT)
+        .bind(format!("old.{i}"))
+        .execute(&pool)
+        .await
+        .expect("audit event");
+        written.push(id);
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    assert_eq!(store.latest_audit_seq().await.expect("latest"), 3);
+    // A new event is numbered after the old ones.
+    store
+        .record(&[AuditEvent::new("system", "new", AuditOutcome::Success)])
+        .await
+        .expect("record");
+    let events = store.audit_events_after(0, 10).await.expect("events");
+    let numbers: Vec<u64> = events.iter().map(|(n, _)| *n).collect();
+    let actions: Vec<&str> = events.iter().map(|(_, e)| e.action.as_str()).collect();
+    assert_eq!(numbers, [1, 2, 3, 4]);
+    assert_eq!(actions, ["old.0", "old.1", "old.2", "new"]);
+    let ids: Vec<String> = events[..3].iter().map(|(_, e)| e.id.to_string()).collect();
+    assert_eq!(ids, written);
+}

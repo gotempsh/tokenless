@@ -20,6 +20,7 @@ use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
+mod audit_export;
 mod sso;
 
 use crate::error::StoreError;
@@ -54,6 +55,8 @@ struct Inner {
     snapshot_version: u64,
     oidc_providers: HashMap<OidcProviderId, OidcProvider>,
     sign_in_settings: Option<SignInSettings>,
+    audit_destinations:
+        HashMap<tokenless_core::ids::AuditDestinationId, crate::model::AuditDestination>,
 }
 
 #[derive(Default)]
@@ -1334,6 +1337,18 @@ impl NodeStore for MemoryStore {
                 ciphertext: value.clone(),
             });
         }
+        for d in inner.audit_destinations.values() {
+            out.push(StoredCiphertext {
+                owner: CiphertextOwner::AuditDestinationSecret { id: d.id },
+                ciphertext: d.signing_secret_enc.clone(),
+            });
+            if let Some(value) = &d.auth_header_value_enc {
+                out.push(StoredCiphertext {
+                    owner: CiphertextOwner::AuditDestinationHeader { id: d.id },
+                    ciphertext: value.clone(),
+                });
+            }
+        }
         for provider in inner.oidc_providers.values() {
             if let Some(secret) = &provider.client_secret_enc {
                 out.push(StoredCiphertext {
@@ -1369,6 +1384,14 @@ impl NodeStore for MemoryStore {
                     .oidc_providers
                     .get_mut(id)
                     .and_then(|p| p.client_secret_enc.as_mut()),
+                CiphertextOwner::AuditDestinationSecret { id } => inner
+                    .audit_destinations
+                    .get_mut(id)
+                    .map(|d| &mut d.signing_secret_enc),
+                CiphertextOwner::AuditDestinationHeader { id } => inner
+                    .audit_destinations
+                    .get_mut(id)
+                    .and_then(|d| d.auth_header_value_enc.as_mut()),
             };
             if let Some(slot) = slot {
                 if *slot == old.ciphertext {
