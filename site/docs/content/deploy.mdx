@@ -279,8 +279,10 @@ attributes. A proxy's metrics are the Prometheus counters, named
 `tokenless.proxy.requests_injected`), and tagged with the proxy's node ID
 as `service.instance.id`. Telemetry waits in a bounded queue: a slow or
 unreachable collector drops telemetry, and never slows the traffic. On
-exit, what is still queued is sent, waiting a few seconds at most; another
-stop signal, or the second one that stops a proxy at once, exits without
-waiting. The first admin's password is printed to the terminal, not the
+exit (Ctrl-C or `SIGTERM`), what is still queued is sent: logs wait at
+most their timeout, metrics 5 seconds. Another stop signal, or the second
+one that stops a proxy at once, exits without waiting. The exporter's own
+debug messages, which include the full endpoint, are never logged, even
+with `RUST_LOG=debug`. The first admin's password is printed to the terminal, not the
 log, so it is never sent. An endpoint that is not a valid URL turns its
 signal off, and the log names the variable without repeating its value.

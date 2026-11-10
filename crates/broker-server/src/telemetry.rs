@@ -368,6 +368,8 @@ pub enum TelemetryError {
 #[derive(Default)]
 pub struct Telemetry {
     logs: Option<SdkLoggerProvider>,
+    /// How long the last logs may take to send at shutdown.
+    logs_timeout: Duration,
     metrics: Option<SdkMeterProvider>,
     /// Kept so their callbacks stay registered.
     instruments: Mutex<Vec<ObservableCounter<u64>>>,
@@ -404,6 +406,7 @@ impl Telemetry {
                 signal: "logs",
                 reason: without_endpoint(&e.to_string()),
             })?;
+            telemetry.logs_timeout = settings.logs_timeout;
             telemetry.logs = Some(
                 SdkLoggerProvider::builder()
                     .with_resource(resource.clone())
@@ -483,14 +486,20 @@ impl Telemetry {
         }
     }
 
-    /// Sends what is queued and stops the exporters, waiting at most for
-    /// their timeouts. Failures are logged; they do not fail the exit.
+    /// Sends what is queued and stops the exporters. Logs get their export
+    /// timeout and a second more; metrics get 5 s, a limit the SDK fixes.
+    /// Failures are logged; they do not fail the exit.
     ///
     /// The work runs on its own thread, not the runtime's blocking pool, so
     /// a caller that stops waiting (dropping the future) can exit at once:
     /// the runtime does not wait for the thread when it shuts down.
     pub async fn shutdown(self) {
-        let Self { logs, metrics, .. } = self;
+        let Self {
+            logs,
+            logs_timeout,
+            metrics,
+            ..
+        } = self;
         if logs.is_none() && metrics.is_none() {
             return;
         }
@@ -505,7 +514,9 @@ impl Telemetry {
                     }
                 }
                 if let Some(provider) = logs {
-                    if let Err(e) = provider.shutdown() {
+                    if let Err(e) =
+                        provider.shutdown_with_timeout(logs_timeout + Duration::from_secs(1))
+                    {
                         tracing::warn!(error = %e, "OpenTelemetry logs were not all sent at shutdown");
                     }
                 }
@@ -538,6 +549,14 @@ impl Telemetry {
             let _ = p.force_flush();
         }
     }
+}
+
+/// Whether an event may go to the process's own log. The exporter's debug
+/// events carry the full export URL, whose path or query may hold an
+/// ingest token, and the collector's reply; its warnings and errors do not,
+/// so those still say why exports fail.
+pub fn shown_locally(target: &str, level: &tracing::Level) -> bool {
+    !(target.starts_with("opentelemetry") && *level > tracing::Level::INFO)
 }
 
 /// The exporter and the HTTP stack it sends through.
@@ -877,6 +896,17 @@ mod tests {
             exporter_url("http://collector:4318/", "logs"),
             "http://collector:4318/v1/logs"
         );
+    }
+
+    #[test]
+    fn the_exporter_s_debug_events_never_reach_the_local_log() {
+        use tracing::Level;
+        // HttpClient.NetworkError and StatusError carry the export URL.
+        assert!(!shown_locally("opentelemetry-otlp", &Level::DEBUG));
+        assert!(!shown_locally("opentelemetry_sdk", &Level::TRACE));
+        assert!(shown_locally("opentelemetry_sdk", &Level::WARN));
+        assert!(shown_locally("opentelemetry-otlp", &Level::ERROR));
+        assert!(shown_locally("broker_server", &Level::DEBUG));
     }
 
     #[test]

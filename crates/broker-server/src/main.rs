@@ -25,7 +25,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
-use broker_server::telemetry::{Component, Settings as TelemetrySettings, Telemetry};
+use broker_server::telemetry::{self, Component, Settings as TelemetrySettings, Telemetry};
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use messages::{detail, say};
@@ -33,6 +33,7 @@ use serde::Serialize;
 use tokenless_dataplane::node::{enroll, NodeIdentity};
 use tokenless_dataplane::{DataPlane, DataPlaneConfig};
 use tracing::{error, info, warn};
+use tracing_subscriber::filter::{filter_fn, FilterExt};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -550,7 +551,9 @@ fn init_logging(agent_side: bool, telemetry: &Telemetry) {
         .json()
         .with_current_span(false)
         .with_writer(writer)
-        .with_filter(filter());
+        .with_filter(filter().and(filter_fn(|meta| {
+            telemetry::shown_locally(meta.target(), meta.level())
+        })));
     tracing_subscriber::registry()
         .with(stdout)
         .with(telemetry.log_layer(filter()))
@@ -631,6 +634,7 @@ fn read_cas(
     Ok(out)
 }
 
+#[cfg(not(unix))]
 async fn wait_for_shutdown() -> Result<(), CliError> {
     tokio::signal::ctrl_c().await.map_err(|e| CliError::Io {
         context: "waiting for Ctrl-C".into(),
@@ -686,8 +690,8 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
-    wait_for_shutdown().await?;
-    info!("shutting down");
+    let signal = stop_signal().await?;
+    info!(signal, "shutting down");
     running.shutdown();
     Ok(())
 }
