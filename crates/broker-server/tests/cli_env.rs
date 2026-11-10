@@ -287,6 +287,43 @@ fn templates_find_a_variable_s_service_before_any_setup() {
     assert!(err.contains("no template matches"), "{err}");
 }
 
+/// Signed in to a control plane that does not answer, the built-in list
+/// still comes back, and the reason given is the real one, not "not signed
+/// in" (which would send the person to log in again for nothing).
+#[test]
+fn templates_say_why_the_control_plane_s_list_is_missing() {
+    use broker_server::launcher::account::{SavedSession, SessionFiles, SessionVault};
+    let home = tempfile::tempdir().unwrap();
+    let server = nowhere();
+    SessionFiles::new(home.path().join(".config/tokenless/sessions"))
+        .save(&SavedSession {
+            server: server.clone(),
+            username: "admin".into(),
+            totp_enrolled: false,
+            token: "test-session-token".into(),
+            csrf_token: "test-csrf-token".into(),
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        })
+        .unwrap();
+    for json in [false, true] {
+        let mut args = vec!["service", "templates", "openai", "--server", &server];
+        if json {
+            args.push("--json");
+        }
+        let (code, out, err) = tokenless(home.path(), &args);
+        assert_eq!(code, Some(0), "{out}{err}");
+        assert!(
+            err.contains("could not list the control plane's templates"),
+            "{err}"
+        );
+        assert!(!err.contains("not signed in"), "{err}");
+        if json {
+            let rows: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(rows[0]["id"], "openai");
+        }
+    }
+}
+
 /// An agent without a terminal is told how to hand the secret over instead
 /// of failing on an empty standard input.
 #[test]

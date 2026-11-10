@@ -16,8 +16,8 @@ use broker_server::launcher::status::{self, Observed, ProxyStateFile, Skill, Vau
 use broker_server::launcher::templates::{self, TemplateRow};
 use broker_server::launcher::{skill, LauncherError};
 use serde::Serialize;
-use tokenless_control::model::StoredTemplate;
-use tokenless_core::ids::CredentialId;
+use tokenless_control::model::{AccessBundle, StoredTemplate};
+use tokenless_core::ids::{CredentialId, RuleId, VaultId};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 
 use super::messages::{self, say};
@@ -128,20 +128,20 @@ pub async fn templates_command(
     // The control plane also lists templates an admin imported; without
     // one, the built-in catalogue is still worth searching.
     let from_server = match ConsoleClient::open(&SessionStore::system(), &server, &prompter) {
-        Ok(client) => client.templates().await.ok(),
-        Err(_) => None,
+        Ok(client) => client.templates().await,
+        Err(e) => Err(e),
     };
     let all: Vec<ServiceTemplate> = match from_server {
-        Some(stored) => templates::newest(
+        Ok(stored) => templates::newest(
             stored
                 .into_iter()
                 .filter(|t| t.status == tokenless_control::model::TemplateStatus::Approved)
                 .map(|t| t.template),
         ),
-        None => {
-            if !json {
-                say("not signed in, so these are the built-in templates; tokenless login also lists ones imported on your control plane");
-            }
+        Err(e) => {
+            // On stderr even with --json, so a caller can tell the built-in
+            // catalogue from the control plane's.
+            say(builtin_because(&e));
             builtin_templates()
                 .map_err(|e| LauncherError::config(format!("reading the built-in templates: {e}")))?
                 .into_iter()
@@ -166,6 +166,16 @@ pub async fn templates_command(
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Why `service templates` lists only the built-in templates.
+fn builtin_because(e: &LauncherError) -> String {
+    match e {
+        LauncherError::NotSignedIn { .. } => "not signed in, so these are the built-in templates; tokenless login also lists ones imported on your control plane".into(),
+        other => format!(
+            "could not list the control plane's templates ({other}), so these are the built-in ones"
+        ),
+    }
 }
 
 /// How `service add` gets the secret.
@@ -209,9 +219,15 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let client = ConsoleClient::open(&SessionStore::system(), &args.server, &prompter)?;
     let template = account::pick_template(client.templates().await?, &args.template)?;
+    // The secret file, kept until the key is stored.
+    let mut file = None;
     let fields = match &args.source {
         Source::Web { open } => return add_from_web(&client, &template, &args, *open).await,
-        Source::File { path, open } => from_file(&template, &args, path, *open).await?,
+        Source::File { path, open } => {
+            let (fields, path) = from_file(&template, &args, path, *open).await?;
+            file = Some(path);
+            fields
+        }
         Source::Terminal => {
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 say(messages::service_prompt(
@@ -229,7 +245,23 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         bundle: args.bundle.clone(),
         read_only: args.read_only,
     };
-    let added = client.add_service(&plan, &template, fields).await?;
+    let added = match client.add_service(&plan, &template, fields).await {
+        Ok(added) => added,
+        Err(e) => {
+            if let Some(path) = &file {
+                say(messages::kept_secret_file(&path.display().to_string()));
+            }
+            return Err(e.into());
+        }
+    };
+    if let Some(path) = &file {
+        if let Err(e) = secret_file::remove(path) {
+            say(format_args!(
+                "the key is stored, but {} could not be deleted: {e}; delete it yourself",
+                path.display()
+            ));
+        }
+    }
     let bundle = added
         .bundle
         .as_ref()
@@ -260,16 +292,24 @@ fn run_command(vault: &str, bundle: &str) -> String {
     format!("tokenless run --vault {vault} --bundle {bundle} -- <command>")
 }
 
-/// Deletes the secret file however the command ends, unless the process is
-/// killed outright.
-struct RemoveOnDrop<'a>(&'a Path);
+/// Deletes the secret file when the wait for it ends without a key (a stop
+/// signal, the deadline, an unreadable file), unless the process is killed
+/// outright. Disarmed once the key is read: the file is then kept until the
+/// key is stored, so a failed store loses nothing.
+struct RemoveOnDrop<'a> {
+    path: &'a Path,
+    armed: bool,
+}
 
 impl Drop for RemoveOnDrop<'_> {
     fn drop(&mut self) {
-        if let Err(e) = secret_file::remove(self.0) {
+        if !self.armed {
+            return;
+        }
+        if let Err(e) = secret_file::remove(self.path) {
             say(format_args!(
                 "could not delete {}: {e}; delete it yourself",
-                self.0.display()
+                self.path.display()
             ));
         }
     }
@@ -280,7 +320,7 @@ async fn from_file(
     args: &AddArgs,
     path: &Path,
     open: bool,
-) -> Result<Fields, CliError> {
+) -> Result<(Fields, PathBuf), CliError> {
     let home = home_dir();
     let path = if path.as_os_str().is_empty() {
         let home = home.as_deref().ok_or_else(|| {
@@ -294,7 +334,10 @@ async fn from_file(
     };
     let fields = &template.template.credential_fields;
     let prepared = secret_file::prepare(&path, &template.template.name, args.vault.trim(), fields)?;
-    let _remove = RemoveOnDrop(&path);
+    let mut remove = RemoveOnDrop {
+        path: &path,
+        armed: true,
+    };
     let shown = path.display().to_string();
     if prepared == Prepared::Created || !secret_file::filled(&path, fields) {
         let what = match fields.as_slice() {
@@ -302,7 +345,7 @@ async fn from_file(
             _ => format!("each {} credential after its =", template.template.name),
         };
         say(format_args!(
-            "put {what} in {shown} and save it. tokenless then reads it, deletes the file and stores it encrypted; waiting up to {} minutes",
+            "put {what} in {shown} and save it. tokenless then stores it encrypted and deletes the file; waiting up to {} minutes",
             args.wait.unwrap_or(Duration::ZERO).as_secs().div_ceil(60)
         ));
         if open {
@@ -316,6 +359,11 @@ async fn from_file(
         fields,
         args.wait.unwrap_or(Duration::ZERO),
         FILE_POLL,
+        |problem| {
+            say(format_args!(
+                "{problem}; fix it in {shown} and save again, still waiting"
+            ))
+        },
     );
     let values = tokio::select! {
         values = wait => values?,
@@ -324,7 +372,9 @@ async fn from_file(
             return Err(LauncherError::config(format!("stopped by {signal}; {shown} was deleted, nothing was stored")).into());
         }
     };
-    Ok(values)
+    remove.armed = false;
+    drop(remove);
+    Ok((values, path))
 }
 
 async fn add_from_web(
@@ -378,7 +428,7 @@ async fn add_from_web(
         let now = services_of(client, id).await?;
         if let Some(new) = now
             .into_iter()
-            .find(|(c, _, _)| !before.iter().any(|(b, _, _)| b == c))
+            .find(|(c, ..)| !before.iter().any(|(b, ..)| b == c))
         {
             break new;
         }
@@ -391,36 +441,78 @@ async fn add_from_web(
             .into());
         }
     };
-    let (_, service, vault) = found;
+    let (credential, service, vault_id, vault_name) = found;
+    let joined = bundle_of(client, &vault_id, &credential, args.bundle.as_deref()).await?;
+    // The page may have created the vault and the bundle; they are new when
+    // they were not there before it opened.
+    let vault_created = vault.is_none_or(|v| v.id != vault_id);
+    let bundle_created = joined
+        .as_ref()
+        .is_some_and(|b| bundle.as_ref().is_none_or(|before| before.id != b.id));
+    let joined = joined.map(|b| b.name);
     if args.json {
         print_json(&Added {
             service: &service,
             template: id,
-            vault: &vault,
-            vault_created: false,
-            bundle: None,
-            bundle_created: false,
-            run: None,
+            vault: &vault_name,
+            vault_created,
+            bundle: joined.as_deref(),
+            bundle_created,
+            run: joined.as_deref().map(|b| run_command(&vault_name, b)),
         })?;
     } else {
-        say(format_args!(
-            "added {service} to vault '{vault}' in the console. Start a command with its bundle: tokenless run --vault {vault} --bundle <bundle> -- <command>"
-        ));
+        match &joined {
+            Some(b) => say(format_args!(
+                "added {service} to vault '{vault_name}' and bundle '{b}' in the console. Start a command behind it: {}",
+                run_command(&vault_name, b)
+            )),
+            None => say(format_args!(
+                "added {service} to vault '{vault_name}' in the console, in no access bundle yet; add it to one on the vault's page, then: tokenless run --vault {vault_name} --bundle <bundle> -- <command>"
+            )),
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
+/// The access bundle in `vault` holding a rule of `credential`: the one named
+/// `wanted` when it does, else the first. `None` when no bundle holds it.
+async fn bundle_of(
+    client: &ConsoleClient<'_>,
+    vault: &VaultId,
+    credential: &CredentialId,
+    wanted: Option<&str>,
+) -> Result<Option<AccessBundle>, LauncherError> {
+    let rules: Vec<RuleId> = client
+        .rules(vault)
+        .await?
+        .into_iter()
+        .filter(|r| &r.credential_id == credential)
+        .map(|r| r.id)
+        .collect();
+    let holding: Vec<AccessBundle> = client
+        .bundles(vault)
+        .await?
+        .into_iter()
+        .filter(|b| b.rule_ids.iter().any(|r| rules.contains(r)))
+        .collect();
+    let preferred = wanted
+        .map(str::trim)
+        .and_then(|w| holding.iter().position(|b| b.name == w))
+        .unwrap_or(0);
+    Ok(holding.into_iter().nth(preferred))
+}
+
 /// Every service made from `template`, in every vault the person sees: its
-/// ID, name and vault.
+/// ID, name, and its vault's ID and name.
 async fn services_of(
     client: &ConsoleClient<'_>,
     template: &str,
-) -> Result<Vec<(CredentialId, String, String)>, LauncherError> {
+) -> Result<Vec<(CredentialId, String, VaultId, String)>, LauncherError> {
     let mut out = Vec::new();
     for vault in client.vaults().await? {
         for c in client.credentials(&vault.id).await? {
             if c.template_id == template {
-                out.push((c.id, c.name, vault.name.clone()));
+                out.push((c.id, c.name, vault.id, vault.name.clone()));
             }
         }
     }

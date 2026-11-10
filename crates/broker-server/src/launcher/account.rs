@@ -714,6 +714,19 @@ impl<'p> ConsoleClient<'p> {
         Ok(page.items)
     }
 
+    /// The rules in `vault` (the first 100).
+    pub async fn rules(&self, vault: &VaultId) -> Result<Vec<Rule>, LauncherError> {
+        let page: Page<Rule> = self
+            .call(
+                Method::GET,
+                &format!("/vaults/{vault}/rules?page_size=100"),
+                None,
+                "listing rules",
+            )
+            .await?;
+        Ok(page.items)
+    }
+
     /// The services in `vault` (the first 100).
     pub async fn credentials(&self, vault: &VaultId) -> Result<Vec<CredentialMeta>, LauncherError> {
         let page: Page<CredentialMeta> = self

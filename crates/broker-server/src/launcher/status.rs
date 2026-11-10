@@ -296,11 +296,12 @@ pub fn assess(o: Observed) -> Report {
             fix: None,
             required: true,
         },
+        // The list could not be read, so nothing says a proxy serves agents.
         Some(Err(why)) => Check {
             id: "proxy",
             label: "Proxy",
-            state: State::Unknown,
-            detail: why.clone(),
+            state: State::Failed,
+            detail: format!("could not list proxies: {why}"),
             fix: None,
             required: true,
         },
@@ -329,8 +330,9 @@ pub fn assess(o: Observed) -> Report {
         },
     });
 
-    // Only a check that could have passed counts against ready: one that is
-    // unknown because the person may not see it does not.
+    // Only a check that could have passed counts against ready: the proxy
+    // check is unknown when the person may not see proxies (a 403), and that
+    // does not. A failure to list them is `Failed` and does.
     let ready = checks.iter().filter(|c| c.required).all(|c| {
         c.state == State::Ok || (c.state == State::Unknown && c.id == "proxy" && signed_in)
     });
@@ -585,6 +587,21 @@ mod tests {
         assert!(behind.ready);
         assert_eq!(behind.next, None);
         assert!(render(&behind).contains("This shell runs behind tokenless"));
+    }
+
+    #[test]
+    fn a_proxy_list_that_failed_is_not_ready() {
+        let now = Utc::now();
+        let report = assess(Observed {
+            proxies: Some(Err(
+                "request to /api/v1/nodes failed: connection reset".into()
+            )),
+            ..observed(now)
+        });
+        assert!(!report.ready, "{report:#?}");
+        let proxy = check(&report, "proxy");
+        assert_eq!(proxy.state, State::Failed);
+        assert!(proxy.detail.contains("could not list proxies"), "{proxy:?}");
     }
 
     #[test]

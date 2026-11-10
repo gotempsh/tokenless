@@ -114,7 +114,7 @@ tokenless node run                                # listens on 127.0.0.1:3128
 stores the token encrypted and write-only, and adds a rule for it to the
 bundle. An agent can run it for you without seeing the token:
 `--secret-file` waits for you to save it in a private file and deletes the
-file, `--web` waits for you to enter it in the console. `tokenless service
+file once it is stored, `--web` waits for you to enter it in the console. `tokenless service
 templates OPENAI_API_KEY` finds a template by the variable a tool reads.
 See [Set up from the terminal](site/docs/content/terminal.mdx).
 

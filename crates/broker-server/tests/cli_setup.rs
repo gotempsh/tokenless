@@ -282,15 +282,11 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
         fields,
         Duration::from_secs(10),
         Duration::from_millis(50),
+        |e| panic!("the saved key did not parse: {e}"),
     )
     .await
     .unwrap();
     person.await.unwrap();
-    secret_file::remove(&path).unwrap();
-    assert!(
-        !path.exists(),
-        "the file is deleted before the key is stored"
-    );
 
     let plan = AddService {
         template_id: "openai".into(),
@@ -300,6 +296,9 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
         read_only: false,
     };
     let added = client.add_service(&plan, &template, values).await.unwrap();
+    // Only once the key is stored is the file deleted.
+    secret_file::remove(&path).unwrap();
+    assert!(!path.exists());
     let listed = client.credentials(&added.vault.id).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "openai");
@@ -446,6 +445,52 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     );
     assert!(stderr.contains(&file.display().to_string()), "{stderr}");
 
+    // The key is read but cannot be stored (a service of that name is
+    // already in the vault): the file keeps it for another try.
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--secret-file",
+        "--wait",
+        "1m",
+    ]);
+    appears(&file).await;
+    let instructions = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{instructions}{KEY}\n")).unwrap();
+    let out = finish(child).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(
+        stderr.contains("nothing was stored") && stderr.contains("still holds the key"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(KEY), "{stderr}");
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains(KEY),
+        "a failed store keeps the key in the file"
+    );
+    // Run again with the problem fixed, it reads the file it left.
+    let out = finish(cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--name",
+        "openai-work",
+        "--secret-file",
+        "--wait",
+        "1m",
+    ]))
+    .await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(!file.exists(), "stored at last, the file is deleted");
+
     // Stopped while it waits: the file goes, nothing is stored.
     let child = cli.spawn(&[
         "service",
@@ -515,6 +560,14 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     let added: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(added["service"], "github");
     assert_eq!(added["vault"], "personal");
+    // The bundle it joined on the page, which already existed.
+    assert_eq!(added["bundle"], "my-agent", "{added:#}");
+    assert_eq!(added["bundle_created"], false);
+    assert_eq!(added["vault_created"], false);
+    assert_eq!(
+        added["run"],
+        "tokenless run --vault personal --bundle my-agent -- <command>"
+    );
 
     // status sees it all, short of a proxy.
     let out = finish(cli.spawn(&["status", "--json"])).await;

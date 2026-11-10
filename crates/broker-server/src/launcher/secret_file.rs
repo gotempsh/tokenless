@@ -163,8 +163,11 @@ pub fn parse(content: &str, fields: &[CredentialField]) -> Result<Option<Fields>
         };
         let name = name.trim();
         if !fields.iter().any(|f| f.name == name) {
+            // The text before `=` is not repeated: a key pasted on a line
+            // of its own can hold an `=` (base64 padding).
             return Err(LauncherError::config(format!(
-                "the secret file names a field '{name}', which this service does not have; its fields are {}",
+                "line {} of the secret file names a field this service does not have; its fields are {}",
+                number + 1,
                 known()
             )));
         }
@@ -203,24 +206,35 @@ pub fn filled(path: &Path, fields: &[CredentialField]) -> bool {
     read(path).is_ok_and(|content| matches!(parse(&content, fields), Ok(Some(_))))
 }
 
-/// Waits until the file holds every required value and has stopped
-/// changing (an editor may save more than once), then returns the values.
-/// Gives up after `timeout`.
+/// Waits until the file holds every required field and has stopped
+/// changing (an editor may save in pieces), then returns the values. A file
+/// that does not parse is not ready yet: `problem` is told once per distinct
+/// error (which never quotes a value) and the wait goes on, so the person can
+/// fix the line. At the deadline the last such error is returned.
 pub async fn wait(
     path: &Path,
     fields: &[CredentialField],
     timeout: Duration,
     poll: Duration,
+    mut problem: impl FnMut(&LauncherError),
 ) -> Result<Fields, LauncherError> {
     let deadline = Instant::now() + timeout;
     let mut last: Option<Zeroizing<String>> = None;
+    let mut wrong: Option<LauncherError> = None;
     loop {
         match read(path) {
             Ok(content) => {
                 let settled = last.as_ref().is_some_and(|l| **l == *content);
                 if settled {
-                    if let Some(values) = parse(&content, fields)? {
-                        return Ok(values);
+                    match parse(&content, fields) {
+                        Ok(Some(values)) => return Ok(values),
+                        Ok(None) => wrong = None,
+                        Err(e) => {
+                            if wrong.as_ref().map(ToString::to_string) != Some(e.to_string()) {
+                                problem(&e);
+                            }
+                            wrong = Some(e);
+                        }
                     }
                 }
                 last = Some(content);
@@ -231,11 +245,13 @@ pub async fn wait(
             Err(e) => return Err(e),
         }
         if Instant::now() >= deadline {
-            return Err(LauncherError::config(format!(
-                "nothing was saved in {} within {} minutes; run the command again when you have the key",
-                path.display(),
-                timeout.as_secs().div_ceil(60)
-            )));
+            return Err(wrong.unwrap_or_else(|| {
+                LauncherError::config(format!(
+                    "nothing was saved in {} within {} minutes; run the command again when you have the key",
+                    path.display(),
+                    timeout.as_secs().div_ceil(60)
+                ))
+            }));
         }
         tokio::time::sleep(poll).await;
     }
@@ -328,9 +344,11 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("'client_ID'") && e.contains("client_id, client_secret"),
+            e.contains("line 1 ") && e.contains("client_id, client_secret"),
             "{e}"
         );
+        // What comes before `=` may be part of a pasted key: never repeated.
+        assert!(!e.contains("client_ID"), "{e}");
         let e = parse("just a value\n", &fields).unwrap_err().to_string();
         assert!(e.contains("line 1"), "{e}");
         // The refusal never repeats a value.
@@ -413,6 +431,7 @@ mod tests {
             &fields,
             Duration::from_secs(5),
             Duration::from_millis(100),
+            |_| {},
         )
         .await
         .unwrap();
@@ -431,10 +450,71 @@ mod tests {
             &fields,
             Duration::from_millis(50),
             Duration::from_millis(10),
+            |_| {},
         )
         .await
         .unwrap_err()
         .to_string();
         assert!(e.contains("nothing was saved"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_line_is_reported_once_and_the_wait_goes_on_until_it_is_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        let fields = [
+            field("access_key_id", true),
+            field("secret_access_key", true),
+        ];
+        prepare(&path, "AWS", "personal", &fields).unwrap();
+        let fresh = std::fs::read_to_string(&path).unwrap();
+        // A typo in a field name, with a value that must not be repeated.
+        std::fs::write(
+            &path,
+            format!("{fresh}access_key=AKIAEXAMPLE\nsecret_access_key=s3cr3t==\n"),
+        )
+        .unwrap();
+        let writer = {
+            let (path, fresh) = (path.clone(), fresh.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                std::fs::write(
+                    &path,
+                    format!("{fresh}access_key_id=AKIAEXAMPLE\nsecret_access_key=s3cr3t==\n"),
+                )
+                .unwrap();
+            })
+        };
+        let mut problems = Vec::new();
+        let got = wait(
+            &path,
+            &fields,
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            |e| problems.push(e.to_string()),
+        )
+        .await
+        .unwrap();
+        writer.await.unwrap();
+        assert_eq!(value(&got, "access_key_id"), "AKIAEXAMPLE");
+        assert_eq!(value(&got, "secret_access_key"), "s3cr3t==");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("line"), "{problems:?}");
+        assert!(!problems[0].contains("AKIA") && !problems[0].contains("s3cr3t"));
+
+        // Left wrong, the wait ends with that error, not "nothing was saved".
+        std::fs::write(&path, format!("{fresh}s3cr3t==\n")).unwrap();
+        let e = wait(
+            &path,
+            &fields,
+            Duration::from_millis(200),
+            Duration::from_millis(20),
+            |_| {},
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("does not have"), "{e}");
+        assert!(!e.contains("s3cr3t"), "{e}");
     }
 }

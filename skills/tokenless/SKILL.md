@@ -230,7 +230,8 @@ The steps it leads through:
 
    - **A file they fill in.** Run this in the background: it creates a
      file only they can read, waits until they save the key in it, then
-     deletes the file and stores the key. `--open` opens the file in their
+     stores the key and deletes the file (if storing fails, the file stays
+     and running the same command again reads it). `--open` opens the file in their
      text editor. Tell them the path it prints, and never read the file
      yourself.
 
@@ -246,7 +247,8 @@ The steps it leads through:
      tokenless service add openai --vault personal --bundle my-agent --web --open
      ```
 
-   Either ends with the service's vault and bundle, as JSON with `--json`.
+   Either ends with the service's vault and the bundle it joined, as JSON
+   with `--json`.
    Then they delete any plaintext copy (the line in `.env`, the `export`
    in the profile); a tool that insists on the variable gets a dummy value
    (`OPENAI_API_KEY=tokenless`), as in section 2.
