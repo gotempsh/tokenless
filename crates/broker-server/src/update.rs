@@ -43,6 +43,11 @@ const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
 const MAX_BINARY: u64 = 512 * 1024 * 1024;
 const MAX_SMALL_FILE: u64 = 1024 * 1024;
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
+/// What the file staged next to the binary is called, before its random part.
+const STAGED_PREFIX: &str = ".tokenless-update-";
+/// A staged file this old belongs to no running update: one was killed
+/// before it could remove it.
+const STALE_STAGED: Duration = Duration::from_secs(60 * 60);
 
 /// The release target this binary was built for, as in the archive names.
 pub fn target() -> Option<&'static str> {
@@ -163,6 +168,11 @@ pub enum UpdateError {
     Signature { repo: String, reason: String },
     #[error("unpacking {asset}: {reason}")]
     Archive { asset: String, reason: String },
+    #[error("stopped by {signal}; {binary} is unchanged")]
+    Interrupted {
+        signal: &'static str,
+        binary: String,
+    },
     #[error("the new binary does not run on this machine: {reason}; {binary} is unchanged")]
     NewBinary { binary: String, reason: String },
     #[error("release {tag} holds tokenless {found}, not {expected}; not installing")]
@@ -434,11 +444,14 @@ pub async fn update(
     let beside = installed.parent().unwrap_or(Path::new("."));
     let stage = |dir: &Path| {
         tempfile::Builder::new()
-            .prefix(".tokenless-update-")
+            .prefix(STAGED_PREFIX)
             .tempfile_in(dir)
     };
     let (staged, staged_in) = match stage(beside) {
-        Ok(staged) => (staged, beside),
+        Ok(staged) => {
+            remove_stale(beside);
+            (staged, beside)
+        }
         Err(_) if opts.check_only => (
             stage(work.path()).map_err(io("staging the download"))?,
             work.path(),
@@ -548,6 +561,32 @@ pub async fn update(
         to: found,
         signature_verified,
     })
+}
+
+/// Removes what earlier updates, killed before they could clean up, staged
+/// in `dir`. Best effort: a file that cannot be removed stays.
+fn remove_stale(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(STAGED_PREFIX)
+        {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > STALE_STAGED);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 async fn verify_signature(
@@ -1034,6 +1073,31 @@ mod tests {
         }
         assert_eq!(release.archive_downloads.load(Ordering::SeqCst), 0);
         assert_eq!(installed.contents(), "the installed binary");
+    }
+
+    #[tokio::test]
+    async fn what_a_killed_update_staged_is_removed_once_it_is_an_hour_old() {
+        let release = Arc::new(Release::default());
+        publish(&release, "v9.9.9", "9.9.9");
+        let base = serve(release.clone()).await;
+        let installed = Installed::new();
+        let dir = installed.path.parent().unwrap();
+        let stale = dir.join(format!("{STAGED_PREFIX}stale"));
+        let recent = dir.join(format!("{STAGED_PREFIX}recent"));
+        std::fs::write(&stale, "a killed update's").unwrap();
+        std::fs::write(&recent, "a running update's").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+
+        update(&options(&base), &installed.path, &v("0.2.0"))
+            .await
+            .unwrap();
+        assert!(!stale.exists());
+        assert!(recent.exists());
     }
 
     #[tokio::test]

@@ -1786,7 +1786,25 @@ async fn update_command(args: UpdateArgs) -> Result<ExitCode, CliError> {
         ca_file: args.download_ca,
         ..update::Options::new(args.repo)
     };
-    match update::update(&options, &installed, &current).await? {
+    // A stop signal (Ctrl-C, or systemd stopping the update's unit) ends the
+    // update here, so what it staged next to the binary is removed.
+    let interrupted = async {
+        match stop_signal().await {
+            Ok(signal) => signal,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    let outcome = tokio::select! {
+        outcome = update::update(&options, &installed, &current) => outcome?,
+        signal = interrupted => {
+            return Err(UpdateError::Interrupted {
+                signal,
+                binary: installed.display().to_string(),
+            }
+            .into())
+        }
+    };
+    match outcome {
         UpdateOutcome::UpToDate { current, latest } if latest < current => {
             say(format_args!(
                 "this is {current}, newer than the latest release {latest}"
