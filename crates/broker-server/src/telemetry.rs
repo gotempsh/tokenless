@@ -11,13 +11,14 @@
 //! sends its logs and the proxy's counters. `OTEL_RESOURCE_ATTRIBUTES` tags
 //! everything sent, and `OTEL_SERVICE_NAME` renames the service.
 //!
-//! The exporter reads the rest of its variables itself: headers, protocol
-//! (`http/protobuf`, the default, or `http/json`; gRPC is not built in),
-//! timeout, compression and temporality. `OTEL_METRIC_EXPORT_INTERVAL` sets
-//! how often counters are sent (60 s). Exports go through the server's own
-//! HTTP client and TLS (the public web PKI, plus the CAs in
-//! `OTEL_EXPORTER_OTLP_CERTIFICATE`), on background threads with bounded
-//! queues: a slow or unreachable collector drops telemetry, never traffic.
+//! The protocol (`http/protobuf`, the default, or `http/json`; gRPC is not
+//! built in) and each signal's timeout are read here, as the HTTP client is
+//! built here; the exporter reads the rest itself: headers, compression and
+//! temporality. `OTEL_METRIC_EXPORT_INTERVAL` sets how often counters are
+//! sent (60 s). Exports go through the server's own HTTP client and TLS (the
+//! public web PKI, plus the CAs in `OTEL_EXPORTER_OTLP_CERTIFICATE`), on
+//! background threads with bounded queues: a slow or unreachable collector
+//! drops telemetry, never traffic.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -103,8 +104,12 @@ pub struct Settings {
     /// `OTEL_EXPORTER_OTLP_CERTIFICATE`: a PEM file of CAs the collector's
     /// certificate is checked against, besides the public web PKI.
     pub certificate: Option<String>,
-    /// `OTEL_EXPORTER_OTLP_TIMEOUT`, in milliseconds.
-    pub timeout: Duration,
+    /// How long one export may take: `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT` /
+    /// `..._METRICS_TIMEOUT`, or `OTEL_EXPORTER_OTLP_TIMEOUT`, in
+    /// milliseconds. The exporter reads the same variables for how long it
+    /// retries; the HTTP client is built here, so it needs them too.
+    pub logs_timeout: Duration,
+    pub metrics_timeout: Duration,
     /// Variables that were set but are not followed, and why.
     pub ignored: Vec<String>,
     /// Sends to this base URL instead of the `OTEL_EXPORTER_OTLP_*`
@@ -125,7 +130,8 @@ impl Default for Settings {
             service_name: None,
             resource: Vec::new(),
             certificate: None,
-            timeout: DEFAULT_TIMEOUT,
+            logs_timeout: DEFAULT_TIMEOUT,
+            metrics_timeout: DEFAULT_TIMEOUT,
             ignored: Vec::new(),
             endpoint: None,
         }
@@ -185,6 +191,26 @@ impl Settings {
                     Encoding::Protobuf
                 }
             };
+            // The exporter refuses a URL it cannot parse, quoting it in the
+            // error; checked here instead, so the message names the variable
+            // and not the value, which may hold a token.
+            let refused = match (&endpoint, &general) {
+                (Some(url), _) => url
+                    .parse::<http::Uri>()
+                    .is_err()
+                    .then(|| format!("OTEL_EXPORTER_OTLP_{upper}_ENDPOINT")),
+                (None, Some(base)) => exporter_url(base, name)
+                    .parse::<http::Uri>()
+                    .is_err()
+                    .then(|| "OTEL_EXPORTER_OTLP_ENDPOINT".to_string()),
+                (None, None) => None,
+            };
+            if let (true, Some(var_name)) = (wanted, refused) {
+                settings.ignored.push(format!(
+                    "{name} are not sent: {var_name} is not a valid URL (look for spaces or a line break in it)"
+                ));
+                return (false, String::new(), encoding);
+            }
             let to = endpoint
                 .or_else(|| general.clone())
                 .unwrap_or_else(|| DEFAULT_ENDPOINT.into());
@@ -212,14 +238,23 @@ impl Settings {
             }
         }
         settings.certificate = var("OTEL_EXPORTER_OTLP_CERTIFICATE");
-        if let Some(ms) = var("OTEL_EXPORTER_OTLP_TIMEOUT") {
+        let mut timeout = |name: &str| {
+            let ms = var(name)?;
             match ms.trim().parse::<u64>() {
-                Ok(ms) if ms > 0 => settings.timeout = Duration::from_millis(ms),
-                _ => settings.ignored.push(format!(
-                    "OTEL_EXPORTER_OTLP_TIMEOUT={ms} is not a number of milliseconds"
-                )),
+                Ok(ms) if ms > 0 => Some(Duration::from_millis(ms)),
+                _ => {
+                    settings
+                        .ignored
+                        .push(format!("{name}={ms} is not a number of milliseconds"));
+                    None
+                }
             }
-        }
+        };
+        let general = timeout("OTEL_EXPORTER_OTLP_TIMEOUT").unwrap_or(DEFAULT_TIMEOUT);
+        let logs_timeout = timeout("OTEL_EXPORTER_OTLP_LOGS_TIMEOUT").unwrap_or(general);
+        let metrics_timeout = timeout("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT").unwrap_or(general);
+        settings.logs_timeout = logs_timeout;
+        settings.metrics_timeout = metrics_timeout;
         settings
     }
 
@@ -261,6 +296,32 @@ fn origin(endpoint: &str) -> String {
     match url::Url::parse(endpoint.trim()) {
         Ok(url) => url.origin().ascii_serialization(),
         Err(_) => "an endpoint that is not a URL".into(),
+    }
+}
+
+/// The URL the exporter sends a signal (`logs` or `metrics`) to when only
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` is set: `base` with `/v1/<signal>` added,
+/// as the exporter adds it.
+fn exporter_url(base: &str, signal: &str) -> String {
+    let base = base.strip_suffix('/').unwrap_or(base);
+    format!("{base}/v1/{signal}")
+}
+
+/// An exporter error without an endpoint it quotes: the exporter writes
+/// `invalid endpoint '<url>': <why>`, and a URL's path or query may hold a
+/// token. A quote that does not close loses the rest of the message.
+fn without_endpoint(reason: &str) -> String {
+    const QUOTED: &str = "invalid endpoint '";
+    let Some(start) = reason.find(QUOTED) else {
+        return reason.to_string();
+    };
+    let head = &reason[..start];
+    match reason[start + QUOTED.len()..].rfind("': ") {
+        Some(end) => format!(
+            "{head}invalid endpoint{}",
+            &reason[start + QUOTED.len() + end + 1..]
+        ),
+        None => format!("{head}invalid endpoint"),
     }
 }
 
@@ -320,7 +381,9 @@ impl Telemetry {
         if !settings.logs && !metrics_wanted {
             return Ok(Self::default());
         }
-        let client = OtlpHttp::new(settings)?;
+        let runtime =
+            tokio::runtime::Handle::try_current().map_err(|_| TelemetryError::NoRuntime)?;
+        let tls = exporter_tls(settings)?;
         let resource = settings.resource(component);
         let endpoint = |path: &str| {
             settings
@@ -333,13 +396,13 @@ impl Telemetry {
             let mut builder = LogExporter::builder()
                 .with_http()
                 .with_protocol(settings.logs_encoding.protocol())
-                .with_http_client(client.clone());
+                .with_http_client(OtlpHttp::new(runtime.clone(), &tls, settings.logs_timeout)?);
             if let Some(url) = endpoint("v1/logs") {
                 builder = builder.with_endpoint(url);
             }
             let exporter = builder.build().map_err(|e| TelemetryError::Exporter {
                 signal: "logs",
-                reason: e.to_string(),
+                reason: without_endpoint(&e.to_string()),
             })?;
             telemetry.logs = Some(
                 SdkLoggerProvider::builder()
@@ -352,13 +415,13 @@ impl Telemetry {
             let mut builder = MetricExporter::builder()
                 .with_http()
                 .with_protocol(settings.metrics_encoding.protocol())
-                .with_http_client(client);
+                .with_http_client(OtlpHttp::new(runtime, &tls, settings.metrics_timeout)?);
             if let Some(url) = endpoint("v1/metrics") {
                 builder = builder.with_endpoint(url);
             }
             let exporter = builder.build().map_err(|e| TelemetryError::Exporter {
                 signal: "metrics",
-                reason: e.to_string(),
+                reason: without_endpoint(&e.to_string()),
             })?;
             telemetry.metrics = Some(
                 SdkMeterProvider::builder()
@@ -422,25 +485,47 @@ impl Telemetry {
 
     /// Sends what is queued and stops the exporters, waiting at most for
     /// their timeouts. Failures are logged; they do not fail the exit.
+    ///
+    /// The work runs on its own thread, not the runtime's blocking pool, so
+    /// a caller that stops waiting (dropping the future) can exit at once:
+    /// the runtime does not wait for the thread when it shuts down.
     pub async fn shutdown(self) {
         let Self { logs, metrics, .. } = self;
-        let result = tokio::task::spawn_blocking(move || {
-            // Metrics first: their failures still reach the logs.
-            if let Some(provider) = metrics {
-                if let Err(e) = provider.shutdown() {
-                    tracing::warn!(error = %e, "OpenTelemetry metrics were not all sent at shutdown");
-                }
-            }
-            if let Some(provider) = logs {
-                if let Err(e) = provider.shutdown() {
-                    tracing::warn!(error = %e, "OpenTelemetry logs were not all sent at shutdown");
-                }
-            }
-        })
-        .await;
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "stopping the OpenTelemetry exporters failed");
+        if logs.is_none() && metrics.is_none() {
+            return;
         }
+        let (done, finished) = tokio::sync::oneshot::channel::<()>();
+        let spawned = std::thread::Builder::new()
+            .name("otel-shutdown".into())
+            .spawn(move || {
+                // Metrics first: their failures still reach the logs.
+                if let Some(provider) = metrics {
+                    if let Err(e) = provider.shutdown() {
+                        tracing::warn!(error = %e, "OpenTelemetry metrics were not all sent at shutdown");
+                    }
+                }
+                if let Some(provider) = logs {
+                    if let Err(e) = provider.shutdown() {
+                        tracing::warn!(error = %e, "OpenTelemetry logs were not all sent at shutdown");
+                    }
+                }
+                let _ = done.send(());
+            });
+        match spawned {
+            Ok(_) => {
+                let _ = finished.await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not start a thread to send the OpenTelemetry data still queued");
+            }
+        }
+    }
+
+    /// Stops without sending what is queued, for a process told to stop at
+    /// once. Dropping the exporters would send it, waiting up to their
+    /// timeouts, so they are leaked instead; the process is about to exit.
+    pub fn abandon(self) {
+        std::mem::forget(self);
     }
 
     /// Sends what is queued now. Blocks: call it off the runtime's threads.
@@ -479,43 +564,51 @@ struct OtlpHttp {
     timeout: Duration,
 }
 
-impl OtlpHttp {
-    fn new(settings: &Settings) -> Result<Self, TelemetryError> {
-        let runtime =
-            tokio::runtime::Handle::try_current().map_err(|_| TelemetryError::NoRuntime)?;
-        let mut roots = Vec::new();
-        if let Some(path) = &settings.certificate {
-            let pem =
-                std::fs::read_to_string(path).map_err(|source| TelemetryError::Certificate {
-                    path: path.clone(),
-                    source,
-                })?;
-            roots = tokenless_dataplane::tls::certs_from_pem(path, &pem).map_err(|e| {
-                TelemetryError::Tls {
-                    reason: e.to_string(),
-                }
-            })?;
-        }
-        let tls = tokenless_dataplane::tls::upstream_client_config(true, &roots).map_err(|e| {
+/// The collector's certificate is checked against the public web PKI and
+/// the CAs in `OTEL_EXPORTER_OTLP_CERTIFICATE`.
+fn exporter_tls(settings: &Settings) -> Result<rustls::ClientConfig, TelemetryError> {
+    let mut roots = Vec::new();
+    if let Some(path) = &settings.certificate {
+        let pem = std::fs::read_to_string(path).map_err(|source| TelemetryError::Certificate {
+            path: path.clone(),
+            source,
+        })?;
+        roots = tokenless_dataplane::tls::certs_from_pem(path, &pem).map_err(|e| {
             TelemetryError::Tls {
                 reason: e.to_string(),
             }
         })?;
+    }
+    let tls = tokenless_dataplane::tls::upstream_client_config(true, &roots).map_err(|e| {
+        TelemetryError::Tls {
+            reason: e.to_string(),
+        }
+    })?;
+    Ok((*tls).clone())
+}
+
+impl OtlpHttp {
+    /// A client for one signal, whose exports may take `timeout` each.
+    fn new(
+        runtime: tokio::runtime::Handle,
+        tls: &rustls::ClientConfig,
+        timeout: Duration,
+    ) -> Result<Self, TelemetryError> {
         let http = reqwest::Client::builder()
-            .use_preconfigured_tls((*tls).clone())
-            .timeout(settings.timeout)
-            .connect_timeout(settings.timeout)
+            .use_preconfigured_tls(tls.clone())
+            .timeout(timeout)
+            .connect_timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .user_agent(concat!("tokenless/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| TelemetryError::Tls {
-                reason: describe(e, settings.timeout),
+                reason: describe(e, timeout),
             })?;
         Ok(Self {
             http,
             runtime,
-            timeout: settings.timeout,
+            timeout,
         })
     }
 }
@@ -687,12 +780,168 @@ mod tests {
 
     #[test]
     fn a_bad_timeout_is_ignored_and_said() {
-        assert_eq!(Settings::default().timeout, DEFAULT_TIMEOUT);
+        let d = Settings::default();
+        assert_eq!(
+            (d.logs_timeout, d.metrics_timeout),
+            (DEFAULT_TIMEOUT, DEFAULT_TIMEOUT)
+        );
         let s = Settings::from_env(env(&[("OTEL_EXPORTER_OTLP_TIMEOUT", "2500")]));
-        assert_eq!(s.timeout, Duration::from_millis(2500));
+        let ms = Duration::from_millis;
+        assert_eq!((s.logs_timeout, s.metrics_timeout), (ms(2500), ms(2500)));
         let s = Settings::from_env(env(&[("OTEL_EXPORTER_OTLP_TIMEOUT", "soon")]));
-        assert_eq!(s.timeout, DEFAULT_TIMEOUT);
-        assert_eq!(s.ignored.len(), 1);
+        assert_eq!(s.logs_timeout, DEFAULT_TIMEOUT);
+        assert_eq!(
+            s.ignored,
+            ["OTEL_EXPORTER_OTLP_TIMEOUT=soon is not a number of milliseconds"]
+        );
+    }
+
+    #[test]
+    fn a_signal_timeout_overrides_the_general_one_for_that_signal() {
+        let ms = Duration::from_millis;
+        let s = Settings::from_env(env(&[
+            ("OTEL_EXPORTER_OTLP_TIMEOUT", "2500"),
+            ("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "30000"),
+        ]));
+        assert_eq!((s.logs_timeout, s.metrics_timeout), (ms(2500), ms(30000)));
+        let s = Settings::from_env(env(&[("OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "2000")]));
+        assert_eq!(
+            (s.logs_timeout, s.metrics_timeout),
+            (ms(2000), DEFAULT_TIMEOUT)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn each_signal_waits_for_the_collector_as_long_as_its_own_timeout() {
+        // A collector that accepts the connection and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let tls = exporter_tls(&Settings::default()).unwrap();
+        let runtime = tokio::runtime::Handle::current();
+        let send = |timeout: Duration| {
+            let client = OtlpHttp::new(runtime.clone(), &tls, timeout).unwrap();
+            let request = http::Request::post(format!("{base}/v1/logs"))
+                .body(Bytes::new())
+                .unwrap();
+            async move {
+                let started = std::time::Instant::now();
+                let result = client.send_bytes(request).await;
+                (result.map(|_| ()), started.elapsed())
+            }
+        };
+        let (short, long) = tokio::join!(
+            send(Duration::from_millis(200)),
+            send(Duration::from_millis(1500))
+        );
+        let (short_result, short_took) = short;
+        let (long_result, long_took) = long;
+        assert!(short_result.is_err() && long_result.is_err());
+        assert!(short_took < Duration::from_millis(1000), "{short_took:?}");
+        assert!(long_took >= Duration::from_millis(1400), "{long_took:?}");
+    }
+
+    #[test]
+    fn an_endpoint_the_exporter_would_refuse_is_named_but_never_quoted() {
+        let secret = "https://user:secret@otlp.example.com/otlp?token=abc\n";
+        let s = Settings::from_env(env(&[("OTEL_EXPORTER_OTLP_ENDPOINT", secret)]));
+        assert!(!s.logs && !s.metrics);
+        assert_eq!(s.ignored.len(), 2, "{:?}", s.ignored);
+        assert!(
+            s.ignored[0]
+                .starts_with("logs are not sent: OTEL_EXPORTER_OTLP_ENDPOINT is not a valid URL"),
+            "{:?}",
+            s.ignored
+        );
+        let s = Settings::from_env(env(&[(
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+            " https://otlp.example.com/v1/metrics?token=abc",
+        )]));
+        assert!(!s.metrics);
+        assert!(s.ignored[0].contains("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"));
+        for message in &s.ignored {
+            assert!(!message.contains("secret") && !message.contains("token=abc"));
+        }
+        // A trailing slash is fine, as it is for the exporter.
+        let s = Settings::from_env(env(&[(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "http://collector:4318/",
+        )]));
+        assert!(s.logs && s.metrics && s.ignored.is_empty());
+        assert_eq!(
+            exporter_url("http://collector:4318/", "logs"),
+            "http://collector:4318/v1/logs"
+        );
+    }
+
+    #[test]
+    fn exporter_errors_lose_the_endpoint_they_quote() {
+        assert_eq!(
+            without_endpoint(
+                "invalid exporter configuration: OTEL_EXPORTER_OTLP_ENDPOINT: invalid endpoint 'https://u:secret@h/?token=a': b': invalid uri character"
+            ),
+            "invalid exporter configuration: OTEL_EXPORTER_OTLP_ENDPOINT: invalid endpoint: invalid uri character"
+        );
+        assert_eq!(
+            without_endpoint(
+                "invalid exporter configuration: endpoint: invalid endpoint 'https://h/?token=a"
+            ),
+            "invalid exporter configuration: endpoint: invalid endpoint"
+        );
+        let other = "invalid exporter configuration: compression: zstd compression requested but zstd-http feature not enabled";
+        assert_eq!(without_endpoint(other), other);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_at_once_does_not_wait_for_the_collector() {
+        // A collector that accepts the connection and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let start = || {
+            let settings = Settings {
+                endpoint: Some(base.clone()),
+                logs_timeout: Duration::from_secs(30),
+                ..Settings::from_env(env(&[("OTEL_LOGS_EXPORTER", "otlp")]))
+            };
+            let telemetry = Telemetry::start(&settings, Component::ControlPlane).unwrap();
+            let subscriber =
+                tracing_subscriber::registry().with(telemetry.log_layer(EnvFilter::new("info")));
+            tracing::subscriber::with_default(subscriber, || tracing::info!("never answered"));
+            telemetry
+        };
+
+        let started = std::time::Instant::now();
+        start().abandon();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+
+        // Waiting on the flush can be given up, and nothing then holds the
+        // runtime up.
+        let started = std::time::Instant::now();
+        let gave_up = tokio::time::timeout(Duration::from_millis(200), start().shutdown()).await;
+        assert!(
+            gave_up.is_err(),
+            "the never-answering collector cannot be flushed to"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     fn resource_value(resource: &Resource, key: &'static str) -> Option<String> {
@@ -906,7 +1155,8 @@ mod tests {
         // Nothing listens on port 1.
         let settings = Settings {
             endpoint: Some("http://127.0.0.1:1".into()),
-            timeout: Duration::from_millis(300),
+            logs_timeout: Duration::from_millis(300),
+            metrics_timeout: Duration::from_millis(300),
             ..Settings::from_env(env(&[(
                 "OTEL_EXPORTER_OTLP_ENDPOINT",
                 "http://127.0.0.1:1",

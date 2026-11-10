@@ -991,7 +991,15 @@ async fn admin(command: AdminCommand) -> Result<(), CliError> {
     }
 }
 
-async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<(), CliError> {
+/// How a command stopped. Told to stop at once, the process leaves the
+/// OpenTelemetry data still queued unsent rather than wait on the collector.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Stopped {
+    Normally,
+    AtOnce,
+}
+
+async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<Stopped, CliError> {
     match command {
         NodeCommand::Join {
             control_url,
@@ -1003,7 +1011,7 @@ async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<(), CliErro
             identity.save(&state)?;
             info!(node_id = %identity.node_id, state = %state.display(), "node enrolled");
             say(messages::enrolled(&name, &state.display().to_string()));
-            Ok(())
+            Ok(Stopped::Normally)
         }
         NodeCommand::Run {
             state,
@@ -1034,7 +1042,7 @@ async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<(), CliErro
                 report = dp.shutdown(Duration::from_secs(drain_secs)) => report,
                 _ = stop_signal() => {
                     warn!("second stop signal: stopping without draining");
-                    return Ok(());
+                    return Ok(Stopped::AtOnce);
                 }
             };
             if !report.clean() {
@@ -1044,7 +1052,7 @@ async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<(), CliErro
                     "node stopped with traffic cut or audit events unshipped"
                 );
             }
-            Ok(())
+            Ok(Stopped::Normally)
         }
     }
 }
@@ -1780,9 +1788,13 @@ async fn main() -> ExitCode {
     let (telemetry, settings, failed) = start_telemetry(&cli.command);
     init_logging(agent_side, &telemetry);
     report_telemetry(&telemetry, &settings, failed);
+    let mut stopped = Stopped::Normally;
     let result = match cli.command {
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
-        Command::Node { command } => node(command, &telemetry).await.map(|()| ExitCode::SUCCESS),
+        Command::Node { command } => node(command, &telemetry).await.map(|how| {
+            stopped = how;
+            ExitCode::SUCCESS
+        }),
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
@@ -1808,7 +1820,19 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    telemetry.shutdown().await;
+    match stopped {
+        Stopped::AtOnce => telemetry.abandon(),
+        // Sending what is queued can take the exporters' timeouts; a stop
+        // signal meanwhile ends the wait.
+        Stopped::Normally => tokio::select! {
+            () = telemetry.shutdown() => {}
+            () = async {
+                if stop_signal().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            } => warn!("stop signal: exiting without sending the OpenTelemetry data still queued"),
+        },
+    }
     code
 }
 

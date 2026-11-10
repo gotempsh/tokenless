@@ -264,13 +264,13 @@ logs and metrics are going, or which setting it ignored and why.
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (the default) or `http/json`. gRPC is not supported: use the collector's HTTP port, 4318. |
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | A PEM file of CAs to trust for the collector's certificate, besides the public ones. |
 | `OTEL_EXPORTER_OTLP_COMPRESSION` | `gzip` compresses exports. `zstd` is not built in. |
-| `OTEL_EXPORTER_OTLP_TIMEOUT` | How long an export may take, in milliseconds (10000). |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | How long an export may take, in milliseconds (10000). `OTEL_EXPORTER_OTLP_LOGS_TIMEOUT` or `..._METRICS_TIMEOUT` sets it for one signal. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | How often proxies send their metrics, in milliseconds (60000). |
 | `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER` | `none` turns one signal off; `otlp` turns it on, to `http://localhost:4318` if no endpoint is set. |
 | `OTEL_SDK_DISABLED` | `true` sends nothing. |
 
-The signal-specific `_HEADERS`, `_PROTOCOL`, `_TIMEOUT` and `_COMPRESSION`
-variables and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` work as
+The signal-specific `_HEADERS`, `_PROTOCOL` and `_COMPRESSION` variables
+and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` work as
 their specification says.
 
 Every log line `RUST_LOG` lets through is sent, with its fields as
@@ -278,6 +278,9 @@ attributes. A proxy's metrics are the Prometheus counters, named
 `tokenless.proxy.<name>` without the `_total` (such as
 `tokenless.proxy.requests_injected`), and tagged with the proxy's node ID
 as `service.instance.id`. Telemetry waits in a bounded queue: a slow or
-unreachable collector drops telemetry, and never slows the traffic. The
-first admin's password is printed to the terminal, not the log, so it is
-never sent.
+unreachable collector drops telemetry, and never slows the traffic. On
+exit, what is still queued is sent, waiting a few seconds at most; another
+stop signal, or the second one that stops a proxy at once, exits without
+waiting. The first admin's password is printed to the terminal, not the
+log, so it is never sent. An endpoint that is not a valid URL turns its
+signal off, and the log names the variable without repeating its value.
