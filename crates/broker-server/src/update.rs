@@ -681,10 +681,30 @@ async fn run_version(staged: &Path, installed: &Path) -> Result<semver::Version,
         binary: installed.display().to_string(),
         reason,
     };
-    let run = tokio::process::Command::new(staged)
-        .arg("--version")
-        .kill_on_drop(true)
-        .output();
+    let run = async {
+        // Linux refuses to run a file some process has open for writing.
+        // Ours is closed, but a process forked by another thread in the
+        // meantime holds a copy of a descriptor until it runs its own
+        // program, which takes moments: try again a few times.
+        let mut busy_wait = Duration::from_millis(20);
+        loop {
+            let run = tokio::process::Command::new(staged)
+                .arg("--version")
+                .kill_on_drop(true)
+                .output()
+                .await;
+            match run {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && busy_wait < Duration::from_secs(2) =>
+                {
+                    tokio::time::sleep(busy_wait).await;
+                    busy_wait *= 2;
+                }
+                run => return run,
+            }
+        }
+    };
     let output = tokio::time::timeout(VERSION_TIMEOUT, run)
         .await
         .map_err(|_| {
