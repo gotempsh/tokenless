@@ -46,6 +46,11 @@ const DEFAULT_ENDPOINT: &str = "http://localhost:4318";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A collector answers an export with a short status; read no more.
 const MAX_REPLY: usize = 1024 * 1024;
+/// The target of the warnings that say why exports fail. Kept out of
+/// OpenTelemetry: while exports fail, sending them would add to the queue.
+const EXPORT_FAILURES: &str = "tokenless::otlp_export";
+/// A cause that does not change is said again after this long.
+const REPEAT_FAILURE: Duration = Duration::from_secs(60);
 
 /// Which process is sending: it names the service and decides which
 /// signals there are.
@@ -398,7 +403,12 @@ impl Telemetry {
             let mut builder = LogExporter::builder()
                 .with_http()
                 .with_protocol(settings.logs_encoding.protocol())
-                .with_http_client(OtlpHttp::new(runtime.clone(), &tls, settings.logs_timeout)?);
+                .with_http_client(OtlpHttp::new(
+                    runtime.clone(),
+                    &tls,
+                    settings.logs_timeout,
+                    "logs",
+                )?);
             if let Some(url) = endpoint("v1/logs") {
                 builder = builder.with_endpoint(url);
             }
@@ -418,7 +428,12 @@ impl Telemetry {
             let mut builder = MetricExporter::builder()
                 .with_http()
                 .with_protocol(settings.metrics_encoding.protocol())
-                .with_http_client(OtlpHttp::new(runtime, &tls, settings.metrics_timeout)?);
+                .with_http_client(OtlpHttp::new(
+                    runtime,
+                    &tls,
+                    settings.metrics_timeout,
+                    "metrics",
+                )?);
             if let Some(url) = endpoint("v1/metrics") {
                 builder = builder.with_endpoint(url);
             }
@@ -553,8 +568,8 @@ impl Telemetry {
 
 /// Whether an event may go to the process's own log. The exporter's debug
 /// events carry the full export URL, whose path or query may hold an
-/// ingest token, and the collector's reply; its warnings and errors do not,
-/// so those still say why exports fail.
+/// ingest token, and the collector's reply; its warnings and errors do not.
+/// Why an export failed is said by [`FailureLog`] instead.
 pub fn shown_locally(target: &str, level: &tracing::Level) -> bool {
     !(target.starts_with("opentelemetry") && *level > tracing::Level::INFO)
 }
@@ -563,6 +578,7 @@ pub fn shown_locally(target: &str, level: &tracing::Level) -> bool {
 fn is_exporter_noise(target: &str) -> bool {
     [
         "opentelemetry",
+        EXPORT_FAILURES,
         "reqwest",
         "hyper",
         "h2",
@@ -581,6 +597,48 @@ struct OtlpHttp {
     http: reqwest::Client,
     runtime: tokio::runtime::Handle,
     timeout: Duration,
+    failures: FailureLog,
+}
+
+/// Says why a signal's exports fail. The exporter reports every failure as
+/// "network error" and logs the cause only at debug, next to the URL; this
+/// logs the cause `describe` wrote, without the URL, when it changes and
+/// again a minute later, so a collector that stays down does not flood
+/// the log.
+#[derive(Debug, Clone)]
+struct FailureLog {
+    signal: &'static str,
+    last: Arc<Mutex<Option<(String, std::time::Instant)>>>,
+}
+
+impl FailureLog {
+    fn new(signal: &'static str) -> Self {
+        Self {
+            signal,
+            last: Arc::default(),
+        }
+    }
+
+    /// Logs `cause` unless it was just logged. Whether it was.
+    fn report(&self, cause: &str) -> bool {
+        let now = std::time::Instant::now();
+        {
+            let mut last = self.last.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((said, at)) = &*last {
+                if said == cause && now.duration_since(*at) < REPEAT_FAILURE {
+                    return false;
+                }
+            }
+            *last = Some((cause.to_string(), now));
+        }
+        tracing::warn!(
+            target: EXPORT_FAILURES,
+            signal = self.signal,
+            cause,
+            "OpenTelemetry export failed"
+        );
+        true
+    }
 }
 
 /// The collector's certificate is checked against the public web PKI and
@@ -607,11 +665,13 @@ fn exporter_tls(settings: &Settings) -> Result<rustls::ClientConfig, TelemetryEr
 }
 
 impl OtlpHttp {
-    /// A client for one signal, whose exports may take `timeout` each.
+    /// A client for `signal` (`logs` or `metrics`), whose exports may take
+    /// `timeout` each.
     fn new(
         runtime: tokio::runtime::Handle,
         tls: &rustls::ClientConfig,
         timeout: Duration,
+        signal: &'static str,
     ) -> Result<Self, TelemetryError> {
         let http = reqwest::Client::builder()
             .use_preconfigured_tls(tls.clone())
@@ -628,6 +688,7 @@ impl OtlpHttp {
             http,
             runtime,
             timeout,
+            failures: FailureLog::new(signal),
         })
     }
 }
@@ -645,10 +706,13 @@ impl HttpClient for OtlpHttp {
     ) -> Result<http::Response<Bytes>, HttpError> {
         let http = self.http.clone();
         let timeout = self.timeout;
+        let failures = self.failures.clone();
         self.runtime
             .spawn(async move {
                 let fail = |e: reqwest::Error| -> HttpError {
-                    Box::new(ExportFailed(describe(e, timeout)))
+                    let cause = describe(e, timeout);
+                    failures.report(&cause);
+                    Box::new(ExportFailed(cause))
                 };
                 let request = reqwest::Request::try_from(request).map_err(fail)?;
                 let mut response = http.execute(request).await.map_err(fail)?;
@@ -844,7 +908,7 @@ mod tests {
         let tls = exporter_tls(&Settings::default()).unwrap();
         let runtime = tokio::runtime::Handle::current();
         let send = |timeout: Duration| {
-            let client = OtlpHttp::new(runtime.clone(), &tls, timeout).unwrap();
+            let client = OtlpHttp::new(runtime.clone(), &tls, timeout, "logs").unwrap();
             let request = http::Request::post(format!("{base}/v1/logs"))
                 .body(Bytes::new())
                 .unwrap();
@@ -896,6 +960,38 @@ mod tests {
             exporter_url("http://collector:4318/", "logs"),
             "http://collector:4318/v1/logs"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_export_says_why_once_per_cause_and_without_the_url() {
+        // Nothing listens on port 1.
+        let tls = exporter_tls(&Settings::default()).unwrap();
+        let client = OtlpHttp::new(
+            tokio::runtime::Handle::current(),
+            &tls,
+            Duration::from_secs(2),
+            "logs",
+        )
+        .unwrap();
+        let request = || {
+            http::Request::post("http://127.0.0.1:1/v1/logs?token=abc")
+                .body(Bytes::new())
+                .unwrap()
+        };
+        let err = client.send_bytes(request()).await.unwrap_err();
+        let (said, _) = client.failures.last.lock().unwrap().clone().unwrap();
+        assert_eq!(said, err.to_string());
+        assert!(
+            !said.contains("token") && !said.contains("127.0.0.1"),
+            "{said}"
+        );
+
+        // The same cause again is not said again within the minute; another is.
+        assert!(!client.failures.report(&said));
+        assert!(client.failures.report("no answer within 2s"));
+        // And the warnings stay out of OpenTelemetry.
+        assert!(is_exporter_noise(EXPORT_FAILURES));
+        assert!(shown_locally(EXPORT_FAILURES, &tracing::Level::WARN));
     }
 
     #[test]
