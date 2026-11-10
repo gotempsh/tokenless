@@ -21,11 +21,13 @@ credential to the request on the way out. The agent can call the API,
 but it never holds the key, so it can't leak it, paste it into a log or
 keep using it after the job.
 
-```text
-agent ──HTTPS_PROXY──▶ proxy ──adds Authorization──▶ api.github.com
-                         ▲
-                         │ signed policy, sealed credentials
-                    control plane (console, API, vaults)
+```mermaid
+flowchart LR
+  accTitle: How a request gets its credential
+  accDescr: The agent sends its HTTPS traffic to the tokenless proxy, which adds the Authorization header and forwards it to api.github.com. The control plane gives the proxy a signed policy and sealed credentials.
+  agent("Agent") -- "HTTPS_PROXY" --> proxy("tokenless proxy")
+  proxy -- "adds Authorization" --> api("api.github.com")
+  cp("Control plane<br/>console, API, vaults") -- "signed policy,<br/>sealed credentials" --> proxy
 ```
 
 ## Get started

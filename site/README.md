@@ -37,6 +37,10 @@ A new page is a file in `docs/content/`; add its name to
 `../settings.mdx` from a folder), so the links also work on GitHub; the
 site and each page's Markdown turn them into addresses.
 
+Draw a diagram as a ` ```mermaid ` block with an `accTitle` and
+`accDescr`, never as box-drawing text; `bun run test` fails on one. GitHub
+draws the same block, and a page's Markdown keeps it as written.
+
 To check the image as it is deployed:
 
 ```sh
