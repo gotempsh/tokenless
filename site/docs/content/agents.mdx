@@ -179,17 +179,24 @@ npx skills add https://git.example.com/you/tokenless.git
 ```
 
 Or from the binary, which installs the copy built into it, so it always
-matches the CLI you have:
+matches the CLI you have. It lays it out as `npx skills add -g` does: the
+copy in `~/.agents/skills`, which Codex and most other agents read, and,
+when Claude Code is set up, a link to it in `~/.claude/skills`:
 
 ```sh
-tokenless skill --install                        # ~/.claude/skills/tokenless/SKILL.md
-tokenless skill --install --dir .claude/skills   # for one project
+tokenless skill --install                        # ~/.agents/skills/tokenless, linked from ~/.claude/skills
+tokenless skill --install --project              # this project's .agents/skills (and .claude/skills)
+tokenless skill --install --copy                 # a copy in .claude/skills instead of a link
+tokenless skill --install --dir <skills dir>     # only <skills dir>/tokenless, for another agent
 tokenless skill                                  # print it
 ```
 
-`tokenless login` offers to install it when Claude Code is set up and
-has no copy, and `tokenless run -- claude` says so in one line when the
-skill is missing, then starts Claude Code anyway. Neither installs
+A copy of this version that an older `skill --install` left in
+`~/.claude/skills` becomes the link; one with local edits is only replaced
+with `--force`. `tokenless login` offers to install it when Claude Code or
+Codex is set up and has no copy, and `tokenless run -- claude` (or
+`-- codex`) says so in one line when the skill is missing, then starts the
+agent anyway. Neither installs
 anything unless you say yes. Turn the line off with `--no-skill-hint` or
 `TOKENLESS_NO_SKILL_HINT=1`.
 

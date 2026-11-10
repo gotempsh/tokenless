@@ -136,7 +136,7 @@ Exits 0 when agents can be started behind tokenless, 1 otherwise.
 | `--session-token-file` (`run`, `exec`, `session start`, `session revoke`) | `TOKENLESS_SESSION_TOKEN` (the token itself) | used when no bundle is given |
 | `--name` (when minting) | | the session's name on the Sessions page |
 | `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
-| `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` says when the skill isn't installed |
+| `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` or `run -- codex` says when the skill isn't installed |
 
 Inside `run` or behind `session start`, `TOKENLESS_PROXY` is set to the
 session port and `HTTPS_PROXY` points at it.

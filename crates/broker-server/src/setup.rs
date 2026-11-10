@@ -91,12 +91,22 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
 }
 
 fn skill_state(cwd: &Path, home: Option<&Path>) -> Skill {
-    if skill::installed_in(&skill::claude_dirs(cwd, home)) {
-        Skill::Installed
-    } else if home.is_some_and(|h| h.join(".claude").is_dir()) {
-        Skill::Missing
+    let set_up: Vec<skill::Agent> = [skill::Agent::ClaudeCode, skill::Agent::Codex]
+        .into_iter()
+        .filter(|a| home.is_some_and(|h| a.set_up(h)))
+        .collect();
+    if set_up.is_empty() {
+        return Skill::NoAgent;
+    }
+    let missing: Vec<&'static str> = set_up
+        .iter()
+        .filter(|a| !a.has_skill(cwd, home))
+        .map(|a| a.name())
+        .collect();
+    if missing.is_empty() {
+        Skill::Installed(set_up.iter().map(|a| a.name()).collect())
     } else {
-        Skill::NoClaudeCode
+        Skill::Missing(missing)
     }
 }
 

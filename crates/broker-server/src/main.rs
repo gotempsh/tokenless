@@ -153,15 +153,24 @@ enum Command {
     ///   tokenless mcp --bundle code-review --format json
     #[command(verbatim_doc_comment)]
     Mcp(McpArgs),
-    /// Print the agent skill, or install it where Claude Code finds skills.
-    /// It tells an agent behind the broker how to see what it can reach,
-    /// use placeholders and read the proxy's errors.
+    /// Print the agent skill, or install it where agents find skills. It
+    /// tells an agent behind the broker how to see what it can reach, use
+    /// placeholders and read the proxy's errors.
     Skill {
-        /// Write it to <dir>/tokenless/SKILL.md.
+        /// Install it as `npx skills add -g` does: in ~/.agents/skills,
+        /// which Codex and most other agents read, linked from
+        /// ~/.claude/skills when Claude Code is set up.
         #[arg(long)]
         install: bool,
-        /// Skills directory (default: ~/.claude/skills; use .claude/skills
-        /// for one project).
+        /// Install it in this project's .agents/skills (and .claude/skills)
+        /// instead, for everyone working on it.
+        #[arg(long, requires = "install", conflicts_with = "dir")]
+        project: bool,
+        /// Copy it into .claude/skills instead of linking it.
+        #[arg(long, requires = "install", conflicts_with = "dir")]
+        copy: bool,
+        /// Write only <dir>/tokenless/SKILL.md, for an agent that reads
+        /// skills somewhere else.
         #[arg(long, requires = "install")]
         dir: Option<PathBuf>,
         /// Replace an installed copy that differs from this version.
@@ -320,8 +329,8 @@ struct RunArgs {
     /// Variables to set, as `NAME=cb://<service>/<field>` or `NAME=value`.
     #[arg(value_name = "NAME=VALUE")]
     assignments: Vec<String>,
-    /// Don't say so when the command is Claude Code and the tokenless
-    /// skill isn't installed. From the environment, `0`, `false`, `no`,
+    /// Don't say so when the command is Claude Code or Codex and the
+    /// tokenless skill isn't installed. From the environment, `0`, `false`, `no`,
     /// `off` and empty mean no; anything else means yes.
     #[arg(
         long,
@@ -872,7 +881,7 @@ async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
 }
 
 /// [`skill::missing_hint`] from where `run` was started.
-fn skill_hint(program: &str) -> Option<&'static str> {
+fn skill_hint(program: &str) -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let home = home_dir();
     skill::missing_hint(program, &cwd, home.as_deref())
@@ -884,9 +893,9 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// After signing in at a terminal, offers to install the skill for Claude
-/// Code when it is set up here and has no copy. Declining changes nothing,
-/// and a failed install doesn't undo the sign-in.
+/// After signing in at a terminal, offers to install the skill when an agent
+/// is set up here (Claude Code, Codex) and finds no copy. Declining changes
+/// nothing, and a failed install doesn't undo the sign-in.
 fn offer_skill() {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
@@ -895,22 +904,34 @@ fn offer_skill() {
     let Ok(cwd) = std::env::current_dir() else {
         return;
     };
-    let Some(dir) = skill::install_offer(&cwd, home_dir().as_deref()) else {
+    let Some(home) = home_dir() else {
         return;
     };
+    let agents = skill::install_offer(&cwd, Some(&home));
+    if agents.is_empty() {
+        return;
+    }
+    let names: Vec<&str> = agents.iter().map(|a| a.name()).collect();
     let question = format!(
-        "tokenless: install the agent skill for Claude Code in {}?",
-        dir.display()
+        "tokenless: install the agent skill for {} (in ~/.agents/skills, as npx skills does)?",
+        names.join(" and ")
     );
     match skill::ask_yes(
         &question,
         &mut std::io::stdin().lock(),
         &mut std::io::stderr(),
     ) {
-        Ok(true) => match skill::install(&dir, false) {
-            Ok((path, _)) => say(format_args!("installed {}", path.display())),
-            Err(e) => say(format_args!("the skill was not installed: {e}")),
-        },
+        Ok(true) => {
+            let claude_code = skill::Agent::ClaudeCode.set_up(&home);
+            match skill::install_for_agents(&home, claude_code, false, false) {
+                Ok(placed) => {
+                    for p in placed {
+                        say(skill_installed(&p));
+                    }
+                }
+                Err(e) => say(format_args!("the skill was not installed: {e}")),
+            }
+        }
         Ok(false) => say("skipped; install it later with: tokenless skill --install"),
         Err(e) => say(format_args!("the skill was not installed: {e}")),
     }
@@ -1872,23 +1893,56 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     Ok(exit_code(status))
 }
 
-fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<ExitCode, CliError> {
+fn skill_command(
+    install: bool,
+    project: bool,
+    copy: bool,
+    dir: Option<PathBuf>,
+    force: bool,
+) -> Result<ExitCode, CliError> {
     if !install {
         print!("{}", skill::SKILL_MD);
         return Ok(ExitCode::SUCCESS);
     }
-    let dir = match dir {
-        Some(dir) => dir,
-        None => skill::default_dir()?,
+    let placed = match dir {
+        Some(dir) => {
+            let (path, outcome) = skill::install(&dir, force)?;
+            vec![skill::Placed {
+                agents: "the agent reading it",
+                path,
+                outcome,
+            }]
+        }
+        None => {
+            let base = if project {
+                std::env::current_dir().map_err(|e| CliError::Io {
+                    context: "finding this project's folder".into(),
+                    source: e,
+                })?
+            } else {
+                skill::home()?
+            };
+            // Claude Code gets its link when it is set up for this user or
+            // this project.
+            let claude_code = home_dir().is_some_and(|h| skill::Agent::ClaudeCode.set_up(&h))
+                || (project && base.join(".claude").is_dir());
+            skill::install_for_agents(&base, claude_code, copy, force)?
+        }
     };
-    let (path, outcome) = skill::install(&dir, force)?;
-    let what = match outcome {
+    for p in placed {
+        say(skill_installed(&p));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn skill_installed(p: &skill::Placed) -> String {
+    let what = match p.outcome {
         skill::Installed::Created => "installed",
+        skill::Installed::Linked => "linked",
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
     };
-    say(format_args!("skill {what} at {}", path.display()));
-    Ok(ExitCode::SUCCESS)
+    format!("skill {what} at {} ({})", p.path.display(), p.agents)
 }
 
 /// `--check` exits with this when a newer release exists.
@@ -2024,9 +2078,11 @@ async fn main() -> ExitCode {
         Command::Mcp(args) => mcp_command(args).await,
         Command::Skill {
             install,
+            project,
+            copy,
             dir,
             force,
-        } => skill_command(install, dir, force),
+        } => skill_command(install, project, copy, dir, force),
         Command::Update(args) => update_command(args).await,
     };
     let code = match result {

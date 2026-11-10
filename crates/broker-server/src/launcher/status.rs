@@ -87,12 +87,15 @@ pub struct VaultSummary {
     pub bundles: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The agent skill for the agents set up here (Claude Code, Codex), by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Skill {
-    Installed,
-    Missing,
-    /// Claude Code is not set up here; other agents install it with `npx skills`.
-    NoClaudeCode,
+    /// Every agent set up here finds it.
+    Installed(Vec<&'static str>),
+    /// These agents set up here don't.
+    Missing(Vec<&'static str>),
+    /// Neither Claude Code nor Codex is set up here.
+    NoAgent,
 }
 
 /// The proxy identity file `proxy add` writes and `node run` reads.
@@ -347,23 +350,28 @@ pub fn assess(o: Observed) -> Report {
         None => unknown("proxy", "Proxy", signed_in, true),
     });
 
-    checks.push(match o.skill {
-        Skill::Installed => ok("skill", "Agent skill", "installed for Claude Code".into()),
-        Skill::Missing => Check {
+    checks.push(match &o.skill {
+        Skill::Installed(agents) => Check {
+            required: false,
+            ..ok(
+                "skill",
+                "Agent skill",
+                format!("installed for {}", agents.join(" and ")),
+            )
+        },
+        Skill::Missing(agents) => Check {
             id: "skill",
             label: "Agent skill",
             state: State::Missing,
-            detail: "not installed for Claude Code".into(),
+            detail: format!("not installed for {}", agents.join(" and ")),
             fix: Some("tokenless skill --install".into()),
             required: false,
         },
-        Skill::NoClaudeCode => Check {
+        Skill::NoAgent => Check {
             id: "skill",
             label: "Agent skill",
             state: State::Unknown,
-            detail:
-                "no Claude Code here; other agents get it with: npx skills add gotempsh/tokenless"
-                    .into(),
+            detail: "no Claude Code or Codex here; tokenless skill --install puts it in ~/.agents/skills, where most agents look".into(),
             fix: None,
             required: false,
         },
@@ -521,7 +529,7 @@ mod tests {
                 bundles: vec!["code-review".into()],
             }])),
             proxies: Some(Ok(Some(vec![node("laptop", Some(5), now)]))),
-            skill: Skill::Installed,
+            skill: Skill::Installed(vec!["Claude Code"]),
             behind_tokenless: false,
             proxy_state: ProxyStateFile {
                 path: "~/.tokenless/node.json".into(),
@@ -565,7 +573,7 @@ mod tests {
             signed_in: None,
             vaults: None,
             proxies: None,
-            skill: Skill::Missing,
+            skill: Skill::Missing(vec!["Claude Code"]),
             ..observed(now)
         });
         assert!(!report.ready);
@@ -637,7 +645,7 @@ mod tests {
         let now = Utc::now();
         let report = assess(Observed {
             proxies: Some(Ok(None)),
-            skill: Skill::Missing,
+            skill: Skill::Missing(vec!["Claude Code"]),
             ..observed(now)
         });
         assert!(report.ready, "{report:#?}");
@@ -667,7 +675,7 @@ mod tests {
         // Behind tokenless with the skill missing: that is all there is to do.
         let behind = assess(Observed {
             behind_tokenless: true,
-            skill: Skill::Missing,
+            skill: Skill::Missing(vec!["Claude Code"]),
             ..observed(now)
         });
         assert_eq!(behind.next.as_deref(), Some("tokenless skill --install"));
