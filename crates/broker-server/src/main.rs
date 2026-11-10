@@ -1951,7 +1951,13 @@ fn skill_installed(p: &skill::Placed) -> String {
         skill::Installed::Linked => "linked",
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
-        skill::Installed::Kept => "left as it is",
+        skill::Installed::Kept => {
+            return format!(
+                "skill left as it is at {} ({}): it is another version, which works; tokenless skill --install --force replaces it with this one",
+                p.path.display(),
+                p.agents
+            )
+        }
     };
     format!("skill {what} at {} ({})", p.path.display(), p.agents)
 }

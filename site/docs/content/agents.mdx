@@ -193,12 +193,12 @@ tokenless skill                                  # print it
 
 A copy of this version that an older `skill --install` left in
 `~/.claude/skills` becomes the link. Any other copy, from an earlier
-release, from `npx skills`, or with local edits, is kept, since tokenless
-cannot tell these apart: an older copy in `~/.claude/skills` stays there,
-another version in `~/.agents/skills` stays and Claude Code is linked to
-it, and the command says which and exits with an error. `--force` brings
-both to this version. `tokenless login` offers to install it when Claude Code or
-Codex is set up and has no copy, and `tokenless run -- claude` (or
+release, from `npx skills`, or with local edits, works, so it is kept and
+the command says so: another version in `~/.agents/skills` stays and Claude
+Code is linked to it. `--force` brings both to this version; in a folder
+holding files of your own besides `SKILL.md`, it rewrites only `SKILL.md`.
+`tokenless login` offers to install it when Claude Code (`~/.claude`) or
+Codex (`~/.codex`) is set up and has no copy, and `tokenless run -- claude` (or
 `-- codex`) says so in one line when the skill is missing, then starts the
 agent anyway. Neither installs
 anything unless you say yes. Turn the line off with `--no-skill-hint` or
