@@ -177,7 +177,8 @@ pub fn install_for_agents(
         }
     }
     if claude_code {
-        match place_for_claude_code(base, copy, force) {
+        let shared_current = placed.first().is_some_and(|p| p.outcome != Installed::Kept);
+        match place_for_claude_code(base, copy, force, shared_current) {
             Ok(p) => placed.push(p),
             Err(e) => failed.push(e),
         }
@@ -194,17 +195,21 @@ enum Existing {
     Shared,
     /// A link to the shared copy, as [`install_for_agents`] makes it.
     OurLink,
-    /// The link [`install_for_agents`] makes, leading nowhere now (a folder
-    /// moved), so replacing it loses nothing.
-    BrokenLink,
-    /// A folder of its own: `same` when its `SKILL.md` is this version's,
-    /// `alone` when nothing else is in it, so removing it loses nothing.
+    /// A link somewhere else; `works` when a `SKILL.md` is there, so a
+    /// dangling one loses nothing when replaced.
+    Link {
+        works: bool,
+    },
+    /// A folder of its own: `skill` when it holds a `SKILL.md`, `same` when
+    /// that is this version's, `alone` when nothing else is in it, so
+    /// removing it loses nothing.
     Copy {
+        skill: bool,
         same: bool,
         alone: bool,
     },
-    /// A file, or a link somewhere else.
-    Other,
+    /// A file where the folder belongs.
+    File,
 }
 
 /// Whether `a` and `b` are the same folder once links are followed.
@@ -215,26 +220,25 @@ fn same_place(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn existing(link: &Path, shared: &Path, relative: &Path) -> Result<Existing, LauncherError> {
+fn existing(link: &Path, shared: &Path) -> Result<Existing, LauncherError> {
     let meta = match std::fs::symlink_metadata(link) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Existing::Nothing),
         Err(e) => return Err(LauncherError::io(format!("checking {}", link.display()))(e)),
     };
+    let skill = link.join("SKILL.md").is_file();
     if meta.file_type().is_symlink() {
         return Ok(if same_place(link, shared) {
             Existing::OurLink
-        } else if std::fs::read_link(link).is_ok_and(|to| to == relative) {
-            Existing::BrokenLink
         } else {
-            Existing::Other
+            Existing::Link { works: skill }
         });
     }
     if same_place(link, shared) {
         return Ok(Existing::Shared);
     }
     if !meta.is_dir() {
-        return Ok(Existing::Other);
+        return Ok(Existing::File);
     }
     // Finder's .DS_Store is not something anyone would miss.
     let alone = std::fs::read_dir(link)
@@ -243,10 +247,17 @@ fn existing(link: &Path, shared: &Path, relative: &Path) -> Result<Existing, Lau
         .map(|e| e.file_name())
         .all(|name| name == "SKILL.md" || name == ".DS_Store");
     let same = std::fs::read_to_string(link.join("SKILL.md")).is_ok_and(|c| c == SKILL_MD);
-    Ok(Existing::Copy { same, alone })
+    Ok(Existing::Copy { skill, same, alone })
 }
 
-fn place_for_claude_code(base: &Path, copy: bool, force: bool) -> Result<Placed, LauncherError> {
+/// Places Claude Code's skill; `shared_current` when the shared copy is
+/// this version, so linking to it never trades this version for another.
+fn place_for_claude_code(
+    base: &Path,
+    copy: bool,
+    force: bool,
+    shared_current: bool,
+) -> Result<Placed, LauncherError> {
     let shared = Agent::Codex.skills_dir(base).join(SKILL_NAME);
     let skills = Agent::ClaudeCode.skills_dir(base);
     let link = skills.join(SKILL_NAME);
@@ -261,28 +272,68 @@ fn place_for_claude_code(base: &Path, copy: bool, force: bool) -> Result<Placed,
         path,
         outcome,
     };
-    let found = existing(&link, &shared, &relative)?;
+    let found = existing(&link, &shared)?;
     match (&found, copy) {
         // Removing it would delete the shared copy.
         (Existing::Shared, _) => return Ok(placed(link.join("SKILL.md"), Installed::Unchanged)),
         (Existing::OurLink, false) => return Ok(placed(link, Installed::Unchanged)),
-        // Up to date, and the other files in it stay.
-        (Existing::Copy { same: true, alone }, _) if copy || !alone => {
+        // Up to date: the other files in it stay, and a shared copy of
+        // another version is no reason to give it up.
+        (
+            Existing::Copy {
+                same: true, alone, ..
+            },
+            _,
+        ) if copy || !alone || !shared_current => {
             return Ok(placed(link.join("SKILL.md"), Installed::Unchanged))
         }
-        (Existing::Copy { same: false, .. } | Existing::Other, _) if !force => {
-            return Ok(placed(link.join("SKILL.md"), Installed::Kept))
+        // Another version, which works.
+        (
+            Existing::Copy {
+                skill: true,
+                same: false,
+                ..
+            }
+            | Existing::Link { works: true },
+            _,
+        ) if !force => return Ok(placed(link.join("SKILL.md"), Installed::Kept)),
+        (Existing::File, _) if !force => {
+            return Err(LauncherError::config(format!(
+                "{} is a file, not a skill folder; pass --force to replace it",
+                link.display()
+            )))
         }
-        // --force rewrites only SKILL.md where other files would be lost.
-        (Existing::Copy { alone: false, .. }, _) => {
+        // Where other files would be lost, only SKILL.md is written.
+        (
+            Existing::Copy {
+                skill,
+                alone: false,
+                ..
+            },
+            _,
+        ) => {
             let (path, _) = install(&skills, true)?;
-            return Ok(placed(path, Installed::Replaced));
+            let outcome = if *skill {
+                Installed::Replaced
+            } else {
+                Installed::Created
+            };
+            return Ok(placed(path, outcome));
         }
         _ => {}
     }
     // Only what --force overwrote counts as replaced: an old copy of this
-    // version, or the link swapped for a copy, loses nothing.
-    let overwritten = matches!(found, Existing::Copy { same: false, .. } | Existing::Other);
+    // version, an empty folder, a dangling link, or the link swapped for a
+    // copy, loses nothing.
+    let overwritten = matches!(
+        found,
+        Existing::Copy {
+            skill: true,
+            same: false,
+            ..
+        } | Existing::Link { works: true }
+            | Existing::File
+    );
     if !matches!(found, Existing::Nothing) {
         remove(&link)?;
     }
@@ -308,7 +359,7 @@ fn place_for_claude_code(base: &Path, copy: bool, force: bool) -> Result<Placed,
 }
 
 /// Removes a link, a file, or a folder [`existing`] found holding nothing
-/// but `SKILL.md`.
+/// but `SKILL.md` (or nothing at all).
 fn remove(path: &Path) -> Result<(), LauncherError> {
     let removed = match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
@@ -688,6 +739,72 @@ mod tests {
         assert!(!Agent::Codex.set_up(home));
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         assert!(Agent::Codex.set_up(home));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_claude_code_folder_without_a_skill_gets_one_without_force() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dir = home.join(".claude/skills/tokenless");
+        let has_it = || Agent::ClaudeCode.has_skill(home, Some(home));
+
+        // Empty, or only a .DS_Store: it becomes the link.
+        for leftover in [None, Some(".DS_Store")] {
+            let _ = std::fs::remove_file(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(name) = leftover {
+                std::fs::write(dir.join(name), [0u8; 8]).unwrap();
+            }
+            let placed = installed(home, true, false, false);
+            assert_eq!(placed[1].outcome, Installed::Linked, "{placed:?}");
+            assert!(has_it());
+        }
+
+        // A dangling link of someone's own is replaced too.
+        std::fs::remove_file(&dir).unwrap();
+        std::os::unix::fs::symlink(home.join("gone"), &dir).unwrap();
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[1].outcome, Installed::Linked, "{placed:?}");
+        assert!(has_it());
+
+        // Other files and no SKILL.md: it is written next to them.
+        std::fs::remove_file(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("notes.md"), "mine").unwrap();
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[1].outcome, Installed::Created, "{placed:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            SKILL_MD
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.md")).unwrap(),
+            "mine"
+        );
+    }
+
+    #[test]
+    fn a_current_copy_is_not_traded_for_a_link_to_another_shared_version() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let shared = home.join(".agents/skills/tokenless/SKILL.md");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, "an older version").unwrap();
+        install(&home.join(".claude/skills"), false).unwrap();
+        let dir = home.join(".claude/skills/tokenless");
+
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[0].outcome, Installed::Kept);
+        assert_eq!(placed[1].outcome, Installed::Unchanged);
+        assert!(!std::fs::symlink_metadata(&dir)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            SKILL_MD
+        );
     }
 
     #[cfg(unix)]

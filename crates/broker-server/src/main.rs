@@ -924,7 +924,7 @@ fn offer_skill() {
         Ok(true) => {
             let (placed, failed) = skill::install_offered(&home, &agents);
             for p in &placed {
-                say(skill_installed(p));
+                say(skill_installed(p, "tokenless skill --install --force"));
             }
             for e in failed {
                 say(format_args!("the skill was not installed everywhere: {e}"));
@@ -1925,9 +1925,14 @@ fn skill_command(
             let claude_code = home_dir().is_some_and(|h| skill::Agent::ClaudeCode.set_up(&h))
                 || (project && base.join(".claude").is_dir());
             let (placed, failed) = skill::install_for_agents(&base, claude_code, copy, force);
+            let again = if project {
+                "tokenless skill --install --project --force"
+            } else {
+                "tokenless skill --install --force"
+            };
             // What was placed before a failure is still reported.
             for p in &placed {
-                say(skill_installed(p));
+                say(skill_installed(p, again));
             }
             for e in &failed {
                 say(e);
@@ -1939,13 +1944,19 @@ fn skill_command(
             });
         }
     };
+    // `install` refuses another version rather than keeping it.
     for p in placed {
-        say(skill_installed(&p));
+        say(skill_installed(
+            &p,
+            "tokenless skill --install --dir <skills dir> --force",
+        ));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn skill_installed(p: &skill::Placed) -> String {
+/// What `skill --install` did for one agent; `force` is the command that
+/// would replace a kept copy, for the same place.
+fn skill_installed(p: &skill::Placed, force: &str) -> String {
     let what = match p.outcome {
         skill::Installed::Created => "installed",
         skill::Installed::Linked => "linked",
@@ -1953,7 +1964,7 @@ fn skill_installed(p: &skill::Placed) -> String {
         skill::Installed::Replaced => "replaced",
         skill::Installed::Kept => {
             return format!(
-                "skill left as it is at {} ({}): it is another version, which works; tokenless skill --install --force replaces it with this one",
+                "skill left as it is at {} ({}): it is another version, which works; {force} replaces it with this one",
                 p.path.display(),
                 p.agents
             )
@@ -2131,6 +2142,20 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_kept_skill_names_the_force_command_for_the_same_place() {
+        let kept = super::skill::Placed {
+            agents: "Claude Code",
+            path: std::path::PathBuf::from("repo/.claude/skills/tokenless/SKILL.md"),
+            outcome: super::skill::Installed::Kept,
+        };
+        let line = super::skill_installed(&kept, "tokenless skill --install --project --force");
+        assert!(
+            line.contains("; tokenless skill --install --project --force replaces it"),
+            "{line}"
+        );
+    }
+
     use super::*;
 
     #[test]
