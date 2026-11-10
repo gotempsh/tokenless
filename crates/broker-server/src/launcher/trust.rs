@@ -189,6 +189,20 @@ pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+/// `value` as one shell word: as it is when nothing in it needs quoting
+/// (`personal`, `my-agent`), quoted otherwise (`'Work stuff'`).
+pub fn shell_word(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@' | '+' | ',')
+        });
+    if plain {
+        value.to_string()
+    } else {
+        shell_quote(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +313,9 @@ mod tests {
     fn shell_quoting() {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_word("my-agent"), "my-agent");
+        assert_eq!(shell_word("Work stuff"), "'Work stuff'");
+        assert_eq!(shell_word("$HOME"), "'$HOME'");
+        assert_eq!(shell_word(""), "''");
     }
 }

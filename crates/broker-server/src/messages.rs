@@ -37,6 +37,14 @@ pub fn service_prompt(template: &str, vault: &str) -> String {
     format!("{template} for vault '{vault}'. Stored encrypted; nobody can read it back.")
 }
 
+/// When `service add --secret-file` read the key but could not store it:
+/// the file is kept, so running the command again picks it up.
+pub fn kept_secret_file(path: &str) -> String {
+    format!(
+        "nothing was stored, and {path} still holds the key. Fix what the error below says (a sign-in, for instance: tokenless login), then run the same command again and it reads the file; or delete the file yourself"
+    )
+}
+
 pub struct AddedService<'a> {
     pub service: &'a str,
     pub vault: &'a str,

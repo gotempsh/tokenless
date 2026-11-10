@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
-use tokenless_control::model::{AccessBundle, CredentialMeta, Page, Rule, StoredTemplate, Vault};
+use tokenless_control::model::{
+    AccessBundle, CredentialMeta, Node, Page, Rule, StoredTemplate, Vault,
+};
 use tokenless_control::service::auth::UserSummary;
 use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use zeroize::Zeroizing;
@@ -691,6 +693,103 @@ impl<'p> ConsoleClient<'p> {
         )
         .await
     }
+
+    /// The signed-in person, which also proves the saved session still works.
+    pub async fn me(&self) -> Result<UserSummary, LauncherError> {
+        #[derive(Deserialize)]
+        struct Me {
+            user: UserSummary,
+        }
+        let me: Me = self
+            .call(Method::GET, "/auth/me", None, "checking the session")
+            .await?;
+        Ok(me.user)
+    }
+
+    /// The enrolled proxies (the first 100). Needs a role that may see them.
+    pub async fn nodes(&self) -> Result<Vec<Node>, LauncherError> {
+        let page: Page<Node> = self
+            .call(Method::GET, "/nodes?page_size=100", None, "listing proxies")
+            .await?;
+        Ok(page.items)
+    }
+
+    /// The rules in `vault` (the first 100).
+    pub async fn rules(&self, vault: &VaultId) -> Result<Vec<Rule>, LauncherError> {
+        let page: Page<Rule> = self
+            .call(
+                Method::GET,
+                &format!("/vaults/{vault}/rules?page_size=100"),
+                None,
+                "listing rules",
+            )
+            .await?;
+        Ok(page.items)
+    }
+
+    /// The services in `vault` (the first 100).
+    pub async fn credentials(&self, vault: &VaultId) -> Result<Vec<CredentialMeta>, LauncherError> {
+        let page: Page<CredentialMeta> = self
+            .call(
+                Method::GET,
+                &format!("/vaults/{vault}/credentials?page_size=100"),
+                None,
+                "listing services",
+            )
+            .await?;
+        Ok(page.items)
+    }
+}
+
+/// Whether a control plane answers at `server`: any HTTP answer counts,
+/// since the check is not signed in. The error says why it does not.
+pub async fn probe(server: &str) -> Result<String, String> {
+    let base = normalise(server).map_err(|e| e.to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .no_proxy()
+        .build()
+        .map_err(|e| e.to_string())?;
+    client
+        .get(format!("{base}/api/v1/auth/me"))
+        .send()
+        .await
+        .map(|_| base)
+        .map_err(|e| {
+            if e.is_connect() {
+                "nothing is listening there".to_string()
+            } else if e.is_timeout() {
+                "it did not answer within 5 seconds".to_string()
+            } else {
+                e.to_string()
+            }
+        })
+}
+
+/// The console page that adds a `template` service, with the vault and
+/// bundle chosen when they exist. The person types the secret there, in
+/// their browser, signed in as themselves.
+pub fn add_service_url(
+    server: &str,
+    template: &str,
+    vault: Option<&VaultId>,
+    bundle: Option<&BundleId>,
+) -> Result<String, LauncherError> {
+    let base = normalise(server)?;
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(vault) = vault {
+        query.append_pair("vault", &vault.to_string());
+    }
+    if let Some(bundle) = bundle {
+        query.append_pair("bundle", &bundle.to_string());
+    }
+    let query = query.finish();
+    let template: String = url::form_urlencoded::byte_serialize(template.as_bytes()).collect();
+    Ok(if query.is_empty() {
+        format!("{base}/#/add-service/{template}")
+    } else {
+        format!("{base}/#/add-service/{template}?{query}")
+    })
 }
 
 /// `tokenless service add`: a service from a template, its rule, and its
@@ -744,6 +843,12 @@ impl ConsoleClient<'_> {
         template: &StoredTemplate,
         fields: BTreeMap<String, Zeroizing<String>>,
     ) -> Result<AddedService, LauncherError> {
+        // Checked before anything is stored, so a bad name cannot leave a
+        // stored credential behind.
+        if let Some(bundle) = &plan.bundle {
+            tokenless_control::service::bundles::validate_bundle_name(bundle)
+                .map_err(|e| LauncherError::config(e.to_string()))?;
+        }
         let vault_name = plan.vault.trim();
         let (vault, vault_created) = match self
             .vaults()
@@ -773,12 +878,26 @@ impl ConsoleClient<'_> {
             )
             .await?;
         drop(fields);
+        let partly = |step: &'static str| {
+            let (service, vault) = (credential.name.clone(), vault.name.clone());
+            move |source: LauncherError| LauncherError::PartlyAdded {
+                service,
+                vault,
+                step,
+                source: Box::new(source),
+            }
+        };
         let rule = self
             .create_rule(&vault.id, &credential.id, &name, plan.read_only)
-            .await?;
+            .await
+            .map_err(partly("creating its rule"))?;
         let bundle = match &plan.bundle {
             None => None,
-            Some(bundle_name) => Some(self.join_bundle(&vault.id, bundle_name, &rule.id).await?),
+            Some(bundle_name) => Some(
+                self.join_bundle(&vault.id, bundle_name, &rule.id)
+                    .await
+                    .map_err(partly("adding it to the access bundle"))?,
+            ),
         };
         Ok(AddedService {
             vault,

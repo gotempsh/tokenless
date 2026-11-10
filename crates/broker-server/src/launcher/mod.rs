@@ -17,8 +17,11 @@ pub mod client;
 pub mod inject;
 pub mod mcp;
 pub mod port;
+pub mod secret_file;
 pub mod session;
 pub mod skill;
+pub mod status;
+pub mod templates;
 pub mod trust;
 
 use thiserror::Error;
@@ -64,6 +67,16 @@ pub enum LauncherError {
         operation: &'static str,
         server: String,
         reason: String,
+    },
+
+    /// `service add` stored the credential, then a later step failed: the
+    /// key is in the vault, so it must not be asked for again.
+    #[error("the service '{service}' is stored in vault '{vault}', but {step} failed: {source}; finish it on the vault's page in the console, or delete the service there and run this again")]
+    PartlyAdded {
+        service: String,
+        vault: String,
+        step: &'static str,
+        source: Box<LauncherError>,
     },
 
     #[error("I/O failure while {context}: {source}")]

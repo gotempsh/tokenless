@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use broker_server::launcher::account::{
-    self, AddService, ConsoleClient, Prompter, SessionStore, SessionVault, SignIn, Stored,
+    self, ConsoleClient, Prompter, SessionStore, SessionVault, SignIn, Stored,
 };
 use broker_server::launcher::client::{ApiClient, Credentials, MintRequest, PortServices};
 use broker_server::launcher::inject::{self, Assignment};
@@ -42,12 +42,14 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
 mod messages;
+mod setup;
 
 #[derive(Parser)]
 #[command(
     name = "tokenless",
     version = update::VERSION,
-    about = "Credential broker for AI agents"
+    about = "Credential broker for AI agents",
+    after_help = "New here, or setting up for someone? Start with: tokenless status"
 )]
 struct Cli {
     /// Also say what tokenless itself does (sessions, ports, proxy) on
@@ -80,6 +82,22 @@ enum Command {
     Logout {
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// What is set up on this machine (control plane, sign-in, services,
+    /// proxy, agent skill) and the one command to run next. Exits 0 when
+    /// agents can be started behind tokenless, 1 when something is missing.
+    ///
+    /// Examples:
+    ///   tokenless status
+    ///   tokenless status --json
+    #[command(verbatim_doc_comment)]
+    Status {
+        /// Print the report as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = setup::DEFAULT_SERVER)]
         server: String,
     },
     /// Services agents can use. Needs `tokenless login`.
@@ -412,14 +430,17 @@ struct ServeArgs {
 
 #[derive(Subcommand)]
 enum ServiceCommand {
-    /// Add a service from a template: asks for its credential without
-    /// echoing it, stores it encrypted, and lets the access bundle use it.
-    /// Piped input is read as the credential when the template has one
-    /// field.
+    /// Add a service from a template: stores its credential encrypted and
+    /// lets the access bundle use it. The credential comes from a prompt
+    /// that does not echo it, standard input when piped (one field), a file
+    /// the person fills in (--secret-file), or the console (--web). The last
+    /// two let an agent run this for a person without seeing the secret.
     ///
     /// Examples:
     ///   tokenless service add github --vault work --bundle code-review
     ///   gh auth token | tokenless service add github --vault work --bundle code-review
+    ///   tokenless service add openai --vault personal --bundle my-agent --secret-file
+    ///   tokenless service add openai --vault personal --bundle my-agent --web --open
     #[command(verbatim_doc_comment)]
     Add {
         /// Template id, as on the console's Templates page (github, openai, ...).
@@ -437,10 +458,58 @@ enum ServiceCommand {
         /// Let agents only read (GET and HEAD).
         #[arg(long)]
         read_only: bool,
+        /// Read the credential from a file the person fills in, and wipe and
+        /// delete it once the credential is stored. The file is created
+        /// (mode 0600) if missing, at ~/.tokenless/incoming/<template>
+        /// without a path, and the command waits until it is saved. A file
+        /// that was already there is only deleted once its key is stored.
+        #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "web")]
+        secret_file: Option<String>,
+        /// Don't take the credential here: print the console page that adds
+        /// this service, where the person types it, and wait until it is saved.
+        #[arg(long, conflicts_with_all = ["name", "read_only"])]
+        web: bool,
+        /// Open the page (--web) in the browser, or the file (--secret-file)
+        /// in the text editor.
+        #[arg(long)]
+        open: bool,
+        /// How long --secret-file and --web wait for the person: 90s, 15m, 1h.
+        #[arg(long, default_value = "15m", value_parser = parse_wait)]
+        wait: Duration,
+        /// With --web, print the page and exit without waiting.
+        #[arg(long, requires = "web")]
+        no_wait: bool,
+        /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
     },
+    /// Find the template for a service by its ID, name, host or the
+    /// variable a tool reads its key from. Lists the control plane's
+    /// templates when signed in, the built-in ones otherwise.
+    ///
+    /// Examples:
+    ///   tokenless service templates OPENAI_API_KEY
+    ///   tokenless service templates api.github.com --json
+    #[command(verbatim_doc_comment)]
+    Templates {
+        /// Part of an ID, name, alias, host or variable; all when left out.
+        query: Option<String>,
+        /// Print the templates as JSON, with their fields and hosts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+fn parse_wait(raw: &str) -> Result<Duration, String> {
+    parse_duration_secs(raw)
+        .map(Duration::from_secs)
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Subcommand)]
@@ -753,10 +822,20 @@ impl Prompter for TerminalPrompter {
     fn secret(&self, label: &str) -> Result<Zeroizing<String>, LauncherError> {
         rpassword::prompt_password(format!("{label}: "))
             .map(|v| Zeroizing::new(v.trim_end_matches(['\r', '\n']).to_string()))
-            .map_err(LauncherError::io(format!(
-                "reading {label} from the terminal"
-            )))
+            .map_err(|e| no_terminal(label, e))
     }
+}
+
+/// Why a prompt failed. Without a terminal (an agent or a script ran the
+/// command) it says how to get past the prompt instead.
+fn no_terminal(label: &str, e: std::io::Error) -> LauncherError {
+    let terminal = std::fs::File::open(if cfg!(windows) { "CONIN$" } else { "/dev/tty" }).is_ok();
+    if terminal {
+        return LauncherError::io(format!("reading {label} from the terminal"))(e);
+    }
+    LauncherError::config(format!(
+        "this needs {label}, and there is no terminal to type it in. Run tokenless login in a terminal (a sign-in also confirms it is you for a few minutes), then run this again; for a credential, pass --secret-file or --web instead"
+    ))
 }
 
 async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
@@ -870,7 +949,7 @@ fn read_fields(
     if !std::io::stdin().is_terminal() {
         let [only] = fields.as_slice() else {
             return Err(LauncherError::config(format!(
-                "template '{}' has {} credential fields; run this in a terminal to be asked for each",
+                "template '{}' has {} credential fields; run this in a terminal to be asked for each, or use --secret-file or --web",
                 template.template.id,
                 fields.len()
             ))
@@ -886,7 +965,7 @@ fn read_fields(
         let value = Zeroizing::new(value.trim().to_string());
         if value.is_empty() {
             return Err(
-                LauncherError::config("standard input was empty; pipe the credential in").into(),
+                LauncherError::config("standard input was empty; pipe the credential in, or let the person enter it with --secret-file or --web").into(),
             );
         }
         out.insert(only.name.clone(), value);
@@ -919,38 +998,40 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             bundle,
             name,
             read_only,
+            secret_file,
+            web,
+            open,
+            wait,
+            no_wait,
+            json,
             server,
         } => {
-            let prompter = TerminalPrompter;
-            let client = ConsoleClient::open(&SessionStore::system(), &server, &prompter)?;
-            let template = account::pick_template(client.templates().await?, &template)?;
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                say(messages::service_prompt(
-                    &template.template.name,
-                    vault.trim(),
-                ));
-            }
-            let fields = read_fields(&template, &prompter)?;
-            let plan = AddService {
-                template_id: template.template.id.clone(),
-                name,
+            let source = match (web, secret_file) {
+                (true, _) => setup::Source::Web { open },
+                (false, Some(path)) => setup::Source::File {
+                    path: PathBuf::from(path),
+                    open,
+                },
+                (false, None) => setup::Source::Terminal,
+            };
+            setup::add_service(setup::AddArgs {
+                template,
                 vault,
                 bundle,
+                name,
                 read_only,
-            };
-            let added = client.add_service(&plan, &template, fields).await?;
-            say(messages::added_service(&messages::AddedService {
-                service: &added.credential.name,
-                vault: &added.vault.name,
-                vault_created: added.vault_created,
-                bundle: added
-                    .bundle
-                    .as_ref()
-                    .map(|(b, created)| (b.name.as_str(), *created)),
-                rule: &added.rule.name,
-            }));
-            Ok(ExitCode::SUCCESS)
+                server,
+                source,
+                wait: (!no_wait).then_some(wait),
+                json,
+            })
+            .await
         }
+        ServiceCommand::Templates {
+            query,
+            json,
+            server,
+        } => setup::templates_command(query, json, server).await,
     }
 }
 
@@ -1918,6 +1999,7 @@ async fn main() -> ExitCode {
             | Command::Login { .. }
             | Command::Logout { .. }
             | Command::Service { .. }
+            | Command::Status { .. }
             | Command::Proxy { .. }
             | Command::Update(_)
     );
@@ -1935,6 +2017,7 @@ async fn main() -> ExitCode {
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
         Command::Service { command } => service(command).await,
+        Command::Status { json, server } => setup::status_command(server, json).await,
         Command::Proxy { command } => proxy(command).await,
         Command::Session { command } => session(command, cli.verbose).await,
         Command::Run(args) => run(args, cli.verbose).await,
@@ -2051,7 +2134,10 @@ mod tests {
         let commands = suggested_commands(skill::SKILL_MD);
         for wanted in [
             "tokenless serve --data-dir ~/.tokenless",
-            "tokenless service add openai --vault personal --bundle my-agent",
+            "tokenless status --json",
+            "tokenless service templates OPENAI_API_KEY --json",
+            "tokenless service add openai --vault personal --bundle my-agent --secret-file --open",
+            "tokenless service add openai --vault personal --bundle my-agent --web --open",
             "tokenless proxy add --name laptop --state ~/.tokenless/node.json",
             "tokenless node run --state ~/.tokenless/node.json",
             "tokenless run --vault personal --bundle my-agent -- claude",

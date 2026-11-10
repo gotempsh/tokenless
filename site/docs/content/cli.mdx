@@ -8,8 +8,10 @@ description: "Every command takes --help for its full list of options."
 | Command | What it does |
 |---|---|
 | `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](./deploy.mdx). |
+| `tokenless status` | What is set up here and the command to run next. Start here. |
 | `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
+| `tokenless service templates` | Find a template by name, host or variable. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
 | `tokenless admin reset-password` | On the server's host: replace a lost password. |
 | `tokenless admin rotate-root-key` | On the server's host: replace the root key. |
@@ -51,9 +53,32 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 | `--bundle` | | Access bundle to add the rule to, created when missing |
 | `--name` | the template's ID | Credential name |
 | `--read-only` | | Rule allows only `GET` and `HEAD` |
+| `--secret-file [PATH]` | `~/.tokenless/incoming/<template>` | Wait for the credential to be saved in this file (created, mode 0600); delete it once the credential is stored, keep it if storing fails; a file that was already there is never deleted otherwise |
+| `--web` | | Print the console page that adds it and wait until it is saved there. Not with `--name` or `--read-only` |
+| `--open` | | Open the page in the browser, or the file in the text editor |
+| `--wait` | `15m` | How long `--secret-file` and `--web` wait |
+| `--no-wait` | | With `--web`, only print the page |
+| `--json` | | Print the service, vault and the bundle it joined (`null` if none) as JSON |
 
 The template is matched by ID or name. A single-field credential can be
-piped in on standard input.
+piped in on standard input. See
+[Without typing the key here](./terminal.mdx#without-typing-the-key-here).
+
+## `service templates [query]`
+
+Lists the templates whose ID, name, alias, host or variable (`OPENAI_API_KEY`)
+matches, best first; all of them without a query. Signed in, it lists the
+control plane's templates, imported ones included; otherwise the built-in
+ones. `--json` adds each template's fields. Exits 1 when nothing matches.
+
+## `status`
+
+| Option | Default | |
+|---|---|---|
+| `--server` | `http://127.0.0.1:8080` | The control plane to check |
+| `--json` | | The report as JSON: `ready`, each check's `state` and `fix`, and `next` |
+
+Exits 0 when agents can be started behind tokenless, 1 otherwise.
 
 ## `proxy add`
 
