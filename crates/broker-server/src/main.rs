@@ -922,14 +922,12 @@ fn offer_skill() {
         &mut std::io::stderr(),
     ) {
         Ok(true) => {
-            let claude_code = skill::Agent::ClaudeCode.set_up(&home);
-            match skill::install_for_agents(&home, claude_code, false, false) {
-                Ok(placed) => {
-                    for p in placed {
-                        say(skill_installed(&p));
-                    }
-                }
-                Err(e) => say(format_args!("the skill was not installed: {e}")),
+            let (placed, failed) = skill::install_offered(&home, &agents);
+            for p in &placed {
+                say(skill_installed(p));
+            }
+            if let Some(e) = failed {
+                say(format_args!("the skill was not installed everywhere: {e}"));
             }
         }
         Ok(false) => say("skipped; install it later with: tokenless skill --install"),
@@ -1926,7 +1924,15 @@ fn skill_command(
             // this project.
             let claude_code = home_dir().is_some_and(|h| skill::Agent::ClaudeCode.set_up(&h))
                 || (project && base.join(".claude").is_dir());
-            skill::install_for_agents(&base, claude_code, copy, force)?
+            let (placed, failed) = skill::install_for_agents(&base, claude_code, copy, force);
+            // What was placed before a failure is still reported.
+            for p in &placed {
+                say(skill_installed(p));
+            }
+            return match failed {
+                Some(e) => Err(e.into()),
+                None => Ok(ExitCode::SUCCESS),
+            };
         }
     };
     for p in placed {
