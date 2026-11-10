@@ -39,6 +39,61 @@ fn any_value_of_the_skill_hint_setting_lets_run_start() {
     }
 }
 
+/// `serve` shuts down on SIGTERM, which `docker stop` and systemd send,
+/// instead of dying at once: its shutdown runs, and the telemetry still
+/// queued is sent.
+#[cfg(unix)]
+#[test]
+fn serve_shuts_down_on_sigterm() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let data = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .arg("serve")
+        .arg("--data-dir")
+        .arg(data.path())
+        .args([
+            "--api-listen",
+            "127.0.0.1:0",
+            "--node-listen",
+            "127.0.0.1:0",
+        ])
+        .env_clear()
+        .env("HOME", data.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id().to_string();
+    // A serve that never stops fails the test rather than hanging it.
+    let watchdog = pid.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = Command::new("kill").args(["-KILL", &watchdog]).status();
+    });
+    let mut lines = BufReader::new(child.stdout.take().unwrap())
+        .lines()
+        .map_while(Result::ok);
+    assert!(
+        lines.any(|l| l.contains("server started")),
+        "serve did not start"
+    );
+    assert!(Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap()
+        .success());
+    let rest: Vec<String> = lines.collect();
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status:?}: {rest:?}");
+    assert!(
+        rest.iter()
+            .any(|l| l.contains("shutting down") && l.contains("SIGTERM")),
+        "{rest:?}"
+    );
+}
+
 /// `tokenless update` stopped mid-download by SIGTERM (systemd stopping the
 /// update's unit) leaves nothing next to the binary.
 #[cfg(unix)]

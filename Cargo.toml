@@ -74,6 +74,17 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
+# OpenTelemetry: logs and metrics over OTLP/HTTP, configured by the
+# standard OTEL_* variables. HTTP only (no gRPC, so no tonic), and no HTTP
+# client of its own: exports go through the server's reqwest and rustls.
+opentelemetry = { version = "0.33", default-features = false, features = ["logs", "metrics", "internal-logs"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["logs", "metrics", "internal-logs"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["logs", "metrics", "http-proto", "http-json", "gzip-http", "internal-logs"] }
+opentelemetry-http = { version = "0.33", default-features = false, features = ["internal-logs"] }
+opentelemetry-appender-tracing = "0.33"
+# Tests only: decoding what the exporter sends.
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "metrics"] }
+prost = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
