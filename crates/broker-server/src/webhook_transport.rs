@@ -53,10 +53,10 @@ impl HttpWebhookTransport {
 /// full URL, and a receiver's path or query may hold an ingest token. Its
 /// message names only the kind of failure, so the causes beneath it follow:
 /// a refused port, a failed lookup and an untrusted certificate read
-/// differently.
-fn describe(e: reqwest::Error) -> String {
+/// differently. `timeout` is the client's, for a request that timed out.
+pub(crate) fn describe(e: reqwest::Error, timeout: Duration) -> String {
     if e.is_timeout() {
-        return format!("no answer within {}s", TIMEOUT.as_secs());
+        return format!("no answer within {}s", timeout.as_secs());
     }
     let e = e.without_url();
     let mut reason = if e.is_connect() {
@@ -86,7 +86,10 @@ impl WebhookTransport for HttpWebhookTransport {
         for (name, value) in &request.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let mut response = builder.send().await.map_err(|e| fail(describe(e)))?;
+        let mut response = builder
+            .send()
+            .await
+            .map_err(|e| fail(describe(e, TIMEOUT)))?;
         let status = response.status().as_u16();
         // Read a little of the reply so a keep-alive connection can be
         // reused, then stop: a receiver cannot make us buffer more.

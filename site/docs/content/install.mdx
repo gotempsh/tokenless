@@ -27,6 +27,26 @@ Check it:
 tokenless --version
 ```
 
+## Update
+
+```sh
+tokenless update
+```
+
+It replaces the binary it runs from with the latest release, checked like
+the install script checks it: against `SHA256SUMS`, and the signature too
+when cosign is installed (`--require-signature` refuses to update without
+it). The new binary is unpacked next to the old one and run with
+`--version` before it takes its place, so a failed download or check leaves
+the old one as it was. Run it as the user that owns the binary, such as
+with `sudo` for `/usr/local/bin`.
+
+`serve` and `node run` keep running the old version until you restart
+them. `tokenless update --check` only says whether a newer release exists,
+and `--release v0.2.0` installs a given release, even an older one. To
+update on a schedule, see [Deploy → Automatic updates](./deploy.mdx#automatic-updates).
+In the container image, pull the new tag instead.
+
 ## Download a release yourself
 
 Each [release](https://github.com/gotempsh/tokenless/releases) has one

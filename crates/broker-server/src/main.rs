@@ -25,6 +25,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
+use broker_server::update::{self, Outcome as UpdateOutcome, UpdateError};
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use messages::{detail, say};
@@ -140,6 +141,31 @@ enum Command {
         #[arg(long, requires = "install")]
         force: bool,
     },
+    /// Replace this binary with the latest release, checked against the
+    /// release's SHA256SUMS (and its signature, when cosign is installed).
+    /// Running servers and proxies keep the old version until restarted.
+    Update(UpdateArgs),
+}
+
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// Only say whether a newer release exists. Exits 10 when one does,
+    /// 0 when this is the latest.
+    #[arg(long)]
+    check: bool,
+    /// Install this release, such as v0.3.0, instead of the latest; even
+    /// an older one.
+    #[arg(long)]
+    release: Option<String>,
+    /// Refuse to update unless cosign verifies the release's signature.
+    #[arg(long)]
+    require_signature: bool,
+    /// GitHub repository the releases come from.
+    #[arg(long, env = "TOKENLESS_REPO", default_value = update::DEFAULT_REPO)]
+    repo: String,
+    /// Base URL holding the release files instead of GitHub, for mirrors.
+    #[arg(long, env = "TOKENLESS_DOWNLOAD_URL")]
+    download_url: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -555,6 +581,8 @@ enum CliError {
     DataPlane(#[from] tokenless_dataplane::DataPlaneError),
     #[error(transparent)]
     Launcher(#[from] LauncherError),
+    #[error(transparent)]
+    Update(#[from] UpdateError),
     #[error("I/O failure while {context}: {source}")]
     Io {
         context: String,
@@ -1709,6 +1737,70 @@ fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--check` exits with this when a newer release exists.
+const UPDATE_AVAILABLE: u8 = 10;
+
+async fn update_command(args: UpdateArgs) -> Result<ExitCode, CliError> {
+    let image = std::env::var(update::CONTAINER_IMAGE_ENV).ok();
+    if let (Some(image), false) = (image, args.check) {
+        return Err(UpdateError::Container { image }.into());
+    }
+    let installed = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map_err(|e| CliError::Io {
+            context: "finding this binary".into(),
+            source: e,
+        })?;
+    let current = update::parse_tag(env!("CARGO_PKG_VERSION"))?;
+    let options = update::Options {
+        mirror: args.download_url,
+        wanted: match args.release {
+            Some(tag) => update::Wanted::Release(tag),
+            None => update::Wanted::Latest,
+        },
+        check_only: args.check,
+        cosign: update::find_on_path("cosign"),
+        require_signature: args.require_signature,
+        ..update::Options::new(args.repo)
+    };
+    match update::update(&options, &installed, &current).await? {
+        UpdateOutcome::UpToDate { current, latest } if latest < current => {
+            say(format_args!(
+                "this is {current}, newer than the latest release {latest}"
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
+        UpdateOutcome::UpToDate { current, .. } => {
+            say(format_args!("{current} is the latest release"));
+            Ok(ExitCode::SUCCESS)
+        }
+        UpdateOutcome::Available { current, latest } => {
+            say(format_args!(
+                "{latest} is available (this is {current}); update with: tokenless update"
+            ));
+            Ok(ExitCode::from(UPDATE_AVAILABLE))
+        }
+        UpdateOutcome::Updated {
+            path,
+            from,
+            to,
+            signature_verified,
+        } => {
+            let checked = if signature_verified {
+                "checksum and signature verified"
+            } else {
+                "checksum verified; install cosign to also verify the signature"
+            };
+            say(format_args!(
+                "updated {} from {from} to {to} ({checked})",
+                path.display()
+            ));
+            say("restart tokenless serve and tokenless node run to use it");
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -1723,6 +1815,7 @@ async fn main() -> ExitCode {
             | Command::Logout { .. }
             | Command::Service { .. }
             | Command::Proxy { .. }
+            | Command::Update(_)
     );
     init_logging(agent_side);
     let result = match cli.command {
@@ -1741,6 +1834,7 @@ async fn main() -> ExitCode {
             dir,
             force,
         } => skill_command(install, dir, force),
+        Command::Update(args) => update_command(args).await,
     };
     match result {
         Ok(code) => code,
