@@ -210,10 +210,60 @@ them, by design.
 
 Replace the binary (or the image tag) and restart. Database migrations run
 on start. The console is part of the binary, so it upgrades with it.
+`tokenless update` replaces the binary with the latest release; see
+[Install → Update](./install.mdx#update).
 Upgrade the control plane before the proxies. A proxy older than the
 control plane keeps working, but it does not use a service that needs a
 newer proxy (for now, one whose secret has an expiry date, or a rule
 with a Git scope) until it is upgraded; the control plane logs a warning naming that proxy.
+
+### Automatic updates
+
+On the control plane, a systemd timer can check for a release every day,
+and update and restart only when there is one:
+
+```ini
+# /etc/systemd/system/tokenless-update.service
+[Unit]
+Description=Update tokenless to the latest release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --check exits 10 when a newer release exists, 0 when there is none.
+# systemd expands $, so the shell's own are written $$.
+ExecStart=/bin/sh -c '/usr/local/bin/tokenless update --check; s=$$?; \
+  [ "$$s" -eq 10 ] || exit "$$s"; \
+  /usr/local/bin/tokenless update && systemctl restart tokenless.service'
+```
+
+```ini
+# /etc/systemd/system/tokenless-update.timer
+[Timer]
+OnCalendar=*-*-* 03:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl enable --now tokenless-update.timer
+```
+
+It runs as root, which can replace `/usr/local/bin/tokenless`; the service
+itself still runs as `tokenless`. A failed check or update fails the unit,
+so `systemctl status tokenless-update` shows why.
+
+Don't put proxies on the same timer: each host installs whatever release
+is newest when its timer fires, so a release published between two runs
+would reach the proxies before the control plane. Update a proxy once the
+control plane runs the new version, to that version: `tokenless --version`
+on the control plane names it, and `tokenless update --release v0.3.0`
+installs it on the proxy. Then restart the proxy's service; it lets open
+tunnels finish for `--drain-secs` first.
 
 **Upgrading past the removal of `session_issuer` keys.** API keys with
 the `session_issuer` role are deleted on upgrade, and whatever used one

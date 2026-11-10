@@ -13,6 +13,7 @@ pub mod oidc_transport;
 pub mod probe;
 pub mod root_key;
 pub mod store;
+pub mod update;
 pub mod webhook_transport;
 
 use std::net::SocketAddr;
