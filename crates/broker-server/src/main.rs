@@ -2052,7 +2052,8 @@ mod tests {
         for wanted in [
             "tokenless serve --data-dir ~/.tokenless",
             "tokenless service add openai --vault personal --bundle my-agent",
-            "tokenless proxy add --name laptop",
+            "tokenless proxy add --name laptop --state ~/.tokenless/node.json",
+            "tokenless node run --state ~/.tokenless/node.json",
             "tokenless run --vault personal --bundle my-agent -- claude",
         ] {
             assert!(
@@ -2073,6 +2074,36 @@ mod tests {
             if *whole || unknown {
                 panic!("the skill suggests `{command}`, which does not parse:\n{e}");
             }
+        }
+    }
+
+    #[test]
+    fn the_skill_keeps_keys_and_identities_out_of_the_project() {
+        // The skill's setup runs in the user's project, where `./data` and
+        // `./node.json` (the root key, the proxy's private keys) would sit
+        // one `git add .` away from a commit. Every command that writes one
+        // names a path in the home directory.
+        let outside = |path: &std::path::Path| path.starts_with("~/") || path.is_absolute();
+        for (command, whole) in suggested_commands(skill::SKILL_MD) {
+            let Ok(cli) = Cli::try_parse_from(command.split_whitespace()) else {
+                continue;
+            };
+            let written = match &cli.command {
+                Command::Serve(args) => &args.data_dir,
+                Command::Proxy {
+                    command: ProxyCommand::Add { state, .. },
+                }
+                | Command::Node {
+                    command: NodeCommand::Join { state, .. } | NodeCommand::Run { state, .. },
+                } => state,
+                _ => continue,
+            };
+            assert!(whole, "`{command}` is only named, never shown in full");
+            assert!(
+                outside(written),
+                "the skill suggests `{command}`, which writes {} in the project",
+                written.display()
+            );
         }
     }
 

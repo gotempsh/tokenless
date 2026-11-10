@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "fumadocs-mdx && next build && bun scripts/markdown-files.mjs",
     "typecheck": "fumadocs-mdx && tsc --noEmit",
-    "test": "bun test scripts lib",
+    "test": "bun test scripts lib components",
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {

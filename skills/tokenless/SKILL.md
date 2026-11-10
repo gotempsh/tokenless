@@ -226,11 +226,13 @@ of their own:
    the profile); a tool that insists on the variable gets a dummy value
    (`OPENAI_API_KEY=tokenless`), as in section 2.
 
-4. **Start a proxy**, once per machine:
+4. **Start a proxy**, once per machine. Its identity file holds the
+   proxy's private keys, and both commands default to `./node.json`, the
+   project you are in, so always pass a `--state` outside it:
 
    ```sh
-   tokenless proxy add --name laptop
-   tokenless node run       # kept running in a terminal
+   tokenless proxy add --name laptop --state ~/.tokenless/node.json
+   tokenless node run --state ~/.tokenless/node.json   # kept running in a terminal
    ```
 
 5. **Use it.** Signed in, you can run a command behind the bundle
