@@ -10,3 +10,8 @@ version = 1
 path = ["docs/content/screenshots/*.png", "docs/content/meta.json", "docs/content/console/meta.json", "docs/package.json", "docs/bun.lock", "docs/tsconfig.json"]
 SPDX-FileCopyrightText = "2026 tokenless contributors"
 SPDX-License-Identifier = "MIT OR Apache-2.0"
+
+[[annotations]]
+path = "docs/components/harness-logos.NOTICE.md"
+SPDX-FileCopyrightText = "2023 LobeHub"
+SPDX-License-Identifier = "MIT"
