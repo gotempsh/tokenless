@@ -237,3 +237,47 @@ Logs are JSON lines on stdout. Set `RUST_LOG` to change the level, for
 example `RUST_LOG=debug`. Proxies expose Prometheus metrics with
 `node run --metrics-listen 127.0.0.1:9090`. Every change, injection and
 refusal is also in the **Audit log**.
+
+### OpenTelemetry
+
+`serve` and `node run` also send their logs, and proxies their metrics, to
+an OpenTelemetry Collector or any provider that accepts OTLP over HTTP.
+Set the standard variables:
+
+```sh
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com:4318
+export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <ingest token>"
+export OTEL_RESOURCE_ATTRIBUTES="deployment.environment.name=production,team=platform"
+tokenless node run
+```
+
+Nothing is sent until an endpoint is set. On start, the log says where
+logs and metrics are going, or which setting it ignored and why.
+
+| Variable | What it does |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Where to send, such as `http://localhost:4318`. Logs go to `/v1/logs`, metrics to `/v1/metrics`. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Send only that signal, or send it somewhere else. The full URL, path included. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers for every export, such as an API key: `key=value,key2=value2`. Never logged. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Tags on everything sent: `key=value,key2=value2`, with `%2C` for a comma inside a value. |
+| `OTEL_SERVICE_NAME` | The service name. By default `tokenless` for `serve` and `tokenless-proxy` for `node run`. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` (the default) or `http/json`. gRPC is not supported: use the collector's HTTP port, 4318. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | A PEM file of CAs to trust for the collector's certificate, besides the public ones. |
+| `OTEL_EXPORTER_OTLP_COMPRESSION` | `gzip` compresses exports. `zstd` is not built in. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | How long an export may take, in milliseconds (10000). |
+| `OTEL_METRIC_EXPORT_INTERVAL` | How often proxies send their metrics, in milliseconds (60000). |
+| `OTEL_LOGS_EXPORTER`, `OTEL_METRICS_EXPORTER` | `none` turns one signal off; `otlp` turns it on, to `http://localhost:4318` if no endpoint is set. |
+| `OTEL_SDK_DISABLED` | `true` sends nothing. |
+
+The signal-specific `_HEADERS`, `_PROTOCOL`, `_TIMEOUT` and `_COMPRESSION`
+variables and `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE` work as
+their specification says.
+
+Every log line `RUST_LOG` lets through is sent, with its fields as
+attributes. A proxy's metrics are the Prometheus counters, named
+`tokenless.proxy.<name>` without the `_total` (such as
+`tokenless.proxy.requests_injected`), and tagged with the proxy's node ID
+as `service.instance.id`. Telemetry waits in a bounded queue: a slow or
+unreachable collector drops telemetry, and never slows the traffic. The
+first admin's password is printed to the terminal, not the log, so it is
+never sent.

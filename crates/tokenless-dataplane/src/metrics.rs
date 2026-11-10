@@ -14,14 +14,10 @@ macro_rules! metrics {
         }
 
         impl Metrics {
-            pub fn render(&self) -> String {
-                let mut out = String::new();
-                $(
-                    let _ = writeln!(out, "# HELP broker_dataplane_{} {}", stringify!($name), $help);
-                    let _ = writeln!(out, "# TYPE broker_dataplane_{} counter", stringify!($name));
-                    let _ = writeln!(out, "broker_dataplane_{} {}", stringify!($name), self.$name.load(Ordering::Relaxed));
-                )*
-                out
+            /// Every counter, in a fixed order, for exporters other than
+            /// [`Metrics::render`].
+            pub fn counters(&self) -> Vec<Counter<'_>> {
+                vec![$(Counter { name: stringify!($name), help: $help, value: &self.$name },)*]
             }
         }
     };
@@ -49,7 +45,31 @@ metrics! {
     gateway_auth_failures_total: "MCP gateway requests refused with 401 (missing, invalid, expired or revoked session)",
 }
 
+/// One counter: its name (without the `broker_dataplane_` prefix the
+/// Prometheus endpoint adds), what it counts, and its live value.
+pub struct Counter<'a> {
+    pub name: &'static str,
+    pub help: &'static str,
+    pub value: &'a AtomicU64,
+}
+
+impl Counter<'_> {
+    pub fn get(&self) -> u64 {
+        self.value.load(Ordering::Relaxed)
+    }
+}
+
 impl Metrics {
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        for c in self.counters() {
+            let _ = writeln!(out, "# HELP broker_dataplane_{} {}", c.name, c.help);
+            let _ = writeln!(out, "# TYPE broker_dataplane_{} counter", c.name);
+            let _ = writeln!(out, "broker_dataplane_{} {}", c.name, c.get());
+        }
+        out
+    }
+
     pub fn inc(counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -70,5 +90,20 @@ mod tests {
         let text = m.render();
         assert!(text.contains("broker_dataplane_audit_dropped_total 1"));
         assert!(text.contains("# TYPE broker_dataplane_requests_injected_total counter"));
+    }
+
+    #[test]
+    fn counters_list_every_counter_with_its_live_value() {
+        let m = Metrics::default();
+        Metrics::add(&m.requests_injected_total, 3);
+        let counters = m.counters();
+        assert_eq!(counters.len(), m.render().matches("# TYPE").count());
+        let injected = counters
+            .iter()
+            .find(|c| c.name == "requests_injected_total")
+            .unwrap();
+        assert_eq!(injected.get(), 3);
+        Metrics::inc(&m.requests_injected_total);
+        assert_eq!(injected.get(), 4, "a counter reads the live value");
     }
 }

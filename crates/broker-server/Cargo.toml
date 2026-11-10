@@ -32,6 +32,11 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 keyring.workspace = true
+opentelemetry.workspace = true
+opentelemetry-appender-tracing.workspace = true
+opentelemetry-http.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 rand.workspace = true
 rpassword.workspace = true
 reqwest.workspace = true
@@ -55,6 +60,8 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+opentelemetry-proto.workspace = true
+prost.workspace = true
 tokenless-auth = { workspace = true, features = ["test-signing"] }
 tokenless-conformance.workspace = true
 rcgen.workspace = true

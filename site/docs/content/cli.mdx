@@ -39,6 +39,9 @@ description: "Every command takes --help for its full list of options."
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
 
+`serve` sends its logs to OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT`
+is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
+
 ## `service add <template>`
 
 | Option | Default | |
@@ -78,6 +81,10 @@ piped in on standard input.
 | `--upstream-ca` | | Extra CAs for upstream TLS (repeatable) |
 | `--no-public-roots` | | Trust only `--upstream-ca` |
 | `--drain-secs` | `30` | On Ctrl-C or SIGTERM, how long open tunnels get to finish before they are cut |
+
+`node run` sends its logs and metrics to OpenTelemetry when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set. See
+[Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 
 ## Client commands
 

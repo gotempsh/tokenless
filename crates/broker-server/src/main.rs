@@ -25,6 +25,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
+use broker_server::telemetry::{Component, Settings as TelemetrySettings, Telemetry};
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use messages::{detail, say};
@@ -32,7 +33,10 @@ use serde::Serialize;
 use tokenless_dataplane::node::{enroll, NodeIdentity};
 use tokenless_dataplane::{DataPlane, DataPlaneConfig};
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
 mod messages;
@@ -532,18 +536,66 @@ enum NodeCommand {
 }
 
 /// Servers log to stdout at `info`. Agent-side commands log to stderr at
-/// `warn`, because stdout belongs to the token or to the agent.
-fn init_logging(agent_side: bool) {
+/// `warn`, because stdout belongs to the token or to the agent. When
+/// `telemetry` sends logs, the same events also go to OpenTelemetry.
+fn init_logging(agent_side: bool, telemetry: &Telemetry) {
     let default = if agent_side { "warn" } else { "info" };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
-    let builder = tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(filter)
-        .with_current_span(false);
-    if agent_side {
-        builder.with_writer(std::io::stderr).init();
+    let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
+    let writer = if agent_side {
+        BoxMakeWriter::new(std::io::stderr)
     } else {
-        builder.init();
+        BoxMakeWriter::new(std::io::stdout)
+    };
+    let stdout = tracing_subscriber::fmt::layer()
+        .json()
+        .with_current_span(false)
+        .with_writer(writer)
+        .with_filter(filter());
+    tracing_subscriber::registry()
+        .with(stdout)
+        .with(telemetry.log_layer(filter()))
+        .init();
+}
+
+/// Starts OpenTelemetry export for the server commands, from the `OTEL_*`
+/// variables. Agent-side commands send nothing. A setup failure is
+/// returned to be logged once logging is up; the server runs without it.
+fn start_telemetry(command: &Command) -> (Telemetry, TelemetrySettings, Option<String>) {
+    let node_id;
+    let component = match command {
+        Command::Serve(_) => Component::ControlPlane,
+        Command::Node {
+            command: NodeCommand::Run { state, .. },
+        } => {
+            node_id = NodeIdentity::load(state)
+                .ok()
+                .map(|i| i.node_id.to_string());
+            Component::Proxy {
+                node_id: node_id.as_deref(),
+            }
+        }
+        _ => return (Telemetry::default(), TelemetrySettings::default(), None),
+    };
+    let settings = TelemetrySettings::from_process_env();
+    match Telemetry::start(&settings, component) {
+        Ok(telemetry) => (telemetry, settings, None),
+        Err(e) => (Telemetry::default(), settings, Some(e.to_string())),
+    }
+}
+
+/// Says what the `OTEL_*` variables turned on, and what was ignored.
+fn report_telemetry(telemetry: &Telemetry, settings: &TelemetrySettings, failed: Option<String>) {
+    for ignored in &settings.ignored {
+        warn!(setting = %ignored, "OpenTelemetry setting ignored");
+    }
+    if let Some(error) = failed {
+        error!(%error, "OpenTelemetry export is off: it could not be set up");
+    }
+    if telemetry.sends_logs() {
+        info!(endpoint = %settings.logs_to, "sending logs to OpenTelemetry");
+    }
+    if telemetry.sends_metrics() {
+        info!(endpoint = %settings.metrics_to, "sending proxy metrics to OpenTelemetry");
     }
 }
 
@@ -939,7 +991,7 @@ async fn admin(command: AdminCommand) -> Result<(), CliError> {
     }
 }
 
-async fn node(command: NodeCommand) -> Result<(), CliError> {
+async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<(), CliError> {
     match command {
         NodeCommand::Join {
             control_url,
@@ -975,6 +1027,7 @@ async fn node(command: NodeCommand) -> Result<(), CliError> {
                 ..DataPlaneConfig::default()
             };
             let dp = DataPlane::start(config, identity).await?;
+            telemetry.watch_proxy(dp.metrics());
             let signal = stop_signal().await?;
             info!(signal, drain_secs, "shutting down; open tunnels may finish");
             let report = tokio::select! {
@@ -1724,10 +1777,12 @@ async fn main() -> ExitCode {
             | Command::Service { .. }
             | Command::Proxy { .. }
     );
-    init_logging(agent_side);
+    let (telemetry, settings, failed) = start_telemetry(&cli.command);
+    init_logging(agent_side, &telemetry);
+    report_telemetry(&telemetry, &settings, failed);
     let result = match cli.command {
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
-        Command::Node { command } => node(command).await.map(|()| ExitCode::SUCCESS),
+        Command::Node { command } => node(command, &telemetry).await.map(|()| ExitCode::SUCCESS),
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
@@ -1742,7 +1797,7 @@ async fn main() -> ExitCode {
             force,
         } => skill_command(install, dir, force),
     };
-    match result {
+    let code = match result {
         Ok(code) => code,
         Err(e) => {
             if agent_side {
@@ -1752,7 +1807,9 @@ async fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
-    }
+    };
+    telemetry.shutdown().await;
+    code
 }
 
 #[cfg(test)]
