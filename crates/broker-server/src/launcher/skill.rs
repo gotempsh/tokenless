@@ -21,6 +21,8 @@ pub enum Installed {
     Linked,
     Unchanged,
     Replaced,
+    /// Another version was already there and is left as it is.
+    Kept,
 }
 
 /// The agents whose skills folder differs, as `npx skills` lays them out:
@@ -140,31 +142,60 @@ pub struct Placed {
 /// be made. Anything else already in either place is only replaced with
 /// `force`.
 ///
-/// Returns what was placed even when a later step failed, with that
-/// failure: the shared copy stays installed when Claude Code's folder
-/// cannot be touched.
+/// Returns what was placed with every failure, so a copy written before a
+/// failure is still reported. Another version of the shared copy (one from
+/// `npx skills`, say) is kept without `force`, and Claude Code is still
+/// linked to it: any version works.
 pub fn install_for_agents(
     base: &Path,
     claude_code: bool,
     copy: bool,
     force: bool,
-) -> (Vec<Placed>, Option<LauncherError>) {
-    let (path, outcome) = match install(&Agent::Codex.skills_dir(base), force) {
-        Ok(done) => done,
-        Err(e) => return (Vec::new(), Some(e)),
-    };
-    let mut placed = vec![Placed {
-        agents: "Codex and other agents",
-        path,
-        outcome,
-    }];
+) -> (Vec<Placed>, Vec<LauncherError>) {
+    place(base, claude_code, copy, force, false)
+}
+
+/// [`install_for_agents`]; `keep_shared` keeps another version of the
+/// shared copy without calling it a failure, for when it was not asked
+/// about.
+fn place(
+    base: &Path,
+    claude_code: bool,
+    copy: bool,
+    force: bool,
+    keep_shared: bool,
+) -> (Vec<Placed>, Vec<LauncherError>) {
+    const SHARED: &str = "Codex and other agents";
+    let skills = Agent::Codex.skills_dir(base);
+    let path = skills.join(SKILL_NAME).join("SKILL.md");
+    let other_version = !force && std::fs::read_to_string(&path).is_ok_and(|c| c != SKILL_MD);
+    let mut placed = Vec::new();
+    let mut failed = Vec::new();
+    if other_version && keep_shared {
+        placed.push(Placed {
+            agents: SHARED,
+            path,
+            outcome: Installed::Kept,
+        });
+    } else {
+        match install(&skills, force) {
+            Ok((path, outcome)) => placed.push(Placed {
+                agents: SHARED,
+                path,
+                outcome,
+            }),
+            // It stays, and Claude Code can still be linked to it.
+            Err(e) if other_version => failed.push(e),
+            Err(e) => return (placed, vec![e]),
+        }
+    }
     if claude_code {
         match place_for_claude_code(base, copy, force) {
             Ok(p) => placed.push(p),
-            Err(e) => return (placed, Some(e)),
+            Err(e) => failed.push(e),
         }
     }
-    (placed, None)
+    (placed, failed)
 }
 
 /// What is at Claude Code's skill folder before installing.
@@ -253,7 +284,7 @@ fn place_for_claude_code(base: &Path, copy: bool, force: bool) -> Result<Placed,
         }
         (Existing::Other, _) if !force => {
             return Err(LauncherError::config(format!(
-                "{} already exists and is not this version's skill; pass --force to replace it",
+                "{} already exists and is not this version's skill (an earlier release's, or one with local edits); pass --force to replace it",
                 link.display()
             )))
         }
@@ -358,10 +389,18 @@ pub fn install_offer(cwd: &Path, home: Option<&Path>) -> Vec<Agent> {
 }
 
 /// Installs the skill in `home` for the `agents` [`install_offer`] asked
-/// about and nothing else: a copy Claude Code already has, in any
-/// version, is left as it is.
-pub fn install_offered(home: &Path, agents: &[Agent]) -> (Vec<Placed>, Option<LauncherError>) {
-    install_for_agents(home, agents.contains(&Agent::ClaudeCode), false, false)
+/// about and nothing else: a copy an agent already has, in any version,
+/// is left as it is.
+pub fn install_offered(home: &Path, agents: &[Agent]) -> (Vec<Placed>, Vec<LauncherError>) {
+    // Without Codex in the offer, another version of the shared copy is
+    // what Codex already reads, so Claude Code is linked to it as it is.
+    place(
+        home,
+        agents.contains(&Agent::ClaudeCode),
+        false,
+        false,
+        !agents.contains(&Agent::Codex),
+    )
 }
 
 /// Reads a yes/no answer to `question` from `input`, writing the question
@@ -393,7 +432,7 @@ mod tests {
     /// [`install_for_agents`], which must place everything it is asked to.
     fn installed(base: &Path, claude_code: bool, copy: bool, force: bool) -> Vec<Placed> {
         let (placed, e) = install_for_agents(base, claude_code, copy, force);
-        assert!(e.is_none(), "{e:?} after {placed:?}");
+        assert!(e.is_empty(), "{e:?} after {placed:?}");
         placed
     }
 
@@ -409,11 +448,59 @@ mod tests {
         assert_eq!(offered, vec![Agent::Codex]);
 
         let (placed, e) = install_offered(home, &offered);
-        assert!(e.is_none(), "{e:?}");
+        assert!(e.is_empty(), "{e:?}");
         assert_eq!(placed.len(), 1, "{placed:?}");
         assert_eq!(placed[0].outcome, Installed::Created);
         assert_eq!(std::fs::read_to_string(&old).unwrap(), "an older version");
         assert!(install_offer(home, Some(home)).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn another_shared_version_is_kept_and_claude_code_is_linked_to_it() {
+        // `npx skills add` without Claude Code picked, or an older release,
+        // left another version where Codex reads it.
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let shared = home.join(".agents/skills/tokenless/SKILL.md");
+        let link = home.join(".claude/skills/tokenless");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, "from npx skills").unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+
+        // Login offers it for Claude Code only, and accepting keeps
+        // Codex's copy and links Claude Code to it.
+        let offered = install_offer(home, Some(home));
+        assert_eq!(offered, vec![Agent::ClaudeCode]);
+        let (placed, e) = install_offered(home, &offered);
+        assert!(e.is_empty(), "{e:?}");
+        assert_eq!(placed[0].outcome, Installed::Kept);
+        assert_eq!(placed[1].outcome, Installed::Linked);
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "from npx skills");
+        assert_eq!(
+            std::fs::read_to_string(link.join("SKILL.md")).unwrap(),
+            "from npx skills"
+        );
+        assert!(install_offer(home, Some(home)).is_empty());
+
+        // `skill --install` says the shared copy differs, and links anyway.
+        std::fs::remove_file(&link).unwrap();
+        let (placed, e) = install_for_agents(home, true, false, false);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert!(e[0].to_string().contains("--force"), "{}", e[0]);
+        assert_eq!(placed.len(), 1, "{placed:?}");
+        assert_eq!(placed[0].outcome, Installed::Linked);
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "from npx skills");
+
+        // --force brings both to this version.
+        let placed = installed(home, true, false, true);
+        assert_eq!(placed[0].outcome, Installed::Replaced);
+        assert_eq!(placed[1].outcome, Installed::Unchanged);
+        assert_eq!(
+            std::fs::read_to_string(link.join("SKILL.md")).unwrap(),
+            SKILL_MD
+        );
     }
 
     #[cfg(unix)]
@@ -581,7 +668,8 @@ mod tests {
         std::fs::create_dir_all(&link).unwrap();
         std::fs::write(link.join("SKILL.md"), "my edits").unwrap();
         let (placed, e) = install_for_agents(home, true, false, false);
-        let e = e.unwrap().to_string();
+        assert_eq!(e.len(), 1, "{e:?}");
+        let e = e[0].to_string();
         assert!(e.contains("--force"), "{e}");
         // The shared copy is still reported, so the user knows Codex has it.
         assert_eq!(placed.len(), 1, "{placed:?}");

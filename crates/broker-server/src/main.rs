@@ -926,7 +926,7 @@ fn offer_skill() {
             for p in &placed {
                 say(skill_installed(p));
             }
-            if let Some(e) = failed {
+            for e in failed {
                 say(format_args!("the skill was not installed everywhere: {e}"));
             }
         }
@@ -1929,10 +1929,14 @@ fn skill_command(
             for p in &placed {
                 say(skill_installed(p));
             }
-            return match failed {
-                Some(e) => Err(e.into()),
-                None => Ok(ExitCode::SUCCESS),
-            };
+            for e in &failed {
+                say(e);
+            }
+            return Ok(if failed.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
         }
     };
     for p in placed {
@@ -1947,6 +1951,7 @@ fn skill_installed(p: &skill::Placed) -> String {
         skill::Installed::Linked => "linked",
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
+        skill::Installed::Kept => "left as it is",
     };
     format!("skill {what} at {} ({})", p.path.display(), p.agents)
 }
