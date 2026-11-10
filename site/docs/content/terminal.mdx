@@ -13,10 +13,14 @@ console: sign in, add a service and enrol a proxy.
 tokenless status
 ```
 
-It checks the control plane, your sign-in, the services, the proxy and the
-agent skill, and ends with the one command to run next. It exits 0 once
-agents can be started behind tokenless, 1 before. `--json` gives an agent
-the same report, with `next` holding that command.
+It checks the control plane, your sign-in, the services, the access bundle
+a session is started from, the proxy and the agent skill, and ends with
+the one command to run next: once everything is ready, the `tokenless run`
+that starts an agent, with the skill listed as optional. A step with no
+command to run (a service in no bundle, which you fix on the vault's page)
+is named instead. It exits 0 once agents can be started behind tokenless,
+1 before. `--json` gives an agent the same report, with `next` holding
+that command (`null` when there is none).
 
 ## Sign in
 

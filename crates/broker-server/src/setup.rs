@@ -22,13 +22,16 @@ use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 
 use super::messages::{self, say};
-use super::{home_dir, read_fields, stop_signal, CliError, TerminalPrompter};
+use super::{home_dir, read_fields, CliError, TerminalPrompter};
 
 pub const DEFAULT_SERVER: &str = "http://127.0.0.1:8080";
 
 /// How often `--web` looks for the new service, and `--secret-file` at the file.
 const WEB_POLL: Duration = Duration::from_secs(3);
 const FILE_POLL: Duration = Duration::from_millis(500);
+/// How long `--web` lets the page finish adding a new service to its bundle.
+const WEB_SETTLE: Duration = Duration::from_secs(15);
+const SETTLE_POLL: Duration = Duration::from_secs(1);
 
 pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliError> {
     let cwd = std::env::current_dir().map_err(|e| CliError::Io {
@@ -101,11 +104,20 @@ async fn vault_summaries(client: &ConsoleClient<'_>) -> Result<Vec<VaultSummary>
     let mut out = Vec::new();
     for vault in client.vaults().await? {
         let services = client.credentials(&vault.id).await?.len() as u64;
+        // Only a bundle with an enabled rule can start a session.
         let bundles = if services > 0 {
+            let enabled: Vec<RuleId> = client
+                .rules(&vault.id)
+                .await?
+                .into_iter()
+                .filter(|r| r.enabled)
+                .map(|r| r.id)
+                .collect();
             client
                 .bundles(&vault.id)
                 .await?
                 .into_iter()
+                .filter(|b| b.rule_ids.iter().any(|r| enabled.contains(r)))
                 .map(|b| b.name)
                 .collect()
         } else {
@@ -219,14 +231,26 @@ struct Added<'a> {
 pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let client = ConsoleClient::open(&SessionStore::system(), &args.server, &prompter)?;
+    // Before anyone is asked for a key: a name the server refuses would
+    // only fail after it was handed over.
+    if let Some(bundle) = &args.bundle {
+        tokenless_control::service::bundles::validate_bundle_name(bundle)
+            .map_err(|e| LauncherError::config(e.to_string()))?;
+    }
     let template = account::pick_template(client.templates().await?, &args.template)?;
-    // The secret file, kept until the key is stored.
+    // The secret file, kept until the key is stored, and the signals that
+    // end the waits (not listened for at a terminal prompt, which handles
+    // Ctrl-C itself).
     let mut file = None;
     let fields = match &args.source {
-        Source::Web { open } => return add_from_web(&client, &template, &args, *open).await,
+        Source::Web { open } => {
+            let mut stop = Stop::listen()?;
+            return add_from_web(&client, &template, &args, *open, &mut stop).await;
+        }
         Source::File { path, open } => {
-            let (fields, path) = from_file(&template, &args, path, *open).await?;
-            file = Some(path);
+            let mut stop = Stop::listen()?;
+            let (fields, path) = from_file(&template, &args, path, *open, &mut stop).await?;
+            file = Some((path, stop));
             fields
         }
         Source::Terminal => {
@@ -246,7 +270,22 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         bundle: args.bundle.clone(),
         read_only: args.read_only,
     };
-    let added = match client.add_service(&plan, &template, fields).await {
+    let stored = match &mut file {
+        Some((path, stop)) => tokio::select! {
+            stored = client.add_service(&plan, &template, fields) => stored,
+            signal = stop.signalled() => {
+                return Err(LauncherError::config(format!(
+                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise run the same command again",
+                    args.vault.trim(),
+                    path.display()
+                ))
+                .into());
+            }
+        },
+        None => client.add_service(&plan, &template, fields).await,
+    };
+    let file = file.map(|(path, _)| path);
+    let added = match stored {
         Ok(added) => added,
         Err(e) => {
             if let Some(path) = &file {
@@ -298,6 +337,55 @@ fn run_command(vault: &str, bundle: &str) -> String {
     )
 }
 
+/// Ctrl-C and, on Unix, SIGTERM, listened for from the moment this is made,
+/// so a signal that comes while the command is busy (an HTTP call between
+/// two waits) is kept for the next wait rather than lost.
+struct Stop {
+    #[cfg(unix)]
+    interrupt: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    terminate: tokio::signal::unix::Signal,
+}
+
+impl Stop {
+    fn listen() -> Result<Self, CliError> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let listen = |kind: SignalKind, name: &str| {
+                signal(kind).map_err(|e| CliError::Io {
+                    context: format!("listening for {name}"),
+                    source: e,
+                })
+            };
+            Ok(Stop {
+                interrupt: listen(SignalKind::interrupt(), "SIGINT")?,
+                terminate: listen(SignalKind::terminate(), "SIGTERM")?,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Stop {})
+        }
+    }
+
+    /// Which signal came.
+    async fn signalled(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.interrupt.recv() => "SIGINT",
+                _ = self.terminate.recv() => "SIGTERM",
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            "Ctrl-C"
+        }
+    }
+}
+
 /// Deletes a stored key's secret file, or says it could not.
 fn discard(path: &Path) {
     if let Err(e) = secret_file::remove(path) {
@@ -338,6 +426,7 @@ async fn from_file(
     args: &AddArgs,
     path: &Path,
     open: bool,
+    stop: &mut Stop,
 ) -> Result<(Fields, PathBuf), CliError> {
     let home = home_dir();
     let path = if path.as_os_str().is_empty() {
@@ -385,8 +474,7 @@ async fn from_file(
     );
     let values = tokio::select! {
         values = wait => values?,
-        signal = stop_signal() => {
-            let signal = signal.unwrap_or("a stop signal");
+        signal = stop.signalled() => {
             let file = if remove.armed { "was deleted" } else { "was left as it was" };
             return Err(LauncherError::config(format!("stopped by {signal}; {shown} {file}, nothing was stored")).into());
         }
@@ -401,6 +489,7 @@ async fn add_from_web(
     template: &StoredTemplate,
     args: &AddArgs,
     open: bool,
+    stop: &mut Stop,
 ) -> Result<ExitCode, CliError> {
     let id = &template.template.id;
     let vaults = client.vaults().await?;
@@ -441,15 +530,21 @@ async fn add_from_web(
         return Ok(ExitCode::SUCCESS);
     };
     let deadline = Instant::now() + timeout;
+    let stopped = |signal: &str| -> CliError {
+        LauncherError::config(format!(
+            "stopped waiting by {signal}; a service saved on the page is still added"
+        ))
+        .into()
+    };
     let found = loop {
-        tokio::select! {
-            () = tokio::time::sleep(WEB_POLL) => {}
-            signal = stop_signal() => {
-                let signal = signal.unwrap_or("a stop signal");
-                return Err(LauncherError::config(format!("stopped waiting by {signal}; a service saved on the page is still added")).into());
-            }
-        }
-        let now = services_of(client, id).await?;
+        let poll = async {
+            tokio::time::sleep(WEB_POLL).await;
+            services_of(client, id).await
+        };
+        let now = tokio::select! {
+            now = poll => now?,
+            signal = stop.signalled() => return Err(stopped(signal)),
+        };
         if let Some(new) = now
             .into_iter()
             .find(|(c, ..)| !before.iter().any(|(b, ..)| b == c))
@@ -466,7 +561,20 @@ async fn add_from_web(
         }
     };
     let (credential, service, vault_id, vault_name) = found;
-    let joined = bundle_of(client, &vault_id, &credential, args.bundle.as_deref()).await?;
+    // The page saves the service, then its rule, then puts the rule in the
+    // bundle, each its own request: give it a moment to finish before
+    // saying the service is in no bundle.
+    let settle = Instant::now() + WEB_SETTLE;
+    let joined = loop {
+        let joined = bundle_of(client, &vault_id, &credential, args.bundle.as_deref()).await?;
+        if joined.is_some() || Instant::now() >= settle {
+            break joined;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(SETTLE_POLL) => {}
+            signal = stop.signalled() => return Err(stopped(signal)),
+        }
+    };
     // The page may have created the vault and the bundle; they are new when
     // they were not there before it opened.
     let vault_created = !vaults.iter().any(|v| v.id == vault_id);
@@ -586,6 +694,24 @@ fn print_json(value: &impl Serialize) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Ctrl-C or SIGTERM that comes while the command is busy with a
+    /// request, when nothing waits for it, still ends the next wait.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_signal_while_busy_is_kept_for_the_next_wait() {
+        let mut stop = Stop::listen().unwrap();
+        assert!(std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .unwrap()
+            .success());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let signal = tokio::time::timeout(Duration::from_secs(5), stop.signalled())
+            .await
+            .expect("the signal sent before the wait ends it");
+        assert_eq!(signal, "SIGTERM");
+    }
 
     #[test]
     fn the_editor_hint_quotes_the_path() {

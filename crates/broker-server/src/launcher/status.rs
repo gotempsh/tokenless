@@ -82,6 +82,8 @@ pub struct Observed {
 pub struct VaultSummary {
     pub name: String,
     pub services: u64,
+    /// The bundles a session can be minted from: those holding at least one
+    /// enabled rule.
     pub bundles: Vec<String>,
 }
 
@@ -144,21 +146,22 @@ pub fn connected(node: &Node, now: DateTime<Utc>) -> bool {
             .is_some_and(|seen| now - seen <= CONNECTED_WITHIN)
 }
 
-/// The vault and bundle to suggest: the first vault with a service and a
-/// bundle, then any vault with a service.
-fn suggested(vaults: &[VaultSummary]) -> (String, String) {
+/// The vault and bundle to name in suggested commands: a bundle a session
+/// can be minted from when there is one (`None` otherwise, never a made-up
+/// name), else the vault with services, else `personal`.
+fn suggested(vaults: &[VaultSummary]) -> (String, Option<String>) {
     let with_services = || vaults.iter().filter(|v| v.services > 0);
     let (vault, bundle) = with_services()
-        .find_map(|v| v.bundles.first().map(|b| (v.name.as_str(), b.as_str())))
-        .or_else(|| {
-            with_services()
-                .next()
-                .map(|v| (v.name.as_str(), "my-agent"))
+        .find_map(|v| {
+            v.bundles
+                .first()
+                .map(|b| (v.name.as_str(), Some(b.as_str())))
         })
-        .unwrap_or(("personal", "my-agent"));
+        .or_else(|| with_services().next().map(|v| (v.name.as_str(), None)))
+        .unwrap_or(("personal", None));
     // Both go into commands an agent runs as they are; a vault name may
     // hold a space.
-    (shell_word(vault), shell_word(bundle))
+    (shell_word(vault), bundle.map(shell_word))
 }
 
 pub fn assess(o: Observed) -> Report {
@@ -240,7 +243,8 @@ pub fn assess(o: Observed) -> Report {
             state: State::Missing,
             detail: "none yet; find the template with: tokenless service templates <name or variable>".into(),
             fix: Some(format!(
-                "tokenless service add <template> --vault {vault} --bundle {bundle} --secret-file{server_flag}"
+                "tokenless service add <template> --vault {vault} --bundle {} --secret-file{server_flag}",
+                bundle.as_deref().unwrap_or("my-agent")
             )),
             required: true,
         },
@@ -253,6 +257,36 @@ pub fn assess(o: Observed) -> Report {
             required: true,
         },
         None => unknown("services", "Services", signed_in, true),
+    });
+
+    // A session is minted from a bundle, so services in none are not usable.
+    checks.push(match (&o.vaults, &bundle) {
+        (Some(Ok(_)), Some(b)) => ok("bundle", "Access bundle", format!("{b} in vault {vault}")),
+        (Some(Ok(v)), None) if v.iter().any(|v| v.services > 0) => Check {
+            id: "bundle",
+            label: "Access bundle",
+            state: State::Missing,
+            detail: "no access bundle holds an enabled service, so no session can be started; add a service to one on its vault's page in the console, or pass --bundle <name> to the next service add".into(),
+            fix: None,
+            required: true,
+        },
+        (Some(Ok(_)), None) => Check {
+            id: "bundle",
+            label: "Access bundle",
+            state: State::Unknown,
+            detail: "comes with the first service (service add --bundle)".into(),
+            fix: None,
+            required: true,
+        },
+        (Some(Err(_)), _) => Check {
+            id: "bundle",
+            label: "Access bundle",
+            state: State::Unknown,
+            detail: "the vaults could not be listed".into(),
+            fix: None,
+            required: true,
+        },
+        (None, _) => unknown("bundle", "Access bundle", signed_in, true),
     });
 
     let state = o.proxy_state.path.display().to_string();
@@ -341,15 +375,18 @@ pub fn assess(o: Observed) -> Report {
     let ready = checks.iter().filter(|c| c.required).all(|c| {
         c.state == State::Ok || (c.state == State::Unknown && c.id == "proxy" && signed_in)
     });
+    // A required fix comes first; once ready, starting an agent; optional
+    // fixes (the skill) only after that.
+    let run = bundle
+        .as_ref()
+        .filter(|_| ready && !o.behind_tokenless)
+        .map(|b| format!("tokenless run --vault {vault} --bundle {b} -- <command>"));
     let next = checks
         .iter()
         .find(|c| c.required && c.fix.is_some())
-        .or_else(|| checks.iter().find(|c| c.fix.is_some()))
         .and_then(|c| c.fix.clone())
-        .or_else(|| {
-            (ready && !o.behind_tokenless)
-                .then(|| format!("tokenless run --vault {vault} --bundle {bundle} -- <command>"))
-        });
+        .or(run)
+        .or_else(|| checks.iter().find_map(|c| c.fix.clone()));
     Report {
         version: o.version,
         server: o.server,
@@ -421,13 +458,34 @@ pub fn render(report: &Report) -> String {
             "This shell runs behind tokenless: tokenless session info shows what it reaches.\n",
         );
     }
+    let optional: Vec<&str> = report
+        .checks
+        .iter()
+        .filter(|c| !c.required)
+        .filter_map(|c| c.fix.as_deref())
+        .collect();
     match &report.next {
-        Some(next) if report.ready => {
+        Some(next) if report.ready && !optional.contains(&next.as_str()) => {
             out.push_str(&format!("Ready. Start an agent with:\n  {next}\n"))
         }
+        _ if report.ready => out.push_str("Ready.\n"),
         Some(next) => out.push_str(&format!("Next:\n  {next}\n")),
-        None if report.ready => out.push_str("Ready.\n"),
-        None => {}
+        None => {
+            // Nothing to run: say what is in the way.
+            if let Some(c) = report
+                .checks
+                .iter()
+                .find(|c| c.required && matches!(c.state, State::Missing | State::Failed))
+            {
+                out.push_str(&format!("Not ready: {}: {}\n", c.label, c.detail));
+            }
+        }
+    }
+    if report.ready && !optional.is_empty() {
+        out.push_str("Optional:\n");
+        for fix in optional {
+            out.push_str(&format!("  {fix}\n"));
+        }
     }
     out
 }
@@ -583,8 +641,22 @@ mod tests {
             ..observed(now)
         });
         assert!(report.ready, "{report:#?}");
-        // The missing skill is still the next thing to do.
-        assert_eq!(report.next.as_deref(), Some("tokenless skill --install"));
+        // Starting an agent comes first; the missing skill is optional.
+        let run = "tokenless run --vault work --bundle code-review -- <command>";
+        assert_eq!(report.next.as_deref(), Some(run));
+        let text = render(&report);
+        assert!(
+            text.contains(&format!("Ready. Start an agent with:\n  {run}\n")),
+            "{text}"
+        );
+        assert!(
+            text.contains("Optional:\n  tokenless skill --install\n"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("Start an agent with:\n  tokenless skill"),
+            "{text}"
+        );
         let behind = assess(Observed {
             behind_tokenless: true,
             ..observed(now)
@@ -592,6 +664,39 @@ mod tests {
         assert!(behind.ready);
         assert_eq!(behind.next, None);
         assert!(render(&behind).contains("This shell runs behind tokenless"));
+        // Behind tokenless with the skill missing: that is all there is to do.
+        let behind = assess(Observed {
+            behind_tokenless: true,
+            skill: Skill::Missing,
+            ..observed(now)
+        });
+        assert_eq!(behind.next.as_deref(), Some("tokenless skill --install"));
+        let text = render(&behind);
+        assert!(
+            text.contains("Ready.\n") && !text.contains("Start an agent"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn services_in_no_bundle_are_not_ready_and_no_bundle_is_made_up() {
+        let now = Utc::now();
+        // `bundles` holds only bundles with an enabled rule, so this also
+        // stands for bundles that are empty or hold only disabled rules.
+        let report = assess(Observed {
+            vaults: Some(Ok(vec![VaultSummary {
+                name: "personal".into(),
+                services: 2,
+                bundles: vec![],
+            }])),
+            ..observed(now)
+        });
+        assert!(!report.ready, "{report:#?}");
+        assert_eq!(check(&report, "bundle").state, State::Missing);
+        assert_eq!(report.next, None, "{report:#?}");
+        let text = render(&report);
+        assert!(text.contains("Not ready: Access bundle:"), "{text}");
+        assert!(!text.contains("my-agent"), "{text}");
     }
 
     #[test]

@@ -365,6 +365,30 @@ impl Cli {
     }
 }
 
+/// `PATCH /api/v1<path>` as the signed-in person, as the console would.
+async fn patch(url: &str, session: &account::SavedSession, path: &str, body: serde_json::Value) {
+    let response = reqwest::Client::new()
+        .patch(format!("{url}/api/v1{path}"))
+        .header(
+            "cookie",
+            format!(
+                "{}={}",
+                tokenless_auth::cookie::SESSION_COOKIE,
+                session.token
+            ),
+        )
+        .header(tokenless_auth::csrf::CSRF_HEADER, &session.csrf_token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_success(),
+        "PATCH {path}: {}",
+        response.status()
+    );
+}
+
 /// Waits for `path` to appear, for up to ten seconds.
 async fn appears(path: &std::path::Path) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -511,22 +535,13 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         .into_iter()
         .find(|r| r.name == "openai-work")
         .unwrap();
-    let renamed = reqwest::Client::new()
-        .patch(format!("{url}/api/v1/rules/{}", rule.id))
-        .header(
-            "cookie",
-            format!(
-                "{}={}",
-                tokenless_auth::cookie::SESSION_COOKIE,
-                session.token
-            ),
-        )
-        .header(tokenless_auth::csrf::CSRF_HEADER, &session.csrf_token)
-        .json(&serde_json::json!({ "name": "taken" }))
-        .send()
-        .await
-        .unwrap();
-    assert!(renamed.status().is_success(), "{}", renamed.status());
+    patch(
+        &url,
+        &session,
+        &format!("/rules/{}", rule.id),
+        serde_json::json!({ "name": "taken" }),
+    )
+    .await;
     let child = cli.spawn(&[
         "service",
         "add",
@@ -554,9 +569,9 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert!(!stderr.contains("nothing was stored"), "{stderr}");
     assert!(!file.exists(), "a stored key's file is deleted");
 
-    // A bundle name the server would refuse is refused before anything is
-    // stored, so the key stays in the file for another try.
-    let child = cli.spawn(&[
+    // A bundle name the server would refuse is refused before the person is
+    // asked for the key at all.
+    let out = finish(cli.spawn(&[
         "service",
         "add",
         "openai",
@@ -569,23 +584,15 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         "--secret-file",
         "--wait",
         "1m",
-    ]);
-    appears(&file).await;
-    let instructions = std::fs::read_to_string(&file).unwrap();
-    std::fs::write(&file, format!("{instructions}{KEY}\n")).unwrap();
-    let out = finish(child).await;
+    ]))
+    .await;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(stderr.contains("access bundle name 'my agent'"), "{stderr}");
-    assert!(stderr.contains("still holds the key"), "{stderr}");
-    assert!(std::fs::read_to_string(&file).unwrap().contains(KEY));
-    assert!(!client
-        .credentials(&personal.id)
-        .await
-        .unwrap()
-        .iter()
-        .any(|c| c.name == "openai-spaced"));
-    std::fs::remove_file(&file).unwrap();
+    assert!(
+        !file.exists(),
+        "no file is made for a command that cannot work"
+    );
 
     // A file that was already there is the person's: giving up on it leaves
     // it alone.
@@ -649,20 +656,39 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         "--wait", "1m", "--json",
     ]);
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    // The person saves the form in the console.
+    // The person saves the form in the console. The page saves the service
+    // and its rule first and puts the rule in the bundle in a later request;
+    // here that comes after a poll has already seen the new service.
     let template = account::pick_template(client.templates().await.unwrap(), "github").unwrap();
     let plan = AddService {
         template_id: "github".into(),
         name: None,
         vault: "personal".into(),
-        bundle: Some("my-agent".into()),
+        bundle: None,
         read_only: true,
     };
     let fields = BTreeMap::from([(
         "token".to_string(),
         Zeroizing::new(GITHUB_TOKEN.to_string()),
     )]);
-    client.add_service(&plan, &template, fields).await.unwrap();
+    let saved = client.add_service(&plan, &template, fields).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let my_agent = client
+        .bundles(&saved.vault.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|b| b.name == "my-agent")
+        .unwrap();
+    let mut rule_ids = my_agent.rule_ids.clone();
+    rule_ids.push(saved.rule.id);
+    patch(
+        &url,
+        &session,
+        &format!("/bundles/{}", my_agent.id),
+        serde_json::json!({ "rule_ids": rule_ids }),
+    )
+    .await;
     let out = finish(child).await;
     let (stdout, stderr) = (
         String::from_utf8_lossy(&out.stdout),
@@ -700,6 +726,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     };
     assert_eq!(state("signed_in"), "ok", "{report:#}");
     assert_eq!(state("services"), "ok", "{report:#}");
+    assert_eq!(state("bundle"), "ok", "{report:#}");
     assert_eq!(state("proxy"), "missing", "{report:#}");
     assert_eq!(
         report["next"],

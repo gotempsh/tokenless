@@ -197,8 +197,10 @@ the commands around it.
 
 **Start with `tokenless status --json`** (install it first if
 `command -v tokenless` finds nothing). It checks the control plane, the
-sign-in, the services, the proxy and this skill, and `next` is the one
-command to run. Run it again after each step until `ready` is true.
+sign-in, the services, their access bundle, the proxy and this skill, and
+`next` is the one command to run. Run it again after each step until
+`ready` is true. When `next` is `null`, the check that is not `ok` says
+what the person has to do.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
