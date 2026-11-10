@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "broker-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3025,7 +3025,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokenless-auth"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-conformance"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-control"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3089,7 +3089,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -3110,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-dataplane"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
