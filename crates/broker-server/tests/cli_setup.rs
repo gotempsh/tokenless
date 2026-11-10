@@ -226,3 +226,314 @@ async fn a_lost_admin_password_is_reset_from_the_server_host() {
     assert!(restarted.initial_admin.is_none());
     restarted.shutdown();
 }
+
+/// What an agent uses to set up tokenless for a person: whether a control
+/// plane answers, who is signed in, what exists, and a secret handed over in
+/// a file the person fills in, which is gone once it is stored.
+#[tokio::test]
+async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
+    use broker_server::launcher::secret_file;
+    use std::time::Duration;
+
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let url = format!("http://{}", server.api_addr);
+    let admin = server.initial_admin.as_ref().unwrap();
+
+    assert_eq!(account::probe(&url).await.unwrap(), url);
+    let unused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let nowhere = format!("http://{}", unused.local_addr().unwrap());
+    drop(unused);
+    let why = account::probe(&nowhere).await.unwrap_err();
+    assert_eq!(why, "nothing is listening there");
+
+    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
+        .await
+        .unwrap()
+    else {
+        panic!("the generated admin has no authenticator");
+    };
+    let vault = MemoryVault::default();
+    vault.save(&session).unwrap();
+    let client = ConsoleClient::open(&vault, &url, &NoPrompts).unwrap();
+    assert_eq!(client.me().await.unwrap().username, admin.username);
+    assert!(client.nodes().await.unwrap().is_empty());
+
+    // The command creates the file, the person saves the key in it.
+    let home = tempfile::tempdir().unwrap();
+    let path = secret_file::default_path(home.path(), "openai");
+    let template = account::pick_template(client.templates().await.unwrap(), "openai").unwrap();
+    let fields = &template.template.credential_fields;
+    secret_file::prepare(&path, "OpenAI", "personal", fields).unwrap();
+    const KEY: &str = "sk-fileHandoffTestKey0123456789abcdef";
+    let person = {
+        let path = path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let instructions = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(&path, format!("{instructions}{KEY}\n")).unwrap();
+        })
+    };
+    let values = secret_file::wait(
+        &path,
+        fields,
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+    person.await.unwrap();
+    secret_file::remove(&path).unwrap();
+    assert!(
+        !path.exists(),
+        "the file is deleted before the key is stored"
+    );
+
+    let plan = AddService {
+        template_id: "openai".into(),
+        name: None,
+        vault: "personal".into(),
+        bundle: Some("my-agent".into()),
+        read_only: false,
+    };
+    let added = client.add_service(&plan, &template, values).await.unwrap();
+    let listed = client.credentials(&added.vault.id).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "openai");
+    assert_eq!(listed[0].template_id, "openai");
+    let stored = all_bytes(data.path());
+    assert!(
+        !stored.windows(KEY.len()).any(|w| w == KEY.as_bytes()),
+        "the key is stored encrypted"
+    );
+
+    // The console page for --web opens on this vault and bundle.
+    let (bundle, _) = added.bundle.as_ref().unwrap();
+    assert_eq!(
+        account::add_service_url(
+            &format!("{url}/"),
+            "openai",
+            Some(&added.vault.id),
+            Some(&bundle.id)
+        )
+        .unwrap(),
+        format!(
+            "{url}/#/add-service/openai?vault={}&bundle={}",
+            added.vault.id, bundle.id
+        )
+    );
+    assert_eq!(
+        account::add_service_url(&url, "openai", None, None).unwrap(),
+        format!("{url}/#/add-service/openai")
+    );
+    server.shutdown();
+}
+
+/// The `tokenless` binary as an agent runs it for a person, signed in
+/// through a session file in a scratch home (never the OS keychain).
+struct Cli {
+    home: tempfile::TempDir,
+    url: String,
+}
+
+impl Cli {
+    fn new(url: &str, session: &account::SavedSession) -> Self {
+        let home = tempfile::tempdir().unwrap();
+        account::SessionFiles::new(home.path().join(".config/tokenless/sessions"))
+            .save(session)
+            .unwrap();
+        Cli {
+            home,
+            url: url.to_string(),
+        }
+    }
+
+    fn spawn(&self, args: &[&str]) -> std::process::Child {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+            .args(args)
+            .args(["--server", &self.url])
+            .env_clear()
+            .env("HOME", self.home.path())
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+}
+
+/// Waits for `path` to appear, for up to ten seconds.
+async fn appears(path: &std::path::Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never appeared",
+            path.display()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+async fn finish(child: std::process::Child) -> std::process::Output {
+    tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_agent() {
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let url = format!("http://{}", server.api_addr);
+    let admin = server.initial_admin.as_ref().unwrap();
+    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
+        .await
+        .unwrap()
+    else {
+        panic!("the generated admin has no authenticator");
+    };
+    let cli = Cli::new(&url, &session);
+
+    // --secret-file: the command creates the file, the person fills it in.
+    const KEY: &str = "sk-binaryHandoffTestKey0123456789abcdef";
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--bundle",
+        "my-agent",
+        "--secret-file",
+        "--wait",
+        "1m",
+        "--json",
+    ]);
+    let file = cli.home.path().join(".tokenless/incoming/openai");
+    appears(&file).await;
+    let instructions = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        instructions.contains("Paste it below this line"),
+        "{instructions}"
+    );
+    std::fs::write(&file, format!("{instructions}{KEY}\n")).unwrap();
+    let out = finish(child).await;
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(!file.exists(), "the secret file is deleted");
+    assert!(
+        !stdout.contains(KEY) && !stderr.contains(KEY),
+        "{stdout}{stderr}"
+    );
+    let added: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(added["service"], "openai");
+    assert_eq!(added["vault"], "personal");
+    assert_eq!(added["bundle"], "my-agent");
+    assert_eq!(
+        added["run"],
+        "tokenless run --vault personal --bundle my-agent -- <command>"
+    );
+    assert!(stderr.contains(&file.display().to_string()), "{stderr}");
+
+    // Stopped while it waits: the file goes, nothing is stored.
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "anthropic",
+        "--vault",
+        "personal",
+        "--secret-file",
+    ]);
+    let file = cli.home.path().join(".tokenless/incoming/anthropic");
+    appears(&file).await;
+    std::fs::write(&file, "# half typed\nsk-ant-").unwrap();
+    #[cfg(unix)]
+    {
+        assert!(std::process::Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success());
+        let out = finish(child).await;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success());
+        assert!(stderr.contains("nothing was stored"), "{stderr}");
+        assert!(!file.exists(), "a stopped handoff deletes the file");
+    }
+    #[cfg(not(unix))]
+    {
+        let mut child = child;
+        child.kill().unwrap();
+        let _ = finish(child).await;
+    }
+
+    // --web: the command prints the console page and waits for the service.
+    let vault = MemoryVault::default();
+    vault.save(&session).unwrap();
+    let client = ConsoleClient::open(&vault, &url, &NoPrompts).unwrap();
+    let child = cli.spawn(&[
+        "service", "add", "github", "--vault", "personal", "--bundle", "my-agent", "--web",
+        "--wait", "1m", "--json",
+    ]);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // The person saves the form in the console.
+    let template = account::pick_template(client.templates().await.unwrap(), "github").unwrap();
+    let plan = AddService {
+        template_id: "github".into(),
+        name: None,
+        vault: "personal".into(),
+        bundle: Some("my-agent".into()),
+        read_only: true,
+    };
+    let fields = BTreeMap::from([(
+        "token".to_string(),
+        Zeroizing::new(GITHUB_TOKEN.to_string()),
+    )]);
+    client.add_service(&plan, &template, fields).await.unwrap();
+    let out = finish(child).await;
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(
+        stderr.contains(&format!("{url}/#/add-service/github?vault="))
+            && stderr.contains("&bundle="),
+        "{stderr}"
+    );
+    let added: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(added["service"], "github");
+    assert_eq!(added["vault"], "personal");
+
+    // status sees it all, short of a proxy.
+    let out = finish(cli.spawn(&["status", "--json"])).await;
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let state = |id: &str| {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap()["state"]
+            .clone()
+    };
+    assert_eq!(state("signed_in"), "ok", "{report:#}");
+    assert_eq!(state("services"), "ok", "{report:#}");
+    assert_eq!(state("proxy"), "missing", "{report:#}");
+    assert_eq!(
+        report["next"],
+        format!("tokenless proxy add --name <this machine> --state ~/.tokenless/node.json --server {url}")
+    );
+    server.shutdown();
+}

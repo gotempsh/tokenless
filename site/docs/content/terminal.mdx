@@ -7,6 +7,17 @@ title: "Set up from the terminal"
 Everything in the [Quickstart](./quickstart.mdx) can be done without the
 console: sign in, add a service and enrol a proxy.
 
+## Where you are
+
+```sh
+tokenless status
+```
+
+It checks the control plane, your sign-in, the services, the proxy and the
+agent skill, and ends with the one command to run next. It exits 0 once
+agents can be started behind tokenless, 1 before. `--json` gives an agent
+the same report, with `next` holding that command.
+
 ## Sign in
 
 ```sh
@@ -50,6 +61,37 @@ when piped (`gh auth token | tokenless service add github ...`). Then it:
 Templates with several fields (a client ID and a secret, say) ask for
 each one, so run those in a terminal. `--name` names the credential when
 the vault already has one for the same service.
+
+To find a template's ID, search by name, host or the variable a tool reads
+its key from. It lists the built-in templates before you sign in, and
+your control plane's afterwards:
+
+```sh
+tokenless service templates OPENAI_API_KEY
+```
+
+### Without typing the key here
+
+When an agent sets tokenless up for you, it runs `service add` with one of
+these, so the key goes from you to tokenless and never through the agent:
+
+```sh
+tokenless service add openai --vault personal --bundle my-agent --secret-file --open
+tokenless service add openai --vault personal --bundle my-agent --web --open
+```
+
+- `--secret-file` creates `~/.tokenless/incoming/<template>` (or the path
+  you give it), readable only by you, and waits until you save the key in
+  it. Then it overwrites and deletes the file and stores the key. A
+  template with several fields gets a line per field. The file is deleted
+  if the command is stopped too. `--open` opens it in your text editor;
+  close the editor once you have saved, as some keep a backup copy.
+- `--web` prints the console page that adds the service, with the vault
+  and bundle chosen when they exist, and waits until you save it there.
+  `--open` opens it in your browser. `--no-wait` only prints the page.
+
+Both wait up to 15 minutes (`--wait 30m` for longer), and `--json` prints
+the service, vault and bundle when it is done.
 
 ## Enrol a proxy
 

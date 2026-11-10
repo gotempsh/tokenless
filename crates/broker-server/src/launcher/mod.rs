@@ -17,8 +17,11 @@ pub mod client;
 pub mod inject;
 pub mod mcp;
 pub mod port;
+pub mod secret_file;
 pub mod session;
 pub mod skill;
+pub mod status;
+pub mod templates;
 pub mod trust;
 
 use thiserror::Error;

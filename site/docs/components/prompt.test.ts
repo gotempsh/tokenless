@@ -20,4 +20,10 @@ describe('the copy prompt', () => {
     expect(proxy.length).toBe(2);
     for (const c of proxy) expect(c).toMatch(/--state (~\/|\/)/);
   });
+
+  test('has the key handed over in a file or the console, never through the agent', () => {
+    const adds = commands.filter((c) => c.startsWith('tokenless service add'));
+    expect(adds.length).toBeGreaterThan(0);
+    for (const c of adds) expect(c).toMatch(/--secret-file|--web/);
+  });
 });

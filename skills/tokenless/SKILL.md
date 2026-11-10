@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 name: tokenless
-description: Use when you need to call an API or run a tool that wants an API key or token and TOKENLESS_PROXY is set in your environment, when a tool served through the tokenless MCP gateway is refused, or when asked to run a command with secrets from a tokenless vault. Also use when TOKENLESS_PROXY is not set and the user pastes an API key or token, asks you to put one in a .env file, a config file or a shell profile, or a tool fails for want of one; then offer to keep the key in a tokenless vault instead, and set it up with them without ever seeing it. Explains how to see which services you can reach, what to give a tool that insists on a key, how placeholders and `tokenless exec NAME=cb://<service>/<field>` work when a service has them, what the proxy's 401, 403, 407 and 429 answers mean, and how to move a key into a vault.
+description: Use when you need to call an API or run a tool that wants an API key or token and TOKENLESS_PROXY is set in your environment, when a tool served through the tokenless MCP gateway is refused, or when asked to run a command with secrets from a tokenless vault. Also use when TOKENLESS_PROXY is not set and the user pastes an API key or token, asks you to put one in a .env file, a config file or a shell profile, or a tool fails for want of one; then offer to keep the key in a tokenless vault instead and set it up with them, starting from `tokenless status`, with the key handed over in a file or the console so you never see it. Explains how to see which services you can reach, what to give a tool that insists on a key, how placeholders and `tokenless exec NAME=cb://<service>/<field>` work when a service has them, what the proxy's 401, 403, 407 and 429 answers mean, and how to move a key into a vault.
 ---
 
 # Working behind tokenless
@@ -192,50 +192,77 @@ do what they asked. A key already pasted into the chat has left their
 machine; suggest they revoke it and store a new one.
 
 Never ask for the key, read it from a file or an environment variable,
-or print it. The user types it into tokenless themselves, in a terminal
-of their own:
+or print it. The person hands it to tokenless directly, and you only run
+the commands around it.
 
-1. **Install it**, if `command -v tokenless` finds nothing:
+**Start with `tokenless status --json`** (install it first if
+`command -v tokenless` finds nothing). It checks the control plane, the
+sign-in, the services, the proxy and this skill, and `next` is the one
+command to run. Run it again after each step until `ready` is true.
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
-   ```
+```sh
+curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
+tokenless status --json
+```
 
-2. **Start a control plane**, if they have none. They keep it running in
-   a terminal and save the admin password it prints, which is shown once.
-   Keep its data directory out of any repository: it holds the root key.
+The steps it leads through:
+
+1. **A control plane.** The person starts it in a terminal of their own
+   and keeps it running: it prints the admin password once, which you must
+   not see. Its data directory holds the root key, so keep it out of any
+   repository. Then they sign in, also in their own terminal, since it
+   asks for the password.
 
    ```sh
    tokenless serve --data-dir ~/.tokenless
-   tokenless login          # in another terminal, with that password
+   tokenless login
    ```
 
-3. **Store the key.** Give the template for the variable (`openai` for
-   `OPENAI_API_KEY`, `anthropic` for `ANTHROPIC_API_KEY`, `github` for
-   `GITHUB_TOKEN`; the console's Templates page lists them all) and the
-   command:
+2. **The key.** Find the template for the service or the variable the
+   tool reads:
 
    ```sh
-   tokenless service add openai --vault personal --bundle my-agent
+   tokenless service templates OPENAI_API_KEY --json
    ```
 
-   It asks for the key without echoing it, and stores it with a rule
-   that lets the bundle use it. A key another tool can print may be
-   piped in: `gh auth token | tokenless service add github ...`. Then
-   they delete the plaintext copy (the line in `.env`, the `export` in
-   the profile); a tool that insists on the variable gets a dummy value
+   Then let the person hand the key over in one of two ways. In both,
+   the key goes from them to tokenless and never through you.
+
+   - **A file they fill in.** Run this in the background: it creates a
+     file only they can read, waits until they save the key in it, then
+     deletes the file and stores the key. `--open` opens the file in their
+     text editor. Tell them the path it prints, and never read the file
+     yourself.
+
+     ```sh
+     tokenless service add openai --vault personal --bundle my-agent --secret-file --open
+     ```
+
+   - **The console.** This prints the console page that adds the service,
+     with the vault and bundle chosen, and waits until they save it there.
+     `--open` opens it in their browser.
+
+     ```sh
+     tokenless service add openai --vault personal --bundle my-agent --web --open
+     ```
+
+   Either ends with the service's vault and bundle, as JSON with `--json`.
+   Then they delete any plaintext copy (the line in `.env`, the `export`
+   in the profile); a tool that insists on the variable gets a dummy value
    (`OPENAI_API_KEY=tokenless`), as in section 2.
 
-4. **Start a proxy**, once per machine. Its identity file holds the
-   proxy's private keys, and both commands default to `./node.json`, the
-   project you are in, so always pass a `--state` outside it:
+3. **A proxy**, once per machine. Its identity file holds the proxy's
+   private keys, and both commands default to `./node.json`, the project
+   you are in, so always pass a `--state` outside it. `node run` keeps
+   running: in a terminal of theirs, or in the background if you can keep
+   it there.
 
    ```sh
    tokenless proxy add --name laptop --state ~/.tokenless/node.json
-   tokenless node run --state ~/.tokenless/node.json   # kept running in a terminal
+   tokenless node run --state ~/.tokenless/node.json
    ```
 
-5. **Use it.** Signed in, you can run a command behind the bundle
+4. **Use it.** Signed in, you can run a command behind the bundle
    yourself, without seeing the key:
 
    ```sh
@@ -247,8 +274,9 @@ of their own:
    command that starts you). Then `TOKENLESS_PROXY` is set and the
    sections above apply.
 
-Every command says what is missing when a step was skipped (`run tokenless
-login`, no proxy answering, an unknown template), so follow what it says.
+A command that has no terminal to ask in says so and what to do instead,
+and every other refusal names what is missing (`run tokenless login`, no
+proxy answering, an unknown template), so follow what it says.
 
 Never try to bypass the broker: no direct connections, no unsetting the
 proxy, no hunting for keys in files. If you need access you don't have, say

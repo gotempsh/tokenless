@@ -103,6 +103,7 @@ machine prints a new one.
 From the terminal:
 
 ```sh
+tokenless status                                  # what is set up, and what to run next
 tokenless login                                   # session kept in the OS keychain
 tokenless service add github --vault work --bundle code-review   # asks for the token
 tokenless proxy add --name laptop                 # writes ./node.json
@@ -111,7 +112,11 @@ tokenless node run                                # listens on 127.0.0.1:3128
 
 `service add` creates the vault and the bundle when they don't exist,
 stores the token encrypted and write-only, and adds a rule for it to the
-bundle. See [Set up from the terminal](site/docs/content/terminal.mdx).
+bundle. An agent can run it for you without seeing the token:
+`--secret-file` waits for you to save it in a private file and deletes the
+file, `--web` waits for you to enter it in the console. `tokenless service
+templates OPENAI_API_KEY` finds a template by the variable a tool reads.
+See [Set up from the terminal](site/docs/content/terminal.mdx).
 
 Or in the console at <http://127.0.0.1:8080/>:
 

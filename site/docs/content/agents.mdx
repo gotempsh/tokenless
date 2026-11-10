@@ -152,11 +152,14 @@ trying to work around them.
 It also helps before you use tokenless. When you paste a key into the
 chat, ask the agent to write one into `.env` or a shell profile, or a
 tool fails for want of one, an agent with the skill offers to keep the
-key in a vault instead and gives you the commands: install, `serve` and
-`login` if you have no control plane yet, `tokenless service add` (which
-asks you for the key, so the agent never sees it), and `proxy add`. It
-then runs commands behind the bundle with `tokenless run`, or asks you to
-restart it behind it. It suggests revoking a key you already pasted.
+key in a vault instead. It follows `tokenless status`: you start `serve`
+and run `login` in a terminal of your own if you have no control plane
+yet, it finds the template with `tokenless service templates`, and it runs
+`tokenless service add --secret-file` (you save the key in a file it then
+deletes) or `--web` (you enter it in the console), so the key never
+passes through the agent. Then `proxy add`, and it runs commands behind
+the bundle with `tokenless run`, or asks you to restart it behind it. It
+suggests revoking a key you already pasted.
 
 Install it into the agents you use with the
 [skills CLI](https://skills.sh):
