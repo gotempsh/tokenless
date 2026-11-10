@@ -11,7 +11,7 @@ Its documentation: https://github.com/gotempsh/tokenless/tree/main/site/docs/con
 
 1. Install it: curl -fsSL https://raw.githubusercontent.com/gotempsh/tokenless/main/site/install.sh | sh
 2. Install its agent skill and read it: npx skills add gotempsh/tokenless
-3. If no tokenless control plane is running, ask me to start one in a terminal of my own with \`tokenless serve --data-dir ./data\` and to save the admin password it prints. Then ask me to run \`tokenless login\`.
+3. If no tokenless control plane is running, ask me to start one in a terminal of my own with \`tokenless serve --data-dir ~/.tokenless\` and to save the admin password it prints. Its data directory holds the root key, so keep it out of any repository. Then ask me to run \`tokenless login\`.
 4. Ask me which services you need, such as GitHub or OpenAI. For each one, give me the command to run in my own terminal, for example \`tokenless service add github --vault work --bundle my-agent\`; it asks me for the token. Never ask me to paste a token into this chat, and never read one from a file or an environment variable.
-5. Enrol this machine as a proxy with \`tokenless proxy add --name laptop\`, then ask me to keep \`tokenless node run\` running in a terminal of my own.
+5. Enrol this machine as a proxy with \`tokenless proxy add --name laptop --state ~/.tokenless/node.json\`, then ask me to keep \`tokenless node run --state ~/.tokenless/node.json\` running in a terminal of my own. That file holds the proxy's private keys; without \`--state\` both commands use ./node.json in the current folder, which may be a repository.
 6. Check that it works with \`tokenless run --vault work --bundle my-agent -- tokenless session info\`. From then on, run anything that calls those services as \`tokenless run --vault work --bundle my-agent -- <command>\`.`;

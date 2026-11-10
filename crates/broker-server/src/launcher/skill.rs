@@ -232,6 +232,25 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_moves_keys_into_a_vault_without_seeing_them() {
+        // Outside the broker the skill is what suggests tokenless when a key
+        // comes up, so its description must say when, and the section must
+        // keep the key away from the agent.
+        let description = SKILL_MD
+            .lines()
+            .find_map(|l| l.strip_prefix("description: "))
+            .expect("a description");
+        assert!(
+            description.contains("TOKENLESS_PROXY is not set"),
+            "{description}"
+        );
+        assert!(SKILL_MD.contains("## 6. Not behind tokenless yet"));
+        assert!(SKILL_MD
+            .contains("Never ask for the key, read it from a file or an environment variable"));
+        assert!(SKILL_MD.contains("suggest they revoke it"));
+    }
+
+    #[test]
     fn install_creates_then_keeps_local_edits_unless_forced() {
         let dir = tempfile::tempdir().unwrap();
         let (path, outcome) = install(dir.path(), false).unwrap();

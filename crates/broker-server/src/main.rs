@@ -2002,6 +2002,111 @@ mod tests {
         );
     }
 
+    /// The `tokenless ...` commands in `md`, each with whether it is a whole
+    /// command line (in a shell block, `\` continuations joined) or inline
+    /// code, which may only name one (`tokenless run`). Words before a pipe
+    /// and `NAME=value` in front are dropped; spans with `<...>` or `...` in
+    /// them are patterns and are left out.
+    fn suggested_commands(md: &str) -> Vec<(String, bool)> {
+        let mut found = Vec::new();
+        let mut keep = |span: &str, whole: bool| {
+            let span = span.split(" #").next().unwrap_or(span);
+            let span = span.rsplit('|').next().unwrap_or(span).trim();
+            let words: Vec<&str> = span
+                .split_whitespace()
+                .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+                .collect();
+            if words.first() == Some(&"tokenless") && !span.contains('<') && !span.contains("...") {
+                found.push((words.join(" "), whole));
+            }
+        };
+        let mut fenced = false;
+        let mut command = String::new();
+        for line in md.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            if fenced {
+                command.push_str(trimmed.trim_end_matches('\\'));
+                command.push(' ');
+                if !trimmed.ends_with('\\') {
+                    keep(&command, true);
+                    command.clear();
+                }
+            } else {
+                for span in line.split('`').skip(1).step_by(2) {
+                    keep(span, false);
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn every_command_the_skill_suggests_exists() {
+        // An agent runs, or hands the user, what the skill says word for
+        // word, so a renamed command or flag must fail here first.
+        let commands = suggested_commands(skill::SKILL_MD);
+        for wanted in [
+            "tokenless serve --data-dir ~/.tokenless",
+            "tokenless service add openai --vault personal --bundle my-agent",
+            "tokenless proxy add --name laptop --state ~/.tokenless/node.json",
+            "tokenless node run --state ~/.tokenless/node.json",
+            "tokenless run --vault personal --bundle my-agent -- claude",
+        ] {
+            assert!(
+                commands.iter().any(|(c, _)| c == wanted),
+                "{wanted}: {commands:#?}"
+            );
+        }
+        for (command, whole) in &commands {
+            let Err(e) = Cli::try_parse_from(command.split_whitespace()) else {
+                continue;
+            };
+            // Naming a command leaves out what it needs; it still has to
+            // name commands and flags that exist.
+            let unknown = matches!(
+                e.kind(),
+                clap::error::ErrorKind::UnknownArgument | clap::error::ErrorKind::InvalidSubcommand
+            );
+            if *whole || unknown {
+                panic!("the skill suggests `{command}`, which does not parse:\n{e}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_skill_keeps_keys_and_identities_out_of_the_project() {
+        // The skill's setup runs in the user's project, where `./data` and
+        // `./node.json` (the root key, the proxy's private keys) would sit
+        // one `git add .` away from a commit. Every command that writes one
+        // names a path in the home directory.
+        let outside = |path: &std::path::Path| path.starts_with("~/") || path.is_absolute();
+        for (command, whole) in suggested_commands(skill::SKILL_MD) {
+            let Ok(cli) = Cli::try_parse_from(command.split_whitespace()) else {
+                continue;
+            };
+            let written = match &cli.command {
+                Command::Serve(args) => &args.data_dir,
+                Command::Proxy {
+                    command: ProxyCommand::Add { state, .. },
+                }
+                | Command::Node {
+                    command: NodeCommand::Join { state, .. } | NodeCommand::Run { state, .. },
+                } => state,
+                _ => continue,
+            };
+            assert!(whole, "`{command}` is only named, never shown in full");
+            assert!(
+                outside(written),
+                "the skill suggests `{command}`, which writes {} in the project",
+                written.display()
+            );
+        }
+    }
+
     #[test]
     fn update_check_does_not_take_a_release() {
         // A check says whether a newer release exists; a named one is no answer.
