@@ -395,10 +395,17 @@ pub async fn update(
         }
     }
     let expected = tag.as_deref().map(parse_tag).transpose()?;
+    let work = tempfile::tempdir().map_err(io("creating a temporary directory"))?;
 
     // Written next to the binary, so the final rename is atomic; failing
-    // here, before any download, is the cheapest place to find out.
-    let dir = installed.parent().unwrap_or(Path::new("."));
+    // here, before any download, is the cheapest place to find out. A
+    // check (a mirror's latest is only known once it runs) installs
+    // nothing, so it needs no write access there.
+    let dir = if opts.check_only {
+        work.path()
+    } else {
+        installed.parent().unwrap_or(Path::new("."))
+    };
     let staged = tempfile::Builder::new()
         .prefix(".tokenless-update-")
         .tempfile_in(dir)
@@ -419,7 +426,6 @@ pub async fn update(
         ),
     };
     let asset = format!("tokenless-{target}.tar.gz");
-    let work = tempfile::tempdir().map_err(io("creating a temporary directory"))?;
 
     let sums_bytes = http.small(&format!("{base}/SHA256SUMS")).await?;
     let sums = String::from_utf8_lossy(&sums_bytes).into_owned();
@@ -455,7 +461,10 @@ pub async fn update(
     }
 
     unpack(&archive, &asset, target, staged.path())?;
-    let found = run_version(staged.path(), installed).await?;
+    // Closed first: Linux refuses to run a file open for writing ("Text
+    // file busy").
+    let staged = staged.into_temp_path();
+    let found = run_version(&staged, installed).await?;
     match &expected {
         Some(expected) if found != *expected => {
             return Err(UpdateError::VersionMismatch {
@@ -922,6 +931,41 @@ mod tests {
 
         let outcome = update(&opts, &installed.path, &v("0.2.0")).await.unwrap();
         assert!(matches!(outcome, Outcome::Updated { .. }), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn checking_a_mirror_needs_no_write_access_to_the_binary_s_directory() {
+        let release = Arc::new(Release::default());
+        publish(&release, "unused", "9.9.9");
+        let base = serve(release.clone()).await;
+        let installed = Installed::new();
+        let dir = installed.path.parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let opts = Options {
+            mirror: Some(format!("{base}/mirror")),
+            check_only: true,
+            ..options("https://github.invalid")
+        };
+
+        let newer = update(&opts, &installed.path, &v("0.2.0")).await;
+        let same = update(&opts, &installed.path, &v("9.9.9")).await;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            newer.unwrap(),
+            Outcome::Available {
+                current: v("0.2.0"),
+                latest: v("9.9.9")
+            }
+        );
+        assert_eq!(
+            same.unwrap(),
+            Outcome::UpToDate {
+                current: v("9.9.9"),
+                latest: v("9.9.9")
+            }
+        );
+        assert_eq!(installed.contents(), "the installed binary");
+        assert_eq!(installed.leftovers(), Vec::<String>::new());
     }
 
     /// A stand-in for cosign that exits with `code` and prints `stderr`.

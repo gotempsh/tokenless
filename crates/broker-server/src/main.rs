@@ -151,7 +151,7 @@ enum Command {
 struct UpdateArgs {
     /// Only say whether a newer release exists. Exits 10 when one does,
     /// 0 when this is the latest.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "release")]
     check: bool,
     /// Install this release, such as v0.3.0, instead of the latest; even
     /// an older one.
@@ -1852,6 +1852,16 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_check_does_not_take_a_release() {
+        // A check says whether a newer release exists; a named one is no answer.
+        assert!(Cli::try_parse_from(["tokenless", "update", "--check"]).is_ok());
+        assert!(Cli::try_parse_from(["tokenless", "update", "--release", "v0.1.0"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["tokenless", "update", "--check", "--release", "v0.1.0"]).is_err()
+        );
+    }
 
     #[test]
     fn a_wildcard_listener_is_signed_in_to_on_loopback() {

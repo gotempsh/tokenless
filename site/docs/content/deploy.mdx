@@ -219,8 +219,8 @@ with a Git scope) until it is upgraded; the control plane logs a warning naming 
 
 ### Automatic updates
 
-A systemd timer can check for a release every day, and update and restart
-only when there is one:
+On the control plane, a systemd timer can check for a release every day,
+and update and restart only when there is one:
 
 ```ini
 # /etc/systemd/system/tokenless-update.service
@@ -253,10 +253,15 @@ systemctl enable --now tokenless-update.timer
 
 It runs as root, which can replace `/usr/local/bin/tokenless`; the service
 itself still runs as `tokenless`. A failed check or update fails the unit,
-so `systemctl status tokenless-update` shows why. On proxy hosts, use the
-same units with the proxy's service name and a later time, such as
-`05:00`, so the control plane is upgraded first. A restarted proxy lets
-open tunnels finish for `--drain-secs` first.
+so `systemctl status tokenless-update` shows why.
+
+Don't put proxies on the same timer: each host installs whatever release
+is newest when its timer fires, so a release published between two runs
+would reach the proxies before the control plane. Update a proxy once the
+control plane runs the new version, to that version: `tokenless --version`
+on the control plane names it, and `tokenless update --release v0.3.0`
+installs it on the proxy. Then restart the proxy's service; it lets open
+tunnels finish for `--drain-secs` first.
 
 **Upgrading past the removal of `session_issuer` keys.** API keys with
 the `session_issuer` role are deleted on upgrade, and whatever used one

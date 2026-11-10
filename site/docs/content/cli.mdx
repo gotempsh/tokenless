@@ -71,7 +71,7 @@ piped in on standard input.
 
 | Option | Default | |
 |---|---|---|
-| `--check` | | Only say whether a newer release exists. Exits `10` when one does, `0` when this is the latest |
+| `--check` | | Only say whether a newer release exists. Exits `10` when one does, `0` when this is the latest. Not with `--release` |
 | `--release` | the latest | A release tag, e.g. `v0.2.0`. Installed even when it is older |
 | `--require-signature` | | Refuse to update unless cosign verifies the signature |
 | `--repo` | `TOKENLESS_REPO`, or `gotempsh/tokenless` | Where releases come from |
