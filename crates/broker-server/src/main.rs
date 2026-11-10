@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1920,10 +1920,7 @@ fn skill_command(
             } else {
                 skill::home()?
             };
-            // Claude Code gets its link when it is set up for this user or
-            // this project.
-            let claude_code = home_dir().is_some_and(|h| skill::Agent::ClaudeCode.set_up(&h))
-                || (project && base.join(".claude").is_dir());
+            let claude_code = for_claude_code(home_dir().as_deref(), &base, project, copy);
             let (placed, failed) = skill::install_for_agents(&base, claude_code, copy, force);
             let again = if project {
                 "tokenless skill --install --project --force"
@@ -1952,6 +1949,14 @@ fn skill_command(
         ));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether `skill --install` places the skill for Claude Code too: when it
+/// is set up for this user or this project, or asked for with `--copy`,
+/// which only Claude Code's folder takes.
+fn for_claude_code(home: Option<&Path>, base: &Path, project: bool, copy: bool) -> bool {
+    copy || home.is_some_and(|h| skill::Agent::ClaudeCode.set_up(h))
+        || (project && base.join(".claude").is_dir())
 }
 
 /// What `skill --install` did for one agent; `force` is the command that
@@ -2142,6 +2147,22 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copy_places_the_skill_for_claude_code_before_it_is_set_up() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (h, p) = (Some(home.path()), project.path());
+        assert!(!super::for_claude_code(h, p, false, false));
+        assert!(!super::for_claude_code(h, p, true, false));
+        assert!(super::for_claude_code(h, p, false, true));
+        assert!(super::for_claude_code(h, p, true, true));
+        std::fs::create_dir_all(p.join(".claude")).unwrap();
+        assert!(super::for_claude_code(h, p, true, false));
+        assert!(!super::for_claude_code(h, p, false, false));
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        assert!(super::for_claude_code(h, p, false, false));
+    }
+
     #[test]
     fn a_kept_skill_names_the_force_command_for_the_same_place() {
         let kept = super::skill::Placed {
