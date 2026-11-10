@@ -20,8 +20,9 @@ test('diagrams are Mermaid, never drawn in a code block', () => {
   const drawn: string[] = [];
   for (const file of pages(content)) {
     const text = readFileSync(file, 'utf8');
-    for (const block of text.matchAll(/^```(\w*)[^\n]*\n([\s\S]*?)^```/gm)) {
-      if (block[1] !== 'mermaid' && DRAWING.test(block[2])) {
+    // Backtick or tilde fences, indented too (a block inside a numbered step).
+    for (const block of text.matchAll(/^[ \t]*(`{3,}|~{3,})(\w*)[^\n]*\n([\s\S]*?)^[ \t]*\1/gm)) {
+      if (block[2] !== 'mermaid' && DRAWING.test(block[3])) {
         drawn.push(`${relative(content, file)}:${text.slice(0, block.index).split('\n').length}`);
       }
     }

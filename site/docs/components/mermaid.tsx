@@ -22,6 +22,9 @@ export function Mermaid({ chart }: { chart: string }) {
   const id = `mermaid-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
   const { resolvedTheme } = useTheme();
   const [svg, setSvg] = useState<string | null>(null);
+  // Mermaid removes any element with the id it draws under, so each drawing
+  // gets its own: a superseded one must not delete the diagram on screen.
+  const drawings = useRef(0);
   const box = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState(0);
   // The chart's width as written, from its first drawing.
@@ -59,10 +62,13 @@ export function Mermaid({ chart }: { chart: string }) {
           lineColor: dark ? '#737373' : '#a3a3a3',
           edgeLabelBackground: dark ? '#111111' : '#fafafa',
           tertiaryColor: 'transparent',
+          clusterBkg: dark ? '#141414' : '#f5f5f5',
+          clusterBorder: dark ? '#3f3f3f' : '#d4d4d4',
+          titleColor: dark ? '#a3a3a3' : '#525252',
         },
       });
       try {
-        const { svg } = await mermaid.render(id, upright ? chart.replace(SIDEWAYS, '$1TD') : chart);
+        const { svg } = await mermaid.render(`${id}-${++drawings.current}`, upright ? chart.replace(SIDEWAYS, '$1TD') : chart);
         if (cancelled) return;
         setSvg(svg);
         if (!upright) setWide(Number(svg.match(/viewBox="[-\d.]+ [-\d.]+ ([\d.]+)/)?.[1] ?? 0));

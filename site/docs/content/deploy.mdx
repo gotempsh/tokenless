@@ -154,8 +154,8 @@ contains:
 flowchart TD
   accTitle: The key hierarchy
   accDescr: The root key, kept outside the database, encrypts the instance key. The instance key encrypts the data keys, one per vault and one for the instance. The data keys encrypt the secrets. Everything but the root key is in the database.
-  root("Root key, outside the database") -- encrypts --> instance("Instance key")
-  instance -- encrypts --> data("Data keys, one per vault")
+  root("Root key<br/>outside the database") -- encrypts --> instance("Instance key<br/>in the database")
+  instance -- encrypts --> data("Data keys in the database,<br/>one per vault and one for the instance")
   data -- encrypt --> secrets("Secrets")
 ```
 
