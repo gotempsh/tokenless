@@ -147,7 +147,18 @@ proxy refuses both. Narrow the GitLab rule's paths to `/api/*`
 
 The skill tells an agent how to see what it can reach, hand a tool a
 placeholder instead of a key, and read the proxy's answers below without
-trying to work around them. Install it into the agents you use with the
+trying to work around them.
+
+It also helps before you use tokenless. When you paste a key into the
+chat, ask the agent to write one into `.env` or a shell profile, or a
+tool fails for want of one, an agent with the skill offers to keep the
+key in a vault instead and gives you the commands: install, `serve` and
+`login` if you have no control plane yet, `tokenless service add` (which
+asks you for the key, so the agent never sees it), and `proxy add`. It
+then runs commands behind the bundle with `tokenless run`, or asks you to
+restart it behind it. It suggests revoking a key you already pasted.
+
+Install it into the agents you use with the
 [skills CLI](https://skills.sh):
 
 ```sh
