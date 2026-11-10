@@ -83,11 +83,15 @@ tokenless service add openai --vault personal --bundle my-agent --web --open
 - `--secret-file` creates `~/.tokenless/incoming/<template>` (or the path
   you give it), readable only by you, and waits until you save the key in
   it. Then it stores the key and overwrites and deletes the file. If
-  storing fails (a sign-in that ended, a name already taken), the file
-  stays and running the command again reads it. A template with several
-  fields gets a line per field; a line it can't read is reported and it
-  keeps waiting for the fix. The file is deleted if the command is stopped
-  or gives up waiting. `--open` opens it in your text editor;
+  storing fails before the key is saved (a sign-in that ended, a name
+  already taken), the file stays and running the command again reads it;
+  if the key was saved but its rule or bundle was not, the file is deleted
+  and the error says to finish the service on the vault's page. A key
+  written as `OPENAI_API_KEY=sk-...` is stored without the name. A template
+  with several fields gets a line per field; a line it can't read is
+  reported and it keeps waiting for the fix. A file it created is deleted
+  if the command is stopped or gives up waiting; a file that was already
+  there is left as it was. `--open` opens it in your text editor;
   close the editor once you have saved, as some keep a backup copy.
 - `--web` prints the console page that adds the service, with the vault
   and bundle chosen when they exist, and waits until you save it there.

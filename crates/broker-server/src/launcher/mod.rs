@@ -69,6 +69,16 @@ pub enum LauncherError {
         reason: String,
     },
 
+    /// `service add` stored the credential, then a later step failed: the
+    /// key is in the vault, so it must not be asked for again.
+    #[error("the service '{service}' is stored in vault '{vault}', but {step} failed: {source}; finish it on the vault's page in the console, or delete the service there and run this again")]
+    PartlyAdded {
+        service: String,
+        vault: String,
+        step: &'static str,
+        source: Box<LauncherError>,
+    },
+
     #[error("I/O failure while {context}: {source}")]
     Io {
         context: String,

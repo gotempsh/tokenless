@@ -458,10 +458,11 @@ enum ServiceCommand {
         /// Let agents only read (GET and HEAD).
         #[arg(long)]
         read_only: bool,
-        /// Read the credential from a file the person fills in, then wipe
-        /// and delete it. The file is created (mode 0600) if missing, at
-        /// ~/.tokenless/incoming/<template> without a path, and the command
-        /// waits until it is saved.
+        /// Read the credential from a file the person fills in, and wipe and
+        /// delete it once the credential is stored. The file is created
+        /// (mode 0600) if missing, at ~/.tokenless/incoming/<template>
+        /// without a path, and the command waits until it is saved. A file
+        /// that was already there is only deleted once its key is stored.
         #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "web")]
         secret_file: Option<String>,
         /// Don't take the credential here: print the console page that adds

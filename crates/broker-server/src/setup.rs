@@ -14,10 +14,11 @@ use broker_server::launcher::account::{self, AddService, ConsoleClient, SessionS
 use broker_server::launcher::secret_file::{self, Fields, Prepared};
 use broker_server::launcher::status::{self, Observed, ProxyStateFile, Skill, VaultSummary};
 use broker_server::launcher::templates::{self, TemplateRow};
+use broker_server::launcher::trust::shell_word;
 use broker_server::launcher::{skill, LauncherError};
 use serde::Serialize;
 use tokenless_control::model::{AccessBundle, StoredTemplate};
-use tokenless_core::ids::{CredentialId, RuleId, VaultId};
+use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 
 use super::messages::{self, say};
@@ -249,18 +250,19 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         Ok(added) => added,
         Err(e) => {
             if let Some(path) = &file {
-                say(messages::kept_secret_file(&path.display().to_string()));
+                if matches!(e, LauncherError::PartlyAdded { .. }) {
+                    // The key is in the vault; another try would only
+                    // collide with it.
+                    discard(path);
+                } else {
+                    say(messages::kept_secret_file(&path.display().to_string()));
+                }
             }
             return Err(e.into());
         }
     };
     if let Some(path) = &file {
-        if let Err(e) = secret_file::remove(path) {
-            say(format_args!(
-                "the key is stored, but {} could not be deleted: {e}; delete it yourself",
-                path.display()
-            ));
-        }
+        discard(path);
     }
     let bundle = added
         .bundle
@@ -289,13 +291,29 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
 }
 
 fn run_command(vault: &str, bundle: &str) -> String {
-    format!("tokenless run --vault {vault} --bundle {bundle} -- <command>")
+    format!(
+        "tokenless run --vault {} --bundle {} -- <command>",
+        shell_word(vault),
+        shell_word(bundle)
+    )
 }
 
-/// Deletes the secret file when the wait for it ends without a key (a stop
-/// signal, the deadline, an unreadable file), unless the process is killed
-/// outright. Disarmed once the key is read: the file is then kept until the
-/// key is stored, so a failed store loses nothing.
+/// Deletes a stored key's secret file, or says it could not.
+fn discard(path: &Path) {
+    if let Err(e) = secret_file::remove(path) {
+        say(format_args!(
+            "the key is stored, but {} could not be deleted: {e}; delete it yourself",
+            path.display()
+        ));
+    }
+}
+
+/// Deletes the secret file this command created when the wait for it ends
+/// without a key (a stop signal, the deadline, an unreadable file), unless
+/// the process is killed outright. Never armed for a file that was already
+/// there, which may be the person's own. Disarmed once the key is read: the
+/// file is then kept until the key is stored, so a failed store loses
+/// nothing.
 struct RemoveOnDrop<'a> {
     path: &'a Path,
     armed: bool,
@@ -336,7 +354,7 @@ async fn from_file(
     let prepared = secret_file::prepare(&path, &template.template.name, args.vault.trim(), fields)?;
     let mut remove = RemoveOnDrop {
         path: &path,
-        armed: true,
+        armed: prepared == Prepared::Created,
     };
     let shown = path.display().to_string();
     if prepared == Prepared::Created || !secret_file::filled(&path, fields) {
@@ -369,7 +387,8 @@ async fn from_file(
         values = wait => values?,
         signal = stop_signal() => {
             let signal = signal.unwrap_or("a stop signal");
-            return Err(LauncherError::config(format!("stopped by {signal}; {shown} was deleted, nothing was stored")).into());
+            let file = if remove.armed { "was deleted" } else { "was left as it was" };
+            return Err(LauncherError::config(format!("stopped by {signal}; {shown} {file}, nothing was stored")).into());
         }
     };
     remove.armed = false;
@@ -395,6 +414,11 @@ async fn add_from_web(
         _ => None,
     };
     let before = services_of(client, id).await?;
+    // What exists before the page opens, to tell what the page created.
+    let mut bundles_before: Vec<BundleId> = Vec::new();
+    for v in &vaults {
+        bundles_before.extend(client.bundles(&v.id).await?.into_iter().map(|b| b.id));
+    }
     let url = account::add_service_url(
         &args.server,
         id,
@@ -445,10 +469,10 @@ async fn add_from_web(
     let joined = bundle_of(client, &vault_id, &credential, args.bundle.as_deref()).await?;
     // The page may have created the vault and the bundle; they are new when
     // they were not there before it opened.
-    let vault_created = vault.is_none_or(|v| v.id != vault_id);
+    let vault_created = !vaults.iter().any(|v| v.id == vault_id);
     let bundle_created = joined
         .as_ref()
-        .is_some_and(|b| bundle.as_ref().is_none_or(|before| before.id != b.id));
+        .is_some_and(|b| !bundles_before.contains(&b.id));
     let joined = joined.map(|b| b.name);
     if args.json {
         print_json(&Added {
@@ -467,7 +491,7 @@ async fn add_from_web(
                 run_command(&vault_name, b)
             )),
             None => say(format_args!(
-                "added {service} to vault '{vault_name}' in the console, in no access bundle yet; add it to one on the vault's page, then: tokenless run --vault {vault_name} --bundle <bundle> -- <command>"
+                "added {service} to vault '{vault_name}' in the console, in no access bundle yet; add it to one on the vault's page, then: tokenless run --vault {} --bundle <bundle> -- <command>", shell_word(&vault_name)
             )),
         }
     }

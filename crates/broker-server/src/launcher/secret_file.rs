@@ -132,10 +132,25 @@ pub fn parse(content: &str, fields: &[CredentialField]) -> Result<Option<Fields>
         .collect();
     let mut out = Fields::new();
     if let [only] = fields {
-        let prefix = format!("{}=", only.name);
-        let joined = lines.join("\n");
+        let assignments = lines
+            .iter()
+            .filter(|l| assignment(l, &only.name).is_some())
+            .count();
+        if assignments > 1 {
+            return Err(LauncherError::config(format!(
+                "the secret file holds {assignments} NAME=value lines, like a .env file; it takes only the {}, so leave just that in it",
+                only.label
+            )));
+        }
+        let joined = Zeroizing::new(lines.join("\n"));
         let value = joined.trim();
-        let value = value.strip_prefix(&prefix).unwrap_or(value).trim();
+        // The key as it was kept before: `OPENAI_API_KEY=sk-...`, maybe
+        // with `export` and quotes.
+        let value = match assignment(value, &only.name) {
+            Some(rest) if !rest.contains('\n') => unquote(rest.trim()),
+            Some(rest) => rest.trim(),
+            None => value,
+        };
         if value.is_empty() {
             return Ok(None);
         }
@@ -181,6 +196,29 @@ pub fn parse(content: &str, fields: &[CredentialField]) -> Result<Option<Fields>
         .filter(|f| f.required)
         .all(|f| out.contains_key(&f.name));
     Ok(filled.then_some(out))
+}
+
+/// What follows `NAME=` (or `export NAME=`) when `line` starts with an
+/// assignment to `field` or to a variable such as `OPENAI_API_KEY`: an
+/// upper-case name with an underscore, which no key starts with.
+fn assignment<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    let line = line.trim_start();
+    let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+    let (name, rest) = line.split_once('=')?;
+    let variable = name.contains('_')
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    (name == field || variable).then_some(rest)
+}
+
+/// `value` without one pair of matching quotes around it.
+fn unquote(value: &str) -> &str {
+    ['"', '\'']
+        .iter()
+        .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+        .unwrap_or(value)
 }
 
 /// The file's content; it never holds more than a credential.
@@ -335,6 +373,29 @@ mod tests {
         assert_eq!(value(&got, "client_id"), "abc");
         assert_eq!(value(&got, "client_secret"), "s=3");
         assert!(!got.contains_key("region"));
+    }
+
+    #[test]
+    fn a_key_kept_as_a_variable_is_stored_without_the_name() {
+        let fields = [field("api_key", true)];
+        for content in [
+            "OPENAI_API_KEY=sk-abc123\n",
+            "export OPENAI_API_KEY=\"sk-abc123\"\n",
+            "# from my .env\nOPENAI_API_KEY='sk-abc123'\n",
+            "api_key=sk-abc123\n",
+        ] {
+            let got = parse(content, &fields).unwrap().unwrap();
+            assert_eq!(value(&got, "api_key"), "sk-abc123", "{content:?}");
+        }
+        // A whole .env is refused, without repeating any of it.
+        let e = parse("OPENAI_API_KEY=sk-abc123\nOTHER_TOKEN=xyz\n", &fields)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("2 NAME=value lines"), "{e}");
+        assert!(!e.contains("sk-abc123") && !e.contains("xyz"), "{e}");
+        // A key that merely holds `=` is left alone.
+        let got = parse("c2VjcmV0==\n", &fields).unwrap().unwrap();
+        assert_eq!(value(&got, "api_key"), "c2VjcmV0==");
     }
 
     #[test]

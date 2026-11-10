@@ -843,6 +843,12 @@ impl ConsoleClient<'_> {
         template: &StoredTemplate,
         fields: BTreeMap<String, Zeroizing<String>>,
     ) -> Result<AddedService, LauncherError> {
+        // Checked before anything is stored, so a bad name cannot leave a
+        // stored credential behind.
+        if let Some(bundle) = &plan.bundle {
+            tokenless_control::service::bundles::validate_bundle_name(bundle)
+                .map_err(|e| LauncherError::config(e.to_string()))?;
+        }
         let vault_name = plan.vault.trim();
         let (vault, vault_created) = match self
             .vaults()
@@ -872,12 +878,26 @@ impl ConsoleClient<'_> {
             )
             .await?;
         drop(fields);
+        let partly = |step: &'static str| {
+            let (service, vault) = (credential.name.clone(), vault.name.clone());
+            move |source: LauncherError| LauncherError::PartlyAdded {
+                service,
+                vault,
+                step,
+                source: Box::new(source),
+            }
+        };
         let rule = self
             .create_rule(&vault.id, &credential.id, &name, plan.read_only)
-            .await?;
+            .await
+            .map_err(partly("creating its rule"))?;
         let bundle = match &plan.bundle {
             None => None,
-            Some(bundle_name) => Some(self.join_bundle(&vault.id, bundle_name, &rule.id).await?),
+            Some(bundle_name) => Some(
+                self.join_bundle(&vault.id, bundle_name, &rule.id)
+                    .await
+                    .map_err(partly("adding it to the access bundle"))?,
+            ),
         };
         Ok(AddedService {
             vault,

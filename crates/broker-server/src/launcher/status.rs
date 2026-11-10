@@ -12,6 +12,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokenless_control::model::Node;
 
+use super::trust::shell_word;
+
 /// A proxy not heard from for this long is not serving agents (proxies
 /// poll every few seconds); the console uses the same cut-off.
 pub const CONNECTED_WITHIN: chrono::Duration = chrono::Duration::minutes(2);
@@ -146,14 +148,17 @@ pub fn connected(node: &Node, now: DateTime<Utc>) -> bool {
 /// bundle, then any vault with a service.
 fn suggested(vaults: &[VaultSummary]) -> (String, String) {
     let with_services = || vaults.iter().filter(|v| v.services > 0);
-    with_services()
-        .find_map(|v| v.bundles.first().map(|b| (v.name.clone(), b.clone())))
+    let (vault, bundle) = with_services()
+        .find_map(|v| v.bundles.first().map(|b| (v.name.as_str(), b.as_str())))
         .or_else(|| {
             with_services()
                 .next()
-                .map(|v| (v.name.clone(), "my-agent".into()))
+                .map(|v| (v.name.as_str(), "my-agent"))
         })
-        .unwrap_or_else(|| ("personal".into(), "my-agent".into()))
+        .unwrap_or(("personal", "my-agent"));
+    // Both go into commands an agent runs as they are; a vault name may
+    // hold a space.
+    (shell_word(vault), shell_word(bundle))
 }
 
 pub fn assess(o: Observed) -> Report {
@@ -587,6 +592,23 @@ mod tests {
         assert!(behind.ready);
         assert_eq!(behind.next, None);
         assert!(render(&behind).contains("This shell runs behind tokenless"));
+    }
+
+    #[test]
+    fn a_vault_name_with_a_space_is_quoted_in_the_next_command() {
+        let now = Utc::now();
+        let report = assess(Observed {
+            vaults: Some(Ok(vec![VaultSummary {
+                name: "Work stuff".into(),
+                services: 1,
+                bundles: vec!["code-review".into()],
+            }])),
+            ..observed(now)
+        });
+        assert_eq!(
+            report.next.as_deref(),
+            Some("tokenless run --vault 'Work stuff' --bundle code-review -- <command>")
+        );
     }
 
     #[test]

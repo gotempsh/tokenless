@@ -53,7 +53,7 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 | `--bundle` | | Access bundle to add the rule to, created when missing |
 | `--name` | the template's ID | Credential name |
 | `--read-only` | | Rule allows only `GET` and `HEAD` |
-| `--secret-file [PATH]` | `~/.tokenless/incoming/<template>` | Wait for the credential to be saved in this file (created, mode 0600); delete it once the credential is stored, keep it if storing fails |
+| `--secret-file [PATH]` | `~/.tokenless/incoming/<template>` | Wait for the credential to be saved in this file (created, mode 0600); delete it once the credential is stored, keep it if storing fails; a file that was already there is never deleted otherwise |
 | `--web` | | Print the console page that adds it and wait until it is saved there. Not with `--name` or `--read-only` |
 | `--open` | | Open the page in the browser, or the file in the text editor |
 | `--wait` | `15m` | How long `--secret-file` and `--web` wait |

@@ -491,6 +491,123 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert!(out.status.success(), "{stderr}");
     assert!(!file.exists(), "stored at last, the file is deleted");
 
+    // Stored, then a later step fails: a rule already holds the name, so the
+    // credential is saved but its rule is not. The key is in the vault, so
+    // the file goes and the person is told what was stored.
+    let vault = MemoryVault::default();
+    vault.save(&session).unwrap();
+    let client = ConsoleClient::open(&vault, &url, &NoPrompts).unwrap();
+    let personal = client
+        .vaults()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|v| v.name == "personal")
+        .unwrap();
+    let rule = client
+        .rules(&personal.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == "openai-work")
+        .unwrap();
+    let renamed = reqwest::Client::new()
+        .patch(format!("{url}/api/v1/rules/{}", rule.id))
+        .header(
+            "cookie",
+            format!(
+                "{}={}",
+                tokenless_auth::cookie::SESSION_COOKIE,
+                session.token
+            ),
+        )
+        .header(tokenless_auth::csrf::CSRF_HEADER, &session.csrf_token)
+        .json(&serde_json::json!({ "name": "taken" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(renamed.status().is_success(), "{}", renamed.status());
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--name",
+        "taken",
+        "--secret-file",
+        "--wait",
+        "1m",
+    ]);
+    appears(&file).await;
+    let instructions = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{instructions}{KEY}\n")).unwrap();
+    let out = finish(child).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(
+            "the service 'taken' is stored in vault 'personal', but creating its rule failed"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("nothing was stored"), "{stderr}");
+    assert!(!file.exists(), "a stored key's file is deleted");
+
+    // A bundle name the server would refuse is refused before anything is
+    // stored, so the key stays in the file for another try.
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--name",
+        "openai-spaced",
+        "--bundle",
+        "my agent",
+        "--secret-file",
+        "--wait",
+        "1m",
+    ]);
+    appears(&file).await;
+    let instructions = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{instructions}{KEY}\n")).unwrap();
+    let out = finish(child).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("access bundle name 'my agent'"), "{stderr}");
+    assert!(stderr.contains("still holds the key"), "{stderr}");
+    assert!(std::fs::read_to_string(&file).unwrap().contains(KEY));
+    assert!(!client
+        .credentials(&personal.id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|c| c.name == "openai-spaced"));
+    std::fs::remove_file(&file).unwrap();
+
+    // A file that was already there is the person's: giving up on it leaves
+    // it alone.
+    let theirs = cli.home.path().join("notes.env");
+    std::fs::write(&theirs, "# my notes\n").unwrap();
+    let out = finish(cli.spawn(&[
+        "service",
+        "add",
+        "openai",
+        "--vault",
+        "personal",
+        "--secret-file",
+        theirs.to_str().unwrap(),
+        "--wait",
+        "1s",
+    ]))
+    .await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("nothing was saved"), "{stderr}");
+    assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "# my notes\n");
+
     // Stopped while it waits: the file goes, nothing is stored.
     let child = cli.spawn(&[
         "service",
