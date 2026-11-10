@@ -23,7 +23,9 @@ COPY --chmod=0755 ${TARGETPLATFORM}/tokenless /usr/local/bin/tokenless
 COPY --from=data --chown=65532:65532 /data /data
 VOLUME /data
 EXPOSE 8080 8443
-# `tokenless update` reads this and says to pull a new image instead.
-ENV TOKENLESS_CONTAINER_IMAGE=ghcr.io/gotempsh/tokenless
+# `tokenless update` reads this and says to pull a new image instead. The
+# release workflow passes the name it publishes under.
+ARG IMAGE=ghcr.io/gotempsh/tokenless
+ENV TOKENLESS_CONTAINER_IMAGE=${IMAGE}
 ENTRYPOINT ["/usr/local/bin/tokenless"]
 CMD ["serve", "--data-dir", "/data", "--api-listen", "0.0.0.0:8080", "--node-listen", "0.0.0.0:8443"]

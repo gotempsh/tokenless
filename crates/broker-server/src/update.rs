@@ -24,6 +24,13 @@ use tokio::io::AsyncWriteExt;
 use crate::webhook_transport::describe;
 
 pub const DEFAULT_REPO: &str = "gotempsh/tokenless";
+/// This build's version. The release workflow gives a release build its
+/// tag's version, suffix included (`0.3.0-rc.1`): the crate's version never
+/// has one, so an rc built from it would pass for the final release.
+pub const VERSION: &str = match option_env!("TOKENLESS_BUILD_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 /// Set in the container image to its name: there, the image is updated,
 /// not the binary inside it.
 pub const CONTAINER_IMAGE_ENV: &str = "TOKENLESS_CONTAINER_IMAGE";
@@ -73,6 +80,9 @@ pub struct Options {
     pub cosign: Option<PathBuf>,
     /// Refuse to install without verifying the signature.
     pub require_signature: bool,
+    /// A PEM file of CAs trusted for the downloads besides the public
+    /// ones: a mirror's internal CA, or a TLS-inspecting proxy's.
+    pub ca_file: Option<PathBuf>,
     /// `https://github.com`; tests point it at a local server.
     pub github: String,
 }
@@ -86,6 +96,7 @@ impl Options {
             check_only: false,
             cosign: None,
             require_signature: false,
+            ca_file: None,
             github: GITHUB.into(),
         }
     }
@@ -128,6 +139,8 @@ pub enum UpdateError {
         binary: String,
         source: std::io::Error,
     },
+    #[error("reading the CA file {path}: {reason}")]
+    Ca { path: String, reason: String },
     #[error("finding the latest release of {repo}: {reason}")]
     Latest { repo: String, reason: String },
     #[error("release tag {tag:?} is not a version such as v1.2.3")]
@@ -216,6 +229,16 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Why a request failed; a timeout names the limit that ran out.
+fn why(e: reqwest::Error) -> String {
+    let limit = if e.is_connect() {
+        CONNECT_TIMEOUT
+    } else {
+        READ_TIMEOUT
+    };
+    describe(e, limit)
+}
+
 struct Http {
     /// Follows redirects: release downloads are redirected to storage.
     follow: reqwest::Client,
@@ -230,7 +253,18 @@ impl Http {
                 .mirror
                 .as_deref()
                 .is_some_and(|m| m.starts_with("http://"));
-        let tls = tokenless_dataplane::tls::upstream_client_config(true, &[]).map_err(|e| {
+        let mut roots = Vec::new();
+        if let Some(path) = &opts.ca_file {
+            let shown = path.display().to_string();
+            let fail = |reason: String| UpdateError::Ca {
+                path: shown.clone(),
+                reason,
+            };
+            let pem = std::fs::read_to_string(path).map_err(|e| fail(e.to_string()))?;
+            roots = tokenless_dataplane::tls::certs_from_pem(&shown, &pem)
+                .map_err(|e| fail(e.to_string()))?;
+        }
+        let tls = tokenless_dataplane::tls::upstream_client_config(true, &roots).map_err(|e| {
             UpdateError::Download {
                 url: opts.github.clone(),
                 reason: e.to_string(),
@@ -249,7 +283,7 @@ impl Http {
                 .build()
                 .map_err(|e| UpdateError::Download {
                     url: opts.github.clone(),
-                    reason: describe(e, READ_TIMEOUT),
+                    reason: why(e),
                 })
         };
         Ok(Self {
@@ -268,12 +302,7 @@ impl Http {
             repo: opts.repo.clone(),
             reason,
         };
-        let response = self
-            .once
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| fail(describe(e, READ_TIMEOUT)))?;
+        let response = self.once.get(&url).send().await.map_err(|e| fail(why(e)))?;
         let status = response.status();
         if !status.is_redirection() {
             return Err(fail(if status == reqwest::StatusCode::NOT_FOUND {
@@ -302,7 +331,7 @@ impl Http {
             .get(url)
             .send()
             .await
-            .map_err(|e| fail(describe(e, READ_TIMEOUT)))?;
+            .map_err(|e| fail(why(e)))?;
         if !response.status().is_success() {
             return Err(fail(format!("answered {}", response.status())));
         }
@@ -314,7 +343,7 @@ impl Http {
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|e| UpdateError::Download {
             url: url.into(),
-            reason: describe(e, READ_TIMEOUT),
+            reason: why(e),
         })? {
             body.extend_from_slice(&chunk);
             if body.len() as u64 > MAX_SMALL_FILE {
@@ -337,7 +366,7 @@ impl Http {
         let mut size = 0u64;
         while let Some(chunk) = response.chunk().await.map_err(|e| UpdateError::Download {
             url: url.into(),
-            reason: describe(e, READ_TIMEOUT),
+            reason: why(e),
         })? {
             size += chunk.len() as u64;
             if size > MAX_ARCHIVE {
@@ -400,20 +429,28 @@ pub async fn update(
     // Written next to the binary, so the final rename is atomic; failing
     // here, before any download, is the cheapest place to find out. A
     // check (a mirror's latest is only known once it runs) installs
-    // nothing, so it needs no write access there.
-    let dir = if opts.check_only {
-        work.path()
-    } else {
-        installed.parent().unwrap_or(Path::new("."))
+    // nothing, so without write access there it uses a temporary
+    // directory instead.
+    let beside = installed.parent().unwrap_or(Path::new("."));
+    let stage = |dir: &Path| {
+        tempfile::Builder::new()
+            .prefix(".tokenless-update-")
+            .tempfile_in(dir)
     };
-    let staged = tempfile::Builder::new()
-        .prefix(".tokenless-update-")
-        .tempfile_in(dir)
-        .map_err(|source| UpdateError::NotWritable {
-            dir: dir.display().to_string(),
-            binary: installed.display().to_string(),
-            source,
-        })?;
+    let (staged, staged_in) = match stage(beside) {
+        Ok(staged) => (staged, beside),
+        Err(_) if opts.check_only => (
+            stage(work.path()).map_err(io("staging the download"))?,
+            work.path(),
+        ),
+        Err(source) => {
+            return Err(UpdateError::NotWritable {
+                dir: beside.display().to_string(),
+                binary: installed.display().to_string(),
+                source,
+            })
+        }
+    };
 
     // Without a mirror the tag is always known.
     let base = match &opts.mirror {
@@ -464,7 +501,20 @@ pub async fn update(
     // Closed first: Linux refuses to run a file open for writing ("Text
     // file busy").
     let staged = staged.into_temp_path();
-    let found = run_version(&staged, installed).await?;
+    let found = run_version(&staged, installed)
+        .await
+        .map_err(|e| match e {
+            UpdateError::NewBinary { binary, reason } if staged_in != beside => {
+                UpdateError::NewBinary {
+                    binary,
+                    reason: format!(
+                        "{reason} (run from {}; if it is mounted noexec, set TMPDIR to a directory that allows running programs)",
+                        staged_in.display()
+                    ),
+                }
+            }
+            other => other,
+        })?;
     match &expected {
         Some(expected) if found != *expected => {
             return Err(UpdateError::VersionMismatch {
@@ -931,6 +981,59 @@ mod tests {
 
         let outcome = update(&opts, &installed.path, &v("0.2.0")).await.unwrap();
         assert!(matches!(outcome, Outcome::Updated { .. }), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn a_prerelease_installs_and_is_replaced_by_its_final_release() {
+        // A release build reports its tag's version, suffix included.
+        let release = Arc::new(Release::default());
+        let base = serve(release.clone()).await;
+        let installed = Installed::new();
+        publish(&release, "v0.3.0-rc.1", "0.3.0-rc.1");
+        let rc = Options {
+            wanted: Wanted::Release("v0.3.0-rc.1".into()),
+            ..options(&base)
+        };
+        let outcome = update(&rc, &installed.path, &v("0.2.0")).await.unwrap();
+        assert!(
+            matches!(&outcome, Outcome::Updated { to, .. } if *to == v("0.3.0-rc.1")),
+            "{outcome:?}"
+        );
+
+        publish(&release, "v0.3.0", "0.3.0");
+        let outcome = update(&options(&base), &installed.path, &v("0.3.0-rc.1"))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&outcome, Outcome::Updated { to, .. } if *to == v("0.3.0")),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ca_file_that_cannot_be_read_fails_before_any_request() {
+        let release = Arc::new(Release::default());
+        publish(&release, "v9.9.9", "9.9.9");
+        let base = serve(release.clone()).await;
+        let installed = Installed::new();
+        let dir = tempfile::tempdir().unwrap();
+        let not_pem = dir.path().join("ca.pem");
+        std::fs::write(&not_pem, "not a certificate").unwrap();
+        for ca in [dir.path().join("missing.pem"), not_pem] {
+            let opts = Options {
+                ca_file: Some(ca.clone()),
+                ..options(&base)
+            };
+            let err = update(&opts, &installed.path, &v("0.2.0"))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, UpdateError::Ca { path, .. } if *path == ca.display().to_string()),
+                "{err}"
+            );
+        }
+        assert_eq!(release.archive_downloads.load(Ordering::SeqCst), 0);
+        assert_eq!(installed.contents(), "the installed binary");
     }
 
     #[tokio::test]

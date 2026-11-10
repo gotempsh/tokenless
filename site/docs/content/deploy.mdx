@@ -226,6 +226,8 @@ and update and restart only when there is one:
 # /etc/systemd/system/tokenless-update.service
 [Unit]
 Description=Update tokenless to the latest release
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot

@@ -98,6 +98,10 @@ jobs:
           tool: cargo-zigbuild
       - name: Build
         shell: bash
+        env:
+          # The binary reports the tag's version, suffix included, so a
+          # prerelease does not pass for its final release.
+          TOKENLESS_BUILD_VERSION: ${{ needs.console.outputs.version }}
         run: |
           if [ "${{ matrix.zig }}" = "true" ]; then
             cargo zigbuild --release --locked --bin tokenless --target "${{ matrix.target }}"
@@ -204,6 +208,7 @@ jobs:
           context: packaging
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: IMAGE=${{ steps.image.outputs.name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
