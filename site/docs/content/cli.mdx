@@ -23,6 +23,7 @@ description: "Every command takes --help for its full list of options."
 | `tokenless session revoke` | End a session. |
 | `tokenless mcp` | Print MCP client configuration for a bundle's MCP servers. See [MCP](./mcp.mdx). |
 | `tokenless skill` | Print or install the agent skill. |
+| `tokenless update` | Replace this binary with the latest release. See [Install → Update](./install.mdx#update). |
 
 ## `serve`
 
@@ -68,6 +69,17 @@ piped in on standard input.
 |---|---|---|
 | `--username` | `admin` | |
 | `--data-dir`, `--database-url` | as for `serve` | |
+
+## `update`
+
+| Option | Default | |
+|---|---|---|
+| `--check` | | Only say whether a newer release exists. Exits `10` when one does, `0` when this is the latest. Not with `--release` |
+| `--release` | the latest | A release tag, e.g. `v0.2.0`. Installed even when it is older |
+| `--require-signature` | | Refuse to update unless cosign verifies the signature |
+| `--repo` | `TOKENLESS_REPO`, or `gotempsh/tokenless` | Where releases come from |
+| `--download-url` | `TOKENLESS_DOWNLOAD_URL` | A mirror holding the release files |
+| `--download-ca` | `TOKENLESS_DOWNLOAD_CA` | A PEM file of CAs to trust for the downloads besides the public ones, for a mirror with an internal CA or a TLS-inspecting proxy |
 
 ## `node run`
 

@@ -26,6 +26,7 @@ use broker_server::launcher::trust::{
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
 use broker_server::telemetry::{self, Component, Settings as TelemetrySettings, Telemetry};
+use broker_server::update::{self, Outcome as UpdateOutcome, UpdateError};
 use broker_server::{RootKeyInput, Server, ServerConfig};
 use clap::{Parser, Subcommand};
 use messages::{detail, say};
@@ -43,7 +44,11 @@ use zeroize::Zeroizing;
 mod messages;
 
 #[derive(Parser)]
-#[command(name = "tokenless", version, about = "Credential broker for AI agents")]
+#[command(
+    name = "tokenless",
+    version = update::VERSION,
+    about = "Credential broker for AI agents"
+)]
 struct Cli {
     /// Also say what tokenless itself does (sessions, ports, proxy) on
     /// standard error. Without it `run`, `session` and `mcp` print nothing of
@@ -145,6 +150,35 @@ enum Command {
         #[arg(long, requires = "install")]
         force: bool,
     },
+    /// Replace this binary with the latest release, checked against the
+    /// release's SHA256SUMS (and its signature, when cosign is installed).
+    /// Running servers and proxies keep the old version until restarted.
+    Update(UpdateArgs),
+}
+
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// Only say whether a newer release exists. Exits 10 when one does,
+    /// 0 when this is the latest.
+    #[arg(long, conflicts_with = "release")]
+    check: bool,
+    /// Install this release, such as v0.3.0, instead of the latest; even
+    /// an older one.
+    #[arg(long)]
+    release: Option<String>,
+    /// Refuse to update unless cosign verifies the release's signature.
+    #[arg(long)]
+    require_signature: bool,
+    /// GitHub repository the releases come from.
+    #[arg(long, env = "TOKENLESS_REPO", default_value = update::DEFAULT_REPO)]
+    repo: String,
+    /// Base URL holding the release files instead of GitHub, for mirrors.
+    #[arg(long, env = "TOKENLESS_DOWNLOAD_URL")]
+    download_url: Option<String>,
+    /// A PEM file of CAs to trust for the downloads, besides the public
+    /// ones: for a mirror with an internal CA, or a TLS-inspecting proxy.
+    #[arg(long, env = "TOKENLESS_DOWNLOAD_CA")]
+    download_ca: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -610,6 +644,8 @@ enum CliError {
     DataPlane(#[from] tokenless_dataplane::DataPlaneError),
     #[error(transparent)]
     Launcher(#[from] LauncherError),
+    #[error(transparent)]
+    Update(#[from] UpdateError),
     #[error("I/O failure while {context}: {source}")]
     Io {
         context: String,
@@ -1774,6 +1810,101 @@ fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+/// `--check` exits with this when a newer release exists.
+const UPDATE_AVAILABLE: u8 = 10;
+
+/// What `--check` says when `latest` is out: how to update, which in the
+/// container `image` is pulling the new tag.
+fn available(image: Option<&str>, current: &semver::Version, latest: &semver::Version) -> String {
+    match image {
+        Some(image) => format!(
+            "{latest} is available (this is {current}); pull {image}:{latest} and recreate the container"
+        ),
+        None => format!("{latest} is available (this is {current}); update with: tokenless update"),
+    }
+}
+
+async fn update_command(args: UpdateArgs) -> Result<ExitCode, CliError> {
+    let image = std::env::var(update::CONTAINER_IMAGE_ENV).ok();
+    if let (Some(image), false) = (&image, args.check) {
+        return Err(UpdateError::Container {
+            image: image.clone(),
+        }
+        .into());
+    }
+    let installed = std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map_err(|e| CliError::Io {
+            context: "finding this binary".into(),
+            source: e,
+        })?;
+    let current = update::parse_tag(update::VERSION)?;
+    let options = update::Options {
+        mirror: args.download_url,
+        wanted: match args.release {
+            Some(tag) => update::Wanted::Release(tag),
+            None => update::Wanted::Latest,
+        },
+        check_only: args.check,
+        cosign: update::find_on_path("cosign"),
+        require_signature: args.require_signature,
+        ca_file: args.download_ca,
+        ..update::Options::new(args.repo)
+    };
+    // A stop signal (Ctrl-C, or systemd stopping the update's unit) ends the
+    // update here, so what it staged next to the binary is removed.
+    let interrupted = async {
+        match stop_signal().await {
+            Ok(signal) => signal,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    let outcome = tokio::select! {
+        outcome = update::update(&options, &installed, &current) => outcome?,
+        signal = interrupted => {
+            return Err(UpdateError::Interrupted {
+                signal,
+                binary: installed.display().to_string(),
+            }
+            .into())
+        }
+    };
+    match outcome {
+        UpdateOutcome::UpToDate { current, latest } if latest < current => {
+            say(format_args!(
+                "this is {current}, newer than the latest release {latest}"
+            ));
+            Ok(ExitCode::SUCCESS)
+        }
+        UpdateOutcome::UpToDate { current, .. } => {
+            say(format_args!("{current} is the latest release"));
+            Ok(ExitCode::SUCCESS)
+        }
+        UpdateOutcome::Available { current, latest } => {
+            say(available(image.as_deref(), &current, &latest));
+            Ok(ExitCode::from(UPDATE_AVAILABLE))
+        }
+        UpdateOutcome::Updated {
+            path,
+            from,
+            to,
+            signature_verified,
+        } => {
+            let checked = if signature_verified {
+                "checksum and signature verified"
+            } else {
+                "checksum verified; install cosign to also verify the signature"
+            };
+            say(format_args!(
+                "updated {} from {from} to {to} ({checked})",
+                path.display()
+            ));
+            say("restart tokenless serve and tokenless node run to use it");
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -1788,6 +1919,7 @@ async fn main() -> ExitCode {
             | Command::Logout { .. }
             | Command::Service { .. }
             | Command::Proxy { .. }
+            | Command::Update(_)
     );
     let (telemetry, settings, failed) = start_telemetry(&cli.command);
     init_logging(agent_side, &telemetry);
@@ -1812,6 +1944,7 @@ async fn main() -> ExitCode {
             dir,
             force,
         } => skill_command(install, dir, force),
+        Command::Update(args) => update_command(args).await,
     };
     let code = match result {
         Ok(code) => code,
@@ -1843,6 +1976,41 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_in_the_container_says_to_pull_the_image() {
+        let (current, latest) = (semver::Version::new(0, 2, 0), semver::Version::new(0, 3, 0));
+        assert_eq!(
+            available(None, &current, &latest),
+            "0.3.0 is available (this is 0.2.0); update with: tokenless update"
+        );
+        assert_eq!(
+            available(Some("ghcr.io/o/tokenless"), &current, &latest),
+            "0.3.0 is available (this is 0.2.0); pull ghcr.io/o/tokenless:0.3.0 and recreate the container"
+        );
+    }
+
+    #[test]
+    fn the_version_is_the_build_s_own() {
+        let cli = Cli::try_parse_from(["tokenless", "--version"]);
+        let Err(e) = cli else {
+            panic!("--version prints and exits");
+        };
+        assert_eq!(
+            e.to_string().trim(),
+            format!("tokenless {}", update::VERSION)
+        );
+    }
+
+    #[test]
+    fn update_check_does_not_take_a_release() {
+        // A check says whether a newer release exists; a named one is no answer.
+        assert!(Cli::try_parse_from(["tokenless", "update", "--check"]).is_ok());
+        assert!(Cli::try_parse_from(["tokenless", "update", "--release", "v0.1.0"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["tokenless", "update", "--check", "--release", "v0.1.0"]).is_err()
+        );
+    }
 
     #[test]
     fn a_wildcard_listener_is_signed_in_to_on_loopback() {
