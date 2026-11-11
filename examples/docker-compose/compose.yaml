@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# tokenless for a team: the control plane, with Caddy in front of the
+# console for HTTPS, reachable from every machine that runs agents.
+# The walkthrough is in the docs: Deploy -> Docker Compose.
+#
+#   cp .env.example .env                 # set TOKENLESS_DOMAIN
+#   openssl rand -base64 32 > root.key
+#   sudo chown 65532 root.key && sudo chmod 400 root.key
+#   docker compose up -d
+#   docker compose logs tokenless        # the admin's password, printed once
+
+name: tokenless
+
+services:
+  tokenless:
+    image: ghcr.io/gotempsh/tokenless:${TOKENLESS_VERSION:-0.3}
+    restart: unless-stopped
+    command:
+      - serve
+      - --data-dir=/data
+      - --root-key-file=/run/secrets/root_key
+      # Only Caddy reaches the console, on the compose network.
+      - --api-listen=0.0.0.0:8080
+      - --node-listen=0.0.0.0:8443
+      # Proxies check the node API's certificate against the name they dial.
+      - --node-api-name=${TOKENLESS_DOMAIN:?set TOKENLESS_DOMAIN in .env}
+    secrets:
+      - root_key
+    volumes:
+      - tokenless-data:/data
+    ports:
+      # Proxies connect here with their own client certificates, so it is
+      # published as it is, never behind a TLS-terminating proxy.
+      - "8443:8443"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      TOKENLESS_DOMAIN: ${TOKENLESS_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # On a tailnet, uncomment to let Caddy fetch the *.ts.net certificate.
+      # - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
+    depends_on:
+      - tokenless
+
+volumes:
+  tokenless-data:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  root_key:
+    # Outside the volume, so the database's backups never hold it.
+    file: ./root.key

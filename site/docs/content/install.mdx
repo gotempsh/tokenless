@@ -107,6 +107,9 @@ cosign verify ghcr.io/gotempsh/tokenless:latest \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+To reach it from other machines, with HTTPS for the console, use the
+Compose recipe in [Deploy → Docker Compose](./deploy.mdx#docker-compose).
+
 `/data` holds the database: keep it on a volume. Supply
 the root key from outside it, for example
 `-e TOKENLESS_ROOT_KEY="$(cat root.key)"` or a mounted secret with
