@@ -10,7 +10,8 @@
 //! 3. a workload bound to a session minted for it, whose proxy connection
 //!    is a plain byte stream. It never sees the session token or the
 //!    credential, and its request reaches the upstream with the credential
-//!    injected.
+//!    injected. The upstream echoes it back, and the workload gets the
+//!    echo with the credential masked.
 //!
 //! Exits non-zero if any step does not behave as described.
 
@@ -38,6 +39,7 @@ use tokenless_dataplane::state::NodeKeys;
 use tokenless_dataplane::{BindingSpec, DataPlane, DataPlaneConfig, DataPlaneError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -48,7 +50,7 @@ const API_TOKEN: &str = "example-upstream-token";
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let (upstream_port, upstream_root) = start_upstream().await?;
+    let (upstream_port, upstream_root, received) = start_upstream().await?;
     let upstream = format!("localhost:{upstream_port}");
 
     // 1. Control services, no accounts. The host has authenticated its own
@@ -188,16 +190,23 @@ async fn main() -> Result<(), Error> {
     let (workload, proxy_side) = tokio::io::duplex(64 * 1024);
     let serving = binding.clone();
     tokio::spawn(async move { serving.serve(proxy_side).await });
-    let seen = workload_request(
+    let echoed = workload_request(
         workload,
         &upstream,
         CertificateDer::from(control.keys.interception_ca.cert_der.clone()),
     )
     .await?;
-    if seen != format!("Bearer {API_TOKEN}") {
-        return Err(format!("the upstream saw Authorization '{seen}'").into());
+    let injected = format!("Bearer {API_TOKEN}");
+    if *received.borrow() != injected {
+        return Err("the upstream did not receive the injected credential".into());
     }
-    println!("the upstream received the injected credential; the workload never held it");
+    // Masked byte for byte, so it keeps its length.
+    if echoed.contains(API_TOKEN) || echoed.len() != injected.len() {
+        return Err(
+            format!("the workload got back Authorization '{echoed}', not it masked").into(),
+        );
+    }
+    println!("the upstream received the injected credential; the workload never held it, even when the upstream echoed it");
 
     // Its traffic is in the audit log, recorded by the node.
     let mut audited = Vec::new();
@@ -266,7 +275,7 @@ impl AuditShipper for ToControl {
 
 /// What the workload does: CONNECT through its binding, TLS with the
 /// interception CA it was given, one request. Returns what the upstream
-/// says it received in `Authorization`.
+/// says it received in `Authorization`, as the proxy passed it on.
 async fn workload_request(
     mut stream: tokio::io::DuplexStream,
     upstream: &str,
@@ -316,8 +325,10 @@ async fn read_head(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<String, E
 }
 
 /// A local HTTPS service that answers each request with the
-/// `Authorization` header it received. Returns its port and certificate.
-async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
+/// `Authorization` header it received. Returns its port, its certificate
+/// and the last `Authorization` it received, as it received it.
+async fn start_upstream() -> Result<(u16, CertificateDer<'static>, watch::Receiver<String>), Error>
+{
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let der = CertificateDer::from(cert.cert.der().to_vec());
     let config = rustls::ServerConfig::builder()
@@ -329,9 +340,12 @@ async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
     let acceptor = TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
+    let (received, receiver) = watch::channel(String::new());
+    let received = Arc::new(received);
     tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {
             let acceptor = acceptor.clone();
+            let received = received.clone();
             tokio::spawn(async move {
                 let Ok(mut tls) = acceptor.accept(tcp).await else {
                     return;
@@ -347,6 +361,7 @@ async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
                             .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default();
+                received.send_replace(seen.clone());
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{seen}",
                     seen.len()
@@ -356,5 +371,5 @@ async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
             });
         }
     });
-    Ok((port, der))
+    Ok((port, der, receiver))
 }
