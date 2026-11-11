@@ -69,6 +69,11 @@ id_type!(
 id_type!(NodeId, "node");
 id_type!(UserId, "user");
 id_type!(ApiKeyId, "api_key");
+id_type!(
+    /// Something a person should look at: a session cut off, a tripwire hit.
+    AlertId,
+    "alert"
+);
 id_type!(InviteId, "invite");
 id_type!(VariableId, "variable");
 id_type!(AuditEventId, "audit_event");

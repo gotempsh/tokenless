@@ -1285,6 +1285,7 @@ impl PolicyService {
                 )));
             }
         }
+        settings.alerts.validate()?;
         let previous = self.policy.get_settings().await?;
         let adds_exception = settings
             .passthrough_hosts
@@ -1295,9 +1296,11 @@ impl PolicyService {
                 && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough)
             || adds_exception
             || settings.max_session_ttl_secs > previous.max_session_ttl_secs
-            || quarantine_loosens(previous.quarantine, settings.quarantine);
+            || quarantine_loosens(previous.quarantine, settings.quarantine)
+            || settings.alerts.loosens(&previous.alerts);
         if widens {
-            // Opening egress is as sensitive as widening a rule.
+            // Opening egress is as sensitive as widening a rule, and quieter
+            // alerts as sensitive as a looser quarantine.
             self.guard.require_step_up(caller, Action::SettingsWrite)?;
         }
         let event = AuditEvent::new(caller.actor(), "settings.update", AuditOutcome::Success)
@@ -1330,6 +1333,14 @@ impl PolicyService {
                     |q| format!("{} refusals in {}s", q.refusals, q.window_secs),
                 ),
             )
+            .detail(
+                "alert_refusals",
+                settings.alerts.refusals.map_or_else(
+                    || "off".to_string(),
+                    |t| format!("{} refusals in {}s", t.refusals, t.window_secs),
+                ),
+            )
+            .detail("alert_new_proxy", settings.alerts.new_proxy.to_string())
             .detail(
                 "passthrough_hosts",
                 settings

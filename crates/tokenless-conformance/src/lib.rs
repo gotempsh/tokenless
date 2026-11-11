@@ -1149,6 +1149,10 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             refusals: 7,
             window_secs: 60,
         }),
+        alerts: tokenless_control::model::AlertSettings {
+            refusals: None,
+            new_proxy: false,
+        },
         passthrough_hosts: vec![
             tokenless_core::host::HostPattern::parse("registry.npmjs.org").map_err(|e| {
                 ConformanceFailure {
@@ -2991,8 +2995,10 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
 }
 
 // After `ensure!`, which they use.
+mod alerts;
 mod audit_export;
 mod sso;
 
+pub use alerts::alert_store_suite;
 pub use audit_export::audit_export_store_suite;
 pub use sso::sso_store_suite;

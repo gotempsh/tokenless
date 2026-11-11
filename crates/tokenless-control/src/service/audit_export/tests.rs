@@ -151,6 +151,7 @@ async fn setup() -> T {
             sso: store.clone(),
             audit_export: store.clone(),
             nodes: store.clone(),
+            alerts: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,

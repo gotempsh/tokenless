@@ -143,6 +143,18 @@ sessions already started keep running until they expire; end them with
 | `--others` (`revoke`) | | Every sign-in of yours but this one |
 | `--json` (`list`) | | The rows as JSON |
 
+## `alerts list`, `alerts ack`
+
+The [alerts](./console/alerts.mdx) nobody has acknowledged yet, newest
+first: a session cut off, refused often or used through a second proxy.
+`ack` marks one looked at by its id (the first characters `list` shows
+are enough).
+
+| Option | Default | |
+|---|---|---|
+| `--all` (`list`) | | The acknowledged ones too |
+| `--json` (`list`) | | The rows as JSON |
+
 ## `proxy add`
 
 | Option | Default | |

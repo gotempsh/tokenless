@@ -477,6 +477,46 @@ export interface Settings {
   max_session_ttl_secs: number;
   /** When a proxy cuts off a session that keeps being refused; `null` for never. */
   quarantine: QuarantinePolicy | null;
+  /** The alert signals that can be tuned; a quarantine always raises one. */
+  alerts: AlertSettings;
+}
+
+export interface RefusalThreshold {
+  refusals: number;
+  window_secs: number;
+}
+
+export interface AlertSettings {
+  /** An alert for a session refused this often; `null` for never. */
+  refusals: RefusalThreshold | null;
+  /** An alert when a session is used through a second proxy. */
+  new_proxy: boolean;
+}
+
+export type AlertKind = "quarantine" | "tripwire" | "refusals" | "new_proxy";
+
+/** Something the proxies reported that someone should look at now. */
+export interface Alert {
+  id: string;
+  kind: AlertKind;
+  /** What happened, as a sentence. */
+  summary: string;
+  vault_id: string | null;
+  session_id: string | null;
+  node_id: string | null;
+  detail: Record<string, string>;
+  raised_at: string;
+  acknowledged_at: string | null;
+  /** An audit actor, such as `user:<id>`. */
+  acknowledged_by: string | null;
+}
+
+export interface AlertSummary {
+  open: number;
+  /** The newest open alert. */
+  latest: Alert | null;
+  /** When each signal last fired; a signal that never did is left out. */
+  last_raised: { kind: AlertKind; at: string }[];
 }
 
 export interface QuarantinePolicy {

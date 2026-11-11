@@ -36,6 +36,7 @@ pub async fn services_with<C: CredentialStore + 'static>(
             policy: store.clone(),
             audit: store.clone(),
             nodes: store.clone(),
+            alerts: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,

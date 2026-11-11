@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState } from "react";
-import { get, put, type Settings as SettingsModel } from "../api";
+import { get, put, type AlertSummary, type AuditDestination, type Settings as SettingsModel } from "../api";
+import { alertDestinations, DEFAULT_REFUSALS, lastRaised, parseRefusalKey, refusalKey, refusalOptions } from "../alerts";
 import { useAction, useLoad } from "../hooks";
-import { ChoiceCards, ErrorBanner, Field, lines, SelectField } from "../components/common";
+import { ChoiceCards, ErrorBanner, Field, lines, SelectField, When } from "../components/common";
 import { Button } from "../components/ui/button-components";
 import { Label } from "../components/ui/label";
 import { SettingsSection } from "../components/layout";
@@ -13,7 +14,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { DEFAULT_QUARANTINE, parseQuarantineKey, quarantineKey, quarantineOptions } from "../quarantine";
-import { AuditExportSettings } from "./AuditExport";
+import { AuditExportSettings, NEW_DESTINATION_HREF } from "./AuditExport";
 import { SingleSignOnSettings } from "./SingleSignOn";
 
 type Unmatched = SettingsModel["unmatched_host_policy"];
@@ -35,6 +36,8 @@ function lifetimeOptions(current: number) {
 
 export function Settings() {
   const settings = useLoad(() => get<SettingsModel>("/settings"), []);
+  const alertSummary = useLoad(() => get<AlertSummary>("/alerts/summary"), []);
+  const destinations = useLoad(() => get<AuditDestination[]>("/audit-export/destinations"), []);
   const action = useAction();
   const [allowText, setAllowText] = useState<string | null>(null);
   const [hostsText, setHostsText] = useState<string | null>(null);
@@ -204,10 +207,77 @@ export function Settings() {
               </div>
             )}
           </SettingsSection>
+          <SettingsSection
+            title="Alerts"
+            hint="Signs that someone other than the agent holds a session. A session cut off always raises one."
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="alert-refusals">A session refused again and again</Label>
+                <p className="text-sm text-muted-foreground">
+                  <LastFired at={lastRaised(alertSummary.data, "refusals")} />
+                </p>
+              </div>
+              <Switch
+                id="alert-refusals"
+                checked={current.alerts.refusals !== null}
+                disabled={action.busy}
+                onCheckedChange={(on) =>
+                  void save({ ...current, alerts: { ...current.alerts, refusals: on ? DEFAULT_REFUSALS : null } })
+                }
+              />
+            </div>
+            {current.alerts.refusals && (
+              <div className="pt-2">
+                <Label htmlFor="alert-refusals-threshold" className="sr-only">
+                  Alert after
+                </Label>
+                <SelectField
+                  id="alert-refusals-threshold"
+                  className="w-full sm:w-[260px]"
+                  value={refusalKey(current.alerts.refusals)}
+                  onChange={(v) => void save({ ...current, alerts: { ...current.alerts, refusals: parseRefusalKey(v) } })}
+                  options={refusalOptions(current.alerts.refusals)}
+                />
+              </div>
+            )}
+            <div className="flex items-start justify-between gap-4 pt-4">
+              <div className="space-y-1">
+                <Label htmlFor="alert-new-proxy">A session used through a second proxy</Label>
+                <p className="text-sm text-muted-foreground">
+                  Its token may have been copied off the agent's machine.{" "}
+                  <LastFired at={lastRaised(alertSummary.data, "new_proxy")} />
+                </p>
+              </div>
+              <Switch
+                id="alert-new-proxy"
+                checked={current.alerts.new_proxy}
+                disabled={action.busy}
+                onCheckedChange={(on) => void save({ ...current, alerts: { ...current.alerts, new_proxy: on } })}
+              />
+            </div>
+            {destinations.data && alertDestinations(destinations.data).length === 0 && (
+              <p className="pt-4 text-sm text-warning-strong">
+                Alerts only show in the console: no audit webhook sends them.{" "}
+                <a className="underline" href={NEW_DESTINATION_HREF}>
+                  Add one
+                </a>
+              </p>
+            )}
+          </SettingsSection>
           <SingleSignOnSettings />
           <AuditExportSettings />
         </div>
       )}
     </PageContainer>
+  );
+}
+
+function LastFired({ at }: { at: string | null }) {
+  if (!at) return <>Never raised.</>;
+  return (
+    <>
+      Last raised <When at={at} />.
+    </>
   );
 }

@@ -47,6 +47,7 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
+import { SessionAlerts } from "./Alerts";
 import { useActorNames } from "./Audit";
 import { DetailLayout, Fact, FactList } from "../components/layout";
 import { RequestLog } from "./RequestLog";
@@ -141,6 +142,7 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
         }
       />
       <ErrorBanner error={session.error ?? action.error} />
+      {s && <SessionAlerts sessionId={s.id} />}
       {missing && (
         <Panel>
           <Empty

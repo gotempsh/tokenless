@@ -1115,6 +1115,7 @@ async fn end_to_end() {
             "unmatched_host_policy": "deny",
             "egress": { "block_private": true, "allow": [] },
             "passthrough_hosts": [loopback_target.clone()],
+            "alerts": { "refusals": { "refusals": 3, "window_secs": 600 } },
         })),
     )
     .await;
@@ -1172,6 +1173,52 @@ async fn end_to_end() {
     )
     .await;
 
+    // --- the refusals above raised an alert --------------------------------------
+    eventually(
+        "an alert for the refused session",
+        Duration::from_secs(10),
+        || async {
+            let page = api
+                .get(&format!("/alerts?open=true&session_id={session_id}"))
+                .await;
+            page["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|a| a["kind"] == "refusals"))
+        },
+    )
+    .await;
+    let summary = api.get("/alerts/summary").await;
+    let alert = summary["latest"].clone();
+    assert!(
+        summary["open"].as_u64().is_some_and(|n| n >= 1),
+        "{summary}"
+    );
+    assert_eq!(alert["vault_id"], vault_id.as_str(), "{alert}");
+    assert!(alert["dedup_key"].is_null(), "internal: {alert}");
+    let anonymous = api
+        .http
+        .get(format!("{}/alerts", api.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let alert_id = alert["id"].as_str().unwrap();
+    let seen = api
+        .post(&format!("/alerts/{alert_id}/acknowledge"), json!({}))
+        .await;
+    assert!(seen["acknowledged_at"].is_string(), "{seen}");
+    let raised = api.get("/audit?action_prefix=alert.").await;
+    let actions: Vec<&str> = raised["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    assert!(
+        actions.contains(&"alert.raised") && actions.contains(&"alert.acknowledge"),
+        "{actions:?}"
+    );
+
     // A service's log: what was done to it and the requests that used it,
     // the API's answers included, and nothing about other services.
     let log = api
@@ -1217,6 +1264,7 @@ async fn end_to_end() {
         "/settings".to_string(),
         "/api-keys".to_string(),
         "/auth/me".to_string(),
+        "/alerts?page_size=100".to_string(),
     ] {
         bodies.push(api.get(&path).await.to_string());
     }

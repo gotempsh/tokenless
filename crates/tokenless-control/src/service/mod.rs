@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+pub mod alerts;
 pub mod audit;
 pub mod audit_export;
 pub mod auth;
@@ -33,7 +34,7 @@ use crate::model::LaunchScope;
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
-    AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
+    AlertStore, AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
     PolicyStore, SsoStore,
 };
 
@@ -100,6 +101,7 @@ pub struct Stores {
     pub sso: Arc<dyn SsoStore>,
     pub audit_export: Arc<dyn AuditExportStore>,
     pub nodes: Arc<dyn NodeStore>,
+    pub alerts: Arc<dyn AlertStore>,
 }
 
 /// Authorisation plus step-up enforcement, shared by every service.
@@ -216,6 +218,7 @@ pub struct ServiceStores {
     pub policy: Arc<dyn PolicyStore>,
     pub audit: Arc<dyn AuditSink>,
     pub nodes: Arc<dyn NodeStore>,
+    pub alerts: Arc<dyn AlertStore>,
 }
 
 /// The control services without accounts, sign-in or API keys, for a
@@ -229,6 +232,7 @@ pub struct ControlServices {
     pub nodes: nodes::NodeService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
+    pub alerts: Arc<alerts::AlertService>,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -283,6 +287,11 @@ impl ControlServices {
             guard.clone(),
             notifier.clone(),
         );
+        let alerts = Arc::new(alerts::AlertService::new(
+            stores.alerts,
+            stores.policy.clone(),
+            guard.clone(),
+        ));
         let nodes = nodes::NodeService::new(
             stores.nodes.clone(),
             stores.policy.clone(),
@@ -293,6 +302,7 @@ impl ControlServices {
             guard.clone(),
             recorder,
             notifier.clone(),
+            alerts.clone(),
             config,
         );
         let audit = audit::AuditService::new(stores.audit, guard);
@@ -303,6 +313,7 @@ impl ControlServices {
             nodes,
             variables,
             audit,
+            alerts,
             keys,
             notifier,
         })
@@ -322,6 +333,7 @@ pub struct ControlPlane {
     pub users: users::UserService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
+    pub alerts: Arc<alerts::AlertService>,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -383,6 +395,7 @@ impl ControlPlane {
                 policy: stores.policy,
                 audit: stores.audit,
                 nodes: stores.nodes,
+                alerts: stores.alerts,
             },
             guard,
             cipher,
@@ -410,6 +423,7 @@ impl ControlPlane {
             users,
             variables: services.variables,
             audit: services.audit,
+            alerts: services.alerts,
             keys: services.keys,
             notifier: services.notifier,
         })
@@ -458,6 +472,7 @@ mod tests {
             sso: store.clone(),
             audit_export: store.clone(),
             nodes: store.clone(),
+            alerts: store.clone(),
         }
     }
 
@@ -2355,6 +2370,7 @@ mod tests {
                 policy: store.clone(),
                 audit: store.clone(),
                 nodes: store.clone(),
+                alerts: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,

@@ -24,6 +24,7 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "People", prefix: "user." },
   { label: "API keys", prefix: "api_key." },
   { label: "Launcher keys", prefix: "launcher_key." },
+  { label: "Alerts", prefix: "alert." },
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
@@ -40,6 +41,13 @@ export interface ActorNames {
 }
 
 const short = (id: string) => id.slice(0, 8);
+
+const KIND_ARTICLE: Record<string, string> = {
+  quarantine: "a cut-off session alert",
+  tripwire: "a tripwire alert",
+  refusals: "a refused-session alert",
+  new_proxy: "a second-proxy alert",
+};
 
 /** Who did it, in words: "You", a username, "API key ci-runner", "Proxy edge-1". */
 export function actorLabel(event: AuditEvent, names: ActorNames): string {
@@ -196,6 +204,10 @@ export function actionPhrase(event: AuditEvent): string {
       return `skipped ${d.skipped === "1" ? "1 event" : `${d.skipped ?? "the"} events`} for ${named("audit webhook")}`;
     case "audit_export.test":
       return event.outcome === "success" ? `sent a test to ${named("audit webhook")}` : `failed to send a test to ${named("audit webhook")}`;
+    case "alert.raised":
+      return `raised an alert: ${d.summary ?? d.kind ?? "see the Alerts page"}`;
+    case "alert.acknowledge":
+      return `acknowledged ${KIND_ARTICLE[d.kind ?? ""] ?? "an alert"}`;
     case "proxy.inject":
       return `added a credential to ${request}`;
     case "proxy.response":

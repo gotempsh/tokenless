@@ -61,6 +61,24 @@ API it is `quarantine` (`{"refusals": 20, "window_secs": 300}`, or
 `null`) in `PUT /api/v1/settings`. A proxy older than this release keeps
 running without it.
 
+## Alerts
+
+[Alerts](./console/alerts.mdx) point at a session that looks like
+someone other than the agent. A session cut off always raises one; two
+more signals can be tuned here:
+
+- **A session refused again and again**: by default 10 refusals in 5
+  minutes, half the cut-off threshold, so the alert comes first. Choose
+  another threshold or turn it off.
+- **A session used through a second proxy**: on by default.
+
+Each shows when it last fired. Turning one off or making it less
+sensitive asks you to confirm it's you. Over the API it is `alerts`
+(`{"refusals": {"refusals": 10, "window_secs": 300}, "new_proxy": true}`;
+`refusals` is `null` to turn it off) in `PUT /api/v1/settings`. Alerts
+reach you outside the console through an [audit webhook](#audit-export)
+that sends `alert.` events; the section says when none does.
+
 ## Single sign-on
 
 People can sign in with an OpenID Connect identity provider that sends

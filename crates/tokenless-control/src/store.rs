@@ -16,17 +16,17 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
-    ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId,
-    SessionId, SignInId, UserId, VariableId, VaultId,
+    AlertId, ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId,
+    OidcProviderId, RuleId, SessionId, SignInId, UserId, VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite, JoinTokenRecord,
-    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor, Settings,
-    SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
+    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
+    JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
+    Settings, SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -605,6 +605,30 @@ pub trait SsoStore: Send + Sync {
         settings: SignInSettings,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
+}
+
+/// Alerts raised from audit signals.
+#[async_trait]
+pub trait AlertStore: Send + Sync {
+    /// Inserts `alert` unless one with its `dedup_key` exists; returns
+    /// whether it was inserted, recording `audit` only then.
+    async fn insert_alert(&self, alert: Alert, audit: &[AuditEvent]) -> Result<bool, StoreError>;
+    async fn get_alert(&self, id: &AlertId) -> Result<Option<Alert>, StoreError>;
+    /// Newest first.
+    async fn list_alerts(
+        &self,
+        filter: &AlertFilter,
+        page: PageRequest,
+    ) -> Result<Page<Alert>, StoreError>;
+    /// Marks an open alert acknowledged; returns false, recording nothing,
+    /// when it already was. `NotFound` if missing.
+    async fn acknowledge_alert(
+        &self,
+        id: &AlertId,
+        by: &str,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
 }
 
 /// Audit export (standalone mode): the destinations audit events are sent

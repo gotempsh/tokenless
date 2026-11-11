@@ -3,6 +3,7 @@
 
 //! The management HTTP API (`/api/v1`) used by the UI and automation.
 
+mod alerts;
 mod audit_export;
 mod console;
 mod extract;
@@ -196,6 +197,9 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/invites/accept", post(accept_invite))
         .route("/invites/{invite_id}", axum::routing::delete(revoke_invite))
         .route("/audit", get(query_audit))
+        .route("/alerts", get(alerts::list))
+        .route("/alerts/summary", get(alerts::summary))
+        .route("/alerts/{alert_id}/acknowledge", post(alerts::acknowledge))
         .route("/nodes", get(list_nodes))
         .route("/nodes/join-tokens", post(create_join_token))
         .route("/nodes/{node_id}", get(get_node))

@@ -21,8 +21,10 @@ use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
+pub use alerts::*;
 pub use audit_export::*;
 pub use sso::*;
 
@@ -293,6 +295,9 @@ pub struct Settings {
     /// for never. Settings saved before it existed get the default.
     #[serde(default = "default_quarantine")]
     pub quarantine: Option<QuarantinePolicy>,
+    /// Which audit signals raise an alert.
+    #[serde(default)]
+    pub alerts: AlertSettings,
 }
 
 fn default_max_session_ttl() -> u64 {
@@ -311,6 +316,7 @@ impl Default for Settings {
             passthrough_hosts: Vec::new(),
             max_session_ttl_secs: default_max_session_ttl(),
             quarantine: default_quarantine(),
+            alerts: AlertSettings::default(),
         }
     }
 }

@@ -22,13 +22,15 @@ use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
-    AccessBundle, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Vault,
+    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Vault,
 };
 use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
     CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
 };
-use tokenless_core::ids::{ApiKeyId, BundleId, CredentialId, RuleId, SignInId, UserId, VaultId};
+use tokenless_core::ids::{
+    AlertId, ApiKeyId, BundleId, CredentialId, RuleId, SignInId, UserId, VaultId,
+};
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -785,6 +787,28 @@ impl<'p> ConsoleClient<'p> {
     /// The signed-in person's sign-ins, the current one marked.
     pub async fn sign_ins(&self) -> Result<Vec<SignInRecord>, LauncherError> {
         self.pages("/auth/sign-ins", "listing your sign-ins").await
+    }
+
+    /// The newest alerts, up to `limit`; only those not acknowledged
+    /// unless `all`.
+    pub async fn alerts(&self, all: bool, limit: u64) -> Result<Page<Alert>, LauncherError> {
+        self.call(
+            Method::GET,
+            &format!("/alerts?open={}&page_size={limit}", !all),
+            None,
+            "listing alerts",
+        )
+        .await
+    }
+
+    pub async fn acknowledge_alert(&self, id: &AlertId) -> Result<Alert, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/alerts/{id}/acknowledge"),
+            Some(json!({})),
+            "acknowledging the alert",
+        )
+        .await
     }
 
     /// Ends one of the signed-in person's sign-ins.

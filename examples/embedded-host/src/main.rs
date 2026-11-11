@@ -62,6 +62,7 @@ async fn main() -> Result<(), Error> {
                 policy: store.clone(),
                 audit: store.clone(),
                 nodes: store.clone(),
+                alerts: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,

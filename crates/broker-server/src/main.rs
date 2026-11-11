@@ -41,6 +41,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
+mod alerts;
 mod keys;
 mod list;
 mod messages;
@@ -86,6 +87,13 @@ enum Command {
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
+    },
+    /// What the proxies reported that someone should look at now: a
+    /// session cut off, refused often or used through a second proxy.
+    /// Needs `tokenless login`.
+    Alerts {
+        #[command(subcommand)]
+        command: AlertCommand,
     },
     /// The browsers and CLI logins signed in as you, and ending them: a
     /// lost laptop, a machine you no longer use. Needs `tokenless login`.
@@ -466,6 +474,39 @@ enum BundleKeyCommand {
         /// Vault name or id. Not needed when there is only one.
         #[arg(long)]
         vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AlertCommand {
+    /// List alerts nobody has acknowledged yet, newest first.
+    ///
+    /// Examples:
+    ///   tokenless alerts list
+    ///   tokenless alerts list --all --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// The acknowledged ones too.
+        #[arg(long)]
+        all: bool,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Mark an alert looked at, so it leaves the open list.
+    ///
+    /// Example:
+    ///   tokenless alerts ack 3f9c2a1b
+    #[command(verbatim_doc_comment)]
+    Ack {
+        /// The alert's id, or its start as `list` shows it.
+        alert: String,
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
@@ -2311,6 +2352,7 @@ async fn main() -> ExitCode {
             | Command::Login { .. }
             | Command::Logout { .. }
             | Command::SignIns { .. }
+            | Command::Alerts { .. }
             | Command::Service { .. }
             | Command::Vault { .. }
             | Command::Bundle { .. }
@@ -2331,6 +2373,10 @@ async fn main() -> ExitCode {
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
+        Command::Alerts { command } => match command {
+            AlertCommand::List { all, json, server } => alerts::list(all, json, server).await,
+            AlertCommand::Ack { alert, server } => alerts::acknowledge(alert, server).await,
+        },
         Command::SignIns { command } => match command {
             SignInCommand::List { user, json, server } => sign_ins::list(user, json, server).await,
             SignInCommand::Revoke {

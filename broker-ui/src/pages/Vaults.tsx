@@ -15,6 +15,7 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { templateOf } from "./Services";
+import { OpenAlertsBanner } from "./Alerts";
 
 export function Vaults({ canCreate }: { canCreate: boolean }) {
   const [page, setPage] = useState(1);
@@ -57,6 +58,7 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
     <PageContainer>
       <PageHeader title="Vaults" actions={createButton} />
       <ErrorBanner error={vaults.error ?? templates.error} />
+      <OpenAlertsBanner />
       {vaults.loading && !vaults.data ? (
         <div className={GRID}>
           {[0, 1, 2].map((i) => (

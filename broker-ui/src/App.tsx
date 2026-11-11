@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
+  BellRing,
   Boxes,
   Braces,
   ChevronRight,
@@ -30,6 +31,7 @@ import {
   post,
   setCsrfToken,
   setStepUpHandler,
+  type AlertSummary,
   type AuditDestination,
   type NodeInfo,
   type Page,
@@ -60,6 +62,7 @@ import { BundleFormPage } from "./pages/BundleFormPage";
 import { Bundles } from "./pages/Bundles";
 import { AddService } from "./pages/AddService";
 import { ApiKeys } from "./pages/ApiKeys";
+import { Alerts as AlertsPage } from "./pages/Alerts";
 import { Audit } from "./pages/Audit";
 import { Nodes } from "./pages/Nodes";
 import { ProxyDetail } from "./pages/ProxyDetail";
@@ -106,6 +109,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "Instance",
     items: [
+      { key: "alerts", label: "Alerts", icon: BellRing },
       { key: "proxies", label: "Proxies", icon: Server },
       { key: "audit", label: "Audit log", icon: ScrollText },
       { key: "settings", label: "Settings", icon: SettingsIcon },
@@ -249,6 +253,7 @@ export function App() {
       {section === "api-keys" && <ApiKeys />}
       {section === "proxies" && !id && <Nodes />}
       {section === "proxies" && id && <ProxyDetail nodeId={id} />}
+      {section === "alerts" && <AlertsPage me={user} />}
       {section === "audit" && <Audit me={user} />}
       {section === "settings" && !id && <Settings />}
       {section === "settings" && id === "sso" && tab === "new" && <ProviderFormPage />}
@@ -277,25 +282,27 @@ const ALERT_POLL_MS = 30_000;
 
 /**
  * Sections that need someone to act, so the sidebar can say so from any
- * page. Only admins manage proxies and audit export, so only they are asked.
+ * page. Open alerts are everyone's; only admins manage proxies and audit
+ * export, so only they are asked about those.
  */
 function useSectionAlerts(isAdmin: boolean): Alerts {
   const [alerts, setAlerts] = useState<Alerts>({});
   useEffect(() => {
-    if (!isAdmin) return;
     let cancelled = false;
     const check = async () => {
       // Each page reports its own errors; a check that fails stays quiet.
-      const [nodes, destinations] = await Promise.allSettled([
-        get<Page<NodeInfo>>("/nodes?page_size=100"),
-        get<AuditDestination[]>("/audit-export/destinations"),
+      const [summary, nodes, destinations] = await Promise.allSettled([
+        get<AlertSummary>("/alerts/summary"),
+        isAdmin ? get<Page<NodeInfo>>("/nodes?page_size=100") : Promise.resolve(undefined),
+        isAdmin ? get<AuditDestination[]>("/audit-export/destinations") : Promise.resolve(undefined),
       ]);
       const next: Alerts = {};
-      if (nodes.status === "fulfilled") {
+      if (summary.status === "fulfilled" && summary.value.open > 0) next.alerts = "critical";
+      if (nodes.status === "fulfilled" && nodes.value) {
         const attention = proxyAttention(nodes.value.items, new Date());
         if (attention.level !== "ok") next.proxies = attention.level;
       }
-      if (destinations.status === "fulfilled" && failingDestinations(destinations.value).length > 0) {
+      if (destinations.status === "fulfilled" && destinations.value && failingDestinations(destinations.value).length > 0) {
         next.audit = "warning";
       }
       if (!cancelled) setAlerts(next);

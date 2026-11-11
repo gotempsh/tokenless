@@ -41,6 +41,7 @@ use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
 

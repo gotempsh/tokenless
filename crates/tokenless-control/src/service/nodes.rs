@@ -30,6 +30,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
+use super::alerts::AlertService;
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::SecretCipher;
@@ -95,6 +96,7 @@ pub struct NodeService {
     guard: Guard,
     audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
+    alerts: Arc<AlertService>,
     config: ControlConfig,
     cache: Mutex<HashMap<NodeId, Arc<CachedContent>>>,
 }
@@ -115,6 +117,7 @@ impl NodeService {
         guard: Guard,
         audit: AuditRecorder,
         notifier: Arc<PolicyNotifier>,
+        alerts: Arc<AlertService>,
         config: ControlConfig,
     ) -> Self {
         Self {
@@ -127,6 +130,7 @@ impl NodeService {
             guard,
             audit,
             notifier,
+            alerts,
             config,
             cache: Mutex::new(HashMap::new()),
         }
@@ -581,9 +585,15 @@ impl NodeService {
             events.push(event);
         }
         self.audit_sink.record(&events).await?;
+        // A failed revocation still raises its alert before failing the batch.
+        let mut revoked = Ok(());
         for event in events.iter().filter(|e| e.action == QUARANTINE_ACTION) {
-            self.quarantine(node, event).await?;
+            if let Err(e) = self.quarantine(node, event).await {
+                revoked = Err(e);
+            }
         }
+        self.alerts.observe(node, &events).await;
+        revoked?;
         Ok(events.len())
     }
 

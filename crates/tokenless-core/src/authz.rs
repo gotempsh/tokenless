@@ -78,6 +78,8 @@ pub enum Action {
     /// Revoke a launcher key. No step-up: cutting access off must be quick.
     LauncherKeyRevoke,
     AuditRead,
+    /// Mark an alert as looked at. Seeing alerts takes `AuditRead`.
+    AlertAcknowledge,
     /// List proxies and their status.
     NodeRead,
     NodeManage,
@@ -253,6 +255,7 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 | Action::LauncherKeyCreate
                 | Action::LauncherKeyRevoke
                 | Action::AuditRead
+                | Action::AlertAcknowledge
         ),
         Role::Viewer => matches!(
             action,

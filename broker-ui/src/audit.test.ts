@@ -50,6 +50,16 @@ describe("actionPhrase", () => {
     expect(actionPhrase(event({ action: "rule.delete" }))).toBe("deleted a rule");
   });
 
+  test("alerts say what happened and which one was seen", () => {
+    expect(
+      actionPhrase(event({ action: "alert.raised", actor: "node:n1", detail: { kind: "refusals", summary: "Session 3f9c2a1b was refused 10 times within 300s." } })),
+    ).toBe("raised an alert: Session 3f9c2a1b was refused 10 times within 300s.");
+    expect(actionPhrase(event({ action: "alert.acknowledge", detail: { kind: "new_proxy" } }))).toBe(
+      "acknowledged a second-proxy alert",
+    );
+    expect(actionPhrase(event({ action: "alert.acknowledge" }))).toBe("acknowledged an alert");
+  });
+
   test("audit export changes name the webhook", () => {
     expect(actionPhrase(event({ action: "audit_export.create", detail: { name: "SIEM" } }))).toBe("added audit webhook SIEM");
     expect(actionPhrase(event({ action: "audit_export.skip", detail: { name: "SIEM", skipped: "12" } }))).toBe(
@@ -97,6 +107,7 @@ describe("actionPhrase", () => {
   // Every action the control plane and the proxies record. A new one goes
   // here, with a phrase in audit.ts, so the log never shows a raw name.
   const RECORDED = [
+    "alert.acknowledge", "alert.raised",
     "api_key.create", "api_key.revoke",
     "audit_export.create", "audit_export.delete", "audit_export.pause", "audit_export.resume",
     "audit_export.rotate_secret", "audit_export.skip", "audit_export.test", "audit_export.update",

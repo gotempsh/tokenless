@@ -20,6 +20,7 @@ use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
 
@@ -57,6 +58,7 @@ struct Inner {
     sign_in_settings: Option<SignInSettings>,
     audit_destinations:
         HashMap<tokenless_core::ids::AuditDestinationId, crate::model::AuditDestination>,
+    alerts: HashMap<tokenless_core::ids::AlertId, crate::model::Alert>,
 }
 
 #[derive(Default)]
