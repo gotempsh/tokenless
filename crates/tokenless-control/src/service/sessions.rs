@@ -21,7 +21,7 @@ use tokenless_core::template::{builtin_mcp_path, ServiceKind};
 use super::{Caller, Guard};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle};
+use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle, SessionListing};
 use crate::notify::PolicyNotifier;
 use crate::store::{CredentialStore, NodeStore, PolicyStore};
 
@@ -613,10 +613,13 @@ impl SessionService {
             .ok_or_else(|| ControlError::not_found("session", id))
     }
 
+    /// Newest first; only the live ones (neither revoked nor expired)
+    /// when `active`.
     pub async fn list(
         &self,
         caller: &Caller,
         vault_id: &VaultId,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         self.guard
@@ -624,7 +627,13 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(vault_id), None, page)
+            .list_sessions(
+                Some(vault_id),
+                None,
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
 
@@ -633,6 +642,7 @@ impl SessionService {
     pub async fn list_all(
         &self,
         caller: &Caller,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let vault = caller.principal.vault;
@@ -641,7 +651,13 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(vault.as_ref(), None, page)
+            .list_sessions(
+                vault.as_ref(),
+                None,
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
 
@@ -651,6 +667,7 @@ impl SessionService {
         &self,
         caller: &Caller,
         bundle_id: &BundleId,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let bundle = self
@@ -663,7 +680,13 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(&bundle.vault_id), Some(bundle_id), page)
+            .list_sessions(
+                Some(&bundle.vault_id),
+                Some(bundle_id),
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
 }

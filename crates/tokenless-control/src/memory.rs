@@ -26,8 +26,8 @@ mod sso;
 use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    Page, PageRequest, ProxySession, Rule, Settings, SignInSettings, StoredTemplate, UiSession,
-    User, Variable, Vault, VaultDeletion,
+    Page, PageRequest, ProxySession, Rule, SessionCursor, Settings, SignInSettings, StoredTemplate,
+    UiSession, User, Variable, Vault, VaultDeletion,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -686,17 +686,25 @@ impl PolicyStore for MemoryStore {
         &self,
         vault_id: Option<&VaultId>,
         bundle_id: Option<&BundleId>,
+        active_at: Option<DateTime<Utc>>,
+        after: Option<&SessionCursor>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
-        let items: Vec<_> = self
+        // Newest first, ties by id as text, as the SQL store orders them.
+        let order = |s: &ProxySession| (std::cmp::Reverse(s.created_at), s.id.to_string());
+        let after = after.map(|c| (std::cmp::Reverse(c.created_at), c.id.to_string()));
+        let mut items: Vec<_> = self
             .lock()?
             .sessions
             .values()
             .filter(|s| vault_id.is_none_or(|v| &s.vault_id == v))
             .filter(|s| bundle_id.is_none_or(|b| s.bundle.as_ref().is_some_and(|sb| &sb.id == b)))
+            .filter(|s| active_at.is_none_or(|at| s.revoked_at.is_none() && s.expires_at > at))
+            .filter(|s| after.as_ref().is_none_or(|c| &order(s) > c))
             .cloned()
             .collect();
-        Ok(page.apply(&newest_first(items, |s| s.created_at)))
+        items.sort_by_cached_key(order);
+        Ok(page.apply(&items))
     }
 
     async fn revoke_session(

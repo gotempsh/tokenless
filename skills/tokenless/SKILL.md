@@ -302,7 +302,9 @@ its own.
   with a session token from the bundle's page
   (`TOKENLESS_SESSION_TOKEN`, section 3).
 - **Services** may already be there, added once for the team. When
-  `status` reports services and an access bundle, skip step 2. When the
+  `status` reports services and an access bundle, skip step 2.
+  `tokenless bundle list --json` shows each bundle and the services it
+  reaches, and `service list`, `vault list` and `session list` the rest. When the
   one you need is missing, they add it (step 2) to a vault they can
   write, or ask an admin.
 - **A proxy on every machine**, step 3, even with a shared server:

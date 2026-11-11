@@ -41,6 +41,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
+mod list;
 mod messages;
 mod setup;
 
@@ -100,10 +101,21 @@ enum Command {
         #[arg(long, env = "TOKENLESS_URL", default_value = setup::DEFAULT_SERVER)]
         server: String,
     },
+    /// Vaults: where services, rules and bundles live. Needs `tokenless login`.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
     /// Services agents can use. Needs `tokenless login`.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
+    },
+    /// Access bundles: the services a kind of job may use, that sessions
+    /// are minted from. Needs `tokenless login`.
+    Bundle {
+        #[command(subcommand)]
+        command: BundleCommand,
     },
     /// Proxies that inject credentials. Needs `tokenless login`.
     Proxy {
@@ -335,7 +347,75 @@ struct RunArgs {
 }
 
 #[derive(Subcommand)]
+enum VaultCommand {
+    /// List the vaults you can see, with how many services and bundles
+    /// each holds.
+    ///
+    /// Examples:
+    ///   tokenless vault list
+    ///   tokenless vault list --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleCommand {
+    /// List access bundles with the services their rules reach.
+    ///
+    /// Examples:
+    ///   tokenless bundle list
+    ///   tokenless bundle list --vault work --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Only this vault's, by name or id.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum SessionCommand {
+    /// List sessions, newest first: the active ones, or with --all also
+    /// those that expired or were revoked. The ID is what `session revoke
+    /// --id` takes. Needs `tokenless login`.
+    ///
+    /// Examples:
+    ///   tokenless session list
+    ///   tokenless session list --bundle code-review --all
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Only this vault's, by name or id.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Only those minted from this access bundle, by name or id.
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Include sessions that expired or were revoked.
+        #[arg(long)]
+        all: bool,
+        /// How many to show at most.
+        #[arg(long, default_value_t = list::DEFAULT_SESSION_LIMIT, value_parser = parse_limit)]
+        limit: usize,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
     /// Mint a session from an access bundle and print its token.
     Create {
         #[command(flatten)]
@@ -486,6 +566,24 @@ enum ServiceCommand {
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
     },
+    /// List services with their template, the hosts they reach and when
+    /// their secret expires. Secrets themselves are never shown.
+    ///
+    /// Examples:
+    ///   tokenless service list
+    ///   tokenless service list --vault work --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Only this vault's, by name or id.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
     /// Find the template for a service by its ID, name, host or the
     /// variable a tool reads its key from. Lists the control plane's
     /// templates when signed in, the built-in ones otherwise.
@@ -506,6 +604,14 @@ enum ServiceCommand {
     },
 }
 
+/// A `--limit`: 1 to 1000.
+fn parse_limit(raw: &str) -> Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(n @ 1..=1000) => Ok(n),
+        _ => Err(format!("'{raw}' is not a number from 1 to 1000")),
+    }
+}
+
 fn parse_wait(raw: &str) -> Result<Duration, String> {
     parse_duration_secs(raw)
         .map(Duration::from_secs)
@@ -514,6 +620,21 @@ fn parse_wait(raw: &str) -> Result<Duration, String> {
 
 #[derive(Subcommand)]
 enum ProxyCommand {
+    /// List proxies: whether each is connected, and when it last checked
+    /// in. Admins only.
+    ///
+    /// Examples:
+    ///   tokenless proxy list
+    ///   tokenless proxy list --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
     /// Enrol this machine as a proxy. Start it afterwards with
     /// `tokenless node run`.
     Add {
@@ -1032,11 +1153,17 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             json,
             server,
         } => setup::templates_command(query, json, server).await,
+        ServiceCommand::List {
+            vault,
+            json,
+            server,
+        } => list::services(vault, json, server).await,
     }
 }
 
 async fn proxy(command: ProxyCommand) -> Result<ExitCode, CliError> {
     match command {
+        ProxyCommand::List { json, server } => list::proxies(json, server).await,
         ProxyCommand::Add {
             name,
             state,
@@ -1421,6 +1548,14 @@ struct CreatedSession<'a> {
 
 async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, CliError> {
     match command {
+        SessionCommand::List {
+            vault,
+            bundle,
+            all,
+            limit,
+            json,
+            server,
+        } => list::sessions(vault, bundle, all, limit, json, server).await,
         SessionCommand::Create { mint, json } => {
             // A missing bundle fails before any network call.
             let request = mint_request(&mint, &[])?;
@@ -1999,6 +2134,8 @@ async fn main() -> ExitCode {
             | Command::Login { .. }
             | Command::Logout { .. }
             | Command::Service { .. }
+            | Command::Vault { .. }
+            | Command::Bundle { .. }
             | Command::Status { .. }
             | Command::Proxy { .. }
             | Command::Update(_)
@@ -2017,6 +2154,17 @@ async fn main() -> ExitCode {
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
         Command::Service { command } => service(command).await,
+        Command::Vault {
+            command: VaultCommand::List { json, server },
+        } => list::vaults(json, server).await,
+        Command::Bundle {
+            command:
+                BundleCommand::List {
+                    vault,
+                    json,
+                    server,
+                },
+        } => list::bundles(vault, json, server).await,
         Command::Status { json, server } => setup::status_command(server, json).await,
         Command::Proxy { command } => proxy(command).await,
         Command::Session { command } => session(command, cli.verbose).await,

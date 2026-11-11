@@ -408,7 +408,7 @@ mod tests {
     use crate::cipher::AesGcmCipher;
     use crate::envelope::Envelope;
     use crate::memory::MemoryStore;
-    use crate::model::PageRequest;
+    use crate::model::{PageRequest, SessionListing};
     use crate::store::RbacAuthorizer;
     use crate::store::{CiphertextOwner, NodeStore};
     use crate::StoreError;
@@ -1575,7 +1575,12 @@ mod tests {
             .unwrap();
         let listed = cp
             .sessions
-            .list_for_bundle(&a, &bundle.id, PageRequest::new(None, None))
+            .list_for_bundle(
+                &a,
+                &bundle.id,
+                SessionListing::default(),
+                PageRequest::new(None, None),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1589,7 +1594,12 @@ mod tests {
         let missing = tokenless_core::ids::BundleId::new();
         let err = cp
             .sessions
-            .list_for_bundle(&a, &missing, PageRequest::new(None, None))
+            .list_for_bundle(
+                &a,
+                &missing,
+                SessionListing::default(),
+                PageRequest::new(None, None),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1826,7 +1836,12 @@ mod tests {
         assert!(deleted.sessions_revoked >= 2, "{deleted:?}");
         let ended = cp
             .sessions
-            .list(&a, &vault.id, PageRequest::new(None, None))
+            .list(
+                &a,
+                &vault.id,
+                SessionListing::default(),
+                PageRequest::new(None, None),
+            )
             .await
             .unwrap();
         let first = ended

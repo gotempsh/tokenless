@@ -22,8 +22,8 @@ use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest,
-    ProxySession, Rule, SessionBundle, Settings, StoredTemplate, TemplateSource, TemplateStatus,
-    UiSession, User, Variable, Vault, VaultDeletion,
+    ProxySession, Rule, SessionBundle, SessionCursor, Settings, StoredTemplate, TemplateSource,
+    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
@@ -965,7 +965,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     let listed = store
-        .list_sessions(Some(&v1.id), None, PageRequest::default())
+        .list_sessions(Some(&v1.id), None, None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list"))?;
     ensure!(
@@ -974,6 +974,97 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         listed.total == 3,
         "expected 3 sessions in vault alpha, got {}",
         listed.total
+    );
+    // Of those, one was revoked, one expired (and was revoked): one is live.
+    let live = store
+        .list_sessions(
+            Some(&v1.id),
+            None,
+            Some(at(0)),
+            None,
+            PageRequest::default(),
+        )
+        .await
+        .map_err(backend(S, "session_list_active"))?;
+    ensure!(
+        S,
+        "session_list_active",
+        live.total == 1 && live.items.iter().map(|s| s.id).collect::<Vec<_>>() == vec![limited.id],
+        "only the live session should be listed as active, got {} of {:?}",
+        live.total,
+        live.items.iter().map(|s| s.id).collect::<Vec<_>>()
+    );
+    // Vault beta's expired session was never revoked: expiry alone ends it.
+    let live = store
+        .list_sessions(
+            Some(&v2.id),
+            None,
+            Some(at(0)),
+            None,
+            PageRequest::default(),
+        )
+        .await
+        .map_err(backend(S, "session_list_active_expired"))?;
+    let mut live_ids: Vec<_> = live.items.iter().map(|s| s.id).collect();
+    live_ids.sort_by_key(|id| id.to_string());
+    let mut want = vec![on_node.id, elsewhere.id];
+    want.sort_by_key(|id| id.to_string());
+    ensure!(
+        S,
+        "session_list_active_expired",
+        live.total == 2 && live_ids == want,
+        "an expired session must not be listed as active even unrevoked, got {} of {live_ids:?}",
+        live.total
+    );
+    // One at a time after the last one seen walks the same order, ties
+    // (all three were created at once) broken the same way, and a session
+    // minted meanwhile, newer than the cursor, neither repeats nor shifts
+    // a row.
+    let full: Vec<_> = listed.items.iter().map(|s| s.id).collect();
+    let mut walked = Vec::new();
+    let mut after: Option<SessionCursor> = None;
+    while walked.len() <= full.len() {
+        let got = store
+            .list_sessions(
+                Some(&v1.id),
+                None,
+                None,
+                after.as_ref(),
+                PageRequest::new(None, Some(1)),
+            )
+            .await
+            .map_err(backend(S, "session_list_after"))?;
+        let Some(next) = got.items.first() else {
+            break;
+        };
+        let left = full.len() - walked.len();
+        ensure!(
+            S,
+            "session_list_after_total",
+            usize::try_from(got.total).ok() == Some(left),
+            "the total after a cursor must count what is left ({left}), got {}",
+            got.total
+        );
+        if walked.is_empty() {
+            store
+                .insert_session(
+                    ProxySession {
+                        created_at: at(-5),
+                        ..session(v1.id, 600, None)
+                    },
+                    &[],
+                )
+                .await
+                .map_err(backend(S, "session_insert_newer"))?;
+        }
+        walked.push(next.id);
+        after = Some(SessionCursor::from(next));
+    }
+    ensure!(
+        S,
+        "session_list_after",
+        walked == full,
+        "paging after the last session must walk {full:?} in order, got {walked:?}"
     );
     store
         .insert_session(session(VaultId::new(), 30, None), &[])
@@ -992,7 +1083,13 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .await
         .map_err(backend(S, "session_insert_bundle"))?;
     let by_bundle = store
-        .list_sessions(Some(&v1.id), Some(&bundle_id), PageRequest::default())
+        .list_sessions(
+            Some(&v1.id),
+            Some(&bundle_id),
+            None,
+            None,
+            PageRequest::default(),
+        )
         .await
         .map_err(backend(S, "session_list_bundle"))?;
     ensure!(
@@ -1007,7 +1104,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         by_bundle.items.iter().map(|s| s.id).collect::<Vec<_>>()
     );
     let everywhere = store
-        .list_sessions(None, None, PageRequest::default())
+        .list_sessions(None, None, None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list_all"))?;
     ensure!(
