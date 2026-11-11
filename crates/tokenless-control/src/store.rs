@@ -326,6 +326,15 @@ pub trait PolicyStore: Send + Sync {
         node: &NodeId,
         now: DateTime<Utc>,
     ) -> Result<Vec<ProxySession>, StoreError>;
+    /// Sessions minted for `node` that were live at some moment from
+    /// `from` to `to`: created by `to`, and neither expired nor revoked by
+    /// `from`. Revoked ones included, ordered by id.
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError>;
 
     async fn get_settings(&self) -> Result<Settings, StoreError>;
     async fn put_settings(

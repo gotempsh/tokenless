@@ -909,6 +909,38 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         for_node == vec![on_node.clone()],
         "only the node's own live session should be listed, with its node: {for_node:?}"
     );
+    let mut both = vec![on_node.clone(), on_node_expired.clone()];
+    both.sort_by_key(|s| s.id);
+    let earlier = store
+        .list_sessions_for_node_between(&node, at(-5), at(-2))
+        .await
+        .map_err(backend(S, "sessions_for_node_between"))?;
+    ensure!(
+        S,
+        "sessions_for_node_between",
+        earlier == both,
+        "both of the node's sessions were live then, by id: {earlier:?}"
+    );
+    let later = store
+        .list_sessions_for_node_between(&node, at(0), at(5))
+        .await
+        .map_err(backend(S, "sessions_for_node_between"))?;
+    ensure!(
+        S,
+        "sessions_for_node_between",
+        later == vec![on_node.clone()],
+        "a session expired before the window is not listed: {later:?}"
+    );
+    let before = store
+        .list_sessions_for_node_between(&node, at(-30), at(-20))
+        .await
+        .map_err(backend(S, "sessions_for_node_between"))?;
+    ensure!(
+        S,
+        "sessions_for_node_between",
+        before.is_empty(),
+        "a session created after the window is not listed: {before:?}"
+    );
     let got = store
         .get_session(&active.id)
         .await

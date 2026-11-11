@@ -800,6 +800,25 @@ impl PolicyStore for MemoryStore {
         Ok(out)
     }
 
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let mut out: Vec<_> = self
+            .lock()?
+            .sessions
+            .values()
+            .filter(|s| s.node_id.as_ref() == Some(node))
+            .filter(|s| s.created_at <= to && s.expires_at > from)
+            .filter(|s| s.revoked_at.is_none_or(|at| at > from))
+            .cloned()
+            .collect();
+        out.sort_by_key(|s| s.id);
+        Ok(out)
+    }
+
     async fn get_settings(&self) -> Result<Settings, StoreError> {
         Ok(self.lock()?.settings.clone().unwrap_or_default())
     }

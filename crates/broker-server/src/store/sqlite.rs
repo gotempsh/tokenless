@@ -1450,6 +1450,26 @@ impl PolicyStore for SqliteStore {
             .collect()
     }
 
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE node_id = ? AND expires_at > ? AND created_at <= ? AND (revoked_at IS NULL OR revoked_at > ?) ORDER BY id");
+        sqlx::query(&sql)
+            .bind(node.to_string())
+            .bind(ts(&from))
+            .bind(ts(&to))
+            .bind(ts(&from))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list a node's sessions over a time", "session"))?
+            .iter()
+            .map(session_from_row)
+            .collect()
+    }
+
     async fn get_settings(&self) -> Result<Settings, StoreError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = 'instance'")
             .fetch_optional(&self.pool)

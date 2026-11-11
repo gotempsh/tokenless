@@ -678,15 +678,31 @@ impl NodeService {
         // that failed, with the same event ids, and a revocation done
         // already is skipped the second time, where a recorded event
         // would conflict.
-        for event in &events {
-            match event.action.as_str() {
+        let mut ignored = Vec::new();
+        for (i, event) in events.iter().enumerate() {
+            let stands = match event.action.as_str() {
                 QUARANTINE_ACTION => self.quarantine(node, event, CutOff::Refusals).await?,
                 TRIPWIRE_ACTION => self.quarantine(node, event, CutOff::Tripwire).await?,
-                _ => {}
+                _ => continue,
+            };
+            if !stands {
+                ignored.push(i);
             }
         }
         self.audit_sink.record(&events).await?;
-        self.alerts.observe(node, &events).await;
+        // A report that revoked nothing raises no alert saying it did; it
+        // stays in the audit log.
+        if ignored.is_empty() {
+            self.alerts.observe(node, &events).await;
+        } else {
+            let alerting: Vec<AuditEvent> = events
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !ignored.contains(i))
+                .map(|(_, e)| e.clone())
+                .collect();
+            self.alerts.observe(node, &alerting).await;
+        }
         Ok(events.len())
     }
 
@@ -696,28 +712,29 @@ impl NodeService {
     /// person reviews the session's refusals and starts a new one if it was
     /// an agent at work. A session already revoked, or one this control
     /// plane never minted, is left alone, and so is one the node could not
-    /// have served: a node cuts off only its own traffic.
+    /// have served: a node cuts off only its own traffic. False when the
+    /// report is ignored, so it raises no alert.
     async fn quarantine(
         &self,
         node: &Node,
         event: &AuditEvent,
         why: CutOff,
-    ) -> Result<(), ControlError> {
+    ) -> Result<bool, ControlError> {
         let Some(id) = event
             .detail
             .get("session_id")
             .and_then(|raw| raw.parse::<SessionId>().ok())
         else {
             warn!(node_id = %node.id, "a quarantine report names no session; ignored");
-            return Ok(());
+            return Ok(false);
         };
         let Some(session) = self.policy.get_session(&id).await? else {
             warn!(node_id = %node.id, session_id = %id, "a quarantine report names an unknown session; ignored");
-            return Ok(());
+            return Ok(false);
         };
-        if !self.serves(node, &session).await? {
-            warn!(node_id = %node.id, session_id = %id, pinned_to = ?session.node_id, "a quarantine report names a session this node does not serve; ignored");
-            return Ok(());
+        if !self.served(node, &session, event.at).await? {
+            warn!(node_id = %node.id, session_id = %id, pinned_to = ?session.node_id, "a quarantine report names a session this node did not serve; ignored");
+            return Ok(false);
         }
         if why == CutOff::Tripwire {
             if let Some(tripwire) = event
@@ -729,7 +746,7 @@ impl NodeService {
             }
         }
         if session.revoked_at.is_some() {
-            return Ok(());
+            return Ok(true);
         }
         let mut revoke = AuditEvent::new(
             format!("node:{}", node.id),
@@ -753,20 +770,30 @@ impl NodeService {
             self.notifier.bump_sessions();
             warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, reason = why.reason(), "session cut off by a proxy: revoked");
         }
-        Ok(())
+        Ok(true)
     }
 
-    /// Whether `node` accepts `session`'s token: one minted for a node
-    /// works only there, and a scoped node holds only the rules of the
-    /// sessions minted for it.
-    async fn serves(&self, node: &Node, session: &ProxySession) -> Result<bool, ControlError> {
+    /// Whether `node` accepted `session`'s token at `at`, when it cut the
+    /// session off: one minted for a node works only there, and a scoped
+    /// node holds only the rules of the sessions minted for it. Those are
+    /// the sessions live then, not when the report arrives, which may be
+    /// after they ended; and up to a lease earlier, as a node serves the
+    /// snapshot it has until it gets the next.
+    async fn served(
+        &self,
+        node: &Node,
+        session: &ProxySession,
+        at: DateTime<Utc>,
+    ) -> Result<bool, ControlError> {
         match session.node_id {
             Some(pinned) => Ok(pinned == node.id),
             None if !node.scoped_rules => Ok(true),
             None => {
+                let at = at.min(Utc::now());
+                let lease = Duration::seconds(i64::from(self.config.lease_secs));
                 let held: HashSet<RuleId> = self
                     .policy
-                    .list_live_sessions_for_node(&node.id, Utc::now())
+                    .list_sessions_for_node_between(&node.id, at - lease, at)
                     .await?
                     .into_iter()
                     .flat_map(|s| s.rule_ids)
@@ -1411,6 +1438,116 @@ mod tests {
             .unwrap()
             .items;
         assert_eq!(again.len(), 2);
+    }
+
+    /// A report can arrive well after the node cut the session off: a
+    /// scoped node is judged by the rules it held then.
+    #[tokio::test]
+    async fn a_late_report_is_judged_by_when_the_node_cut_the_session_off() {
+        use tokenless_core::audit::{AuditEvent, AuditOutcome};
+        use tokenless_core::protocol::AuditBatch;
+
+        use crate::model::{AlertFilter, ProxySession};
+        use crate::store::PolicyStore;
+
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-1",
+                &encode_public_key(&SealPublicKey::from(&SealSecretKey::random_from_rng(OsRng))),
+            )
+            .await
+            .unwrap();
+        // The session that gave edge-1 the rule, revoked an hour ago.
+        let now = Utc::now();
+        let pinned = ProxySession {
+            id: SessionId::new(),
+            vault_id: vault,
+            rule_ids: vec![rule],
+            bundle: None,
+            labels: BTreeMap::new(),
+            request_limit: None,
+            node_id: Some(node.node.id),
+            created_by: "user:test".into(),
+            created_at: now - TimeDelta::hours(3),
+            expires_at: now + TimeDelta::hours(1),
+            revoked_at: None,
+        };
+        store.insert_session(pinned.clone(), &[]).await.unwrap();
+        store
+            .revoke_session(&pinned.id, now - TimeDelta::hours(1), &[])
+            .await
+            .unwrap();
+        let late = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let unheld = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let report = |id: SessionId, at| {
+            let mut e = AuditEvent::new("node:x", QUARANTINE_ACTION, AuditOutcome::Denied)
+                .detail("scope", format!("vault:{vault}"))
+                .detail("session_id", id.to_string());
+            e.at = at;
+            e
+        };
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![
+                        // Cut off while edge-1 still held the rule.
+                        report(late, now - TimeDelta::hours(2)),
+                        // Now, when it no longer does: not its traffic.
+                        report(unheld, now),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        let revoked = |id| {
+            let store = store.clone();
+            async move {
+                store
+                    .get_session(&id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revoked_at
+                    .is_some()
+            }
+        };
+        assert!(revoked(late).await, "the late report still revokes");
+        assert!(!revoked(unheld).await);
+
+        let alerts = cs
+            .alerts
+            .list(
+                &host,
+                AlertFilter::default(),
+                PageRequest::new(Some(1), Some(10)),
+            )
+            .await
+            .unwrap()
+            .items;
+        let sessions: Vec<_> = alerts.iter().map(|a| a.session_id).collect();
+        assert_eq!(
+            sessions,
+            [Some(late)],
+            "an ignored report raises no alert saying the session was revoked"
+        );
     }
 
     #[tokio::test]
