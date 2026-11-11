@@ -94,18 +94,36 @@ sudo sysctl --system
 More on the recipe, backups and upgrades:
 [Deploy → Docker Compose](./deploy.mdx#docker-compose).
 
-Without Docker, [install the binary](./install.mdx) and run it with your
-certificate, as a service ([Deploy → systemd](./deploy.mdx#systemd)):
+Without Docker, [install the binary](./install.mdx) and use the unit in
+[Deploy → systemd](./deploy.mdx#systemd), with your certificate on port
+443. In its `[Service]` section:
 
-```sh
-tokenless serve --data-dir /var/lib/tokenless \
-  --root-key-file /etc/tokenless/root.key \
+```ini
+ExecStart=/usr/local/bin/tokenless serve --data-dir /var/lib/tokenless \
+  --root-key-file ${CREDENTIALS_DIRECTORY}/root.key \
   --api-listen 0.0.0.0:443 \
   --api-tls-cert /etc/tokenless/fullchain.pem \
   --api-tls-key /etc/tokenless/privkey.pem \
   --node-listen 0.0.0.0:8443 \
   --node-api-name tokenless.example.com
+# The unit runs as the tokenless user: let it bind 443, and nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 ```
+
+That user also has to read the certificate's key, and Let's Encrypt keeps
+`privkey.pem` readable by root only. A certbot deploy hook copies both
+files for it after every renewal, and the server picks up the new ones
+within a minute, without a restart:
+
+```sh
+#!/bin/sh
+# /etc/letsencrypt/renewal-hooks/deploy/tokenless (chmod +x)
+install -o tokenless -m 0644 "$RENEWED_LINEAGE/fullchain.pem" /etc/tokenless/fullchain.pem
+install -o tokenless -m 0600 "$RENEWED_LINEAGE/privkey.pem" /etc/tokenless/privkey.pem
+```
+
+Run it once yourself for the first certificate:
+`sudo RENEWED_LINEAGE=/etc/letsencrypt/live/tokenless.example.com /etc/letsencrypt/renewal-hooks/deploy/tokenless`.
 
 `--node-api-name` must be the name the hosts use: their proxies check the
 node API's certificate against it.
