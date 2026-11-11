@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# HTTPS for the console and the management API. Caddy gets the certificate
+# itself: from Let's Encrypt for a public name, from Tailscale for a
+# *.ts.net name.
+{$TOKENLESS_DOMAIN} {
+	reverse_proxy tokenless:8080
+}

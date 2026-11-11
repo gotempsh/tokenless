@@ -251,6 +251,27 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_connects_a_machine_to_a_teams_server() {
+        // With a shared control plane the agent must not start another one,
+        // must sign the person in as themselves rather than the default
+        // admin, and must enrol a proxy on this machine even when a non-admin
+        // can't use `proxy add`.
+        let description = SKILL_MD
+            .lines()
+            .find_map(|l| l.strip_prefix("description: "))
+            .expect("a description");
+        assert!(
+            description.contains("a team's tokenless server"),
+            "{description}"
+        );
+        assert!(SKILL_MD.contains("### On a team's server"));
+        assert!(SKILL_MD.contains("Then don't start another"));
+        assert!(SKILL_MD.contains("tokenless login --username <their username>"));
+        assert!(SKILL_MD.contains("only an admin can see proxies"));
+        assert!(SKILL_MD.contains("tokenless node join --control-url"));
+    }
+
+    #[test]
     fn install_creates_then_keeps_local_edits_unless_forced() {
         let dir = tempfile::tempdir().unwrap();
         let (path, outcome) = install(dir.path(), false).unwrap();

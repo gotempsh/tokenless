@@ -118,31 +118,68 @@ A proxy's unit is the same with
 
 ## Docker Compose
 
-```yaml
-services:
-  tokenless:
-    image: ghcr.io/gotempsh/tokenless:0.1
-    restart: unless-stopped
-    command:
-      - serve
-      - --data-dir=/data
-      - --api-listen=0.0.0.0:8080
-      - --node-listen=0.0.0.0:8443
-      - --node-api-name=tokenless.internal
-      - --root-key-file=/run/secrets/root_key
-    secrets:
-      - root_key
-    volumes:
-      - tokenless-data:/data
-    ports:
-      - "127.0.0.1:8080:8080"   # behind your TLS reverse proxy
-      - "8443:8443"             # proxies connect here
-volumes:
-  tokenless-data:
-secrets:
-  root_key:
-    file: ./root.key   # outside the volume; not in its backups
+[`examples/docker-compose`](https://github.com/gotempsh/tokenless/tree/main/examples/docker-compose)
+runs the control plane with [Caddy](https://caddyserver.com) in front of
+the console for HTTPS, so people and agents on other machines can reach
+it. Caddy terminates TLS for the console and the management API on port
+443; the node API stays on port 8443, published as it is, because proxies
+authenticate to it with their own client certificates.
+
+You need a name for the host with a publicly trusted certificate, which
+the CLI and browsers both check:
+
+- **A public DNS name** pointing at the host, with ports 80 and 443 open:
+  Caddy gets the certificate from Let's Encrypt.
+- **A Tailscale name** (`host.tailnet-name.ts.net`): uncomment the
+  `tailscaled.sock` volume in `compose.yaml` and Caddy gets the certificate
+  from Tailscale. Set `TOKENLESS_BIND` in `.env` to the host's tailnet IP
+  (`tailscale ip -4`) so the ports listen only there; otherwise a host
+  with a public address serves the console and the node API on it too.
+
+Proxies also need port 8443 on that name. The ports listen on
+`TOKENLESS_BIND`, every interface by default. Docker's published ports
+bypass ufw and firewalld, so close them with that address or a firewall
+in front of the host (a cloud security group), not with a host firewall.
+
+With `TOKENLESS_BIND` set to a tailnet IP, Docker can start the
+containers at boot before Tailscale has given the host that address, and a
+container whose port can't bind isn't restarted. Let it bind the address
+before it exists:
+
+```sh
+echo 'net.ipv4.ip_nonlocal_bind = 1' | sudo tee /etc/sysctl.d/90-tokenless.conf
+sudo sysctl --system
 ```
+
+On the server:
+
+```sh
+mkdir tokenless && cd tokenless
+for f in compose.yaml Caddyfile .env.example; do
+  curl -fsSLO "https://raw.githubusercontent.com/gotempsh/tokenless/main/examples/docker-compose/$f"
+done
+cp .env.example .env                     # set TOKENLESS_DOMAIN
+openssl rand -base64 32 > root.key       # the root key, outside the volume
+docker run --rm -v "$PWD/root.key:/key" busybox:1.37 \
+  sh -c 'chown 65532:65532 /key && chmod 400 /key'   # the image's user
+docker compose up -d
+docker compose logs tokenless            # the admin's password, printed once
+```
+
+The key now belongs to the image's user, so the container reads it and
+you need `sudo` (or the same `docker run`) to copy it. Sign in at
+`https://<your domain>`, not at the `127.0.0.1` address the log prints,
+which is the server's own view of itself. Back up the `tokenless-data`
+volume and `root.key` separately ([Backups](#backups)).
+
+Then connect each machine that runs agents: sign in, add services, enrol
+its proxy and keep it running, as in
+[One server, many hosts](./server.mdx#4-connect-a-host).
+
+To upgrade,
+change `TOKENLESS_VERSION` in `.env`, then `docker compose pull && docker
+compose up -d`; upgrade the control plane before the proxies
+([Upgrades](#upgrades)).
 
 ## The root key
 
