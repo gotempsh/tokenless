@@ -16,7 +16,7 @@ use tokenless_core::ids::{
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
-use tokenless_core::snapshot::UnmatchedHostPolicy;
+use tokenless_core::snapshot::{QuarantinePolicy, UnmatchedHostPolicy};
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
@@ -289,10 +289,18 @@ pub struct Settings {
     /// The longest session anyone may mint, in seconds.
     #[serde(default = "default_max_session_ttl")]
     pub max_session_ttl_secs: u64,
+    /// When a proxy cuts off a session that keeps being refused; `None`
+    /// for never. Settings saved before it existed get the default.
+    #[serde(default = "default_quarantine")]
+    pub quarantine: Option<QuarantinePolicy>,
 }
 
 fn default_max_session_ttl() -> u64 {
     tokenless_core::session::DEFAULT_MAX_SESSION_TTL_SECS
+}
+
+fn default_quarantine() -> Option<QuarantinePolicy> {
+    Some(QuarantinePolicy::default())
 }
 
 impl Default for Settings {
@@ -302,6 +310,7 @@ impl Default for Settings {
             egress: EgressPolicy::default(),
             passthrough_hosts: Vec::new(),
             max_session_ttl_secs: default_max_session_ttl(),
+            quarantine: default_quarantine(),
         }
     }
 }
@@ -469,6 +478,17 @@ pub struct AuditQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_saved_before_quarantine_get_it_and_off_stays_off() {
+        let old: Settings = serde_json::from_str(r#"{"unmatched_host_policy":"deny"}"#).unwrap();
+        assert_eq!(old.quarantine, Some(QuarantinePolicy::default()));
+        let off: Settings =
+            serde_json::from_str(r#"{"unmatched_host_policy":"deny","quarantine":null}"#).unwrap();
+        assert_eq!(off.quarantine, None);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert_eq!(back.quarantine, None);
+    }
 
     /// Every public type holding a secret prints `***` for it under `{:?}`,
     /// whatever reaches a log line, an error or a panic. A freshly minted

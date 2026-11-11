@@ -19,6 +19,9 @@ This page is the summary an operator needs.
   Don't leave a person's sign-in on a machine that runs agents on its own:
   give it a launcher key, which starts one bundle's sessions and nothing
   else ([Automation → Launcher keys](./automation.mdx#launcher-keys)).
+  Someone probing for what else they can reach is refused again and
+  again, and the proxy then
+  [cuts the session off](./settings.mdx#cut-off-probing-sessions).
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over
   HTTPS to the service's own hosts.

@@ -42,6 +42,25 @@ network. Allow specific ranges here when a service you broker lives on
 one. This applies to other hosts and to credential tests; a session's own
 services are always reachable.
 
+## Cut off probing sessions
+
+An agent at work is refused now and then. A session refused again and
+again, host after host or path after path, is more likely someone on the
+agent's machine trying what else the proxy will do. By default, after
+**20 refusals in 5 minutes** the proxy stops serving the session at once,
+even for what its rules allow, and reports it; the control plane then
+revokes it, so every proxy stops. The agent gets `407` saying the session
+was cut off.
+
+The session's page shows the refusals that did it and the revocation, as
+`proxy.quarantine` and `session.revoke` with reason `quarantine` in the
+audit log. A cut-off session is never resumed: once you have looked at
+what it tried, start a new one. Choose a stricter or looser threshold
+here, or turn it off; loosening it asks you to confirm it's you. Over the
+API it is `quarantine` (`{"refusals": 20, "window_secs": 300}`, or
+`null`) in `PUT /api/v1/settings`. A proxy older than this release keeps
+running without it.
+
 ## Single sign-on
 
 People can sign in with an OpenID Connect identity provider that sends

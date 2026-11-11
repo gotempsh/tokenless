@@ -1145,6 +1145,10 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             allow: vec![allow],
         },
         max_session_ttl_secs: 8 * 3600,
+        quarantine: Some(tokenless_core::snapshot::QuarantinePolicy {
+            refusals: 7,
+            window_secs: 60,
+        }),
         passthrough_hosts: vec![
             tokenless_core::host::HostPattern::parse("registry.npmjs.org").map_err(|e| {
                 ConformanceFailure {

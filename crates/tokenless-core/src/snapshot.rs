@@ -22,12 +22,17 @@ use crate::seal::Sealed;
 use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
-/// `not_after`, format 3 a rule's Git scope. A snapshot is written in the oldest format that carries
+/// `not_after`, format 3 a rule's Git scope, format 4 the quarantine policy. A snapshot is written in the oldest format that carries
 /// everything in it, and a node says which format it reads when it opens
 /// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
 /// enforce is left out of its snapshot, so an older node stops using that
 /// one service instead of refusing every snapshot.
-pub const SNAPSHOT_FORMAT: u32 = 3;
+pub const SNAPSHOT_FORMAT: u32 = 4;
+/// The format that carries [`SnapshotBody::quarantine`].
+pub const QUARANTINE_FORMAT: u32 = 4;
+/// What a node reports when it cuts a session off under its
+/// [`QuarantinePolicy`]; the control plane then revokes the session.
+pub const QUARANTINE_ACTION: &str = "proxy.quarantine";
 /// The snapshot stream's query parameter with the newest format the node
 /// reads. A node that sends none reads format 1.
 pub const READS_FORMAT_PARAM: &str = "reads_format";
@@ -75,6 +80,35 @@ pub fn decode_verifying_key(value: &str) -> Result<VerifyingKey, CoreError> {
         .try_into()
         .map_err(|_| CoreError::encoding("ed25519 public key", "expected 32 bytes"))?;
     VerifyingKey::from_bytes(&bytes).map_err(|e| CoreError::crypto("ed25519.decode", e.to_string()))
+}
+
+/// When a proxy cuts a session off on its own: after `refusals` refused
+/// requests within `window_secs` of the first. A session that keeps
+/// probing for what it may not reach is more likely an intruder than an
+/// agent at work, and a person reviews it before anything runs again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuarantinePolicy {
+    pub refusals: u32,
+    pub window_secs: u32,
+}
+
+impl QuarantinePolicy {
+    pub const MIN_REFUSALS: u32 = 3;
+    pub const MAX_REFUSALS: u32 = 10_000;
+    pub const MIN_WINDOW_SECS: u32 = 10;
+    pub const MAX_WINDOW_SECS: u32 = 3600;
+}
+
+impl Default for QuarantinePolicy {
+    /// 20 refusals in 5 minutes: an agent at work rarely comes near it,
+    /// something trying host after host does within a minute.
+    fn default() -> Self {
+        Self {
+            refusals: 20,
+            window_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +197,10 @@ pub struct SnapshotBody {
     pub passthrough_hosts: Vec<crate::host::HostPattern>,
     pub interception_ca: InterceptionCa,
     pub rules: Vec<SnapshotRule>,
+    /// When the node cuts a session off on its own; `None` for never.
+    /// Format 4: left out for a node that reads older formats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<QuarantinePolicy>,
 }
 
 /// AAD binding a sealed rule credential to one node, rule and credential.
@@ -230,6 +268,15 @@ impl SignedSnapshot {
                 ),
             ));
         }
+        if body.quarantine.is_some() && body.format < QUARANTINE_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry a quarantine policy, which needs format {QUARANTINE_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
         if let Some(rule) = body.rules.iter().find(|r| rule_format(r) > body.format) {
             let what = if rule.allow.git.is_some() {
                 "a Git scope"
@@ -276,7 +323,34 @@ mod tests {
                 key: seal(&node_key, b"key", &ca_aad(&node_id)).unwrap(),
             },
             rules: vec![],
+            quarantine: None,
         }
+    }
+
+    #[test]
+    fn a_quarantine_policy_needs_format_4_and_is_left_out_when_off() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = 3;
+        b.quarantine = Some(QuarantinePolicy::default());
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot carry a quarantine policy"),
+            "{err}"
+        );
+        b.format = QUARANTINE_FORMAT;
+        let got = signed(&b).verify(&key.verifying_key()).unwrap();
+        assert_eq!(
+            got.quarantine,
+            Some(QuarantinePolicy {
+                refusals: 20,
+                window_secs: 300
+            })
+        );
+        // Off is not written at all, so older nodes keep reading it.
+        b.quarantine = None;
+        assert!(!serde_json::to_string(&b).unwrap().contains("quarantine"));
     }
 
     #[test]

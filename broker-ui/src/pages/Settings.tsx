@@ -12,6 +12,7 @@ import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
+import { DEFAULT_QUARANTINE, parseQuarantineKey, quarantineKey, quarantineOptions } from "../quarantine";
 import { AuditExportSettings } from "./AuditExport";
 import { SingleSignOnSettings } from "./SingleSignOn";
 
@@ -168,6 +169,40 @@ export function Settings() {
                 Save allowed ranges
               </Button>
             </form>
+          </SettingsSection>
+          <SettingsSection
+            title="Cut off probing sessions"
+            hint="A session refused again and again is more likely someone on the agent's machine than an agent at work."
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="quarantine">Cut off a session that keeps being refused</Label>
+                <p className="text-sm text-muted-foreground">
+                  The proxy stops serving it at once and it is revoked everywhere. Someone reviews its requests and
+                  starts a new session.
+                </p>
+              </div>
+              <Switch
+                id="quarantine"
+                checked={current.quarantine !== null}
+                disabled={action.busy}
+                onCheckedChange={(on) => void save({ ...current, quarantine: on ? DEFAULT_QUARANTINE : null })}
+              />
+            </div>
+            {current.quarantine && (
+              <div className="pt-2">
+                <Label htmlFor="quarantine-threshold" className="sr-only">
+                  Cut off after
+                </Label>
+                <SelectField
+                  id="quarantine-threshold"
+                  className="w-full sm:w-[260px]"
+                  value={quarantineKey(current.quarantine)}
+                  onChange={(v) => void save({ ...current, quarantine: parseQuarantineKey(v) })}
+                  options={quarantineOptions(current.quarantine)}
+                />
+              </div>
+            )}
           </SettingsSection>
           <SingleSignOnSettings />
           <AuditExportSettings />

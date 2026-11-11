@@ -29,7 +29,9 @@ use tokenless_core::injection::InjectedHeaders;
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
 use tokenless_core::seal::{open, SealSecretKey};
-use tokenless_core::snapshot::{ca_aad, rule_aad, SignedSnapshot, UnmatchedHostPolicy};
+use tokenless_core::snapshot::{
+    ca_aad, rule_aad, QuarantinePolicy, SignedSnapshot, UnmatchedHostPolicy,
+};
 use tokenless_core::substitution::RenderedSubstitution;
 use zeroize::Zeroizing;
 
@@ -52,6 +54,7 @@ pub struct NodeKeys {
     pub snapshot_key: VerifyingKey,
 }
 
+#[derive(Clone)]
 pub struct ActiveRule {
     pub id: RuleId,
     pub scope: Scope,
@@ -90,6 +93,7 @@ impl InterceptionTls {
     }
 }
 
+#[derive(Clone)]
 pub struct ActiveSnapshot {
     pub version: u64,
     pub lease_deadline: Instant,
@@ -106,6 +110,12 @@ pub struct ActiveSnapshot {
     pub passthrough_hosts: Vec<tokenless_core::host::HostPattern>,
     pub rules: Vec<ActiveRule>,
     pub tls: Arc<InterceptionTls>,
+    /// When this node cuts off a session that keeps being refused.
+    pub quarantine: Option<QuarantinePolicy>,
+    /// Sessions this node cut off that the control plane has not listed as
+    /// revoked yet, with their expiry; they are in `revoked` too, and
+    /// carried into each new snapshot until the control plane lists them.
+    pub quarantined: HashMap<SessionId, DateTime<Utc>>,
 }
 
 impl ActiveSnapshot {
@@ -196,20 +206,33 @@ pub fn apply(
     changed: &watch::Sender<u64>,
     metrics: &Metrics,
 ) -> Result<u64, DataPlaneError> {
-    let previous = handle.load_full();
-    match build_active(signed, keys, previous.as_deref(), Utc::now()) {
-        Ok(active) => {
-            let version = active.version;
-            debug!(version, rules = active.rules.len(), "applied snapshot");
-            handle.store(Some(Arc::new(active)));
-            changed.send_replace(version);
-            Metrics::inc(&metrics.snapshots_applied_total);
-            Ok(version)
+    loop {
+        let previous = handle.load_full();
+        let active = match build_active(signed, keys, previous.as_deref(), Utc::now()) {
+            Ok(active) => active,
+            Err(e) => {
+                Metrics::inc(&metrics.snapshots_rejected_total);
+                return Err(e);
+            }
+        };
+        let version = active.version;
+        let rules = active.rules.len();
+        // Swapped only over the snapshot it was built from: a session cut
+        // off in between (see `quarantine`) is carried into a rebuild
+        // rather than lost.
+        let swapped = handle.compare_and_swap(&previous, Some(Arc::new(active)));
+        let same = match (swapped.as_ref(), previous.as_ref()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            continue;
         }
-        Err(e) => {
-            Metrics::inc(&metrics.snapshots_rejected_total);
-            Err(e)
-        }
+        debug!(version, rules, "applied snapshot");
+        changed.send_replace(version);
+        Metrics::inc(&metrics.snapshots_applied_total);
+        return Ok(version);
     }
 }
 
@@ -256,6 +279,10 @@ pub fn build_active(
     for key in &body.session_keys {
         session_keys.insert(key.kid.clone(), key.decode()?);
     }
+
+    let mut revoked: HashSet<SessionId> = body.revoked_sessions.iter().copied().collect();
+    let quarantined = crate::quarantine::still_quarantined(previous, &revoked, now);
+    revoked.extend(quarantined.keys().copied());
 
     let mut limits = HashMap::new();
     for limit in &body.limited_sessions {
@@ -346,7 +373,9 @@ pub fn build_active(
         issued_at: body.issued_at,
         installed_at: Instant::now(),
         session_keys,
-        revoked: body.revoked_sessions.into_iter().collect(),
+        revoked,
+        quarantined,
+        quarantine: body.quarantine,
         limits,
         policy: body.unmatched_host_policy,
         egress: body.egress.clone(),
@@ -475,6 +504,7 @@ pub(crate) mod tests {
                         }
                     })
                     .collect(),
+                quarantine: None,
             }
         }
     }

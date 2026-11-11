@@ -34,6 +34,7 @@ metrics! {
     egress_blocked_total: "Passthrough CONNECTs refused because the destination is not a permitted address",
     requests_injected_total: "Requests forwarded with an injected credential",
     requests_denied_total: "Intercepted requests refused by policy",
+    sessions_quarantined_total: "Sessions cut off for being refused too often",
     lease_refusals_total: "Requests refused because the snapshot lease had expired",
     audit_dropped_total: "Audit events that could not be queued; the injection was refused",
     audit_shipped_total: "Audit events delivered to the control plane",

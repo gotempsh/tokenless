@@ -14,7 +14,7 @@ use serde::Serialize;
 use tokenless_auth::token;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
-use tokenless_core::ids::{NodeId, RuleId, VaultId};
+use tokenless_core::ids::{NodeId, RuleId, SessionId, VaultId};
 use tokenless_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
     MAX_AUDIT_BATCH,
@@ -23,7 +23,8 @@ use tokenless_core::seal::{decode_public_key, seal};
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
     ca_aad, format_for, rule_aad, rules_readable_by, InterceptionCa, PublishedKey, SessionLimit,
-    SignedSnapshot, SnapshotBody, SnapshotRule, MIN_SNAPSHOT_FORMAT, SNAPSHOT_FORMAT,
+    SignedSnapshot, SnapshotBody, SnapshotRule, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION,
+    QUARANTINE_FORMAT, SNAPSHOT_FORMAT,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -510,8 +511,18 @@ impl NodeService {
         );
         let now = Utc::now();
         let settings = self.policy.get_settings().await?;
+        // An older node refuses a snapshot with a field it does not know,
+        // so one that cannot read the policy runs without quarantine.
+        let quarantine = settings
+            .quarantine
+            .filter(|_| reads_format >= QUARANTINE_FORMAT);
+        let format = if quarantine.is_some() {
+            format_for(&rules).max(QUARANTINE_FORMAT)
+        } else {
+            format_for(&rules)
+        };
         let body = SnapshotBody {
-            format: format_for(&rules),
+            format,
             version: self.nodes.next_snapshot_version().await?,
             node_id: node.id,
             issued_at: now,
@@ -535,6 +546,7 @@ impl NodeService {
             passthrough_hosts: settings.passthrough_hosts.clone(),
             interception_ca: content.ca.clone(),
             rules,
+            quarantine,
         };
         Ok(NodeSnapshot {
             snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
@@ -569,7 +581,56 @@ impl NodeService {
             events.push(event);
         }
         self.audit_sink.record(&events).await?;
+        for event in events.iter().filter(|e| e.action == QUARANTINE_ACTION) {
+            self.quarantine(node, event).await?;
+        }
         Ok(events.len())
+    }
+
+    /// Revokes the session a node cut off for being refused too often, so
+    /// every other node stops serving it too. The node already stopped; a
+    /// person reviews the session's refusals and starts a new one if it was
+    /// an agent at work. A session already revoked, or one this control
+    /// plane never minted, is left alone.
+    async fn quarantine(&self, node: &Node, event: &AuditEvent) -> Result<(), ControlError> {
+        let Some(id) = event
+            .detail
+            .get("session_id")
+            .and_then(|raw| raw.parse::<SessionId>().ok())
+        else {
+            warn!(node_id = %node.id, "a quarantine report names no session; ignored");
+            return Ok(());
+        };
+        let Some(session) = self.policy.get_session(&id).await? else {
+            warn!(node_id = %node.id, session_id = %id, "a quarantine report names an unknown session; ignored");
+            return Ok(());
+        };
+        if session.revoked_at.is_some() {
+            return Ok(());
+        }
+        let mut revoke = AuditEvent::new(
+            format!("node:{}", node.id),
+            "session.revoke",
+            AuditOutcome::Success,
+        )
+        .vault(session.vault_id)
+        .target(format!("session:{id}"))
+        .detail("reason", "quarantine")
+        .detail("node", node.name.clone());
+        for key in ["refusals", "window_secs"] {
+            if let Some(value) = event.detail.get(key) {
+                revoke = revoke.detail(key, value.clone());
+            }
+        }
+        if self
+            .policy
+            .revoke_session(&id, Utc::now(), &[revoke])
+            .await?
+        {
+            self.notifier.bump_sessions();
+            warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, "session quarantined: revoked after repeated refusals");
+        }
+        Ok(())
     }
 
     pub async fn list_nodes(
@@ -616,11 +677,13 @@ mod tests {
     use rand::rngs::OsRng;
     use tokenless_core::authz::{Principal, Role};
     use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
-    use tokenless_core::snapshot::{SnapshotBody, MIN_SNAPSHOT_FORMAT};
+    use tokenless_core::snapshot::{
+        QuarantinePolicy, SnapshotBody, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
+    };
 
-    use tokenless_core::ids::{NodeId, RuleId, VaultId};
+    use tokenless_core::ids::{NodeId, RuleId, SessionId, VaultId};
 
-    use crate::model::Node;
+    use crate::model::{Node, PageRequest};
     use crate::service::policy::{CreateCredential, CreateRule, RotateCredential};
     use crate::service::sessions::MintSession;
     use crate::service::testing::{services, vault_with_rule};
@@ -868,6 +931,10 @@ mod tests {
         let body = old.snapshot.verify(&node.snapshot_verify_key).unwrap();
         assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
         assert_eq!(
+            body.quarantine, None,
+            "a format 1 node is sent no quarantine"
+        );
+        assert_eq!(
             body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
             vec![other]
         );
@@ -879,7 +946,193 @@ mod tests {
             .unwrap();
         assert_eq!(current.withheld_rules, 0);
         let body = current.snapshot.verify(&node.snapshot_verify_key).unwrap();
-        assert_eq!((body.format, body.rules.len()), (2, 2));
+        assert_eq!((body.format, body.rules.len()), (QUARANTINE_FORMAT, 2));
+        assert_eq!(body.quarantine, Some(QuarantinePolicy::default()));
+    }
+
+    /// A proxy that cut a session off reports it, and the control plane
+    /// revokes it so every proxy stops serving it.
+    #[tokio::test]
+    async fn a_quarantine_report_revokes_the_session() {
+        use tokenless_core::audit::{AuditEvent, AuditOutcome};
+        use tokenless_core::protocol::AuditBatch;
+
+        use crate::model::AuditQuery;
+        use crate::store::{AuditSink, PolicyStore};
+
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-1",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        let minted = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap();
+        let bystander = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap();
+        let mut sessions = cs.notifier.subscribe();
+        sessions.mark_unchanged();
+        let report = |id: String| {
+            AuditEvent::new("node:x", QUARANTINE_ACTION, AuditOutcome::Denied)
+                .detail("scope", format!("vault:{vault}"))
+                .detail("session_id", id)
+                .detail("refusals", "20")
+                .detail("window_secs", "300")
+        };
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![
+                        report(minted.session.id.to_string()),
+                        // Nonsense is recorded and otherwise ignored.
+                        report("not-a-session".into()),
+                        report(SessionId::new().to_string()),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        let revoked = store
+            .get_session(&minted.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        let untouched = store
+            .get_session(&bystander.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(untouched.revoked_at.is_none());
+        assert!(sessions.has_changed().unwrap(), "proxies are told at once");
+
+        let events = store
+            .query(&AuditQuery {
+                action_prefix: Some("session.revoke".into()),
+                page: PageRequest::new(Some(1), Some(10)),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(events.len(), 1, "{events:?}");
+        let e = &events[0];
+        assert_eq!(e.actor, format!("node:{}", node.node.id));
+        assert_eq!(
+            e.target.as_deref(),
+            Some(format!("session:{}", minted.session.id).as_str())
+        );
+        assert_eq!(e.detail["reason"], "quarantine");
+        assert_eq!(e.detail["refusals"], "20");
+        assert_eq!(e.detail["node"], "edge-1");
+        assert_eq!(e.vault_id, Some(vault));
+
+        // Reported again, by another proxy: nothing more happens.
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![report(minted.session.id.to_string())],
+                },
+            )
+            .await
+            .unwrap();
+        let again = store
+            .query(&AuditQuery {
+                action_prefix: Some("session.revoke".into()),
+                page: PageRequest::new(Some(1), Some(10)),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(again.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn quarantine_is_set_within_bounds_and_loosening_it_needs_a_step_up() {
+        use crate::model::Settings;
+
+        let (_, cs) = services().await;
+        let admin = |step_up_age: i64| Caller {
+            principal: Principal {
+                kind: tokenless_core::authz::PrincipalKind::User,
+                actor: "user:admin".into(),
+                role: Role::Admin,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now() - TimeDelta::seconds(step_up_age)),
+            second_factor: true,
+            launch: None,
+        };
+        let with = |q: Option<QuarantinePolicy>| Settings {
+            quarantine: q,
+            ..Settings::default()
+        };
+        for bad in [
+            QuarantinePolicy {
+                refusals: 1,
+                window_secs: 300,
+            },
+            QuarantinePolicy {
+                refusals: 20,
+                window_secs: 5,
+            },
+            QuarantinePolicy {
+                refusals: 20_000,
+                window_secs: 300,
+            },
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(0), with(Some(bad)))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ControlError::Validation { .. }), "{err:?}");
+        }
+        // Stricter needs no fresh step-up.
+        let stricter = QuarantinePolicy {
+            refusals: 5,
+            window_secs: 300,
+        };
+        cs.policy
+            .put_settings(&admin(3600), with(Some(stricter)))
+            .await
+            .unwrap();
+        // Off or looser does.
+        for looser in [
+            None,
+            Some(QuarantinePolicy {
+                refusals: 50,
+                window_secs: 300,
+            }),
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(3600), with(looser))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ControlError::StepUpRequired { .. }),
+                "{err:?}"
+            );
+        }
+        let off = cs.policy.put_settings(&admin(0), with(None)).await.unwrap();
+        assert_eq!(off.quarantine, None);
     }
 
     #[tokio::test]
@@ -888,7 +1141,10 @@ mod tests {
         let host = Caller::service(Principal::service("host", Role::Admin, None));
         let (vault, rule) = vault_with_rule(&cs, &host).await;
         let body = snapshot(&cs, &host, vault, rule).await;
-        assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
+        assert_eq!(
+            tokenless_core::snapshot::format_for(&body.rules),
+            MIN_SNAPSHOT_FORMAT
+        );
         assert_eq!(body.rules[0].not_after, None);
 
         let credential = body.rules[0].credential_id;
@@ -901,7 +1157,7 @@ mod tests {
             .unwrap();
         assert_eq!(rotated.not_after, Some(deadline));
         let body = snapshot(&cs, &host, vault, rule).await;
-        assert_eq!(body.format, 2);
+        assert_eq!(tokenless_core::snapshot::format_for(&body.rules), 2);
         assert_eq!(body.rules[0].not_after, Some(deadline));
 
         // A secret with no deadline clears the old one.
@@ -911,7 +1167,10 @@ mod tests {
             .unwrap();
         let body = snapshot(&cs, &host, vault, rule).await;
         assert_eq!(
-            (body.format, body.rules[0].not_after),
+            (
+                tokenless_core::snapshot::format_for(&body.rules),
+                body.rules[0].not_after
+            ),
             (MIN_SNAPSHOT_FORMAT, None)
         );
 

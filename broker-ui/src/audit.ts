@@ -123,7 +123,7 @@ export function actionPhrase(event: AuditEvent): string {
     case "session.mint":
       return d.bundle ? `started a session with ${d.bundle}` : "started a session";
     case "session.revoke":
-      return "ended a session";
+      return d.reason === "quarantine" ? `cut off a session refused ${d.refusals ?? "too many"} times` : "ended a session";
     case "session.update_labels":
       return "relabelled a session";
     case "vault.create":
@@ -206,6 +206,8 @@ export function actionPhrase(event: AuditEvent): string {
       return `refused a connection to ${hostOnly(d.host)}`;
     case "proxy.gateway_denied":
       return `refused an MCP call to ${hostOnly(d.host)}`;
+    case "proxy.quarantine":
+      return `cut off a session after ${d.refusals ?? "repeated"} refusals in ${d.window_secs ? `${d.window_secs}s` : "a short time"}`;
     case "proxy.egress_blocked":
       return `blocked a connection to ${hostOnly(d.host)}, a private address`;
     case "proxy.tunnel":
@@ -227,6 +229,8 @@ export function sessionHistoryPhrase(e: AuditEvent): string {
     case "session.mint":
       return e.detail.bundle ? `created the session from ${e.detail.bundle}` : "created the session";
     case "session.revoke":
+      if (e.detail.reason === "quarantine")
+        return `revoked the session after it was refused ${e.detail.refusals ?? "too many"} times`;
       if (e.detail.already_revoked === "true") return "revoked the session again";
       return e.detail.by === "session token" ? "ended the session with its own token" : "revoked the session";
     case "session.update_labels":

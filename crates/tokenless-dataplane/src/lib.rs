@@ -25,6 +25,7 @@ pub mod gateway;
 pub mod metrics;
 pub mod node;
 pub mod proxy;
+pub mod quarantine;
 pub mod shutdown;
 pub mod state;
 pub mod status;
@@ -213,6 +214,7 @@ impl DataPlane {
             status_changed: watch::channel(0).0,
             lifecycle: watch::channel(Lifecycle::Running).0,
             traffic: Arc::new(traffic::OpenTraffic::default()),
+            refusals: quarantine::RefusalCounter::new(),
         });
         let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
@@ -373,6 +375,16 @@ impl DataPlane {
             .load()
             .as_ref()
             .is_some_and(|s| s.lease_valid())
+    }
+
+    /// The snapshot in force, for tests that look past the proxy.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, reason = "tests install a snapshot first")]
+    pub(crate) fn snapshot_for_tests(&self) -> Arc<state::ActiveSnapshot> {
+        self.shared
+            .snapshot
+            .load_full()
+            .expect("a snapshot is installed")
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {

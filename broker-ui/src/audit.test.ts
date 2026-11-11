@@ -109,6 +109,7 @@ describe("actionPhrase", () => {
     "launcher_key.create", "launcher_key.revoke",
     "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
     "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
+    "proxy.quarantine",
     "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
     "rule.create", "rule.delete", "rule.update",
     "session.mint", "session.revoke", "session.update_labels",
@@ -150,6 +151,12 @@ describe("a session's history", () => {
   test("says what was done to the session", () => {
     expect(sessionHistoryPhrase(event({ action: "session.mint", detail: { bundle: "code-review" } }))).toBe(
       "created the session from code-review",
+    );
+    expect(
+      sessionHistoryPhrase(event({ action: "session.revoke", actor: "node:n1", detail: { reason: "quarantine", refusals: "20" } })),
+    ).toBe("revoked the session after it was refused 20 times");
+    expect(actionPhrase(event({ action: "proxy.quarantine", detail: { refusals: "20", window_secs: "300" } }))).toBe(
+      "cut off a session after 20 refusals in 300s",
     );
     expect(sessionHistoryPhrase(event({ action: "session.revoke", detail: { already_revoked: "false" } }))).toBe(
       "revoked the session",

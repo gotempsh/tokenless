@@ -17,7 +17,7 @@ use tokenless_core::injection::SecretFields;
 use tokenless_core::path::{HttpMethod, PathPattern};
 use tokenless_core::rule::{validate_mcp_tools, RuleScope};
 use tokenless_core::scope::Scope;
-use tokenless_core::snapshot::UnmatchedHostPolicy;
+use tokenless_core::snapshot::{QuarantinePolicy, UnmatchedHostPolicy};
 use tokenless_core::substitution::{validate_substitutions, Substitution};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 use tokenless_core::variables::{validate_custom_headers, CustomHeader};
@@ -1270,6 +1270,21 @@ impl PolicyService {
                 settings.max_session_ttl_secs
             )));
         }
+        if let Some(q) = settings.quarantine {
+            let refusals = QuarantinePolicy::MIN_REFUSALS..=QuarantinePolicy::MAX_REFUSALS;
+            let window = QuarantinePolicy::MIN_WINDOW_SECS..=QuarantinePolicy::MAX_WINDOW_SECS;
+            if !refusals.contains(&q.refusals) || !window.contains(&q.window_secs) {
+                return Err(ControlError::validation(format!(
+                    "quarantine after {} refusals in {}s is out of range: refusals must be {}-{} and the window {}-{} seconds, or quarantine null to turn it off",
+                    q.refusals,
+                    q.window_secs,
+                    refusals.start(),
+                    refusals.end(),
+                    window.start(),
+                    window.end()
+                )));
+            }
+        }
         let previous = self.policy.get_settings().await?;
         let adds_exception = settings
             .passthrough_hosts
@@ -1279,7 +1294,8 @@ impl PolicyService {
             || (previous.unmatched_host_policy == UnmatchedHostPolicy::Deny
                 && settings.unmatched_host_policy == UnmatchedHostPolicy::Passthrough)
             || adds_exception
-            || settings.max_session_ttl_secs > previous.max_session_ttl_secs;
+            || settings.max_session_ttl_secs > previous.max_session_ttl_secs
+            || quarantine_loosens(previous.quarantine, settings.quarantine);
         if widens {
             // Opening egress is as sensitive as widening a rule.
             self.guard.require_step_up(caller, Action::SettingsWrite)?;
@@ -1308,6 +1324,13 @@ impl PolicyService {
                 settings.max_session_ttl_secs.to_string(),
             )
             .detail(
+                "quarantine",
+                settings.quarantine.map_or_else(
+                    || "off".to_string(),
+                    |q| format!("{} refusals in {}s", q.refusals, q.window_secs),
+                ),
+            )
+            .detail(
                 "passthrough_hosts",
                 settings
                     .passthrough_hosts
@@ -1319,6 +1342,17 @@ impl PolicyService {
         self.policy.put_settings(settings.clone(), &[event]).await?;
         self.notifier.bump_content();
         Ok(settings)
+    }
+}
+
+/// Whether going from `before` to `after` lets a session be refused more
+/// before it is cut off: turning quarantine off, more refusals, or the
+/// same refusals spread over a shorter window.
+fn quarantine_loosens(before: Option<QuarantinePolicy>, after: Option<QuarantinePolicy>) -> bool {
+    match (before, after) {
+        (Some(_), None) => true,
+        (None, _) => false,
+        (Some(b), Some(a)) => a.refusals > b.refusals || a.window_secs < b.window_secs,
     }
 }
 

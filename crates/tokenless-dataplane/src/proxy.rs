@@ -102,6 +102,8 @@ pub struct ProxyShared {
     pub lifecycle: watch::Sender<Lifecycle>,
     /// Open tunnels and gateway streams per session.
     pub(crate) traffic: Arc<crate::traffic::OpenTraffic>,
+    /// Refusals per session, for [`crate::quarantine`].
+    pub(crate) refusals: crate::quarantine::RefusalCounter,
 }
 
 impl ProxyShared {
@@ -228,6 +230,9 @@ pub(crate) fn check_session(
 ) -> Result<(), &'static str> {
     if clock::now(snapshot) >= claims.exp {
         return Err("proxy session has expired");
+    }
+    if snapshot.quarantined.contains_key(&claims.jti) {
+        return Err("proxy session was cut off after repeated refusals; someone has to review it and start a new session");
     }
     if snapshot.revoked.contains(&claims.jti) {
         return Err("proxy session has been revoked");
@@ -1125,6 +1130,25 @@ pub(crate) fn audit_best_effort(
     let event = proxy_event(shared, claims, action, outcome, host, port, request)
         .detail("reason", reason.to_string());
     let _ = shared.audit.try_record(event);
+    if outcome == AuditOutcome::Denied {
+        crate::quarantine::count_refusal(shared, claims);
+    }
+}
+
+/// An event about the session behind `claims`: its scope, id and labels.
+pub(crate) fn session_event(
+    shared: &ProxyShared,
+    claims: &SessionClaims,
+    action: &str,
+    outcome: AuditOutcome,
+) -> AuditEvent {
+    let mut event = AuditEvent::new(format!("node:{}", shared.node_id), action, outcome)
+        .detail("scope", claims.scope.to_string())
+        .detail("session_id", claims.jti.to_string());
+    for (k, v) in &claims.labels {
+        event = event.detail(&format!("label.{k}"), v.clone());
+    }
+    event
 }
 
 fn proxy_event(
@@ -1136,17 +1160,12 @@ fn proxy_event(
     port: u16,
     request: Option<(&str, &str)>,
 ) -> AuditEvent {
-    let mut event = AuditEvent::new(format!("node:{}", shared.node_id), action, outcome)
-        .detail("scope", claims.scope.to_string())
-        .detail("session_id", claims.jti.to_string())
-        .detail("host", format!("{host}:{port}"));
+    let mut event =
+        session_event(shared, claims, action, outcome).detail("host", format!("{host}:{port}"));
     if let Some((method, path)) = request {
         event = event
             .detail("method", method.to_string())
             .detail("path", path.chars().take(512).collect::<String>());
-    }
-    for (k, v) in &claims.labels {
-        event = event.detail(&format!("label.{k}"), v.clone());
     }
     event
 }

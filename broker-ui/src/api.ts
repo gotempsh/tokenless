@@ -475,6 +475,13 @@ export interface Settings {
   passthrough_hosts: string[];
   /** The longest session anyone may mint. */
   max_session_ttl_secs: number;
+  /** When a proxy cuts off a session that keeps being refused; `null` for never. */
+  quarantine: QuarantinePolicy | null;
+}
+
+export interface QuarantinePolicy {
+  refusals: number;
+  window_secs: number;
 }
 
 export interface CredentialValidation {
