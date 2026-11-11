@@ -428,8 +428,14 @@ struct ServeArgs {
     #[arg(long, default_value_t = 60)]
     lease_secs: u32,
     /// Do not run the built-in proxy, for a server whose proxies run on the
-    /// agents' machines (tokenless node join, then node run, there).
-    #[arg(long)]
+    /// agents' machines (tokenless node join, then node run, there). In
+    /// TOKENLESS_NO_BUILTIN_PROXY, `0`, `false`, `no`, `off` and empty
+    /// mean no; anything else means yes.
+    #[arg(
+        long,
+        env = "TOKENLESS_NO_BUILTIN_PROXY",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     no_proxy: bool,
     /// Where the built-in proxy listens for agents on this machine. Keep it
     /// on loopback or a private address.
@@ -768,6 +774,9 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.api_listen = args.api_listen;
     config.node_listen = args.node_listen;
     config.node_api_names = args.node_api_names;
+    if !args.no_proxy {
+        local_proxy::add_dial_name(&mut config.node_api_names, args.node_listen);
+    }
     config.ui_dir = args.ui_dir;
     if let (Some(cert), Some(key)) = (args.api_tls_cert, args.api_tls_key) {
         config.api_tls = Some(broker_server::api_tls::ApiTlsFiles { cert, key });
@@ -775,38 +784,6 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.control.lease_secs = args.lease_secs.max(3);
     config.validation_extra_roots = read_cas(&args.validation_ca)?;
     let running = Server::start(config).await?;
-    // Listening for the stop signal from here on: starting the built-in
-    // proxy takes a moment, and a SIGTERM then must still shut down cleanly.
-    let stop = stop_signal();
-    tokio::pin!(stop);
-    let proxy = if args.no_proxy {
-        None
-    } else {
-        let config = LocalProxyConfig {
-            listen: args.proxy_listen,
-            mcp_listen: Some(args.proxy_mcp_listen),
-            ..LocalProxyConfig::new(&data_dir)
-        };
-        let started = tokio::select! {
-            started = local_proxy::start(&running.control, running.node_addr, config) => started,
-            signal = &mut stop => {
-                let signal = signal?;
-                info!(signal, "shutting down");
-                running.shutdown();
-                return Ok(());
-            }
-        };
-        match started {
-            Ok(proxy) => Some(proxy),
-            Err(e) => {
-                // The server is still useful without it: say why, and go on.
-                warn!(error = %e, "built-in proxy not started");
-                eprintln!("  No built-in proxy: {e}");
-                eprintln!();
-                None
-            }
-        }
-    };
     if let Some(admin) = &running.initial_admin {
         // Printed to the terminal, not the structured log, so it is not
         // shipped to log aggregation. Only its hash is stored.
@@ -839,6 +816,39 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
+    // After the one-time password is out. Listening for the stop signal
+    // from here on: starting the built-in proxy takes a moment, and a
+    // SIGTERM then must still shut down cleanly.
+    let stop = stop_signal();
+    tokio::pin!(stop);
+    let proxy = if args.no_proxy {
+        None
+    } else {
+        let config = LocalProxyConfig {
+            listen: args.proxy_listen,
+            mcp_listen: Some(args.proxy_mcp_listen),
+            ..LocalProxyConfig::new(&data_dir)
+        };
+        let started = tokio::select! {
+            started = local_proxy::start(&running.control, running.node_addr, config) => started,
+            signal = &mut stop => {
+                let signal = signal?;
+                info!(signal, "shutting down");
+                running.shutdown();
+                return Ok(());
+            }
+        };
+        match started {
+            Ok(proxy) => Some(proxy),
+            Err(e) => {
+                // The server is still useful without it: say why, and go on.
+                warn!(error = %e, "built-in proxy not started");
+                eprintln!("  No built-in proxy: {e}");
+                eprintln!();
+                None
+            }
+        }
+    };
     if let Some(proxy) = &proxy {
         eprintln!(
             "  Proxy for agents on this machine: {}. Run one through it with: {}",
@@ -848,7 +858,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         if !proxy.ready {
             eprintln!("  It has no policy from this server yet and refuses traffic until it does.");
         }
-        eprintln!("  (Proxies on other machines instead? Start with --no-proxy.)");
+        eprintln!("  (Proxies on other machines instead? Start with --no-proxy, or set TOKENLESS_NO_BUILTIN_PROXY=1.)");
         eprintln!();
     }
     let signal = stop.await?;

@@ -11,7 +11,7 @@
 //! whose certificate lapsed while the server was stopped is replaced (the
 //! old one revoked); one an admin revoked stays off until its identity file
 //! is removed. A server whose proxies run on the agents' machines starts
-//! with `--no-proxy`.
+//! with `--no-proxy` (or `TOKENLESS_NO_BUILTIN_PROXY=1`).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ pub enum LocalProxyError {
     Revoked { node_id: String, state: String },
 
     #[error(
-        "could not enrol the built-in proxy with this server's node API at {control_url}: {source}"
+        "could not enrol the built-in proxy with this server's node API at {control_url}: {source}; start with --no-proxy to run without it"
     )]
     Enrol {
         control_url: String,
@@ -50,7 +50,15 @@ pub enum LocalProxyError {
         source: DataPlaneError,
     },
 
-    #[error("could not start the built-in proxy on {listen}: {source}; if another proxy already listens there, start with --no-proxy or move this one with --proxy-listen")]
+    #[error("could not start the built-in proxy: {listen} is taken ({source}); if another proxy already listens there, start with --no-proxy, or move this one with {flag}")]
+    PortTaken {
+        listen: SocketAddr,
+        flag: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not start the built-in proxy on {listen}: {source}; start with --no-proxy to run without it")]
     Start {
         listen: SocketAddr,
         #[source]
@@ -123,14 +131,44 @@ fn server_caller() -> Caller {
     Caller::service(Principal::service("serve", Role::Admin, None))
 }
 
-/// The node API as this host reaches it: a wildcard listener on loopback.
-fn node_api_url(node_addr: SocketAddr) -> String {
-    let ip = match node_addr.ip() {
+/// The address the built-in proxy dials the node API listening on
+/// `node_listen` at: a wildcard listener on loopback.
+fn dial_ip(node_listen: SocketAddr) -> IpAddr {
+    match node_listen.ip() {
         IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
         IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
         ip => ip,
-    };
-    format!("https://{}", SocketAddr::new(ip, node_addr.port()))
+    }
+}
+
+/// The node API as this host reaches it.
+fn node_api_url(node_addr: SocketAddr) -> String {
+    format!(
+        "https://{}",
+        SocketAddr::new(dial_ip(node_addr), node_addr.port())
+    )
+}
+
+/// Adds the address the built-in proxy dials to the node API
+/// certificate's names: `--node-api-name` replaces the loopback defaults,
+/// and a certificate without that address fails the proxy's TLS check.
+pub fn add_dial_name(names: &mut Vec<String>, node_listen: SocketAddr) {
+    let ip = dial_ip(node_listen);
+    if !names.iter().any(|n| n.parse::<IpAddr>().ok() == Some(ip)) {
+        names.push(ip.to_string());
+    }
+}
+
+/// Fails with the flag that moves it when `listen` is taken, before the
+/// proxy enrols, so a taken port leaves nothing behind in Proxies.
+fn check_free(listen: SocketAddr, flag: &'static str) -> Result<(), LocalProxyError> {
+    std::net::TcpListener::bind(listen)
+        .map(drop)
+        .map_err(|source| LocalProxyError::PortTaken {
+            listen,
+            flag,
+            source,
+        })
 }
 
 /// What to do with the identity on disk.
@@ -142,13 +180,14 @@ enum Existing {
 
 async fn existing(
     control: &ControlPlane,
+    node_addr: SocketAddr,
     config: &LocalProxyConfig,
 ) -> Result<Existing, LocalProxyError> {
     if !config.state.exists() {
         return Ok(Existing::None);
     }
     let state = config.state.display().to_string();
-    let identity =
+    let mut identity =
         NodeIdentity::load(&config.state).map_err(|source| LocalProxyError::Identity {
             state: state.clone(),
             source,
@@ -176,6 +215,16 @@ async fn existing(
     }
     if node.cert_not_after <= Utc::now() {
         return Ok(Existing::Replace(Box::new(identity)));
+    }
+    // The node API moved (another --node-listen) since it enrolled: same
+    // server, same certificate, a new address to dial.
+    let control_url = node_api_url(node_addr);
+    if identity.control_url != control_url {
+        info!(from = %identity.control_url, to = %control_url, "built-in proxy follows the node API to its new address");
+        identity.control_url = control_url;
+        identity
+            .save(&config.state)
+            .map_err(|source| LocalProxyError::Identity { state, source })?;
     }
     Ok(Existing::Use(Box::new(identity)))
 }
@@ -217,7 +266,11 @@ pub async fn start(
     node_addr: SocketAddr,
     config: LocalProxyConfig,
 ) -> Result<LocalProxy, LocalProxyError> {
-    let (identity, enrolled) = match existing(control, &config).await? {
+    check_free(config.listen, "--proxy-listen")?;
+    if let Some(mcp) = config.mcp_listen {
+        check_free(mcp, "--proxy-mcp-listen")?;
+    }
+    let (identity, enrolled) = match existing(control, node_addr, &config).await? {
         Existing::Use(identity) => (*identity, false),
         Existing::None => (enrol(control, node_addr, &config.state).await?, true),
         Existing::Replace(old) => {
@@ -235,7 +288,8 @@ pub async fn start(
             (enrol(control, node_addr, &config.state).await?, true)
         }
     };
-    let data_plane = DataPlane::start(
+    let node_id = identity.node_id;
+    let started = DataPlane::start(
         DataPlaneConfig {
             listen: config.listen,
             mcp_listen: config.mcp_listen,
@@ -244,11 +298,26 @@ pub async fn start(
         },
         identity,
     )
-    .await
-    .map_err(|source| LocalProxyError::Start {
-        listen: config.listen,
-        source,
-    })?;
+    .await;
+    let data_plane = match started {
+        Ok(data_plane) => data_plane,
+        Err(source) => {
+            if enrolled {
+                // Enrolled for nothing (a port taken since the check):
+                // leave no proxy behind that never connects.
+                if let Err(e) = control.nodes.revoke_node(&server_caller(), &node_id).await {
+                    warn!(node_id = %node_id, error = %e, "could not revoke the built-in proxy that failed to start");
+                }
+                if let Err(e) = std::fs::remove_file(&config.state) {
+                    warn!(state = %config.state.display(), error = %e, "could not remove the built-in proxy's identity");
+                }
+            }
+            return Err(LocalProxyError::Start {
+                listen: config.listen,
+                source,
+            });
+        }
+    };
     let mut events = data_plane.events();
     let ready = tokio::time::timeout(
         FIRST_SNAPSHOT_WAIT,
@@ -288,6 +357,32 @@ mod tests {
         assert_eq!(
             node_api_url("127.0.0.1:9443".parse().unwrap()),
             "https://127.0.0.1:9443"
+        );
+    }
+
+    #[test]
+    fn the_node_api_certificate_names_the_address_it_dials() {
+        let named = |names: &[&str], listen: &str| {
+            let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+            add_dial_name(&mut names, listen.parse().unwrap());
+            names
+        };
+        assert_eq!(
+            named(&["tokenless.example.com"], "0.0.0.0:8443"),
+            ["tokenless.example.com", "127.0.0.1"]
+        );
+        assert_eq!(
+            named(&["tokenless.internal"], "10.0.0.5:8443"),
+            ["tokenless.internal", "10.0.0.5"]
+        );
+        assert_eq!(
+            named(&["tokenless.internal"], "[::]:8443"),
+            ["tokenless.internal", "::1"]
+        );
+        // Already there: nothing added.
+        assert_eq!(
+            named(&["localhost", "127.0.0.1"], "127.0.0.1:8443"),
+            ["localhost", "127.0.0.1"]
         );
     }
 

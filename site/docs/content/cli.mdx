@@ -41,7 +41,7 @@ description: "Every command takes --help for its full list of options."
 | `--validation-ca` | | Extra CAs for credential tests (repeatable) |
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
-| `--no-proxy` | | Don't run the built-in proxy, for a server whose proxies run on other machines |
+| `--no-proxy` | `TOKENLESS_NO_BUILTIN_PROXY` | Don't run the built-in proxy, for a server whose proxies run on other machines. The container image sets the variable |
 | `--proxy-listen` | `127.0.0.1:3128` | The built-in proxy's listener |
 | `--proxy-mcp-listen` | `127.0.0.1:3129` | The built-in proxy's MCP gateway |
 

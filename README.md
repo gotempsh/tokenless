@@ -99,7 +99,7 @@ cargo build --release
 `serve` runs the control plane and a proxy for agents on the same machine
 (`127.0.0.1:3128`), listed under **Proxies** as *built-in (this server)*.
 A server whose agents run on other machines starts with `--no-proxy`
-instead; see [One server, many hosts](site/docs/content/server.mdx).
+(or `TOKENLESS_NO_BUILTIN_PROXY=1`) instead; see [One server, many hosts](site/docs/content/server.mdx).
 
 Save the username and password it prints; only a hash is stored. If you
 lose it, `tokenless admin reset-password --data-dir ./data` on the same
