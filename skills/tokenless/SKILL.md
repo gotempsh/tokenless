@@ -17,7 +17,8 @@ You are behind the broker when `TOKENLESS_PROXY` is set. Then
 `HTTPS_PROXY` points at a local session port and the broker's CA is
 already trusted (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
 `REQUESTS_CA_BUNDLE`, ...). Leave these variables alone. Unsetting or
-overriding them only makes your requests fail.
+overriding them only makes your requests fail. The proxy URL holds the
+port's password: don't print it or copy it anywhere.
 
 When `TOKENLESS_PROXY` isn't set, you aren't behind it yet: see section 6
 whenever a key comes up.

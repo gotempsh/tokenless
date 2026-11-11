@@ -17,7 +17,7 @@ use broker_server::launcher::account::{
 };
 use broker_server::launcher::client::{ApiClient, Credentials, MintRequest, PortServices};
 use broker_server::launcher::inject::{self, Assignment};
-use broker_server::launcher::port::{check_listen, check_proxy, SessionPort};
+use broker_server::launcher::port::{check_listen, check_proxy, PortPassword, SessionPort};
 use broker_server::launcher::session::LiveSession;
 use broker_server::launcher::skill;
 use broker_server::launcher::trust::{
@@ -302,6 +302,11 @@ struct PortArgs {
     /// system roots, or SSL_CERT_FILE).
     #[arg(long)]
     trust_base: Option<PathBuf>,
+    /// Let the session port take connections without the password it puts
+    /// in HTTPS_PROXY, for a client that can't send proxy credentials. Any
+    /// process on this machine, any user's, can then use the session.
+    #[arg(long)]
+    no_port_password: bool,
 }
 
 /// Where an existing session's token comes from, instead of minting one.
@@ -1593,6 +1598,11 @@ async fn open_session(
     Ok(LiveSession::start(client.clone(), vault, request).await?)
 }
 
+/// A fresh password for the session port, unless it was turned off.
+fn port_password(port: &PortArgs) -> Option<PortPassword> {
+    (!port.no_port_password).then(PortPassword::generate)
+}
+
 /// Downloads the interception CA, checks a pinned fingerprint and writes
 /// the agent's trust files into `dir`.
 async fn prepare_trust(
@@ -1756,17 +1766,22 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
             let live = open_session(&client, &mint, given, &[]).await?;
-            let session_port =
-                match SessionPort::start(listen, &port.proxy, live.auth.clone(), live.listing())
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        live.end().await;
-                        return Err(e.into());
-                    }
-                };
-            let exports: String = agent_env(session_port.addr, &trust)
+            let session_port = match SessionPort::start(
+                listen,
+                &port.proxy,
+                live.auth.clone(),
+                live.listing(),
+                port_password(&port),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    live.end().await;
+                    return Err(e.into());
+                }
+            };
+            let exports: String = agent_env(&session_port.url(), &trust)
                 .into_iter()
                 .chain(placeholder_env(&live.services))
                 .map(|(k, v)| format!("export {k}={}\n", shell_quote(&v)))
@@ -2033,6 +2048,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
         &args.port.proxy,
         live.auth.clone(),
         live.listing(),
+        port_password(&args.port),
     )
     .await
     {
@@ -2042,7 +2058,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
             return Err(e.into());
         }
     };
-    let trust_env = agent_env(session_port.addr, &trust);
+    let trust_env = agent_env(&session_port.url(), &trust);
     let reserved: Vec<String> = trust_env.iter().map(|(k, _)| k.clone()).collect();
     let requested = match inject::resolve(&assignments, &live.services, &reserved) {
         Ok(env) => env,

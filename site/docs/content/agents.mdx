@@ -43,7 +43,10 @@ tokenless run --bundle code-review -- claude     # mint one for this run
 loopback proxy address that adds the session to every request and relays
 it to the proxy. It starts the command with:
 
-- `HTTPS_PROXY` (and `HTTP_PROXY`) pointing at the session port;
+- `HTTPS_PROXY` (and `HTTP_PROXY`) pointing at the session port, with a
+  password made up for this run in the URL
+  (`http://tokenless:<password>@127.0.0.1:<port>`), so other programs on
+  the machine can't use the session;
 - trust files that include the broker's interception CA:
   `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others;
 - `NODE_USE_ENV_PROXY=1`, so Node's built-in `fetch` uses the proxy;
@@ -67,9 +70,14 @@ tokenless session start --bundle code-review \
 
 It prints the same exports and runs until Ctrl-C or SIGTERM. With
 `--bundle` it mints the session, keeps it renewed and ends it on exit;
-with `TOKENLESS_SESSION_TOKEN` it uses that session. The session port only listens on loopback, because
-anything that reaches it uses the session; on a shared machine, other
-local users can too.
+with `TOKENLESS_SESSION_TOKEN` it uses that session. The session port only listens on loopback and
+refuses clients without the password in the exports, so keep them
+private: `--env-file` writes a file only you can read.
+
+curl, git, Node, Python and Go send the password from the proxy URL by
+themselves. For a client that can't, start the port with
+`--no-port-password`; then any program on the machine, any user's, can
+use the session while the port is open.
 
 ## Managing the token yourself
 

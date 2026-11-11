@@ -746,7 +746,7 @@ async fn end_to_end() {
     assert_eq!(listing["total"], 1);
     {
         use broker_server::launcher::client::{ApiClient, Credentials, MintRequest};
-        use broker_server::launcher::port::SessionPort;
+        use broker_server::launcher::port::{PortPassword, SessionPort};
         use broker_server::launcher::session::LiveSession;
         use broker_server::launcher::trust::placeholder_env;
 
@@ -821,19 +821,34 @@ async fn end_to_end() {
             &proxy.to_string(),
             live.auth.clone(),
             live.listing(),
+            Some(PortPassword::generate()),
         )
         .await
         .unwrap();
 
-        // The agent's client has a plain proxy URL: no token anywhere.
-        let mut builder = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::https(format!("http://{}", port.addr)).unwrap())
-            .tls_built_in_root_certs(false)
-            .timeout(Duration::from_secs(10));
-        for pem in [&ca_pem, &upstream.ca_pem] {
-            builder = builder.add_root_certificate(Certificate::from_pem(pem.as_bytes()).unwrap());
-        }
-        let agent = builder.build().unwrap();
+        // The agent's client has the port's URL, with its password: no
+        // session token anywhere. A client without the password is refused.
+        let client_through = |proxy_url: String| {
+            let mut builder = reqwest::Client::builder()
+                .proxy(reqwest::Proxy::https(proxy_url).unwrap())
+                .tls_built_in_root_certs(false)
+                .timeout(Duration::from_secs(10));
+            for pem in [&ca_pem, &upstream.ca_pem] {
+                builder =
+                    builder.add_root_certificate(Certificate::from_pem(pem.as_bytes()).unwrap());
+            }
+            builder.build().unwrap()
+        };
+        let stranger = client_through(format!("http://{}", port.addr));
+        let refused = stranger
+            .get(format!("https://localhost:{upstream_port}/via-port"))
+            .send()
+            .await;
+        assert!(
+            refused.is_err(),
+            "a client without the port's password got through: {refused:?}"
+        );
+        let agent = client_through(port.url());
         let echo: Echo = agent
             .get(format!("https://localhost:{upstream_port}/via-port"))
             .header(AUTHORIZATION, CLIENT_SUPPLIED)
@@ -878,14 +893,19 @@ async fn end_to_end() {
                 .map(|s| s["rule"].as_str().unwrap().to_string())
                 .collect()
         };
+        // `curl $TOKENLESS_PROXY/services`: the password from the URL.
         let ask_port = || async {
-            reqwest::get(format!("http://{}/services", port.addr))
+            reqwest::get(format!("{}/services", port.url()))
                 .await
                 .unwrap()
                 .json::<Value>()
                 .await
                 .unwrap()
         };
+        let unasked = reqwest::get(format!("http://{}/services", port.addr))
+            .await
+            .unwrap();
+        assert_eq!(unasked.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(listed(ask_port().await), ["local-upstream"]);
         live.renew_now().await.unwrap();
         assert_eq!(live.current.load().rule_ids.len(), 2);

@@ -183,6 +183,7 @@ sessions the key started.
 | `--name` (when minting) | | the session's name on the Sessions page |
 | `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
 | `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` says when the skill isn't installed |
+| `--no-port-password` (`run`, `exec`, `session start`) | | off: the session port refuses clients without the password it puts in `HTTPS_PROXY`. Only for a client that can't send proxy credentials: any program on the machine can then use the session |
 
 Inside `run` or behind `session start`, `TOKENLESS_PROXY` is set to the
 session port and `HTTPS_PROXY` points at it.
