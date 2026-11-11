@@ -240,6 +240,25 @@ export function Settings() {
             )}
           </SettingsSection>
           <SettingsSection
+            title="Secrets in responses"
+            hint="An API that echoes its credential back, in a debug answer or an error, would hand it to the agent."
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="scrub-responses">Mask a service's secret in the answers to its requests</Label>
+                <p className="text-sm text-muted-foreground">
+                  In headers, and in text bodies that are not compressed, up to 8 MiB. Each character becomes *.
+                </p>
+              </div>
+              <Switch
+                id="scrub-responses"
+                checked={current.scrub_responses}
+                disabled={action.busy}
+                onCheckedChange={(on) => void save({ ...current, scrub_responses: on })}
+              />
+            </div>
+          </SettingsSection>
+          <SettingsSection
             title="Alerts"
             hint="Signs that someone other than the agent holds a session. A session cut off always raises one."
           >

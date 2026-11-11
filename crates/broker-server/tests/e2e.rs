@@ -517,6 +517,44 @@ async fn end_to_end() {
     .await
     .unwrap();
     let client = proxied_client(proxy, &session_token, &[&ca_pem, &upstream.ca_pem]);
+    // --- an echoed secret reaches the agent masked ------------------------------
+    let echoed = || async {
+        client
+            .get(format!("https://localhost:{upstream_port}/v1/echo"))
+            .send()
+            .await
+            .unwrap()
+            .json::<Echo>()
+            .await
+            .unwrap()
+            .authorization
+    };
+    let masked = "*".repeat(format!("Bearer {SECRET}").len());
+    assert_eq!(echoed().await.as_deref(), Some(masked.as_str()));
+    eventually(
+        "the masking is recorded",
+        Duration::from_secs(5),
+        || async {
+            let page = api
+                .get("/audit?action_prefix=proxy.response_scrubbed")
+                .await;
+            page["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|e| e["detail"]["masked"] == "1"))
+        },
+    )
+    .await;
+    // Off, so the checks below see what the upstream got.
+    api.call(
+        reqwest::Method::PUT,
+        "/settings",
+        Some(json!({ "unmatched_host_policy": "passthrough", "scrub_responses": false })),
+    )
+    .await;
+    eventually("scrubbing turned off", Duration::from_secs(5), || async {
+        echoed().await.as_deref() == Some(format!("Bearer {SECRET}").as_str())
+    })
+    .await;
     let echo: Echo = client
         .get(format!("https://localhost:{upstream_port}/v1/things"))
         .header(AUTHORIZATION, CLIENT_SUPPLIED)

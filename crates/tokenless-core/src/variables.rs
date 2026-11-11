@@ -285,6 +285,7 @@ mod tests {
         let mut out = InjectedHeaders {
             headers: vec![],
             substitutions: vec![],
+            scrub: Default::default(),
         };
         render_custom_headers(
             &[CustomHeader {
@@ -302,6 +303,7 @@ mod tests {
         let mut out = InjectedHeaders {
             headers: vec![],
             substitutions: vec![],
+            scrub: Default::default(),
         };
         assert!(render_custom_headers(
             &[CustomHeader {

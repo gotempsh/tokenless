@@ -38,7 +38,7 @@ use tokenless_core::mcp::{self, McpMessage, NotJsonRpc};
 use tokenless_core::path::check_request_path;
 use tokenless_core::rule::RuleScope;
 use tokenless_core::session::{verify_session, SessionClaims};
-use tokenless_core::snapshot::UnmatchedHostPolicy;
+use tokenless_core::snapshot::{UnmatchedHostPolicy, SCRUBBED_ACTION};
 use tokenless_core::substitution::{
     apply_to_body, apply_to_header, apply_to_target, wants_body, Applied, BodyKind,
     RenderedSubstitution,
@@ -1563,6 +1563,7 @@ pub(crate) async fn handle_intercepted(
         );
     }
     rewrite_headers(req.headers_mut(), rule);
+    let scrubber = rule.scrub.clone().filter(|_| snapshot.scrub_responses);
     let rule_id = rule.id;
     let credential_id = rule.credential_id;
     // Strict sessions and bindings: the upload and the response are cut
@@ -1604,6 +1605,56 @@ pub(crate) async fn handle_intercepted(
             let status = response.status().as_u16();
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
+            let response = response.map(|b| b.map_err(BodyError::from).boxed());
+            let response = match &scrubber {
+                Some(scrubber) => {
+                    let (mut parts, body) = response.into_parts();
+                    let in_headers = scrubber.mask_headers(&mut parts.headers);
+                    if in_headers > 0 {
+                        Metrics::inc(&shared.metrics.responses_scrubbed_total);
+                        outcome = outcome.detail("scrubbed_headers", in_headers.to_string());
+                    }
+                    let body = match crate::scrub::body_skipped(&parts.headers) {
+                        Some(reason) => {
+                            outcome = outcome.detail("body_not_scrubbed", reason);
+                            body
+                        }
+                        None => {
+                            let report = proxy_event(
+                                shared,
+                                claims,
+                                SCRUBBED_ACTION,
+                                AuditOutcome::Success,
+                                &ctx.host,
+                                ctx.port,
+                                Some((&method, &path)),
+                            )
+                            .target(format!("rule:{rule_id}"))
+                            .detail("credential_id", credential_id.to_string())
+                            .detail("request_id", request_id.clone());
+                            let shared = ctx.shared.clone();
+                            crate::scrub::ScrubBody::wrap(body, scrubber.clone(), move |done| {
+                                if done.masked == 0 {
+                                    return;
+                                }
+                                if in_headers == 0 {
+                                    Metrics::inc(&shared.metrics.responses_scrubbed_total);
+                                }
+                                let mut report = report.detail("masked", done.masked.to_string());
+                                if done.truncated {
+                                    report = report.detail(
+                                        "read_up_to",
+                                        crate::scrub::MAX_SCRUB_BODY.to_string(),
+                                    );
+                                }
+                                let _ = shared.audit.try_record(report);
+                            })
+                        }
+                    };
+                    Response::from_parts(parts, body)
+                }
+                None => response,
+            };
             let _ = shared.audit.try_record(outcome);
             if status == StatusCode::UNAUTHORIZED.as_u16() {
                 if let Some(binding) = &ctx.binding {
@@ -1614,7 +1665,6 @@ pub(crate) async fn handle_intercepted(
                     );
                 }
             }
-            let response = response.map(|b| b.map_err(BodyError::from).boxed());
             match &mut cut {
                 Some(cut) => response.map(|b| cut.wrap(b)),
                 None => response,
@@ -1789,6 +1839,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrub: None,
         }
     }
 
@@ -1858,6 +1909,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrub: None,
         };
         let mut h = HeaderMap::new();
         h.insert(

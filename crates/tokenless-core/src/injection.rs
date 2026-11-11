@@ -145,6 +145,14 @@ impl InjectionSpec {
 
     /// Lower-cased header names this injection sets. The data plane strips
     /// any client-supplied header with one of these names.
+    /// The fields whose values are secret: all but a Basic username.
+    pub fn secret_fields(&self) -> Vec<&str> {
+        match self {
+            InjectionSpec::Basic { password_field, .. } => vec![password_field],
+            _ => self.fields(),
+        }
+    }
+
     pub fn header_names(&self) -> Vec<String> {
         match self {
             InjectionSpec::Bearer { .. }
@@ -244,6 +252,7 @@ impl InjectionSpec {
         Ok(InjectedHeaders {
             headers: vec![header],
             substitutions: vec![],
+            scrub: ScrubValues::default(),
         })
     }
 }
@@ -355,6 +364,75 @@ pub struct InjectedHeaders {
     /// Placeholders the proxy swaps for real values; see [`crate::substitution`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub substitutions: Vec<crate::substitution::RenderedSubstitution>,
+    /// Secret values the proxy masks in the responses to requests it added
+    /// them to. Ignored by nodes that predate it.
+    #[serde(default, skip_serializing_if = "ScrubValues::is_empty")]
+    pub scrub: ScrubValues,
+}
+
+/// Shorter values are not masked: they could be ordinary words.
+pub const MIN_SCRUB_LEN: usize = 8;
+
+/// Secret values to mask in responses; never printed.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ScrubValues(Vec<String>);
+
+impl ScrubValues {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn values(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Adds `value` once, unless it is too short to mask safely.
+    pub fn push(&mut self, value: &str) {
+        if value.len() >= MIN_SCRUB_LEN && !self.0.iter().any(|v| v == value) {
+            self.0.push(value.to_string());
+        }
+    }
+
+    /// What to mask for `headers` rendered from `spec` with `fields`: the
+    /// secret fields, the injected values, the encoded half of a Basic
+    /// header, and the substituted values.
+    pub fn for_rendered(
+        spec: &InjectionSpec,
+        fields: &SecretFields,
+        headers: &InjectedHeaders,
+    ) -> Self {
+        let mut out = Self::default();
+        for name in spec.secret_fields() {
+            if let Some(value) = fields.get(name) {
+                out.push(value);
+            }
+        }
+        for h in &headers.headers {
+            out.push(&h.value);
+            if let Some(encoded) = h.value.strip_prefix("Basic ") {
+                out.push(encoded);
+            }
+        }
+        for s in &headers.substitutions {
+            out.push(&s.value);
+        }
+        out
+    }
+}
+
+impl fmt::Debug for ScrubValues {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ScrubValues(<{} redacted>)", self.0.len())
+    }
+}
+
+impl Drop for ScrubValues {
+    fn drop(&mut self) {
+        for v in &mut self.0 {
+            v.zeroize();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -368,6 +446,39 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn scrub_values_are_the_secrets_not_the_username() {
+        let spec = InjectionSpec::Basic {
+            username_field: "user".into(),
+            password_field: "pass".into(),
+        };
+        let f = fields(&[("user", "service-account"), ("pass", "hunter2hunter2")]);
+        let headers = spec.render("t", &f).unwrap();
+        let scrub = ScrubValues::for_rendered(&spec, &f, &headers);
+        let encoded = STANDARD.encode("service-account:hunter2hunter2");
+        assert_eq!(
+            scrub.values(),
+            [
+                "hunter2hunter2".to_string(),
+                format!("Basic {encoded}"),
+                encoded
+            ]
+        );
+        assert!(!format!("{scrub:?}").contains("hunter2"));
+        // Too short to mask without hitting ordinary text.
+        let spec = InjectionSpec::Header {
+            name: "x-key".into(),
+            field: "k".into(),
+            prefix: None,
+        };
+        let f = fields(&[("k", "short")]);
+        let headers = spec.render("t", &f).unwrap();
+        assert!(ScrubValues::for_rendered(&spec, &f, &headers).is_empty());
+        // Old nodes read the sealed headers without it.
+        let json = serde_json::to_string(&headers).unwrap();
+        assert!(!json.contains("scrub"), "{json}");
     }
 
     #[test]

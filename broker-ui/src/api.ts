@@ -481,6 +481,8 @@ export interface Settings {
   quarantine: QuarantinePolicy | null;
   /** How fast each session may send requests through a proxy; `null` for no limit. */
   rate_limit: RateLimit | null;
+  /** Whether proxies mask a service's secrets in the responses they carry back. */
+  scrub_responses: boolean;
   /** The alert signals that can be tuned; a quarantine always raises one. */
   alerts: AlertSettings;
 }

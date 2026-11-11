@@ -25,7 +25,7 @@ use tokenless_core::snapshot::{
     ca_aad, format_for, rule_aad, rules_readable_by, tripwires_aad, InterceptionCa, PublishedKey,
     SessionLimit, SignedSnapshot, SnapshotBody, SnapshotRule, SnapshotTripwire,
     MAX_SNAPSHOT_TRIPWIRES, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
-    RATE_LIMIT_FORMAT, SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
+    RATE_LIMIT_FORMAT, SCRUB_FORMAT, SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -583,6 +583,7 @@ impl NodeService {
         let rate_limit = settings
             .rate_limit
             .filter(|_| reads_format >= RATE_LIMIT_FORMAT);
+        let scrub_responses = settings.scrub_responses && reads_format >= SCRUB_FORMAT;
         let format = format_for(&rules)
             .max(if quarantine.is_some() {
                 QUARANTINE_FORMAT
@@ -596,6 +597,11 @@ impl NodeService {
             })
             .max(if rate_limit.is_some() {
                 RATE_LIMIT_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if scrub_responses {
+                SCRUB_FORMAT
             } else {
                 MIN_SNAPSHOT_FORMAT
             });
@@ -627,6 +633,7 @@ impl NodeService {
             quarantine,
             tripwires,
             rate_limit,
+            scrub_responses,
         };
         Ok(NodeSnapshot {
             snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
@@ -1042,6 +1049,7 @@ mod tests {
             "a format 1 node is sent no quarantine"
         );
         assert_eq!(body.rate_limit, None, "nor a rate limit");
+        assert!(!body.scrub_responses, "nor scrubbing");
         assert_eq!(
             body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
             vec![other]
@@ -1057,6 +1065,7 @@ mod tests {
         assert_eq!((body.format, body.rules.len()), (RATE_LIMIT_FORMAT, 2));
         assert_eq!(body.quarantine, Some(QuarantinePolicy::default()));
         assert_eq!(body.rate_limit, Some(RateLimit::default()));
+        assert!(body.scrub_responses);
 
         // A node that reads format 5 gets the quarantine and no rate limit.
         let five = cs.nodes.build_snapshot_for(&node.node, 5).await.unwrap();
@@ -1108,6 +1117,10 @@ mod tests {
                 rate_limit: None,
                 ..with(5, 50)
             },
+            Settings {
+                scrub_responses: false,
+                ..with(5, 50)
+            },
         ] {
             let err = cs
                 .policy
@@ -1132,6 +1145,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(audit.items[0].detail["rate_limit"], "10/s, bursts of 10");
+        assert_eq!(audit.items[0].detail["scrub_responses"], "true");
+    }
+
+    #[tokio::test]
+    async fn a_rules_secrets_are_sealed_to_the_node_for_scrubbing() {
+        use crate::service::policy::{CreateCredential, CreateRule};
+        use tokenless_core::injection::InjectedHeaders;
+        use tokenless_core::seal::open;
+        use tokenless_core::snapshot::rule_aad;
+
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let vault = cs.policy.create_vault(&host, "v").await.unwrap();
+        let token = "tok_0123456789abcdef";
+        let credential = cs
+            .policy
+            .create_credential(
+                &host,
+                &vault.id,
+                CreateCredential {
+                    name: "api".into(),
+                    template_id: "generic-bearer".into(),
+                    template_version: None,
+                    host_override: vec!["api.example.com".into()],
+                    fields: [("token".to_string(), token.to_string())].into(),
+                    custom_headers: vec![],
+                    substitutions: vec![],
+                    not_after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let rule = cs
+            .policy
+            .create_rule(
+                &host,
+                &vault.id,
+                CreateRule {
+                    name: "api".into(),
+                    credential_id: credential.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                    git: None,
+                },
+            )
+            .await
+            .unwrap();
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "n",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        cs.sessions
+            .mint(&host, &vault.id, mint(rule.id, Some(node.node.id), 600))
+            .await
+            .unwrap();
+        let body = cs
+            .nodes
+            .build_snapshot(&node.node)
+            .await
+            .unwrap()
+            .verify(&node.snapshot_verify_key)
+            .unwrap();
+        assert!(body.scrub_responses, "on by default");
+        let sealed = body.rules.iter().find(|r| r.rule_id == rule.id).unwrap();
+        let plain = open(
+            &secret,
+            &sealed.headers,
+            &rule_aad(&node.node.id, &rule.id, &credential.id),
+        )
+        .unwrap();
+        let headers: InjectedHeaders = serde_json::from_slice(&plain).unwrap();
+        assert_eq!(
+            headers.scrub.values(),
+            [token.to_string(), format!("Bearer {token}")]
+        );
     }
 
     /// A proxy that cut a session off reports it, and the control plane

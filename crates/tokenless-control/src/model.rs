@@ -305,6 +305,11 @@ pub struct Settings {
     /// for no limit. Settings saved before it existed get the default.
     #[serde(default = "default_rate_limit")]
     pub rate_limit: Option<RateLimit>,
+    /// Whether proxies mask a service's secrets in the responses to the
+    /// requests they added them to. Settings saved before it existed get
+    /// it on.
+    #[serde(default = "default_true")]
+    pub scrub_responses: bool,
     /// Which audit signals raise an alert.
     #[serde(default)]
     pub alerts: AlertSettings,
@@ -322,6 +327,10 @@ fn default_rate_limit() -> Option<RateLimit> {
     Some(RateLimit::default())
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -331,6 +340,7 @@ impl Default for Settings {
             max_session_ttl_secs: default_max_session_ttl(),
             quarantine: default_quarantine(),
             rate_limit: default_rate_limit(),
+            scrub_responses: true,
             alerts: AlertSettings::default(),
         }
     }
@@ -505,6 +515,7 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"unmatched_host_policy":"deny"}"#).unwrap();
         assert_eq!(old.quarantine, Some(QuarantinePolicy::default()));
         assert_eq!(old.rate_limit, Some(RateLimit::default()));
+        assert!(old.scrub_responses);
         let off: Settings =
             serde_json::from_str(r#"{"unmatched_host_policy":"deny","quarantine":null}"#).unwrap();
         assert_eq!(off.quarantine, None);

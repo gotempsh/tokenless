@@ -24,7 +24,7 @@ use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
 /// `not_after`, format 3 a rule's Git scope, format 4 the quarantine policy,
-/// format 5 tripwires, format 6 the rate limit. A snapshot is written in the oldest format that carries
+/// format 5 tripwires, format 6 the rate limit and response scrubbing. A snapshot is written in the oldest format that carries
 /// everything in it, and a node says which format it reads when it opens
 /// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
 /// enforce is left out of its snapshot, so an older node stops using that
@@ -36,6 +36,10 @@ pub const QUARANTINE_FORMAT: u32 = 4;
 pub const TRIPWIRE_FORMAT: u32 = 5;
 /// The format that carries [`SnapshotBody::rate_limit`].
 pub const RATE_LIMIT_FORMAT: u32 = 6;
+/// The format that carries [`SnapshotBody::scrub_responses`].
+pub const SCRUB_FORMAT: u32 = 6;
+/// What a node reports when it masked a credential in a response body.
+pub const SCRUBBED_ACTION: &str = "proxy.response_scrubbed";
 /// What a node reports, once per session per [`RATE_LIMIT_REPORT_SECS`],
 /// when it refused a session's requests for going past the
 /// [`RateLimit`], with how many.
@@ -262,6 +266,11 @@ pub struct SnapshotBody {
     /// Format 6: left out for a node that reads older formats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimit>,
+    /// Whether the node masks a rule's secrets in the responses to the
+    /// requests it added them to. Format 6: left out for a node that reads
+    /// older formats, and when off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scrub_responses: bool,
 }
 
 /// A decoy the node refuses and cuts the session off for.
@@ -387,6 +396,15 @@ impl SignedSnapshot {
                 ),
             ));
         }
+        if body.scrub_responses && body.format < SCRUB_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry response scrubbing, which needs format {SCRUB_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
         if let Some(rule) = body.rules.iter().find(|r| rule_format(r) > body.format) {
             let what = if rule.allow.git.is_some() {
                 "a Git scope"
@@ -436,7 +454,31 @@ mod tests {
             quarantine: None,
             tripwires: None,
             rate_limit: None,
+            scrub_responses: false,
         }
+    }
+
+    #[test]
+    fn response_scrubbing_needs_format_6_and_is_left_out_when_off() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = TRIPWIRE_FORMAT;
+        b.scrub_responses = true;
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot carry response scrubbing"),
+            "{err}"
+        );
+        b.format = SCRUB_FORMAT;
+        assert!(
+            signed(&b)
+                .verify(&key.verifying_key())
+                .unwrap()
+                .scrub_responses
+        );
+        b.scrub_responses = false;
+        assert!(!serde_json::to_string(&b).unwrap().contains("scrub"));
     }
 
     #[test]

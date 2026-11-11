@@ -27,6 +27,7 @@ pub mod node;
 pub mod proxy;
 pub mod quarantine;
 pub mod ratelimit;
+pub mod scrub;
 pub mod shutdown;
 pub mod state;
 pub mod status;

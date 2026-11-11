@@ -67,6 +67,8 @@ pub struct ActiveRule {
     pub substitutions: Vec<RenderedSubstitution>,
     /// When the credential stops being valid upstream, if it does.
     pub not_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// The secrets masked in responses, when the snapshot asks for it.
+    pub scrub: Option<Arc<crate::scrub::Scrubber>>,
 }
 
 impl ActiveRule {
@@ -121,6 +123,8 @@ pub struct ActiveSnapshot {
     pub tripwires: Option<Arc<crate::tripwire::Tripwires>>,
     /// How fast each session may send requests through this node.
     pub rate_limit: Option<RateLimit>,
+    /// Whether rules' secrets are masked in responses.
+    pub scrub_responses: bool,
 }
 
 impl ActiveSnapshot {
@@ -358,6 +362,7 @@ pub fn build_active(
             inject,
             substitutions: headers.substitutions.clone(),
             not_after: rule.not_after,
+            scrub: crate::scrub::Scrubber::build(headers.scrub.values())?,
         });
     }
 
@@ -399,6 +404,7 @@ pub fn build_active(
         quarantined,
         quarantine: body.quarantine,
         rate_limit: body.rate_limit,
+        scrub_responses: body.scrub_responses,
         tripwires,
         limits,
         policy: body.unmatched_host_policy,
@@ -496,12 +502,15 @@ pub(crate) mod tests {
                     .into_iter()
                     .map(|(rule_id, scope, host, token)| {
                         let credential_id = CredentialId::new();
+                        let mut scrub = tokenless_core::injection::ScrubValues::default();
+                        scrub.push(token);
                         let headers = InjectedHeaders {
                             headers: vec![InjectedHeader {
                                 name: "authorization".into(),
                                 value: format!("Bearer {token}"),
                             }],
                             substitutions: vec![],
+                            scrub,
                         };
                         SnapshotRule {
                             rule_id,
@@ -531,6 +540,7 @@ pub(crate) mod tests {
                 quarantine: None,
                 tripwires: None,
                 rate_limit: None,
+                scrub_responses: false,
             }
         }
     }

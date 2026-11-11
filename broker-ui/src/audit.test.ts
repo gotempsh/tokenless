@@ -104,6 +104,12 @@ describe("actionPhrase", () => {
     ).toBe("cut an open connection to api.example.com: the session was revoked");
   });
 
+  test("a masked answer says how many secrets it held", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.response_scrubbed", detail: { masked: "2", host: "api.example.com:443", method: "GET", path: "/debug" } })),
+    ).toContain("masked 2 secrets in the answer for GET");
+  });
+
   test("rate-limited requests read as one refusal with a count", () => {
     expect(
       actionPhrase(event({ action: "proxy.rate_limited", detail: { refused: "37", host: "api.example.com:443", per_sec: "20" } })),
@@ -135,7 +141,7 @@ describe("actionPhrase", () => {
     "launcher_key.create", "launcher_key.revoke",
     "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
     "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
-    "proxy.quarantine", "proxy.rate_limited", "proxy.tripwire",
+    "proxy.quarantine", "proxy.rate_limited", "proxy.response_scrubbed", "proxy.tripwire",
     "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
     "rule.create", "rule.delete", "rule.update",
     "session.mint", "session.revoke", "session.update_labels",

@@ -1153,6 +1153,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             per_sec: 7,
             burst: 70,
         }),
+        scrub_responses: false,
         alerts: tokenless_control::model::AlertSettings {
             refusals: None,
             new_proxy: false,

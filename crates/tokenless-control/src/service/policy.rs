@@ -1314,6 +1314,7 @@ impl PolicyService {
             || settings.max_session_ttl_secs > previous.max_session_ttl_secs
             || quarantine_loosens(previous.quarantine, settings.quarantine)
             || RateLimit::loosened_by(previous.rate_limit, settings.rate_limit)
+            || (previous.scrub_responses && !settings.scrub_responses)
             || settings.alerts.loosens(&previous.alerts);
         if widens {
             // Opening egress is as sensitive as widening a rule, and quieter
@@ -1357,6 +1358,7 @@ impl PolicyService {
                     |r| format!("{}/s, bursts of {}", r.per_sec, r.burst),
                 ),
             )
+            .detail("scrub_responses", settings.scrub_responses.to_string())
             .detail(
                 "alert_refusals",
                 settings.alerts.refusals.map_or_else(

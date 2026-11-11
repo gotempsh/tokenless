@@ -227,6 +227,8 @@ export function actionPhrase(event: AuditEvent): string {
       return `refused an MCP call to ${hostOnly(d.host)}`;
     case "proxy.quarantine":
       return `cut off a session after ${d.refusals ?? "repeated"} refusals in ${d.window_secs ? `${d.window_secs}s` : "a short time"}`;
+    case "proxy.response_scrubbed":
+      return `masked ${d.masked === "1" ? "a secret" : `${d.masked ?? "some"} secrets`} in the answer for ${request}`;
     case "proxy.rate_limited": {
       const n = d.refused ?? "some";
       return `refused ${n === "1" ? "1 request" : `${n} requests`} to ${hostOnly(d.host)}: the session went past ${d.per_sec ? `${d.per_sec} a second` : "the rate limit"}`;
