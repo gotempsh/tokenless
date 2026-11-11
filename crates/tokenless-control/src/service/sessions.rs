@@ -613,10 +613,13 @@ impl SessionService {
             .ok_or_else(|| ControlError::not_found("session", id))
     }
 
+    /// Newest first; only the live ones (neither revoked nor expired)
+    /// when `active`.
     pub async fn list(
         &self,
         caller: &Caller,
         vault_id: &VaultId,
+        active: bool,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         self.guard
@@ -624,7 +627,7 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(vault_id), None, page)
+            .list_sessions(Some(vault_id), None, active.then(Utc::now), page)
             .await?)
     }
 
@@ -633,6 +636,7 @@ impl SessionService {
     pub async fn list_all(
         &self,
         caller: &Caller,
+        active: bool,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let vault = caller.principal.vault;
@@ -641,7 +645,7 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(vault.as_ref(), None, page)
+            .list_sessions(vault.as_ref(), None, active.then(Utc::now), page)
             .await?)
     }
 
@@ -651,6 +655,7 @@ impl SessionService {
         &self,
         caller: &Caller,
         bundle_id: &BundleId,
+        active: bool,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let bundle = self
@@ -663,7 +668,12 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(&bundle.vault_id), Some(bundle_id), page)
+            .list_sessions(
+                Some(&bundle.vault_id),
+                Some(bundle_id),
+                active.then(Utc::now),
+                page,
+            )
             .await?)
     }
 }

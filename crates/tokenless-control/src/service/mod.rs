@@ -1575,7 +1575,7 @@ mod tests {
             .unwrap();
         let listed = cp
             .sessions
-            .list_for_bundle(&a, &bundle.id, PageRequest::new(None, None))
+            .list_for_bundle(&a, &bundle.id, false, PageRequest::new(None, None))
             .await
             .unwrap();
         assert_eq!(
@@ -1589,7 +1589,7 @@ mod tests {
         let missing = tokenless_core::ids::BundleId::new();
         let err = cp
             .sessions
-            .list_for_bundle(&a, &missing, PageRequest::new(None, None))
+            .list_for_bundle(&a, &missing, false, PageRequest::new(None, None))
             .await
             .unwrap_err();
         assert!(
@@ -1826,7 +1826,7 @@ mod tests {
         assert!(deleted.sessions_revoked >= 2, "{deleted:?}");
         let ended = cp
             .sessions
-            .list(&a, &vault.id, PageRequest::new(None, None))
+            .list(&a, &vault.id, false, PageRequest::new(None, None))
             .await
             .unwrap();
         let first = ended

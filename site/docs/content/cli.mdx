@@ -9,6 +9,9 @@ description: "Every command takes --help for its full list of options."
 |---|---|
 | `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](./deploy.mdx). |
 | `tokenless status` | What is set up here and the command to run next. Start here. |
+| `tokenless vault list`, `service list`, `bundle list` | What you can see in the console's Vaults, Services and Access bundles pages, as a table or `--json`. |
+| `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
+| `tokenless proxy list` | Proxies, and whether each is connected. Admins only. |
 | `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
 | `tokenless service templates` | Find a template by name, host or variable. |
@@ -80,6 +83,24 @@ ones. `--json` adds each template's fields. Exits 1 when nothing matches.
 
 Exits 0 when agents can be started behind tokenless, 1 otherwise.
 
+## `vault list`, `service list`, `bundle list`, `session list`, `proxy list`
+
+Each prints a table, or the same rows as JSON with `--json` (`[]` when
+there are none). They need `tokenless login` and show what the console
+shows the person signed in; no secret is ever printed.
+
+| Option | Default | |
+|---|---|---|
+| `--vault` (`service`, `bundle`, `session`) | every vault you can see | One vault, by name or id |
+| `--bundle` (`session`) | | Only sessions minted from this access bundle, by name or id |
+| `--all` (`session`) | | Include sessions that expired or were revoked |
+| `--limit` (`session`) | `20` | How many to show at most, newest first |
+| `--json` | | The rows as JSON |
+
+`service list` shows each service's template, the hosts it reaches and
+when its secret expires; `bundle list`, the services each bundle's rules
+reach. `session list` gives the ID that `session revoke --id` takes.
+
 ## `proxy add`
 
 | Option | Default | |
@@ -125,7 +146,7 @@ Exits 0 when agents can be started behind tokenless, 1 otherwise.
 
 ## Client commands
 
-`login`, `service`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; the last four also take the rest. Without an API key they use the session from `tokenless login`.
+`login`, `vault`, `service`, `bundle`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; the last four also take the rest. Without an API key they use the session from `tokenless login`.
 
 | Flag | Environment | Default |
 |---|---|---|

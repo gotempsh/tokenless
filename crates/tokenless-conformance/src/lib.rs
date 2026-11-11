@@ -965,7 +965,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     let listed = store
-        .list_sessions(Some(&v1.id), None, PageRequest::default())
+        .list_sessions(Some(&v1.id), None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list"))?;
     ensure!(
@@ -974,6 +974,19 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         listed.total == 3,
         "expected 3 sessions in vault alpha, got {}",
         listed.total
+    );
+    // Of those, one was revoked, one expired (and was revoked): one is live.
+    let live = store
+        .list_sessions(Some(&v1.id), None, Some(at(0)), PageRequest::default())
+        .await
+        .map_err(backend(S, "session_list_active"))?;
+    ensure!(
+        S,
+        "session_list_active",
+        live.total == 1 && live.items.iter().map(|s| s.id).collect::<Vec<_>>() == vec![limited.id],
+        "only the live session should be listed as active, got {} of {:?}",
+        live.total,
+        live.items.iter().map(|s| s.id).collect::<Vec<_>>()
     );
     store
         .insert_session(session(VaultId::new(), 30, None), &[])
@@ -992,7 +1005,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .await
         .map_err(backend(S, "session_insert_bundle"))?;
     let by_bundle = store
-        .list_sessions(Some(&v1.id), Some(&bundle_id), PageRequest::default())
+        .list_sessions(Some(&v1.id), Some(&bundle_id), None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list_bundle"))?;
     ensure!(
@@ -1007,7 +1020,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         by_bundle.items.iter().map(|s| s.id).collect::<Vec<_>>()
     );
     let everywhere = store
-        .list_sessions(None, None, PageRequest::default())
+        .list_sessions(None, None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list_all"))?;
     ensure!(

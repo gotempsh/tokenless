@@ -60,6 +60,22 @@ impl PageQuery {
     }
 }
 
+/// A page of sessions; `active=true` keeps the live ones (neither revoked
+/// nor expired).
+#[derive(Debug, Default, Deserialize)]
+pub struct SessionPageQuery {
+    pub page: Option<u64>,
+    pub page_size: Option<u64>,
+    #[serde(default)]
+    pub active: bool,
+}
+
+impl SessionPageQuery {
+    fn request(&self) -> PageRequest {
+        PageRequest::new(self.page, self.page_size)
+    }
+}
+
 pub async fn not_found() -> ApiError {
     ApiError::Control(tokenless_control::ControlError::not_found(
         "route",
@@ -707,13 +723,13 @@ pub async fn list_sessions(
     State(s): St,
     authed: Authed,
     Path(vault_id): Path<String>,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     let id: VaultId = parse_id("vault", &vault_id)?;
     Ok(Json(
         s.control
             .sessions
-            .list(&authed.caller, &id, q.request())
+            .list(&authed.caller, &id, q.active, q.request())
             .await?,
     ))
 }
@@ -722,12 +738,12 @@ pub async fn list_sessions(
 pub async fn list_all_sessions(
     State(s): St,
     authed: Authed,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     Ok(Json(
         s.control
             .sessions
-            .list_all(&authed.caller, q.request())
+            .list_all(&authed.caller, q.active, q.request())
             .await?,
     ))
 }
@@ -737,13 +753,13 @@ pub async fn list_bundle_sessions(
     State(s): St,
     authed: Authed,
     Path(bundle_id): Path<String>,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     let id: BundleId = parse_id("access bundle", &bundle_id)?;
     Ok(Json(
         s.control
             .sessions
-            .list_for_bundle(&authed.caller, &id, q.request())
+            .list_for_bundle(&authed.caller, &id, q.active, q.request())
             .await?,
     ))
 }

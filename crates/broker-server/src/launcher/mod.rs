@@ -15,6 +15,7 @@
 pub mod account;
 pub mod client;
 pub mod inject;
+pub mod listing;
 pub mod mcp;
 pub mod port;
 pub mod secret_file;

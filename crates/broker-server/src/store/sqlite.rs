@@ -1291,28 +1291,35 @@ impl PolicyStore for SqliteStore {
         &self,
         vault_id: Option<&VaultId>,
         bundle_id: Option<&BundleId>,
+        active_at: Option<DateTime<Utc>>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
         // `? IS NULL` drops a filter that was not given.
+        const FILTER: &str = "(? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?) AND (? IS NULL OR (revoked_at IS NULL AND expires_at > ?))";
         let vault = vault_id.map(|v| v.to_string());
         let bundle = bundle_id.map(|b| b.to_string());
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS n FROM proxy_sessions WHERE (? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?)",
-        )
+        let active = active_at.map(|at| ts(&at));
+        let row = sqlx::query(&format!(
+            "SELECT COUNT(*) AS n FROM proxy_sessions WHERE {FILTER}"
+        ))
         .bind(vault.clone())
         .bind(vault.clone())
         .bind(bundle.clone())
         .bind(bundle.clone())
+        .bind(active.clone())
+        .bind(active.clone())
         .fetch_one(&self.pool)
         .await
         .map_err(db("count sessions", "session"))?;
         let total = to_u64(get::<i64>(&row, "n")?);
-        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE (? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?) ORDER BY created_at DESC, id LIMIT ? OFFSET ?");
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE {FILTER} ORDER BY created_at DESC, id LIMIT ? OFFSET ?");
         let rows = sqlx::query(&sql)
             .bind(vault.clone())
             .bind(vault)
             .bind(bundle.clone())
             .bind(bundle)
+            .bind(active.clone())
+            .bind(active)
             .bind(to_i64(page.page_size))
             .bind(to_i64(page.offset()))
             .fetch_all(&self.pool)
