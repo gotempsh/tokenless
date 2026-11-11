@@ -25,8 +25,8 @@ use tokenless_core::variables::CustomHeader;
 use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite, JoinTokenRecord,
-    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings,
-    StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
+    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor, Settings,
+    SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -280,14 +280,17 @@ pub trait PolicyStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError>;
-    /// Newest first; every vault when `vault_id` is `None`, only those
-    /// minted from `bundle_id` when it is given, and only those neither
-    /// revoked nor expired at `active_at` when it is given.
+    /// Newest first, ties by id; every vault when `vault_id` is `None`,
+    /// only those minted from `bundle_id` when it is given, only those
+    /// neither revoked nor expired at `active_at` when it is given, and
+    /// only those after `after` in that order when it is given (`total`
+    /// counts those too).
     async fn list_sessions(
         &self,
         vault_id: Option<&VaultId>,
         bundle_id: Option<&BundleId>,
         active_at: Option<DateTime<Utc>>,
+        after: Option<&SessionCursor>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError>;
     /// Returns false if it was already revoked. `NotFound` if missing.

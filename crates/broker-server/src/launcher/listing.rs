@@ -129,6 +129,11 @@ pub struct ServiceRow {
     pub vault: String,
     pub name: String,
     pub template: String,
+    /// The template version it was created on and is injected with.
+    pub template_version: u32,
+    /// Whether that version is approved. When it is not, proxies skip the
+    /// service and `hosts` is empty.
+    pub template_approved: bool,
     /// Where agents' requests get its credential.
     pub hosts: Vec<String>,
     /// When the secret stops being valid upstream, for one that expires.
@@ -136,32 +141,37 @@ pub struct ServiceRow {
     pub updated_at: DateTime<Utc>,
 }
 
-/// A service with the hosts it reaches: its host override, or else its
-/// template's hosts.
+/// A service with the hosts it reaches: its host override, or else the
+/// hosts of the template version it is pinned to, as proxies resolve it.
+/// `approved` is every approved template version, not just the newest.
 pub fn service_rows(
     credentials: &[CredentialMeta],
     vaults: &[Vault],
-    templates: &[ServiceTemplate],
+    approved: &[ServiceTemplate],
 ) -> Vec<ServiceRow> {
     let names = vault_names(vaults);
-    let templates: HashMap<&str, &ServiceTemplate> =
-        templates.iter().map(|t| (t.id.as_str(), t)).collect();
+    let approved: HashMap<(&str, u32), &ServiceTemplate> = approved
+        .iter()
+        .map(|t| ((t.id.as_str(), t.version), t))
+        .collect();
     credentials
         .iter()
         .map(|c| {
-            let hosts = if c.host_override.is_empty() {
-                templates
-                    .get(c.template_id.as_str())
-                    .map(|t| t.hosts.iter().map(|h| h.to_string()).collect())
-                    .unwrap_or_default()
-            } else {
-                c.host_override.iter().map(|h| h.to_string()).collect()
+            let template = approved.get(&(c.template_id.as_str(), c.template_version));
+            let hosts = match template {
+                None => vec![],
+                Some(t) if c.host_override.is_empty() => {
+                    t.hosts.iter().map(|h| h.to_string()).collect()
+                }
+                Some(_) => c.host_override.iter().map(|h| h.to_string()).collect(),
             };
             ServiceRow {
                 id: c.id,
                 vault: vault_name(&names, &c.vault_id),
                 name: c.name.clone(),
                 template: c.template_id.clone(),
+                template_version: c.template_version,
+                template_approved: template.is_some(),
                 hosts,
                 expires_at: c.not_after,
                 updated_at: c.updated_at,
@@ -177,13 +187,21 @@ pub fn service_table(rows: &[ServiceRow], now: DateTime<Utc>) -> String {
             vec![
                 r.vault.clone(),
                 r.name.clone(),
-                r.template.clone(),
+                if r.template_approved {
+                    r.template.clone()
+                } else {
+                    format!("{} v{}", r.template, r.template_version)
+                },
                 match r.expires_at {
                     Some(at) if at <= now => "expired".into(),
                     Some(at) => relative(at, now),
                     None => "-".into(),
                 },
-                first_and_more(&r.hosts),
+                if r.template_approved {
+                    first_and_more(&r.hosts)
+                } else {
+                    "none: this template version is not approved".into()
+                },
             ]
         })
         .collect();
@@ -533,26 +551,57 @@ mod tests {
     fn a_service_reaches_its_override_or_else_its_template_hosts() {
         let now = Utc::now();
         let work = vault("work", now);
-        let github = credential(&work, "github", "github", now);
-        let mut mirror = credential(&work, "mirror", "github", now);
-        mirror.host_override = vec![HostPattern::parse("git.example.internal").unwrap()];
-        mirror.not_after = Some(now - Duration::minutes(1));
-        let templates = tokenless_core::template::builtin_templates()
+        let v1 = tokenless_core::template::builtin_templates()
             .unwrap()
             .into_iter()
             .map(|(t, _)| t)
-            .filter(|t| t.id == "github")
-            .collect::<Vec<_>>();
-        let rows = service_rows(&[github, mirror], &[work], &templates);
+            .find(|t| t.id == "github")
+            .unwrap();
+        // A newer version reaching other hosts: services stay on theirs.
+        let mut v2 = v1.clone();
+        v2.version = v1.version + 1;
+        v2.hosts = vec![HostPattern::parse("api.v2.example.com").unwrap()];
+        let mut github = credential(&work, "github", "github", now);
+        github.template_version = v1.version;
+        let mut mirror = credential(&work, "mirror", "github", now);
+        mirror.template_version = v1.version;
+        mirror.host_override = vec![HostPattern::parse("git.example.internal").unwrap()];
+        mirror.not_after = Some(now - Duration::minutes(1));
+        let mut newer = credential(&work, "newer", "github", now);
+        newer.template_version = v2.version;
+        let rows = service_rows(
+            &[github.clone(), mirror.clone(), newer],
+            std::slice::from_ref(&work),
+            &[v2.clone(), v1.clone()],
+        );
         assert_eq!(rows[0].vault, "work");
         assert!(
-            rows[0].hosts.contains(&"api.github.com".to_string()),
+            rows[0].hosts.contains(&"api.github.com".to_string())
+                && !rows[0].hosts.contains(&"api.v2.example.com".to_string()),
             "{:?}",
             rows[0].hosts
         );
         assert_eq!(rows[1].hosts, ["git.example.internal"]);
+        assert_eq!(rows[2].hosts, ["api.v2.example.com"]);
+        assert!(rows.iter().all(|r| r.template_approved));
         let shown = service_table(&rows, now);
         assert!(shown.lines().nth(2).unwrap().contains("expired"), "{shown}");
+
+        // Its version no longer approved, proxies skip it: no hosts, and
+        // the table says why.
+        let rows = service_rows(&[github, mirror], &[work], &[v2]);
+        assert!(
+            rows.iter()
+                .all(|r| !r.template_approved && r.hosts.is_empty()),
+            "{rows:?}"
+        );
+        let shown = service_table(&rows, now);
+        let line = shown.lines().nth(1).unwrap();
+        assert!(
+            line.contains(&format!("github v{}", v1.version))
+                && line.contains("none: this template version is not approved"),
+            "{shown}"
+        );
     }
 
     #[test]

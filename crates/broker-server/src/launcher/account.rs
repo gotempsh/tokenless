@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -667,34 +667,25 @@ impl<'p> ConsoleClient<'p> {
             .await
     }
 
-    /// The items of a paginated list, `PAGE_SIZE` at a time, newest
-    /// first, up to `limit` (all of them without one).
+    /// Every item of a paginated list, `PAGE_SIZE` at a time.
     async fn pages<T: DeserializeOwned>(
         &self,
         path: &str,
-        limit: Option<usize>,
         operation: &'static str,
     ) -> Result<Vec<T>, LauncherError> {
-        let sep = if path.contains('?') { '&' } else { '?' };
         let mut items = Vec::new();
         let mut page: u64 = 1;
         loop {
             let got: Page<T> = self
                 .call(
                     Method::GET,
-                    &format!("{path}{sep}page={page}&page_size={PAGE_SIZE}"),
+                    &format!("{path}?page={page}&page_size={PAGE_SIZE}"),
                     None,
                     operation,
                 )
                 .await?;
             let fetched = got.items.len();
             items.extend(got.items);
-            if let Some(limit) = limit {
-                if items.len() >= limit {
-                    items.truncate(limit);
-                    break;
-                }
-            }
             if fetched < PAGE_SIZE || u64::try_from(items.len()).unwrap_or(u64::MAX) >= got.total {
                 break;
             }
@@ -704,7 +695,7 @@ impl<'p> ConsoleClient<'p> {
     }
 
     pub async fn vaults(&self) -> Result<Vec<Vault>, LauncherError> {
-        self.pages("/vaults", None, "listing vaults").await
+        self.pages("/vaults", "listing vaults").await
     }
 
     pub async fn create_vault(&self, name: &str) -> Result<Vault, LauncherError> {
@@ -720,7 +711,6 @@ impl<'p> ConsoleClient<'p> {
     pub async fn bundles(&self, vault: &VaultId) -> Result<Vec<AccessBundle>, LauncherError> {
         self.pages(
             &format!("/vaults/{vault}/bundles"),
-            None,
             "listing access bundles",
         )
         .await
@@ -750,27 +740,25 @@ impl<'p> ConsoleClient<'p> {
 
     /// The enrolled proxies. Needs a role that may see them.
     pub async fn nodes(&self) -> Result<Vec<Node>, LauncherError> {
-        self.pages("/nodes", None, "listing proxies").await
+        self.pages("/nodes", "listing proxies").await
     }
 
     /// The rules in `vault`.
     pub async fn rules(&self, vault: &VaultId) -> Result<Vec<Rule>, LauncherError> {
-        self.pages(&format!("/vaults/{vault}/rules"), None, "listing rules")
+        self.pages(&format!("/vaults/{vault}/rules"), "listing rules")
             .await
     }
 
     /// The services in `vault`.
     pub async fn credentials(&self, vault: &VaultId) -> Result<Vec<CredentialMeta>, LauncherError> {
-        self.pages(
-            &format!("/vaults/{vault}/credentials"),
-            None,
-            "listing services",
-        )
-        .await
+        self.pages(&format!("/vaults/{vault}/credentials"), "listing services")
+            .await
     }
 
     /// The newest sessions in `scope`, up to `limit`; only the live ones
-    /// (neither revoked nor expired) when `active`.
+    /// (neither revoked nor expired) when `active`. Each page continues
+    /// after the last session of the one before, not at an offset, so
+    /// sessions minted or ended meanwhile neither repeat nor skip a row.
     pub async fn sessions(
         &self,
         scope: &SessionScope,
@@ -782,12 +770,28 @@ impl<'p> ConsoleClient<'p> {
             SessionScope::Vault(vault) => format!("/vaults/{vault}/sessions"),
             SessionScope::Bundle(bundle) => format!("/bundles/{bundle}/sessions"),
         };
-        self.pages(
-            &format!("{path}?active={active}"),
-            Some(limit),
-            "listing sessions",
-        )
-        .await
+        let mut items: Vec<ProxySession> = Vec::new();
+        while items.len() < limit {
+            let want = (limit - items.len()).min(PAGE_SIZE);
+            let mut url = format!("{path}?active={active}&page_size={want}");
+            if let Some(last) = items.last() {
+                url.push_str(&format!(
+                    "&after_created_at={}&after_id={}",
+                    last.created_at.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                    last.id
+                ));
+            }
+            let got: Page<ProxySession> = self
+                .call(Method::GET, &url, None, "listing sessions")
+                .await?;
+            let fetched = got.items.len();
+            items.extend(got.items);
+            if fetched < want {
+                break;
+            }
+        }
+        items.truncate(limit);
+        Ok(items)
     }
 }
 

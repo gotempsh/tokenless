@@ -79,6 +79,33 @@ async fn post(url: &str, session: &SavedSession, path: &str, body: Value) -> Val
     response.json().await.unwrap_or(Value::Null)
 }
 
+async fn get(url: &str, session: &SavedSession, path: &str) -> (u16, Value) {
+    let response = reqwest::Client::new()
+        .get(format!("{url}/api/v1{path}"))
+        .header(
+            "cookie",
+            format!(
+                "{}={}",
+                tokenless_auth::cookie::SESSION_COOKIE,
+                session.token
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+fn page_ids(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lists_what_the_console_shows_as_tables_and_json() {
     let data = tempfile::tempdir().unwrap();
@@ -389,5 +416,51 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), 125, "no session twice across pages");
+
+    // A page continues after the last session of the one before: a session
+    // minted and one revoked in between neither repeat nor skip a row, as
+    // `page=2` would.
+    let sessions = format!("/vaults/{work}/sessions?active=true");
+    let (_, expected) = get(&url, &session, &format!("{sessions}&page_size=20")).await;
+    let expected = page_ids(&expected);
+    let (_, first) = get(&url, &session, &format!("{sessions}&page_size=10")).await;
+    assert_eq!(page_ids(&first), expected[..10]);
+    post(
+        &url,
+        &session,
+        &format!("/vaults/{work}/sessions"),
+        json!({ "bundle": "code-review", "ttl_secs": 600 }),
+    )
+    .await;
+    post(
+        &url,
+        &session,
+        &format!("/sessions/{}/revoke", expected[2]),
+        json!({}),
+    )
+    .await;
+    let last = &first["items"][9];
+    let cursor = format!(
+        "after_created_at={}&after_id={}",
+        last["created_at"].as_str().unwrap(),
+        last["id"].as_str().unwrap()
+    );
+    let (status, second) = get(&url, &session, &format!("{sessions}&page_size=10&{cursor}")).await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(page_ids(&second), expected[10..20]);
+    let (status, problem) = get(
+        &url,
+        &session,
+        &format!("{sessions}&after_id={}", last["id"].as_str().unwrap()),
+    )
+    .await;
+    assert_eq!(status, 400, "half a cursor is refused: {problem}");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("after_created_at and after_id go together"),
+        "{problem}"
+    );
     server.shutdown();
 }

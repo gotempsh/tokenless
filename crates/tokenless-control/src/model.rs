@@ -249,6 +249,33 @@ pub struct ProxySession {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// Where the previous page of a session list ended. Lists are newest
+/// first, ties broken by id, so the next page starts after this session
+/// whatever was minted or ended in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCursor {
+    pub created_at: DateTime<Utc>,
+    pub id: SessionId,
+}
+
+impl From<&ProxySession> for SessionCursor {
+    fn from(session: &ProxySession) -> Self {
+        Self {
+            created_at: session.created_at,
+            id: session.id,
+        }
+    }
+}
+
+/// Which sessions a list returns within its vault or bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionListing {
+    /// Only those neither revoked nor expired.
+    pub active: bool,
+    /// Only those after this one.
+    pub after: Option<SessionCursor>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub unmatched_host_policy: UnmatchedHostPolicy,

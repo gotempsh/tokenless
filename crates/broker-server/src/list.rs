@@ -11,7 +11,6 @@ use std::process::ExitCode;
 
 use broker_server::launcher::account::{ConsoleClient, SessionScope, SessionStore};
 use broker_server::launcher::listing;
-use broker_server::launcher::templates;
 use broker_server::launcher::LauncherError;
 use chrono::Utc;
 use futures_util::future::try_join_all;
@@ -136,19 +135,19 @@ pub async fn services(
         async move { client.credentials(&id).await }
     })
     .await?;
-    let templates: Vec<ServiceTemplate> = templates::newest(
-        client
-            .templates()
-            .await?
-            .into_iter()
-            .filter(|t| t.status == TemplateStatus::Approved)
-            .map(|t| t.template),
-    );
+    // Every approved version: a service keeps the version it was made on.
+    let approved: Vec<ServiceTemplate> = client
+        .templates()
+        .await?
+        .into_iter()
+        .filter(|t| t.status == TemplateStatus::Approved)
+        .map(|t| t.template)
+        .collect();
     let credentials: Vec<_> = vaults
         .iter()
         .flat_map(|v| credentials.get(&v.id).cloned().unwrap_or_default())
         .collect();
-    let rows = listing::service_rows(&credentials, &all, &templates);
+    let rows = listing::service_rows(&credentials, &all, &approved);
     output(
         &rows,
         json,

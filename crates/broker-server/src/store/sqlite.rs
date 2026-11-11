@@ -21,8 +21,9 @@ use sqlx::sqlite::{
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, Settings, SsoIdentity, StoredTemplate,
-    TemplateSource, TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+    PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SsoIdentity,
+    StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
+    VaultDeletion,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -1292,34 +1293,48 @@ impl PolicyStore for SqliteStore {
         vault_id: Option<&VaultId>,
         bundle_id: Option<&BundleId>,
         active_at: Option<DateTime<Utc>>,
+        after: Option<&SessionCursor>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError> {
-        // `? IS NULL` drops a filter that was not given.
-        const FILTER: &str = "(? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?) AND (? IS NULL OR (revoked_at IS NULL AND expires_at > ?))";
+        // `? IS NULL` drops a filter that was not given. The cursor keeps
+        // what comes after it in `ORDER BY created_at DESC, id`.
+        const FILTER: &str = "(? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?) \
+            AND (? IS NULL OR (revoked_at IS NULL AND expires_at > ?)) \
+            AND (? IS NULL OR created_at < ? OR (created_at = ? AND id > ?))";
         let vault = vault_id.map(|v| v.to_string());
         let bundle = bundle_id.map(|b| b.to_string());
         let active = active_at.map(|at| ts(&at));
-        let row = sqlx::query(&format!(
-            "SELECT COUNT(*) AS n FROM proxy_sessions WHERE {FILTER}"
-        ))
-        .bind(vault.clone())
-        .bind(vault.clone())
-        .bind(bundle.clone())
-        .bind(bundle.clone())
-        .bind(active.clone())
-        .bind(active.clone())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db("count sessions", "session"))?;
+        let after_at = after.map(|c| ts(&c.created_at));
+        let after_id = after.map(|c| c.id.to_string());
+        // Each `?` of FILTER, in order.
+        let binds = [
+            vault.clone(),
+            vault,
+            bundle.clone(),
+            bundle,
+            active.clone(),
+            active,
+            after_at.clone(),
+            after_at.clone(),
+            after_at,
+            after_id,
+        ];
+        let count = format!("SELECT COUNT(*) AS n FROM proxy_sessions WHERE {FILTER}");
+        let mut query = sqlx::query(&count);
+        for value in &binds {
+            query = query.bind(value.clone());
+        }
+        let row = query
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db("count sessions", "session"))?;
         let total = to_u64(get::<i64>(&row, "n")?);
         let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE {FILTER} ORDER BY created_at DESC, id LIMIT ? OFFSET ?");
-        let rows = sqlx::query(&sql)
-            .bind(vault.clone())
-            .bind(vault)
-            .bind(bundle.clone())
-            .bind(bundle)
-            .bind(active.clone())
-            .bind(active)
+        let mut query = sqlx::query(&sql);
+        for value in binds {
+            query = query.bind(value);
+        }
+        let rows = query
             .bind(to_i64(page.page_size))
             .bind(to_i64(page.offset()))
             .fetch_all(&self.pool)

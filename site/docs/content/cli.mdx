@@ -86,8 +86,10 @@ Exits 0 when agents can be started behind tokenless, 1 otherwise.
 ## `vault list`, `service list`, `bundle list`, `session list`, `proxy list`
 
 Each prints a table, or the same rows as JSON with `--json` (`[]` when
-there are none). They need `tokenless login` and show what the console
-shows the person signed in; no secret is ever printed.
+there are none). They need `tokenless login`, not an API key, and show
+what the console shows the person signed in; no secret is ever printed.
+They read no `TOKENLESS_VAULT` or `TOKENLESS_BUNDLE`: without the flags
+they list every vault you can see.
 
 | Option | Default | |
 |---|---|---|
@@ -98,8 +100,10 @@ shows the person signed in; no secret is ever printed.
 | `--json` | | The rows as JSON |
 
 `service list` shows each service's template, the hosts it reaches and
-when its secret expires; `bundle list`, the services each bundle's rules
-reach. `session list` gives the ID that `session revoke --id` takes.
+when its secret expires. A service whose template version is no longer
+approved reaches nothing, and the list says so. `bundle list` shows the
+services each bundle's rules reach. `session list` gives the ID that
+`session revoke --id` takes.
 
 ## `proxy add`
 
@@ -146,7 +150,7 @@ reach. `session list` gives the ID that `session revoke --id` takes.
 
 ## Client commands
 
-`login`, `vault`, `service`, `bundle`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; the last four also take the rest. Without an API key they use the session from `tokenless login`.
+`login`, `vault`, `service`, `bundle`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; `run`, `exec`, `mcp` and the `session` commands other than `session list` also take the rest. Without an API key they use the session from `tokenless login`. The `list` commands only use that sign-in, and take `--vault` and `--bundle` as flags only: `TOKENLESS_VAULT` and `TOKENLESS_BUNDLE` do not narrow them.
 
 | Flag | Environment | Default |
 |---|---|---|
