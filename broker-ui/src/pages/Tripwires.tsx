@@ -14,6 +14,7 @@ import {
   fromWidth,
   ChoiceCards,
   ConfirmDialog,
+  CopyButton,
   DialogActions,
   Empty,
   ErrorBanner,
@@ -35,7 +36,6 @@ import { Alert, AlertDescription, AlertTitle } from "../components/ui/alert";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
-import { CommandSnippet } from "./Bundles";
 import { ALERTS_HREF } from "./Alerts";
 
 export function VaultTripwires({ vaultId, user }: { vaultId: string; user: UserSummary }) {
@@ -181,7 +181,12 @@ function PlantForm({ vaultId, onCancel, onCreated }: { vaultId: string; onCancel
         </Alert>
         {created.plant.map((p) => (
           <Field key={p.place} label={`In ${p.place}`}>
-            <CommandSnippet command={p.text} display={p.text} />
+            <div className="flex items-start gap-2">
+              <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md border bg-background px-3 py-2 font-mono text-xs text-foreground">
+                {p.text}
+              </pre>
+              <CopyButton value={`${p.text}\n`} label="Copy" />
+            </div>
           </Field>
         ))}
         <p className="text-xs text-muted-foreground">{whereSeen(created.tripwire.kind)}</p>

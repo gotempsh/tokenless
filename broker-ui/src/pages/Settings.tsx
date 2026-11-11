@@ -231,7 +231,7 @@ export function Settings() {
                 </Label>
                 <SelectField
                   id="rate-limit-value"
-                  className="w-full sm:w-[260px]"
+                  className="w-full sm:w-[320px]"
                   value={rateKey(current.rate_limit)}
                   onChange={(v) => void save({ ...current, rate_limit: parseRateKey(v) })}
                   options={rateOptions(current.rate_limit)}

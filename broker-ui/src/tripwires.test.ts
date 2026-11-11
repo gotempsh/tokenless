@@ -12,7 +12,7 @@ describe("tripwires", () => {
 
   test("says where a decoy is looked for", () => {
     expect(whereSeen("github")).toBe(
-      "Seen in every request a proxy opens for a session's rules, and on api.github.com, github.com when unmatched hosts are refused.",
+      "Seen in every request a proxy opens for a session's rules, and on api.github.com, github.com when other hosts are blocked.",
     );
     expect(whereSeen("generic")).toBe("Seen in every request a proxy opens for a session's rules.");
   });

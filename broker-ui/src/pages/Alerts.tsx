@@ -81,14 +81,11 @@ export function Alerts({ me }: { me: UserSummary }) {
     <PageContainer width="settings">
       <PageHeader
         title="Alerts"
-        actions={
-          <div className="flex flex-wrap gap-2">
-            {toggle}
-            {destinations.data && <Delivery destinations={destinations.data} />}
-          </div>
-        }
+        actions={destinations.data && <Delivery destinations={destinations.data} />}
       />
       <ErrorBanner error={alerts.error ?? action.error} />
+      {/* The empty state offers it itself. */}
+      {(showAll || (alerts.data?.items.length ?? 0) > 0) && <div className="flex justify-end">{toggle}</div>}
       <Panel>
         {alerts.loading && !alerts.data ? (
           <Loading rows={4} />

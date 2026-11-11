@@ -27,5 +27,5 @@ export function whereSeen(kind: TripwireKind): string {
   const hosts = DECOY_HOSTS[kind];
   const always = "in every request a proxy opens for a session's rules";
   if (hosts.length === 0) return `Seen ${always}.`;
-  return `Seen ${always}, and on ${hosts.join(", ")} when unmatched hosts are refused.`;
+  return `Seen ${always}, and on ${hosts.join(", ")} when other hosts are blocked.`;
 }
