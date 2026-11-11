@@ -519,6 +519,14 @@ pub async fn sign_in(
 /// How many items a list call asks for at a time: the API's maximum.
 const PAGE_SIZE: usize = 100;
 
+/// The sessions `sessions` found, and whether more matched past its
+/// limit.
+#[derive(Debug, Clone)]
+pub struct Sessions {
+    pub sessions: Vec<ProxySession>,
+    pub more: bool,
+}
+
 /// Which sessions `ConsoleClient::sessions` lists.
 #[derive(Debug, Clone)]
 pub enum SessionScope {
@@ -764,13 +772,14 @@ impl<'p> ConsoleClient<'p> {
         scope: &SessionScope,
         active: bool,
         limit: usize,
-    ) -> Result<Vec<ProxySession>, LauncherError> {
+    ) -> Result<Sessions, LauncherError> {
         let path = match scope {
             SessionScope::Everywhere => "/sessions".to_string(),
             SessionScope::Vault(vault) => format!("/vaults/{vault}/sessions"),
             SessionScope::Bundle(bundle) => format!("/bundles/{bundle}/sessions"),
         };
         let mut items: Vec<ProxySession> = Vec::new();
+        let mut more = false;
         while items.len() < limit {
             let want = (limit - items.len()).min(PAGE_SIZE);
             let mut url = format!("{path}?active={active}&page_size={want}");
@@ -785,13 +794,18 @@ impl<'p> ConsoleClient<'p> {
                 .call(Method::GET, &url, None, "listing sessions")
                 .await?;
             let fetched = got.items.len();
+            // After a cursor, `total` counts what is left from there.
+            more = got.total > u64::try_from(fetched).unwrap_or(u64::MAX);
             items.extend(got.items);
             if fetched < want {
                 break;
             }
         }
         items.truncate(limit);
-        Ok(items)
+        Ok(Sessions {
+            sessions: items,
+            more,
+        })
     }
 }
 

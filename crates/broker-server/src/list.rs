@@ -239,10 +239,10 @@ pub async fn sessions(
         },
         (None, None) => SessionScope::Everywhere,
     };
-    let sessions = client.sessions(&scope, !all, limit).await?;
+    let found = client.sessions(&scope, !all, limit).await?;
     let now = Utc::now();
-    let rows = listing::session_rows(&sessions, &vaults, now);
-    if !json && rows.len() == limit {
+    let rows = listing::session_rows(&found.sessions, &vaults, now);
+    if !json && found.more {
         say(format_args!(
             "showing the newest {limit}; --limit shows more"
         ));

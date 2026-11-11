@@ -412,6 +412,14 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
         err.contains("showing the newest 20; --limit shows more"),
         "{err}"
     );
+    // Exactly the limit, with nothing past it: no hint. One fewer: the hint.
+    let (_, _, err) = tokenless(home.path(), &url, &["session", "list", "--limit", "130"]);
+    assert!(!err.contains("--limit shows more"), "{err}");
+    let (_, _, err) = tokenless(home.path(), &url, &["session", "list", "--limit", "129"]);
+    assert!(
+        err.contains("showing the newest 129; --limit shows more"),
+        "{err}"
+    );
     let mut ids: Vec<&str> = shown.iter().map(|s| s["id"].as_str().unwrap()).collect();
     ids.sort_unstable();
     ids.dedup();
