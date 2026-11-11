@@ -132,9 +132,14 @@ the CLI and browsers both check:
   Caddy gets the certificate from Let's Encrypt.
 - **A Tailscale name** (`host.tailnet-name.ts.net`): uncomment the
   `tailscaled.sock` volume in `compose.yaml` and Caddy gets the certificate
-  from Tailscale, with nothing open to the internet.
+  from Tailscale. Set `TOKENLESS_BIND` in `.env` to the host's tailnet IP
+  (`tailscale ip -4`) so the ports listen only there; otherwise a host
+  with a public address serves the console and the node API on it too.
 
-Proxies also need port 8443 on that name.
+Proxies also need port 8443 on that name. The ports listen on
+`TOKENLESS_BIND`, every interface by default. Docker's published ports
+bypass ufw and firewalld, so close them with that address or a firewall
+in front of the host (a cloud security group), not with a host firewall.
 
 On the server:
 
@@ -144,8 +149,9 @@ for f in compose.yaml Caddyfile .env.example; do
   curl -fsSLO "https://raw.githubusercontent.com/gotempsh/tokenless/main/examples/docker-compose/$f"
 done
 cp .env.example .env                     # set TOKENLESS_DOMAIN
+chmod 700 .                              # only you can reach what is here
 openssl rand -base64 32 > root.key       # the root key, outside the volume
-sudo chown 65532 root.key && sudo chmod 400 root.key   # the image's user
+chmod 444 root.key                       # readable by the image's user
 docker compose up -d
 docker compose logs tokenless            # the admin's password, printed once
 ```
@@ -160,12 +166,15 @@ then:
 ```sh
 export TOKENLESS_URL=https://tokenless.example.com   # your domain
 tokenless login                       # the admin, or anyone you invite
+tokenless service add github --vault work --bundle code-review   # once, from any machine
 tokenless proxy add --name laptop     # enrols with the node API on port 8443
 tokenless node run                    # or as a service, see systemd above
 tokenless run --vault work --bundle code-review -- claude
 ```
 
-`TOKENLESS_URL` saves passing `--server` to each command. To upgrade,
+`TOKENLESS_URL` saves passing `--server` to each command. `service add`
+asks for the key without showing it to the agent, and creates the vault
+and the bundle the first time ([Set up from the terminal](./terminal.mdx)). To upgrade,
 change `TOKENLESS_VERSION` in `.env`, then `docker compose pull && docker
 compose up -d`; upgrade the control plane before the proxies
 ([Upgrades](#upgrades)).

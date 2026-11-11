@@ -6,8 +6,8 @@
 # The walkthrough is in the docs: Deploy -> Docker Compose.
 #
 #   cp .env.example .env                 # set TOKENLESS_DOMAIN
-#   openssl rand -base64 32 > root.key
-#   sudo chown 65532 root.key && sudo chmod 400 root.key
+#   chmod 700 .                          # only you can reach what is here
+#   openssl rand -base64 32 > root.key && chmod 444 root.key
 #   docker compose up -d
 #   docker compose logs tokenless        # the admin's password, printed once
 
@@ -33,7 +33,7 @@ services:
     ports:
       # Proxies connect here with their own client certificates, so it is
       # published as it is, never behind a TLS-terminating proxy.
-      - "8443:8443"
+      - "${TOKENLESS_BIND:-0.0.0.0}:8443:8443"
 
   caddy:
     image: caddy:2
@@ -41,9 +41,9 @@ services:
     environment:
       TOKENLESS_DOMAIN: ${TOKENLESS_DOMAIN}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${TOKENLESS_BIND:-0.0.0.0}:80:80"
+      - "${TOKENLESS_BIND:-0.0.0.0}:443:443"
+      - "${TOKENLESS_BIND:-0.0.0.0}:443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -60,5 +60,8 @@ volumes:
 
 secrets:
   root_key:
-    # Outside the volume, so the database's backups never hold it.
+    # Outside the volume, so the database's backups never hold it. Compose
+    # mounts the file as it is, so it must be readable by the image's user
+    # (65532), which under rootless Docker or Podman is another host uid:
+    # chmod 444 it, and keep this folder 0700 instead.
     file: ./root.key
