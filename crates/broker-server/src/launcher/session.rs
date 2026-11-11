@@ -205,8 +205,12 @@ impl Renewal {
     /// Mints the next session from the bundle and switches to it. Returns
     /// when the new one expires.
     async fn once(&self) -> Result<DateTime<Utc>, LauncherError> {
-        let next = self.client.mint(&self.vault, &self.request).await?;
         let previous = self.current.load().id;
+        let request = MintRequest {
+            renews: Some(previous),
+            ..self.request.clone()
+        };
+        let next = self.client.mint(&self.vault, &request).await?;
         remember(&self.minted, next.session.expires_at, &next.token);
         self.auth.store(Arc::new(proxy_authorization(&next.token)));
         info!(previous = %previous, session_id = %next.session.id, expires_at = %next.session.expires_at, "session renewed");
@@ -238,6 +242,15 @@ async fn renew_loop(renewal: Arc<Renewal>) {
             Ok(expires_at) => {
                 wait = renew_in(Utc::now(), expires_at, ttl_secs);
                 backoff = Duration::from_secs(5);
+            }
+            // The session was revoked: cut off by a proxy, or ended by a
+            // person. Minting another would undo that.
+            Err(e @ LauncherError::Api { status: 409, .. }) => {
+                warn!(error = %e, "session revoked; not renewing it");
+                eprintln!(
+                    "tokenless: the session was revoked, so it is not renewed and the proxy refuses requests; stop this and start a new one once you have looked at why: {e}"
+                );
+                return;
             }
             Err(e) => {
                 let expires_at = renewal.current.load().expires_at;

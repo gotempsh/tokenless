@@ -810,6 +810,7 @@ async fn end_to_end() {
                     longest: false,
                     request_limit: None,
                     labels: Default::default(),
+                    renews: None,
                 },
             )
             .await
@@ -829,6 +830,7 @@ async fn end_to_end() {
                 longest: false,
                 request_limit: None,
                 labels: [("command".to_string(), "e2e".to_string())].into(),
+                renews: None,
             },
         )
         .await
@@ -982,6 +984,33 @@ async fn end_to_end() {
         )
         .await;
         port.stop();
+
+        // A session revoked under it (cut off by a proxy, or by a person)
+        // is not renewed: that would undo the revocation.
+        let cut = LiveSession::start(
+            launcher.clone(),
+            resolved,
+            MintRequest {
+                bundle: "local-review".into(),
+                ttl_secs: 120,
+                longest: false,
+                request_limit: None,
+                labels: Default::default(),
+                renews: None,
+            },
+        )
+        .await
+        .unwrap();
+        let cut_id = cut.current.load().id;
+        api.post(&format!("/sessions/{cut_id}/revoke"), json!({}))
+            .await;
+        let refused = cut.renew_now().await.unwrap_err().to_string();
+        assert!(
+            refused.contains("409") && refused.contains("revoked"),
+            "{refused}"
+        );
+        assert_eq!(cut.current.load().id, cut_id, "still the revoked one");
+        cut.end().await;
 
         // Self-revocation needs a real session token.
         let bad = launcher

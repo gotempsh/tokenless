@@ -140,4 +140,13 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
     assert!(ok && err.contains("proxies stop looking for it"), "{err}");
     let (ok, _, err) = tokenless(home.path(), &url, &["tripwire", "remove", "build-runner"]);
     assert!(!ok && err.contains("no tripwire 'build-runner'"), "{err}");
+
+    // `alerts ack` pages through every open alert for a short id, and
+    // sends a whole one straight to the broker.
+    assert!(client.open_alerts().await.unwrap().is_empty());
+    let (ok, _, err) = tokenless(home.path(), &url, &["alerts", "ack", "0123abcd"]);
+    assert!(!ok && err.contains("no open alert '0123abcd'"), "{err}");
+    let whole = "0123abcd-0000-4000-8000-000000000000";
+    let (ok, _, err) = tokenless(home.path(), &url, &["alerts", "ack", whole]);
+    assert!(!ok && err.contains("404") && err.contains(whole), "{err}");
 }

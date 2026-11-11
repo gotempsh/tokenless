@@ -1599,6 +1599,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let minted = cp
             .sessions
@@ -1634,6 +1635,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -1993,6 +1995,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2015,6 +2018,7 @@ mod tests {
                         not_after: None,
                         rule_not_after: Default::default(),
                         strict: false,
+                        renews: None,
                     },
                 )
                 .await,
@@ -2136,6 +2140,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2312,6 +2317,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2450,6 +2456,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2597,6 +2604,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let minted = cp
             .sessions
@@ -2726,6 +2734,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let err = cp
             .sessions
@@ -3202,6 +3211,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
         let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();

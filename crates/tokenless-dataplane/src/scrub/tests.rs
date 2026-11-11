@@ -69,6 +69,50 @@ async fn a_secret_split_across_chunks_is_masked_and_lengths_kept() {
     }
 }
 
+/// A stream that sends its frames and then waits, as an event stream
+/// between events does.
+struct ThenQuiet(VecDeque<Bytes>);
+
+impl Body for ThenQuiet {
+    type Data = Bytes;
+    type Error = BodyError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, BodyError>>> {
+        match self.0.pop_front() {
+            Some(c) => Poll::Ready(Some(Ok(Frame::data(c)))),
+            None => Poll::Pending,
+        }
+    }
+}
+
+/// What the body passes on before it has to wait for more.
+fn until_quiet(chunks: &[&str]) -> String {
+    let inner = ThenQuiet(chunks.iter().map(|c| Bytes::from(c.to_string())).collect());
+    let mut body = ScrubBody::wrap(inner.boxed(), scrubber(), |_| {});
+    let mut cx = Context::from_waker(std::task::Waker::noop());
+    let mut out = Vec::new();
+    while let Poll::Ready(Some(frame)) = Pin::new(&mut body).poll_frame(&mut cx) {
+        out.extend_from_slice(&frame.unwrap().into_data().unwrap());
+    }
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn an_event_goes_out_whole_before_the_stream_goes_quiet() {
+    let event = "event: message\ndata: {\"result\":\"done\"}\n\n";
+    assert_eq!(until_quiet(&[event]), event);
+    let masked = format!("data: {{\"echo\":\"{SECRET}\"}}\n\n");
+    let out = until_quiet(&[&masked]);
+    assert_eq!(out.len(), masked.len());
+    assert!(!out.contains("sk-live"), "{out}");
+    // Only what could start a secret waits for the next frame.
+    assert_eq!(until_quiet(&["data: Bearer sk-li"]), "data: ");
+    assert_eq!(until_quiet(&["data: ", "s"]), "data: ");
+}
+
 #[tokio::test]
 async fn a_body_without_secrets_is_untouched_and_reports_none() {
     let (out, done) = scrub(vec![b"plain ".to_vec(), b"answer".to_vec()]).await;

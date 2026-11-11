@@ -1065,8 +1065,20 @@ impl AuthService {
         Ok(self.identity.list_api_keys(page).await?)
     }
 
+    /// Revokes an ordinary API key. A launcher key is refused: revoking it
+    /// also ends the sessions it started, which
+    /// [`LauncherKeyService::revoke_api_key`](super::launcher_keys::LauncherKeyService::revoke_api_key)
+    /// does.
     pub async fn revoke_api_key(&self, caller: &Caller, id: &ApiKeyId) -> Result<(), ControlError> {
         self.guard.check(caller, Action::ApiKeyManage, None).await?;
+        if let Some(key) = self.identity.get_api_key(id).await? {
+            if key.launch.is_some() {
+                return Err(ControlError::validation(format!(
+                    "api key {} is a launcher key; revoke it as one, from vault {}'s launcher keys, so the sessions it started end too",
+                    key.prefix, key.vault_id
+                )));
+            }
+        }
         let event = AuditEvent::new(caller.actor(), "api_key.revoke", AuditOutcome::Success)
             .target(format!("api_key:{id}"));
         self.identity

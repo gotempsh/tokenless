@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
 use tokenless_core::ids::{TripwireId, VaultId};
+use tokenless_core::snapshot::MAX_SNAPSHOT_TRIPWIRES;
 use tokenless_core::tripwire::TripwireKind;
 use tracing::info;
 
@@ -128,6 +129,17 @@ impl TripwireService {
         if existing.total >= MAX_TRIPWIRES_PER_VAULT {
             return Err(ControlError::validation(format!(
                 "vault {vault_id} already has {MAX_TRIPWIRES_PER_VAULT} tripwires, the most it can hold; delete one first"
+            )));
+        }
+        // Every proxy is sent every vault's, and a snapshot carries so many:
+        // one more would go unwatched.
+        let everywhere = self
+            .tripwires
+            .all_tripwires(MAX_SNAPSHOT_TRIPWIRES as u64)
+            .await?;
+        if everywhere.len() >= MAX_SNAPSHOT_TRIPWIRES {
+            return Err(ControlError::validation(format!(
+                "this instance already has {MAX_SNAPSHOT_TRIPWIRES} tripwires across its vaults, the most proxies watch for; delete one first"
             )));
         }
         let decoy = kind.generate();

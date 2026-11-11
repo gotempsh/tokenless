@@ -694,13 +694,14 @@ impl<'p> ConsoleClient<'p> {
         path: &str,
         operation: &'static str,
     ) -> Result<Vec<T>, LauncherError> {
+        let sep = if path.contains('?') { '&' } else { '?' };
         let mut items = Vec::new();
         let mut page: u64 = 1;
         loop {
             let got: Page<T> = self
                 .call(
                     Method::GET,
-                    &format!("{path}?page={page}&page_size={PAGE_SIZE}"),
+                    &format!("{path}{sep}page={page}&page_size={PAGE_SIZE}"),
                     None,
                     operation,
                 )
@@ -833,6 +834,11 @@ impl<'p> ConsoleClient<'p> {
             "listing alerts",
         )
         .await
+    }
+
+    /// Every alert not acknowledged yet, newest first.
+    pub async fn open_alerts(&self) -> Result<Vec<Alert>, LauncherError> {
+        self.pages("/alerts?open=true", "listing alerts").await
     }
 
     pub async fn acknowledge_alert(&self, id: &AlertId) -> Result<Alert, LauncherError> {

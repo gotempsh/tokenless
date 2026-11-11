@@ -157,6 +157,7 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
                 longest: false,
                 request_limit: None,
                 labels: BTreeMap::new(),
+                renews: None,
             },
         )
         .await

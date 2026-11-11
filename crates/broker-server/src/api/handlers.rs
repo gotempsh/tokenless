@@ -886,7 +886,15 @@ pub async fn revoke_api_key(
     Path(api_key_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let id: ApiKeyId = parse_id("api key", &api_key_id)?;
-    s.control.auth.revoke_api_key(&authed.caller, &id).await?;
+    // A launcher key listed here is revoked as one: its sessions end too.
+    if s.control
+        .launcher_keys
+        .revoke_api_key(&authed.caller, &id)
+        .await?
+        .is_none()
+    {
+        s.control.auth.revoke_api_key(&authed.caller, &id).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

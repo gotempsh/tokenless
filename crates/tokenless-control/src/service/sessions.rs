@@ -70,6 +70,11 @@ pub struct MintSession {
     /// expires. For access promised for a set time.
     #[serde(default)]
     pub strict: bool,
+    /// The session this one replaces, for a caller that renews on a
+    /// timer. Refused when that session was revoked: a session cut off,
+    /// or ended by a person, is not replaced without anyone looking.
+    #[serde(default)]
+    pub renews: Option<SessionId>,
 }
 
 /// Which binding a session is minted for: the workload's id and which start
@@ -223,6 +228,9 @@ impl SessionService {
             .get_vault(vault_id)
             .await?
             .ok_or_else(|| ControlError::not_found("vault", vault_id))?;
+        if let Some(previous) = &req.renews {
+            self.check_renewable(vault_id, previous).await?;
+        }
         let (mut rule_ids, bundle, skipped, bundle_limit) = match &req.bundle {
             Some(_) if !req.rule_ids.is_empty() => {
                 return Err(ControlError::validation(
@@ -368,6 +376,32 @@ impl SessionService {
         Ok(MintedSession { token, session })
     }
 
+    /// A renewal replaces a session of the same vault that was not revoked.
+    async fn check_renewable(
+        &self,
+        vault_id: &VaultId,
+        previous: &SessionId,
+    ) -> Result<(), ControlError> {
+        let session = self
+            .policy
+            .get_session(previous)
+            .await?
+            .filter(|s| &s.vault_id == vault_id)
+            .ok_or_else(|| {
+                ControlError::validation(format!(
+                    "session {previous} is not a session of vault {vault_id}, so it can't be renewed"
+                ))
+            })?;
+        match session.revoked_at {
+            Some(at) => Err(ControlError::Conflict {
+                message: format!(
+                    "session {previous} was revoked at {at}, so it is not renewed; once you have looked at why, start a new one"
+                ),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// The lifetimes a caller allowed to mint in the vault may choose from.
     /// Settings themselves stay admin-only.
     pub async fn limits(
@@ -428,6 +462,17 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(&session.vault_id))
             .await?;
+        // A launcher key only starts sessions: relabelling one, its own
+        // included, would let it drop the labels it stamps on them.
+        if let Some(scope) = &caller.launch {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is a launcher key: it only starts sessions from access bundle {}, so it may not change a session's labels",
+                    caller.actor(),
+                    scope.bundle_id
+                ),
+            });
+        }
         validate_labels(&labels)?;
         let mut event = AuditEvent::new(
             caller.actor(),
@@ -864,6 +909,7 @@ mod tests {
             not_after: Some(not_after),
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         }
     }
 

@@ -54,7 +54,10 @@ it to the proxy. It starts the command with:
 
 A session it minted is renewed while the command runs and ended when the
 command exits; a session it was given is used as is, and `run` says so if
-it expires mid-run. `run` exits with the command's code.
+it expires mid-run. A minted session that was revoked meanwhile, cut off
+by a proxy or ended on the console, is not renewed: the proxy refuses the
+agent until you start the command again. `run` exits with the command's
+code.
 
 Pass `--ca-fingerprint` with the SHA-256 shown on the **Proxies** page to
 refuse to start if the proxy presents a different CA.

@@ -441,6 +441,8 @@ export interface ApiKey {
   expires_at: string;
   revoked_at: string | null;
   last_used_at: string | null;
+  /** Set on a launcher key: it only starts sessions from this bundle. */
+  launch?: { bundle_id: string } | null;
 }
 
 export interface NodeInfo {

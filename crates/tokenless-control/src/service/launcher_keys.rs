@@ -316,6 +316,27 @@ impl LauncherKeyService {
         })
     }
 
+    /// Revokes `id` as [`Self::revoke`] does when it is a launcher key, for
+    /// the API keys list, where launcher keys show too. `None` for an
+    /// ordinary key, which [`AuthService::revoke_api_key`](super::auth::AuthService::revoke_api_key)
+    /// revokes.
+    pub async fn revoke_api_key(
+        &self,
+        caller: &Caller,
+        id: &ApiKeyId,
+    ) -> Result<Option<RevokedLauncherKey>, ControlError> {
+        self.guard.check(caller, Action::ApiKeyManage, None).await?;
+        let Some(key) = self
+            .identity
+            .get_api_key(id)
+            .await?
+            .filter(|k| k.launch.is_some())
+        else {
+            return Ok(None);
+        };
+        self.revoke(caller, &key.vault_id, id).await.map(Some)
+    }
+
     /// Ends the live sessions `key` started from its bundle.
     async fn end_sessions(
         &self,

@@ -145,6 +145,48 @@ async fn names_vaults_roles_and_the_limit_are_checked() {
 }
 
 #[tokio::test]
+async fn the_instance_holds_no_more_than_a_snapshot_carries() {
+    let (_, cs) = services().await;
+    let per_vault = MAX_TRIPWIRES_PER_VAULT as usize;
+    let vaults = MAX_SNAPSHOT_TRIPWIRES.div_ceil(per_vault) + 1;
+    let mut made = 0;
+    let mut last = None;
+    for v in 0..vaults {
+        let vault = cs
+            .policy
+            .create_vault(&host(), &format!("vault-{v}"))
+            .await
+            .unwrap();
+        last = Some(vault.id);
+        for i in 0..per_vault {
+            if made == MAX_SNAPSHOT_TRIPWIRES {
+                break;
+            }
+            cs.tripwires
+                .create(&host(), &vault.id, &format!("m{i}"), TripwireKind::Generic)
+                .await
+                .unwrap();
+            made += 1;
+        }
+    }
+    // The last vault has room of its own, but proxies would not watch it.
+    let err = cs
+        .tripwires
+        .create(
+            &host(),
+            &last.unwrap(),
+            "one-too-many",
+            TripwireKind::Generic,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ControlError::Validation { message } if message.contains("across its vaults")),
+        "{err}"
+    );
+}
+
+#[tokio::test]
 async fn deleting_one_needs_a_step_up_and_its_own_vault() {
     let (_, cs) = services().await;
     let (vault, _) = vault_with_rule(&cs, &host()).await;
@@ -238,6 +280,7 @@ async fn proxies_get_every_decoy_sealed_and_a_trip_revokes_and_alerts() {
             MintSession {
                 rule_ids: vec![rule],
                 ttl_secs: Some(600),
+                node_id: Some(node.node.id),
                 ..MintSession::default()
             },
         )

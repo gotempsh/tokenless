@@ -61,8 +61,8 @@ was cut off.
 
 The session's page shows the refusals that did it and the revocation, as
 `proxy.quarantine` and `session.revoke` with reason `quarantine` in the
-audit log. A cut-off session is never resumed: once you have looked at
-what it tried, start a new one. Choose a stricter or looser threshold
+audit log. A cut-off session is never resumed, nor renewed by
+`tokenless run`: once you have looked at what it tried, start a new one. Choose a stricter or looser threshold
 here, or turn it off; loosening it asks you to confirm it's you. Over the
 API it is `quarantine` (`{"refusals": 20, "window_secs": 300}`, or
 `null`) in `PUT /api/v1/settings`. A proxy older than this release keeps

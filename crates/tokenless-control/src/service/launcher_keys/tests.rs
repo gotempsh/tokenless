@@ -343,8 +343,32 @@ async fn a_key_does_nothing_but_start_its_bundle_s_sessions() {
         "{by_rule}"
     );
 
-    // Reading or changing anything else is refused, naming the key.
+    // Reading or changing anything else is refused, naming the key: even
+    // the labels of a session it started itself.
+    let own = t.cp.sessions.mint(&key, &t.vault, mint()).await.unwrap();
+    let theirs =
+        t.cp.sessions
+            .mint(
+                &editor(),
+                &t.vault,
+                MintSession {
+                    bundle: Some("deploy".into()),
+                    ..mint()
+                },
+            )
+            .await
+            .unwrap()
+            .session
+            .id;
     let reads = [
+        t.cp.sessions
+            .update_labels(&key, &own.session.id, BTreeMap::new())
+            .await
+            .map(|_| ()),
+        t.cp.sessions
+            .update_labels(&key, &theirs, BTreeMap::new())
+            .await
+            .map(|_| ()),
         t.cp.policy
             .list_rules(&key, &t.vault, PageRequest::new(None, None))
             .await
@@ -522,6 +546,106 @@ async fn revoking_a_key_ends_the_sessions_it_started() {
         create_events[0].detail.get("bundle").map(String::as_str),
         Some("build")
     );
+}
+
+#[tokio::test]
+async fn revoking_it_from_the_api_keys_list_ends_its_sessions_too() {
+    let t = setup().await;
+    let (created, key) = t.key(create("build")).await;
+    let started = t.cp.sessions.mint(&key, &t.vault, mint()).await.unwrap();
+    let id = created.launcher_key.id;
+
+    // The plain API-key revoke would leave the sessions running: refused.
+    let err = t.cp.auth.revoke_api_key(&admin(), &id).await.unwrap_err();
+    assert!(
+        matches!(&err, ControlError::Validation { message } if message.contains("launcher key")),
+        "{err}"
+    );
+    assert!(t.cp.auth.authenticate_api_key(&created.key).await.is_ok());
+
+    let revoked =
+        t.cp.launcher_keys
+            .revoke_api_key(&admin(), &id)
+            .await
+            .unwrap()
+            .expect("a launcher key");
+    assert_eq!(revoked.sessions_revoked, 1);
+    let s =
+        t.cp.sessions
+            .get(&admin(), &started.session.id)
+            .await
+            .unwrap();
+    assert!(s.revoked_at.is_some());
+
+    // An ordinary key is left to the API-key revoke.
+    let (_, ordinary) =
+        t.cp.auth
+            .create_api_key(
+                &admin(),
+                CreateApiKey {
+                    name: "ci".into(),
+                    vault_id: t.vault,
+                    role: Role::Viewer,
+                    expires_in_days: 30,
+                },
+            )
+            .await
+            .unwrap();
+    assert!(t
+        .cp
+        .launcher_keys
+        .revoke_api_key(&admin(), &ordinary.id)
+        .await
+        .unwrap()
+        .is_none());
+    t.cp.auth
+        .revoke_api_key(&admin(), &ordinary.id)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_revoked_session_is_not_renewed() {
+    let t = setup().await;
+    let (_, key) = t.key(create("build")).await;
+    let first = t.cp.sessions.mint(&key, &t.vault, mint()).await.unwrap();
+    let renewal = |previous| MintSession {
+        renews: Some(previous),
+        ..mint()
+    };
+    let next =
+        t.cp.sessions
+            .mint(&key, &t.vault, renewal(first.session.id))
+            .await
+            .unwrap();
+
+    // Cut off by a proxy, or ended by a person: the launcher's timer does
+    // not bring it back.
+    t.store
+        .revoke_session(&next.session.id, Utc::now(), &[])
+        .await
+        .unwrap();
+    let err =
+        t.cp.sessions
+            .mint(&key, &t.vault, renewal(next.session.id))
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(&err, ControlError::Conflict { message } if message.contains("revoked")),
+        "{err}"
+    );
+
+    let other_vault = t.cp.policy.create_vault(&admin(), "other").await.unwrap();
+    let elsewhere = MintSession {
+        renews: Some(first.session.id),
+        ..mint()
+    };
+    let err =
+        t.cp.sessions
+            .mint(&admin(), &other_vault.id, elsewhere)
+            .await
+            .unwrap_err();
+    assert!(matches!(err, ControlError::Validation { .. }), "{err}");
 }
 
 #[tokio::test]

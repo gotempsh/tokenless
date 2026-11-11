@@ -1673,6 +1673,7 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
         longest: false,
         request_limit: args.request_limit,
         labels,
+        renews: None,
     })
 }
 
@@ -2021,6 +2022,7 @@ async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
         longest: args.ttl.is_none(),
         request_limit: None,
         labels,
+        renews: None,
     };
     let client = client(&args.broker)?;
     let vault = client.resolve_vault(args.vault.as_deref()).await?;

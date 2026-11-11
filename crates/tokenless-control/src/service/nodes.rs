@@ -28,7 +28,7 @@ use tokenless_core::snapshot::{
     RATE_LIMIT_FORMAT, SCRUB_FORMAT, SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
 };
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zeroize::Zeroizing;
 
 use super::alerts::AlertService;
@@ -37,7 +37,7 @@ use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{JoinTokenRecord, Node, Page, PageRequest, TemplateStatus};
+use crate::model::{JoinTokenRecord, Node, Page, PageRequest, ProxySession, TemplateStatus};
 use crate::notify::{Generation, PolicyNotifier};
 use crate::pki::{self, pem_encode};
 use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore, TripwireStore};
@@ -491,10 +491,17 @@ impl NodeService {
         }
         // Every tripwire goes to every node: a decoy is a sign wherever it
         // turns up, whatever vault it was planted for.
-        let decoys: Vec<SnapshotTripwire> = self
+        let mut planted = self
             .tripwires
-            .all_tripwires(MAX_SNAPSHOT_TRIPWIRES as u64)
-            .await?
+            .all_tripwires(MAX_SNAPSHOT_TRIPWIRES as u64 + 1)
+            .await?;
+        // Creating one past the cap is refused; two created at once can
+        // still get there.
+        if planted.len() > MAX_SNAPSHOT_TRIPWIRES {
+            error!(limit = MAX_SNAPSHOT_TRIPWIRES, "more tripwires than a snapshot carries; the oldest are not watched for until some are deleted");
+            planted.truncate(MAX_SNAPSHOT_TRIPWIRES);
+        }
+        let decoys: Vec<SnapshotTripwire> = planted
             .into_iter()
             .map(|t| SnapshotTripwire {
                 id: t.id,
@@ -667,21 +674,19 @@ impl NodeService {
             event.vault_id = event.detail.get("scope").and_then(|s| vault_from_scope(s));
             events.push(event);
         }
-        self.audit_sink.record(&events).await?;
-        // A failed revocation still raises its alert before failing the batch.
-        let mut revoked = Ok(());
+        // Cut-offs before the batch is recorded: the node resends a batch
+        // that failed, with the same event ids, and a revocation done
+        // already is skipped the second time, where a recorded event
+        // would conflict.
         for event in &events {
-            let cut_off = match event.action.as_str() {
-                QUARANTINE_ACTION => self.quarantine(node, event, CutOff::Refusals).await,
-                TRIPWIRE_ACTION => self.quarantine(node, event, CutOff::Tripwire).await,
-                _ => continue,
-            };
-            if let Err(e) = cut_off {
-                revoked = Err(e);
+            match event.action.as_str() {
+                QUARANTINE_ACTION => self.quarantine(node, event, CutOff::Refusals).await?,
+                TRIPWIRE_ACTION => self.quarantine(node, event, CutOff::Tripwire).await?,
+                _ => {}
             }
         }
+        self.audit_sink.record(&events).await?;
         self.alerts.observe(node, &events).await;
-        revoked?;
         Ok(events.len())
     }
 
@@ -690,22 +695,14 @@ impl NodeService {
     /// too. The node already stopped; a
     /// person reviews the session's refusals and starts a new one if it was
     /// an agent at work. A session already revoked, or one this control
-    /// plane never minted, is left alone.
+    /// plane never minted, is left alone, and so is one the node could not
+    /// have served: a node cuts off only its own traffic.
     async fn quarantine(
         &self,
         node: &Node,
         event: &AuditEvent,
         why: CutOff,
     ) -> Result<(), ControlError> {
-        if why == CutOff::Tripwire {
-            if let Some(id) = event
-                .detail
-                .get("tripwire_id")
-                .and_then(|raw| raw.parse::<TripwireId>().ok())
-            {
-                self.tripwires.tripwire_tripped(&id, event.at).await?;
-            }
-        }
         let Some(id) = event
             .detail
             .get("session_id")
@@ -718,6 +715,19 @@ impl NodeService {
             warn!(node_id = %node.id, session_id = %id, "a quarantine report names an unknown session; ignored");
             return Ok(());
         };
+        if !self.serves(node, &session).await? {
+            warn!(node_id = %node.id, session_id = %id, pinned_to = ?session.node_id, "a quarantine report names a session this node does not serve; ignored");
+            return Ok(());
+        }
+        if why == CutOff::Tripwire {
+            if let Some(tripwire) = event
+                .detail
+                .get("tripwire_id")
+                .and_then(|raw| raw.parse::<TripwireId>().ok())
+            {
+                self.tripwires.tripwire_tripped(&tripwire, event.at).await?;
+            }
+        }
         if session.revoked_at.is_some() {
             return Ok(());
         }
@@ -744,6 +754,26 @@ impl NodeService {
             warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, reason = why.reason(), "session cut off by a proxy: revoked");
         }
         Ok(())
+    }
+
+    /// Whether `node` accepts `session`'s token: one minted for a node
+    /// works only there, and a scoped node holds only the rules of the
+    /// sessions minted for it.
+    async fn serves(&self, node: &Node, session: &ProxySession) -> Result<bool, ControlError> {
+        match session.node_id {
+            Some(pinned) => Ok(pinned == node.id),
+            None if !node.scoped_rules => Ok(true),
+            None => {
+                let held: HashSet<RuleId> = self
+                    .policy
+                    .list_live_sessions_for_node(&node.id, Utc::now())
+                    .await?
+                    .into_iter()
+                    .flat_map(|s| s.rule_ids)
+                    .collect();
+                Ok(session.rule_ids.iter().any(|r| held.contains(r)))
+            }
+        }
     }
 
     pub async fn list_nodes(
@@ -853,6 +883,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         }
     }
 
@@ -1253,7 +1284,22 @@ mod tests {
             )
             .await
             .unwrap();
+        let other = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-2",
+                &encode_public_key(&SealPublicKey::from(&SealSecretKey::random_from_rng(OsRng))),
+            )
+            .await
+            .unwrap();
         let minted = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, Some(node.node.id), 600))
+            .await
+            .unwrap();
+        // Through edge-1 too: it holds the rule for the session above.
+        let unpinned = cs
             .sessions
             .mint(&host, &vault, mint(rule, None, 600))
             .await
@@ -1261,6 +1307,12 @@ mod tests {
         let bystander = cs
             .sessions
             .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap();
+        // Only edge-2 accepts it, so edge-1 cannot cut it off.
+        let elsewhere = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, Some(other.node.id), 600))
             .await
             .unwrap();
         let mut sessions = cs.notifier.subscribe();
@@ -1277,7 +1329,10 @@ mod tests {
                 &node.node,
                 AuditBatch {
                     events: vec![
+                        // Before the session that gives edge-1 its rule ends.
+                        report(unpinned.session.id.to_string()),
                         report(minted.session.id.to_string()),
+                        report(elsewhere.session.id.to_string()),
                         // Nonsense is recorded and otherwise ignored.
                         report("not-a-session".into()),
                         report(SessionId::new().to_string()),
@@ -1298,6 +1353,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(untouched.revoked_at.is_none());
+        let unpinned = store
+            .get_session(&unpinned.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unpinned.revoked_at.is_some());
+        let elsewhere = store
+            .get_session(&elsewhere.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            elsewhere.revoked_at.is_none(),
+            "a node cuts off only sessions it serves"
+        );
         assert!(sessions.has_changed().unwrap(), "proxies are told at once");
 
         let events = store
@@ -1309,13 +1379,13 @@ mod tests {
             .await
             .unwrap()
             .items;
-        assert_eq!(events.len(), 1, "{events:?}");
-        let e = &events[0];
+        assert_eq!(events.len(), 2, "{events:?}");
+        let target = format!("session:{}", minted.session.id);
+        let e = events
+            .iter()
+            .find(|e| e.target.as_deref() == Some(target.as_str()))
+            .unwrap();
         assert_eq!(e.actor, format!("node:{}", node.node.id));
-        assert_eq!(
-            e.target.as_deref(),
-            Some(format!("session:{}", minted.session.id).as_str())
-        );
         assert_eq!(e.detail["reason"], "quarantine");
         assert_eq!(e.detail["refusals"], "20");
         assert_eq!(e.detail["node"], "edge-1");
@@ -1340,7 +1410,7 @@ mod tests {
             .await
             .unwrap()
             .items;
-        assert_eq!(again.len(), 1);
+        assert_eq!(again.len(), 2);
     }
 
     #[tokio::test]

@@ -120,7 +120,8 @@ or a `.env` file. The list shows each tripwire's first characters and
 when it was last tripped. **⋯ › Delete tripwire** stops the proxies
 looking for it; with an authenticator or single sign-on it asks for a
 [recent code](./account.mdx#authenticator-app). Editors and admins
-manage tripwires; a vault holds up to 20.
+manage tripwires; a vault holds up to 20, and the instance up to 500,
+the most every proxy looks for.
 
 Every proxy looks for every vault's tripwires, in the URL and headers of
 each request it opens to add a credential (Basic credentials included).

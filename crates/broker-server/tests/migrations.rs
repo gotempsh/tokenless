@@ -479,7 +479,14 @@ async fn upgrading_keeps_sign_ins_and_gives_them_an_id() {
         .expect("get")
         .expect("the sign-in survives the upgrade");
     assert_ne!(a.id, b.id, "each sign-in gets its own id");
-    assert_eq!(a.last_used_at, a.created_at, "last used starts at sign-in");
+    // Use before the upgrade was never recorded: an idle timeout counts
+    // from the upgrade, not from signing in.
+    let since = chrono::Utc::now() - a.last_used_at;
+    assert!(
+        a.last_used_at > a.created_at && since < chrono::TimeDelta::seconds(60),
+        "last used at the upgrade, not at sign-in: {}",
+        a.last_used_at
+    );
     assert_eq!(a.user_agent, None);
     let listed = store
         .list_ui_sessions(

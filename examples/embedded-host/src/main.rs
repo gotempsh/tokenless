@@ -169,6 +169,7 @@ async fn main() -> Result<(), Error> {
                 not_after: None,
                 rule_not_after: Default::default(),
                 strict: true,
+                renews: None,
             },
         )
         .await?;

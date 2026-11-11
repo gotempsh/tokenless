@@ -12,9 +12,12 @@
 //! first [`MAX_SCRUB_BODY`] bytes; the rest passes through unread.
 //!
 //! Load: this runs on responses to requests that carried a credential.
-//! One Aho-Corasick pass per frame over the frame and the last
-//! (longest secret - 1) bytes of the one before, held back in case a
-//! secret is split between them; nothing else is buffered or copied.
+//! One Aho-Corasick pass per frame over the frame and the bytes the one
+//! before ended on that could start a secret, held back in case a secret
+//! is split between them; nothing else is buffered or copied. A frame
+//! that ends on anything else goes out whole at once, so a stream that
+//! sends an event and goes quiet (server-sent events, an MCP stream)
+//! still delivers the event.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -25,6 +28,7 @@ use bytes::{Bytes, BytesMut};
 use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use http::{HeaderMap, HeaderValue};
 use hyper::body::{Body, Frame, SizeHint};
+use zeroize::Zeroizing;
 
 use crate::error::DataPlaneError;
 use crate::proxy::{BodyError, ProxyBody};
@@ -35,6 +39,8 @@ pub const MAX_SCRUB_BODY: u64 = 8 * 1024 * 1024;
 /// A rule's secrets, ready to find.
 pub struct Scrubber {
     matcher: AhoCorasick,
+    /// The secrets themselves, to tell whether a frame ends partway into one.
+    values: Vec<Zeroizing<Vec<u8>>>,
     longest: usize,
 }
 
@@ -49,7 +55,30 @@ impl Scrubber {
             .map_err(|e| {
                 DataPlaneError::rejected(format!("a rule's secrets cannot be matched: {e}"))
             })?;
-        Ok(Some(Arc::new(Self { matcher, longest })))
+        let values = values
+            .iter()
+            .map(|v| Zeroizing::new(v.as_bytes().to_vec()))
+            .collect();
+        Ok(Some(Arc::new(Self {
+            matcher,
+            values,
+            longest,
+        })))
+    }
+
+    /// How many bytes at the end of `buf` could be the start of a secret
+    /// that the bytes after it complete.
+    fn partial_at_end(&self, buf: &[u8]) -> usize {
+        let most = (self.longest - 1).min(buf.len());
+        (1..=most)
+            .rev()
+            .find(|&k| {
+                let tail = &buf[buf.len() - k..];
+                self.values
+                    .iter()
+                    .any(|v| v.len() > k && v.starts_with(tail))
+            })
+            .unwrap_or(0)
     }
 
     /// Masks every secret in `buf`; how many there were.
@@ -131,7 +160,8 @@ pub struct Scrubbed {
 pub(crate) struct ScrubBody {
     inner: ProxyBody,
     scrubber: Arc<Scrubber>,
-    /// Read but not yet passed on: the tail a secret may continue from.
+    /// Read but not yet passed on: the start of a secret the next frame
+    /// may finish.
     held: BytesMut,
     read: u64,
     masked: usize,
@@ -182,7 +212,7 @@ impl ScrubBody {
             self.truncated = true;
             return Some(self.held.split().freeze());
         }
-        let keep = (self.scrubber.longest - 1).min(self.held.len());
+        let keep = self.scrubber.partial_at_end(&self.held);
         let out = self.held.split_to(self.held.len() - keep);
         (!out.is_empty()).then(|| out.freeze())
     }

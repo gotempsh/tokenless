@@ -5,7 +5,7 @@
 //! now. Each one is also an `alert.raised` audit event, so an audit
 //! destination (a webhook) carries it out of tokenless.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, TimeDelta, Utc};
@@ -23,9 +23,10 @@ use crate::model::{
 };
 use crate::store::{AlertStore, PolicyStore};
 
-/// Sessions whose signals are tracked at once. Past it, the oldest refusal
-/// windows are dropped first; a session not tracked raises no refusal or
-/// second-proxy alert until there is room.
+/// Sessions whose signals are tracked at once. Past it, refusal windows
+/// that can no longer count and sessions that have expired are dropped
+/// first; a session not tracked raises no refusal or second-proxy alert
+/// until there is room.
 pub const MAX_TRACKED_SESSIONS: usize = 10_000;
 
 /// How many open alerts there are, the newest, and when each signal last
@@ -56,6 +57,8 @@ struct Window {
 struct FirstProxy {
     node_id: NodeId,
     name: String,
+    /// When the session expires; past it, no proxy accepts its token.
+    expires_at: DateTime<Utc>,
 }
 
 /// What the control plane remembers about recent sessions between audit
@@ -76,6 +79,16 @@ impl Signals {
         let oldest = now - TimeDelta::seconds(i64::from(RefusalThreshold::MAX_WINDOW_SECS));
         self.refusals.retain(|_, w| w.start > oldest);
         self.refusals.len() < MAX_TRACKED_SESSIONS
+    }
+
+    /// Makes room for one more session in `first_proxy`, dropping sessions
+    /// that have expired; false when there is still none.
+    fn room_for_first_proxy(&mut self, now: DateTime<Utc>) -> bool {
+        if self.first_proxy.len() < MAX_TRACKED_SESSIONS {
+            return true;
+        }
+        self.first_proxy.retain(|_, f| f.expires_at > now);
+        self.first_proxy.len() < MAX_TRACKED_SESSIONS
     }
 }
 
@@ -163,7 +176,12 @@ impl AlertService {
                 AlertSettings::default()
             }
         };
-        for alert in self.signals(node, events, &settings) {
+        let expiries = if settings.new_proxy {
+            self.expiries_of_untracked(node, events).await
+        } else {
+            HashMap::new()
+        };
+        for alert in self.signals(node, events, &settings, &expiries) {
             let (kind, session) = (alert.kind, alert.session_id);
             if let Err(e) = self.raise(node, alert).await {
                 error!(node_id = %node.id, kind = kind.as_str(), session_id = ?session, error = %e, "failed to raise an alert");
@@ -171,9 +189,47 @@ impl AlertService {
         }
     }
 
+    /// When each session of `events` not tracked yet expires, so it can be
+    /// forgotten once it has. A session the control plane never minted is
+    /// left out: no proxy accepts its token, so it is not tracked.
+    async fn expiries_of_untracked(
+        &self,
+        node: &Node,
+        events: &[AuditEvent],
+    ) -> HashMap<SessionId, DateTime<Utc>> {
+        let untracked: BTreeSet<SessionId> = {
+            let signals = self.signals.lock().unwrap_or_else(PoisonError::into_inner);
+            events
+                .iter()
+                .filter_map(session_of)
+                .filter(|s| !signals.first_proxy.contains_key(s))
+                .collect()
+        };
+        let mut expiries = HashMap::with_capacity(untracked.len());
+        for id in untracked {
+            match self.policy.get_session(&id).await {
+                Ok(Some(session)) => {
+                    expiries.insert(id, session.expires_at);
+                }
+                Ok(None) => {}
+                // Looked up again on its next event.
+                Err(e) => {
+                    warn!(node_id = %node.id, session_id = %id, error = %e, "could not read a session to track which proxy it first used");
+                }
+            }
+        }
+        expiries
+    }
+
     /// The alerts `events` raise, updating what is remembered about their
     /// sessions. No I/O, so the lock is never held across an await.
-    fn signals(&self, node: &Node, events: &[AuditEvent], settings: &AlertSettings) -> Vec<Alert> {
+    fn signals(
+        &self,
+        node: &Node,
+        events: &[AuditEvent],
+        settings: &AlertSettings,
+        expiries: &HashMap<SessionId, DateTime<Utc>>,
+    ) -> Vec<Alert> {
         let mut raised = Vec::new();
         let mut signals = self.signals.lock().unwrap_or_else(PoisonError::into_inner);
         for event in events {
@@ -256,18 +312,22 @@ impl AlertService {
                         raised.push(a);
                     }
                     Some(_) => {}
-                    None if signals.first_proxy.len() < MAX_TRACKED_SESSIONS => {
-                        signals.first_proxy.insert(
-                            session,
-                            FirstProxy {
-                                node_id: node.id,
-                                name: node.name.clone(),
-                            },
-                        );
-                    }
-                    None => {
-                        warn!(session_id = %session, limit = MAX_TRACKED_SESSIONS, "too many sessions tracked to tell which proxy this one first used");
-                    }
+                    None => match expiries.get(&session) {
+                        None => {}
+                        Some(&expires_at) if signals.room_for_first_proxy(Utc::now()) => {
+                            signals.first_proxy.insert(
+                                session,
+                                FirstProxy {
+                                    node_id: node.id,
+                                    name: node.name.clone(),
+                                    expires_at,
+                                },
+                            );
+                        }
+                        Some(_) => {
+                            warn!(session_id = %session, limit = MAX_TRACKED_SESSIONS, "too many sessions tracked to tell which proxy this one first used");
+                        }
+                    },
                 }
             }
 

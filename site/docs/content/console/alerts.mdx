@@ -41,8 +41,8 @@ log records who acknowledged it (`alert.acknowledge`). Editors and admins
 can acknowledge alerts; everyone who can read the audit log can see them,
 and a vault-bound API key sees only its vault's.
 
-A session that was cut off stays revoked. If it was an agent at work,
-start a new session.
+A session that was cut off stays revoked, and `tokenless run` does not
+renew it. If it was an agent at work, start a new session.
 
 From a terminal, `tokenless alerts list` and `tokenless alerts ack <id>`
 do the same ([CLI](../cli.mdx#alerts-list-alerts-ack)). Over the API:

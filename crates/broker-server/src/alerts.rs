@@ -10,6 +10,7 @@ use broker_server::launcher::listing::{relative, table};
 use broker_server::launcher::LauncherError;
 use chrono::{DateTime, Utc};
 use tokenless_control::model::Alert;
+use tokenless_core::ids::AlertId;
 
 use super::list::{open, print_json};
 use super::messages::say;
@@ -67,10 +68,19 @@ pub async fn list(all: bool, json: bool, server: String) -> Result<ExitCode, Cli
 pub async fn acknowledge(reference: String, server: String) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let client = open(&server, &prompter)?;
-    let wanted = reference.to_ascii_lowercase();
-    let open_alerts = client.alerts(false, 100).await?;
+    // A whole id needs no lookup, however many alerts are open.
+    if let Ok(id) = reference.trim().parse::<AlertId>() {
+        let acknowledged = client.acknowledge_alert(&id).await?;
+        say(format!(
+            "Acknowledged alert {}: {}",
+            short_id(&acknowledged),
+            acknowledged.summary
+        ));
+        return Ok(ExitCode::SUCCESS);
+    }
+    let wanted = reference.trim().to_ascii_lowercase();
+    let open_alerts = client.open_alerts().await?;
     let matches: Vec<&Alert> = open_alerts
-        .items
         .iter()
         .filter(|a| a.id.to_string().starts_with(&wanted))
         .collect();

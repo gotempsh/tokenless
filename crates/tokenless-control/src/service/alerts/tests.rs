@@ -65,6 +65,26 @@ fn refused_at(vault: VaultId, session: SessionId, secs_ago: i64) -> AuditEvent {
     e
 }
 
+/// A session the store knows, as one minted for an agent is.
+async fn minted(store: &MemoryStore, vault: VaultId, expires_in_secs: i64) -> SessionId {
+    let now = Utc::now();
+    let session = crate::model::ProxySession {
+        id: SessionId::new(),
+        vault_id: vault,
+        rule_ids: vec![],
+        bundle: None,
+        labels: Default::default(),
+        request_limit: None,
+        node_id: None,
+        created_by: "user:test".into(),
+        created_at: now,
+        expires_at: now + TimeDelta::seconds(expires_in_secs),
+        revoked_at: None,
+    };
+    store.insert_session(session.clone(), &[]).await.unwrap();
+    session.id
+}
+
 async fn all(svc: &AlertService) -> Vec<Alert> {
     svc.list(
         &user(Role::Admin, None),
@@ -200,7 +220,11 @@ async fn refusals_raise_an_alert_at_the_threshold_within_the_window() {
 async fn a_session_used_through_a_second_proxy_raises_an_alert() {
     let store = Arc::new(MemoryStore::new());
     let svc = service(&store);
-    let (vault, session, other) = (VaultId::new(), SessionId::new(), SessionId::new());
+    let vault = VaultId::new();
+    let (session, other) = (
+        minted(&store, vault, 900).await,
+        minted(&store, vault, 900).await,
+    );
     let (first, second) = (node("edge-1"), node("edge-2"));
     svc.observe(&first, &[traffic(vault, session, AuditOutcome::Success)])
         .await;
@@ -222,6 +246,51 @@ async fn a_session_used_through_a_second_proxy_raises_an_alert() {
     assert!(a
         .summary
         .contains("through proxy 'edge-2' after first using 'edge-1'"));
+}
+
+#[tokio::test]
+async fn a_session_the_control_plane_never_minted_is_not_tracked() {
+    let store = Arc::new(MemoryStore::new());
+    let svc = service(&store);
+    let (vault, made_up) = (VaultId::new(), SessionId::new());
+    for edge in [node("edge-1"), node("edge-2")] {
+        svc.observe(&edge, &[traffic(vault, made_up, AuditOutcome::Success)])
+            .await;
+    }
+    assert!(all(&svc).await.is_empty());
+    let signals = svc.signals.lock().unwrap();
+    assert!(signals.first_proxy.is_empty());
+}
+
+#[tokio::test]
+async fn a_full_first_proxy_map_forgets_expired_sessions_and_keeps_alerting() {
+    let store = Arc::new(MemoryStore::new());
+    let svc = service(&store);
+    let vault = VaultId::new();
+    let (first, second) = (node("edge-1"), node("edge-2"));
+    {
+        let mut signals = svc.signals.lock().unwrap();
+        let expired = Utc::now() - TimeDelta::seconds(1);
+        for _ in 0..MAX_TRACKED_SESSIONS {
+            signals.first_proxy.insert(
+                SessionId::new(),
+                FirstProxy {
+                    node_id: first.id,
+                    name: first.name.clone(),
+                    expires_at: expired,
+                },
+            );
+        }
+    }
+    let session = minted(&store, vault, 900).await;
+    svc.observe(&first, &[traffic(vault, session, AuditOutcome::Success)])
+        .await;
+    svc.observe(&second, &[traffic(vault, session, AuditOutcome::Success)])
+        .await;
+    let alerts = all(&svc).await;
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0].kind, AlertKind::NewProxy);
+    assert_eq!(svc.signals.lock().unwrap().first_proxy.len(), 1);
 }
 
 #[tokio::test]
