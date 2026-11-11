@@ -61,22 +61,38 @@ With Docker, use the Compose recipe: the control plane, and Caddy in front
 of the console for HTTPS.
 
 ```sh
-mkdir tokenless && cd tokenless && chmod 700 .
+mkdir tokenless && cd tokenless
 for f in compose.yaml Caddyfile .env.example; do
   curl -fsSLO "https://raw.githubusercontent.com/gotempsh/tokenless/main/examples/docker-compose/$f"
 done
 cp .env.example .env               # set TOKENLESS_DOMAIN=tokenless.example.com
-openssl rand -base64 32 > root.key && chmod 444 root.key
+openssl rand -base64 32 > root.key   # the root key, outside the data volume
+docker run --rm -v "$PWD/root.key:/key" busybox:1.37 \
+  sh -c 'chown 65532:65532 /key && chmod 400 /key'   # the image's user
 docker compose up -d
 docker compose logs tokenless      # the admin's password, printed once
 ```
+
+The key now belongs to the image's user, so the server reads it without
+any warning; copying it for a backup needs `sudo` (or the same
+`docker run`).
 
 On a tailnet, also set `TOKENLESS_BIND` in `.env` to the server's tailnet
 IP (`tailscale ip -4`) and uncomment the `tailscaled.sock` volume in
 `compose.yaml`. Docker's published ports bypass ufw and firewalld, so
 `TOKENLESS_BIND` or a firewall in front of the server (a cloud security
-group) is what keeps them off a public address. More on the recipe, backups
-and upgrades: [Deploy → Docker Compose](./deploy.mdx#docker-compose).
+group) is what keeps them off a public address. At boot, Docker can start
+the containers before Tailscale has given the server that address, and a
+container whose port can't bind isn't restarted, so let it bind the
+address before it exists:
+
+```sh
+echo 'net.ipv4.ip_nonlocal_bind = 1' | sudo tee /etc/sysctl.d/90-tokenless.conf
+sudo sysctl --system
+```
+
+More on the recipe, backups and upgrades:
+[Deploy → Docker Compose](./deploy.mdx#docker-compose).
 
 Without Docker, [install the binary](./install.mdx) and run it with your
 certificate, as a service ([Deploy → systemd](./deploy.mdx#systemd)):

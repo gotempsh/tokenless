@@ -6,8 +6,9 @@
 # The walkthrough is in the docs: Deploy -> Docker Compose.
 #
 #   cp .env.example .env                 # set TOKENLESS_DOMAIN
-#   chmod 700 .                          # only you can reach what is here
-#   openssl rand -base64 32 > root.key && chmod 444 root.key
+#   openssl rand -base64 32 > root.key
+#   docker run --rm -v "$PWD/root.key:/key" busybox:1.37 \
+#     sh -c 'chown 65532:65532 /key && chmod 400 /key'
 #   docker compose up -d
 #   docker compose logs tokenless        # the admin's password, printed once
 
@@ -61,7 +62,7 @@ volumes:
 secrets:
   root_key:
     # Outside the volume, so the database's backups never hold it. Compose
-    # mounts the file as it is, so it must be readable by the image's user
-    # (65532), which under rootless Docker or Podman is another host uid:
-    # chmod 444 it, and keep this folder 0700 instead.
+    # mounts the file as it is, so it must belong to the image's user
+    # (65532). Changing it from a container, as above, maps that user the
+    # way this runtime does: rootful or rootless Docker, or Podman.
     file: ./root.key

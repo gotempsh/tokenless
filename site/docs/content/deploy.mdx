@@ -141,6 +141,16 @@ Proxies also need port 8443 on that name. The ports listen on
 bypass ufw and firewalld, so close them with that address or a firewall
 in front of the host (a cloud security group), not with a host firewall.
 
+With `TOKENLESS_BIND` set to a tailnet IP, Docker can start the
+containers at boot before Tailscale has given the host that address, and a
+container whose port can't bind isn't restarted. Let it bind the address
+before it exists:
+
+```sh
+echo 'net.ipv4.ip_nonlocal_bind = 1' | sudo tee /etc/sysctl.d/90-tokenless.conf
+sudo sysctl --system
+```
+
 On the server:
 
 ```sh
@@ -149,16 +159,18 @@ for f in compose.yaml Caddyfile .env.example; do
   curl -fsSLO "https://raw.githubusercontent.com/gotempsh/tokenless/main/examples/docker-compose/$f"
 done
 cp .env.example .env                     # set TOKENLESS_DOMAIN
-chmod 700 .                              # only you can reach what is here
 openssl rand -base64 32 > root.key       # the root key, outside the volume
-chmod 444 root.key                       # readable by the image's user
+docker run --rm -v "$PWD/root.key:/key" busybox:1.37 \
+  sh -c 'chown 65532:65532 /key && chmod 400 /key'   # the image's user
 docker compose up -d
 docker compose logs tokenless            # the admin's password, printed once
 ```
 
-Sign in at `https://<your domain>`, not at the `127.0.0.1` address the
-log prints, which is the server's own view of itself. Back up the
-`tokenless-data` volume and `root.key` separately ([Backups](#backups)).
+The key now belongs to the image's user, so the container reads it and
+you need `sudo` (or the same `docker run`) to copy it. Sign in at
+`https://<your domain>`, not at the `127.0.0.1` address the log prints,
+which is the server's own view of itself. Back up the `tokenless-data`
+volume and `root.key` separately ([Backups](#backups)).
 
 Then connect each machine that runs agents: sign in, add services, enrol
 its proxy and keep it running, as in
