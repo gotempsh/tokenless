@@ -12,6 +12,7 @@ function bundle(name: string, rules = 1, description = ""): AccessBundle {
     name,
     description,
     rule_ids: Array.from({ length: rules }, (_, i) => `r${i}`),
+    request_limit: null,
     created_by: "user:u",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",

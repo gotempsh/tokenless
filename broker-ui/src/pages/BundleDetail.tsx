@@ -75,6 +75,7 @@ import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { SettingsSection } from "../components/layout";
 import { CommandSnippet } from "./Bundles";
+import { parseRequestLimit, requestLimitLabel } from "../ratelimit";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
 import { SessionTable, sessionLabel } from "./Sessions";
@@ -266,6 +267,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
               canEdit={canEdit}
               onEdit={() => setEditing(true)}
               onDelete={() => confirmDelete.ask(b)}
+              onChanged={() => bundle.reload()}
             />
           )}
         </>
@@ -327,6 +329,50 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
   );
 }
 
+function RequestLimitForm({ bundle, canEdit, onChanged }: { bundle: AccessBundle; canEdit: boolean; onChanged: () => void }) {
+  const [text, setText] = useState(bundle.request_limit?.toString() ?? "");
+  const action = useAction();
+  const parsed = text.trim() === "" ? null : parseRequestLimit(text);
+  const save = async (limit: number | null) => {
+    const done = await action.run(() => patch<AccessBundle>(`/bundles/${bundle.id}`, { request_limit: limit }));
+    if (done) {
+      setText(done.request_limit?.toString() ?? "");
+      onChanged();
+    }
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (parsed && "limit" in parsed) void save(parsed.limit);
+  };
+  return (
+    <form className="space-y-3" onSubmit={submit}>
+      <ErrorBanner error={action.error} />
+      <p className="text-sm">{requestLimitLabel(bundle.request_limit)}</p>
+      <Field label="Requests per session" htmlFor="bundle-request-limit" error={parsed && "error" in parsed ? parsed.error : undefined}>
+        <Input
+          id="bundle-request-limit"
+          inputMode="numeric"
+          className="w-full sm:w-[200px]"
+          value={text}
+          disabled={!canEdit}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="No limit"
+        />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" variant="outline" disabled={!canEdit || action.busy || !parsed || "error" in parsed}>
+          Save limit
+        </Button>
+        {bundle.request_limit !== null && (
+          <Button type="button" variant="ghost" disabled={!canEdit || action.busy} onClick={() => void save(null)}>
+            Remove limit
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
 /** The bundle's own details and the things done to the bundle itself. */
 function BundleSettings({
   bundle,
@@ -334,12 +380,14 @@ function BundleSettings({
   canEdit,
   onEdit,
   onDelete,
+  onChanged,
 }: {
   bundle: AccessBundle;
   createdBy: string;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onChanged: () => void;
 }) {
   const reason = canEdit ? null : <p className="text-xs text-muted-foreground">Only editors and admins can change bundles.</p>;
   return (
@@ -356,6 +404,9 @@ function BundleSettings({
           </Button>
           {reason}
         </div>
+      </SettingsSection>
+      <SettingsSection title="Request limit" hint="Each session started from it may make this many requests. Whoever starts one may ask for fewer.">
+        <RequestLimitForm bundle={bundle} canEdit={canEdit} onChanged={onChanged} />
       </SettingsSection>
       <SettingsSection title="History">
         <div className="space-y-1 text-sm">

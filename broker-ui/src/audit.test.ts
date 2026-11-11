@@ -104,6 +104,12 @@ describe("actionPhrase", () => {
     ).toBe("cut an open connection to api.example.com: the session was revoked");
   });
 
+  test("rate-limited requests read as one refusal with a count", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.rate_limited", detail: { refused: "37", host: "api.example.com:443", per_sec: "20" } })),
+    ).toBe("refused 37 requests to api.example.com: the session went past 20 a second");
+  });
+
   test("a tripwire's trip reads as a cut-off", () => {
     expect(
       actionPhrase(event({ action: "proxy.tripwire", detail: { tripwire: "build-runner", host: "api.github.com:443" } })),
@@ -129,7 +135,7 @@ describe("actionPhrase", () => {
     "launcher_key.create", "launcher_key.revoke",
     "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
     "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
-    "proxy.quarantine", "proxy.tripwire",
+    "proxy.quarantine", "proxy.rate_limited", "proxy.tripwire",
     "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
     "rule.create", "rule.delete", "rule.update",
     "session.mint", "session.revoke", "session.update_labels",

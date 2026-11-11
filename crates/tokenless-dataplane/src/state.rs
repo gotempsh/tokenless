@@ -30,7 +30,7 @@ use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
 use tokenless_core::seal::{open, SealSecretKey};
 use tokenless_core::snapshot::{
-    ca_aad, rule_aad, tripwires_aad, QuarantinePolicy, SignedSnapshot, SnapshotTripwire,
+    ca_aad, rule_aad, tripwires_aad, QuarantinePolicy, RateLimit, SignedSnapshot, SnapshotTripwire,
     UnmatchedHostPolicy,
 };
 use tokenless_core::substitution::RenderedSubstitution;
@@ -119,6 +119,8 @@ pub struct ActiveSnapshot {
     pub quarantined: HashMap<SessionId, DateTime<Utc>>,
     /// Decoys a request is refused and its session cut off for.
     pub tripwires: Option<Arc<crate::tripwire::Tripwires>>,
+    /// How fast each session may send requests through this node.
+    pub rate_limit: Option<RateLimit>,
 }
 
 impl ActiveSnapshot {
@@ -396,6 +398,7 @@ pub fn build_active(
         revoked,
         quarantined,
         quarantine: body.quarantine,
+        rate_limit: body.rate_limit,
         tripwires,
         limits,
         policy: body.unmatched_host_policy,
@@ -527,6 +530,7 @@ pub(crate) mod tests {
                     .collect(),
                 quarantine: None,
                 tripwires: None,
+                rate_limit: None,
             }
         }
     }

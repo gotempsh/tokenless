@@ -618,6 +618,7 @@ mod tests {
             name: "code-review".into(),
             description: String::new(),
             rule_ids: vec![on.id, off.id],
+            request_limit: None,
             created_by: "user:a".into(),
             created_at: now,
             updated_at: now,

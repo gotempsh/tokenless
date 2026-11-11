@@ -25,7 +25,7 @@ use tokenless_core::snapshot::{
     ca_aad, format_for, rule_aad, rules_readable_by, tripwires_aad, InterceptionCa, PublishedKey,
     SessionLimit, SignedSnapshot, SnapshotBody, SnapshotRule, SnapshotTripwire,
     MAX_SNAPSHOT_TRIPWIRES, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
-    SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
+    RATE_LIMIT_FORMAT, SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -580,6 +580,9 @@ impl NodeService {
             .tripwires
             .clone()
             .filter(|_| reads_format >= TRIPWIRE_FORMAT);
+        let rate_limit = settings
+            .rate_limit
+            .filter(|_| reads_format >= RATE_LIMIT_FORMAT);
         let format = format_for(&rules)
             .max(if quarantine.is_some() {
                 QUARANTINE_FORMAT
@@ -588,6 +591,11 @@ impl NodeService {
             })
             .max(if tripwires.is_some() {
                 TRIPWIRE_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if rate_limit.is_some() {
+                RATE_LIMIT_FORMAT
             } else {
                 MIN_SNAPSHOT_FORMAT
             });
@@ -618,6 +626,7 @@ impl NodeService {
             rules,
             quarantine,
             tripwires,
+            rate_limit,
         };
         Ok(NodeSnapshot {
             snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
@@ -775,7 +784,8 @@ mod tests {
     use tokenless_core::authz::{Principal, Role};
     use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
     use tokenless_core::snapshot::{
-        QuarantinePolicy, SnapshotBody, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
+        QuarantinePolicy, RateLimit, SnapshotBody, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION,
+        QUARANTINE_FORMAT, RATE_LIMIT_FORMAT,
     };
 
     use tokenless_core::ids::{NodeId, RuleId, SessionId, VaultId};
@@ -1031,6 +1041,7 @@ mod tests {
             body.quarantine, None,
             "a format 1 node is sent no quarantine"
         );
+        assert_eq!(body.rate_limit, None, "nor a rate limit");
         assert_eq!(
             body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
             vec![other]
@@ -1043,8 +1054,84 @@ mod tests {
             .unwrap();
         assert_eq!(current.withheld_rules, 0);
         let body = current.snapshot.verify(&node.snapshot_verify_key).unwrap();
-        assert_eq!((body.format, body.rules.len()), (QUARANTINE_FORMAT, 2));
+        assert_eq!((body.format, body.rules.len()), (RATE_LIMIT_FORMAT, 2));
         assert_eq!(body.quarantine, Some(QuarantinePolicy::default()));
+        assert_eq!(body.rate_limit, Some(RateLimit::default()));
+
+        // A node that reads format 5 gets the quarantine and no rate limit.
+        let five = cs.nodes.build_snapshot_for(&node.node, 5).await.unwrap();
+        let body = five.snapshot.verify(&node.snapshot_verify_key).unwrap();
+        assert_eq!((body.format, body.rate_limit), (QUARANTINE_FORMAT, None));
+    }
+
+    #[tokio::test]
+    async fn the_rate_limit_is_set_within_bounds_and_raising_it_needs_a_step_up() {
+        use crate::model::{AuditQuery, Settings};
+        use crate::store::AuditSink;
+
+        let (store, cs) = services().await;
+        let admin = |step_up_age: i64| Caller {
+            principal: Principal {
+                kind: tokenless_core::authz::PrincipalKind::User,
+                actor: "user:admin".into(),
+                role: Role::Admin,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now() - TimeDelta::seconds(step_up_age)),
+            second_factor: true,
+            launch: None,
+        };
+        let with = |per_sec, burst| Settings {
+            rate_limit: Some(RateLimit { per_sec, burst }),
+            ..Settings::default()
+        };
+        for (per_sec, burst) in [(0, 10), (20, 10), (20_000, 20_000), (20, 200_000)] {
+            let err = cs
+                .policy
+                .put_settings(&admin(0), with(per_sec, burst))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ControlError::Validation { .. })
+                    && err.to_string().contains(&format!("{per_sec} a second")),
+                "{err:?}"
+            );
+        }
+        cs.policy
+            .put_settings(&admin(3600), with(5, 50))
+            .await
+            .unwrap();
+        for looser in [
+            with(6, 50),
+            with(5, 51),
+            Settings {
+                rate_limit: None,
+                ..with(5, 50)
+            },
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(3600), looser)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ControlError::StepUpRequired { .. }),
+                "{err:?}"
+            );
+        }
+        cs.policy
+            .put_settings(&admin(0), with(10, 10))
+            .await
+            .unwrap();
+        let audit = store
+            .query(&AuditQuery {
+                action_prefix: Some("settings.update".into()),
+                page: crate::model::PageRequest::new(Some(1), Some(1)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(audit.items[0].detail["rate_limit"], "10/s, bursts of 10");
     }
 
     /// A proxy that cut a session off reports it, and the control plane

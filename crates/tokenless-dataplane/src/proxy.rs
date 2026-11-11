@@ -104,6 +104,8 @@ pub struct ProxyShared {
     pub(crate) traffic: Arc<crate::traffic::OpenTraffic>,
     /// Refusals per session, for [`crate::quarantine`].
     pub(crate) refusals: crate::quarantine::RefusalCounter,
+    /// Requests per session, for [`crate::ratelimit`].
+    pub(crate) rate: crate::ratelimit::RateLimiter,
 }
 
 impl ProxyShared {
@@ -1231,6 +1233,28 @@ pub(crate) async fn handle_intercepted(
                 StatusCode::FORBIDDEN,
                 "refused: the request carried a credential planted as a tripwire, so this session is cut off and someone has been alerted",
             );
+        }
+    }
+    if let Some(limit) = snapshot.rate_limit {
+        if let Err(wait) = shared.rate.check(&claims.jti, limit) {
+            Metrics::inc(&shared.metrics.requests_rate_limited_total);
+            shared.rate.refused(&claims.jti, || {
+                crate::ratelimit::report_event(shared, claims, limit, &ctx.host, ctx.port)
+            });
+            let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            let mut r = respond(
+                StatusCode::TOO_MANY_REQUESTS,
+                &format!(
+                    "this session is sending more than {} requests a second (bursts of {}); nothing was forwarded, retry in {}s",
+                    limit.per_sec,
+                    limit.burst,
+                    secs.max(1)
+                ),
+            );
+            if let Ok(value) = HeaderValue::from_str(&secs.max(1).to_string()) {
+                r.headers_mut().insert("retry-after", value);
+            }
+            return r;
         }
     }
     let method = req.method().as_str().to_string();

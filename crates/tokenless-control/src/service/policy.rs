@@ -17,7 +17,7 @@ use tokenless_core::injection::SecretFields;
 use tokenless_core::path::{HttpMethod, PathPattern};
 use tokenless_core::rule::{validate_mcp_tools, RuleScope};
 use tokenless_core::scope::Scope;
-use tokenless_core::snapshot::{QuarantinePolicy, UnmatchedHostPolicy};
+use tokenless_core::snapshot::{QuarantinePolicy, RateLimit, UnmatchedHostPolicy};
 use tokenless_core::substitution::{validate_substitutions, Substitution};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 use tokenless_core::variables::{validate_custom_headers, CustomHeader};
@@ -1285,6 +1285,22 @@ impl PolicyService {
                 )));
             }
         }
+        if let Some(r) = settings.rate_limit {
+            let per_sec = RateLimit::MIN_PER_SEC..=RateLimit::MAX_PER_SEC;
+            if !per_sec.contains(&r.per_sec)
+                || r.burst < r.per_sec
+                || r.burst > RateLimit::MAX_BURST
+            {
+                return Err(ControlError::validation(format!(
+                    "a rate limit of {} a second with bursts of {} is out of range: the rate must be {}-{} a second and the burst between the rate and {}, or rate_limit null to turn it off",
+                    r.per_sec,
+                    r.burst,
+                    per_sec.start(),
+                    per_sec.end(),
+                    RateLimit::MAX_BURST
+                )));
+            }
+        }
         settings.alerts.validate()?;
         let previous = self.policy.get_settings().await?;
         let adds_exception = settings
@@ -1297,6 +1313,7 @@ impl PolicyService {
             || adds_exception
             || settings.max_session_ttl_secs > previous.max_session_ttl_secs
             || quarantine_loosens(previous.quarantine, settings.quarantine)
+            || RateLimit::loosened_by(previous.rate_limit, settings.rate_limit)
             || settings.alerts.loosens(&previous.alerts);
         if widens {
             // Opening egress is as sensitive as widening a rule, and quieter
@@ -1331,6 +1348,13 @@ impl PolicyService {
                 settings.quarantine.map_or_else(
                     || "off".to_string(),
                     |q| format!("{} refusals in {}s", q.refusals, q.window_secs),
+                ),
+            )
+            .detail(
+                "rate_limit",
+                settings.rate_limit.map_or_else(
+                    || "off".to_string(),
+                    |r| format!("{}/s, bursts of {}", r.per_sec, r.burst),
                 ),
             )
             .detail(

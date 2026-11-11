@@ -1560,6 +1560,7 @@ mod tests {
                 &a,
                 &vault.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "code-review".into(),
                     description: "GitHub for reviews".into(),
                     rule_ids: vec![rules[1].id, rules[0].id, rules[0].id],
@@ -1800,6 +1801,7 @@ mod tests {
                     &viewer,
                     &vault.id,
                     CreateBundle {
+                        request_limit: None,
                         name: "mine".into(),
                         description: String::new(),
                         rule_ids: vec![],
@@ -1815,6 +1817,7 @@ mod tests {
                 &a,
                 &other.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "x".into(),
                     description: String::new(),
                     rule_ids: vec![rules[0].id],
@@ -1831,6 +1834,7 @@ mod tests {
                     &a,
                     &vault.id,
                     CreateBundle {
+                        request_limit: None,
                         name: "code-review".into(),
                         description: String::new(),
                         rule_ids: vec![],
@@ -1846,6 +1850,7 @@ mod tests {
                 &a,
                 &other.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "other-job".into(),
                     description: String::new(),
                     rule_ids: vec![],

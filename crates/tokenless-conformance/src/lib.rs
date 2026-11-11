@@ -1149,6 +1149,10 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
             refusals: 7,
             window_secs: 60,
         }),
+        rate_limit: Some(tokenless_core::snapshot::RateLimit {
+            per_sec: 7,
+            burst: 70,
+        }),
         alerts: tokenless_control::model::AlertSettings {
             refusals: None,
             new_proxy: false,
@@ -1188,6 +1192,7 @@ fn bundle(vault_id: VaultId, name: &str, mut rule_ids: Vec<RuleId>) -> AccessBun
         name: name.to_string(),
         description: format!("{name} bundle"),
         rule_ids,
+        request_limit: None,
         created_by: "user:conformance".into(),
         created_at: at(0),
         updated_at: at(0),
@@ -1218,7 +1223,10 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         rules.push(r);
     }
 
-    let review = bundle(v1.id, "review", vec![rules[0].id, rules[1].id]);
+    let review = AccessBundle {
+        request_limit: Some(500),
+        ..bundle(v1.id, "review", vec![rules[0].id, rules[1].id])
+    };
     let empty = bundle(v1.id, "empty", vec![]);
     let other = bundle(v2.id, "review", vec![]);
     for b in [&review, &empty, &other] {
@@ -1303,6 +1311,7 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     renamed.description = "changed".into();
     renamed.rule_ids = vec![rules[1].id, rules[2].id];
     renamed.rule_ids.sort();
+    renamed.request_limit = None;
     renamed.updated_at = at(5);
     store
         .update_bundle(renamed.clone(), &[])

@@ -25,7 +25,9 @@ This page is the summary an operator needs.
   session token copied to another machine and used through another proxy
   raises an alert too. Plant [tripwires](./console/vaults.mdx#tripwires),
   fake keys where real ones would be: the session that sends one is cut
-  off at once and you are alerted.
+  off at once and you are alerted. Each session is
+  [rate limited](./settings.mdx#rate-limit), so a stolen one can't be
+  used to empty an API in a few seconds.
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over
   HTTPS to the service's own hosts.

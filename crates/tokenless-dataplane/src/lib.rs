@@ -26,6 +26,7 @@ pub mod metrics;
 pub mod node;
 pub mod proxy;
 pub mod quarantine;
+pub mod ratelimit;
 pub mod shutdown;
 pub mod state;
 pub mod status;
@@ -216,6 +217,7 @@ impl DataPlane {
             lifecycle: watch::channel(Lifecycle::Running).0,
             traffic: Arc::new(traffic::OpenTraffic::default()),
             refusals: quarantine::RefusalCounter::new(),
+            rate: ratelimit::RateLimiter::new(),
         });
         let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
@@ -248,6 +250,7 @@ impl DataPlane {
                 shared.lifecycle.subscribe(),
             )),
             tokio::spawn(status::run_status_loop(shared.clone(), status_tx)),
+            tokio::spawn(ratelimit::run_reports(shared.clone())),
         ];
         let mut metrics_addr = None;
         if let Some(addr) = config.metrics_listen {
@@ -386,6 +389,12 @@ impl DataPlane {
             .snapshot
             .load_full()
             .expect("a snapshot is installed")
+    }
+
+    /// The proxy's shared state, for tests that drive its background work.
+    #[cfg(test)]
+    pub(crate) fn shared_for_tests(&self) -> &Arc<ProxyShared> {
+        &self.shared
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {

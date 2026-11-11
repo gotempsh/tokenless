@@ -61,6 +61,27 @@ API it is `quarantine` (`{"refusals": 20, "window_secs": 300}`, or
 `null`) in `PUT /api/v1/settings`. A proxy older than this release keeps
 running without it.
 
+## Rate limit
+
+How fast each session may send requests through a proxy: by default
+**20 a second, with bursts of 100**. An agent at work stays well under
+it; a script emptying an API through a stolen session does not. Past it
+the proxy answers `429` with `Retry-After` and forwards nothing; nothing
+is queued. It counts the requests a proxy adds a credential to, through
+a tunnel or the MCP gateway; hosts passed through untouched are not
+counted.
+
+Each proxy records one `proxy.rate_limited` event per session every 10
+seconds with how many requests it refused, so a flood does not flood the
+audit log, and counts them in `requests_rate_limited_total`. Rate-limited
+requests never count towards [cutting a session off](#cut-off-probing-sessions).
+Choose another rate here, or turn it off; raising or removing it asks
+you to confirm it's you. Over the API it is `rate_limit`
+(`{"per_sec": 20, "burst": 100}`, or `null`) in `PUT /api/v1/settings`.
+Each proxy keeps its own count, so a session used through two proxies
+gets the rate on each. A proxy older than this release keeps running
+without it.
+
 ## Alerts
 
 [Alerts](./console/alerts.mdx) point at a session that looks like

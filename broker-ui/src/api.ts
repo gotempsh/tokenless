@@ -347,6 +347,8 @@ export interface AccessBundle {
   name: string;
   description: string;
   rule_ids: string[];
+  /** Requests each session started from it may make; `null` for no limit. */
+  request_limit: number | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -477,8 +479,15 @@ export interface Settings {
   max_session_ttl_secs: number;
   /** When a proxy cuts off a session that keeps being refused; `null` for never. */
   quarantine: QuarantinePolicy | null;
+  /** How fast each session may send requests through a proxy; `null` for no limit. */
+  rate_limit: RateLimit | null;
   /** The alert signals that can be tuned; a quarantine always raises one. */
   alerts: AlertSettings;
+}
+
+export interface RateLimit {
+  per_sec: number;
+  burst: number;
 }
 
 export interface RefusalThreshold {

@@ -223,7 +223,7 @@ impl SessionService {
             .get_vault(vault_id)
             .await?
             .ok_or_else(|| ControlError::not_found("vault", vault_id))?;
-        let (mut rule_ids, bundle, skipped) = match &req.bundle {
+        let (mut rule_ids, bundle, skipped, bundle_limit) = match &req.bundle {
             Some(_) if !req.rule_ids.is_empty() => {
                 return Err(ControlError::validation(
                     "give either rule_ids or a bundle, not both",
@@ -254,9 +254,15 @@ impl SessionService {
                     id: bundle.id,
                     name: bundle.name,
                 };
-                (enabled, Some(reference), skipped)
+                (enabled, Some(reference), skipped, bundle.request_limit)
             }
-            None => (req.rule_ids.clone(), None, 0),
+            None => (req.rule_ids.clone(), None, 0, None),
+        };
+        // The bundle's limit is the most a session of it gets; the request
+        // may ask for fewer.
+        let request_limit = match (req.request_limit, bundle_limit) {
+            (Some(asked), Some(cap)) => Some(asked.min(cap)),
+            (asked, cap) => asked.or(cap),
         };
         rule_ids.sort();
         rule_ids.dedup();
@@ -293,7 +299,7 @@ impl SessionService {
             Scope::for_vault(&vault.id),
             rule_ids.clone(),
             ttl,
-            req.request_limit,
+            request_limit,
             req.labels.clone(),
             now,
             max_ttl,
@@ -315,7 +321,7 @@ impl SessionService {
             rule_ids,
             bundle,
             labels: req.labels,
-            request_limit: req.request_limit,
+            request_limit,
             node_id: claims.aud,
             created_by: caller.actor().to_string(),
             created_at: claims.iat,

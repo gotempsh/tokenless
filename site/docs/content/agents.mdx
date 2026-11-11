@@ -214,6 +214,7 @@ plain-text reason.
 | 403 `<host> resolves to <ip>, which is ...` | Connections to that address range are blocked (see [Settings](./settings.mdx#private-addresses)). |
 | 407 `proxy session rejected: ...` | The session expired or was revoked. |
 | 429 `session request limit of <n> reached` | The session used all its requests. |
+| 429 `this session is sending more than <n> requests a second ...` with `retry-after` | The session went past the instance's [rate limit](./settings.mdx#rate-limit). Nothing was forwarded; retry after the delay. |
 | 503 with `retry-after` | The proxy hasn't received a brand-new session yet. Retry after the delay. |
 | 502 | The service failed or couldn't be reached. |
 

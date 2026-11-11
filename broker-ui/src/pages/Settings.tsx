@@ -14,6 +14,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { DEFAULT_QUARANTINE, parseQuarantineKey, quarantineKey, quarantineOptions } from "../quarantine";
+import { DEFAULT_RATE_LIMIT, parseRateKey, rateKey, rateOptions } from "../ratelimit";
 import { AuditExportSettings, NEW_DESTINATION_HREF } from "./AuditExport";
 import { SingleSignOnSettings } from "./SingleSignOn";
 
@@ -203,6 +204,36 @@ export function Settings() {
                   value={quarantineKey(current.quarantine)}
                   onChange={(v) => void save({ ...current, quarantine: parseQuarantineKey(v) })}
                   options={quarantineOptions(current.quarantine)}
+                />
+              </div>
+            )}
+          </SettingsSection>
+          <SettingsSection title="Rate limit" hint="Past it a request is answered 429 and nothing is forwarded.">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="rate-limit">Limit how fast each session sends requests</Label>
+                <p className="text-sm text-muted-foreground">
+                  An agent at work stays well under it; a script emptying an API through a stolen session does not.
+                </p>
+              </div>
+              <Switch
+                id="rate-limit"
+                checked={current.rate_limit !== null}
+                disabled={action.busy}
+                onCheckedChange={(on) => void save({ ...current, rate_limit: on ? DEFAULT_RATE_LIMIT : null })}
+              />
+            </div>
+            {current.rate_limit && (
+              <div className="pt-2">
+                <Label htmlFor="rate-limit-value" className="sr-only">
+                  At most
+                </Label>
+                <SelectField
+                  id="rate-limit-value"
+                  className="w-full sm:w-[260px]"
+                  value={rateKey(current.rate_limit)}
+                  onChange={(v) => void save({ ...current, rate_limit: parseRateKey(v) })}
+                  options={rateOptions(current.rate_limit)}
                 />
               </div>
             )}

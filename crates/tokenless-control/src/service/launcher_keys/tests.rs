@@ -138,6 +138,7 @@ async fn setup() -> T {
                 &a,
                 &vault.id,
                 CreateBundle {
+                    request_limit: None,
                     name: name.into(),
                     description: String::new(),
                     rule_ids: vec![rule.id],

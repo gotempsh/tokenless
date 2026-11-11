@@ -16,7 +16,7 @@ use tokenless_core::ids::{
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
-use tokenless_core::snapshot::{QuarantinePolicy, UnmatchedHostPolicy};
+use tokenless_core::snapshot::{QuarantinePolicy, RateLimit, UnmatchedHostPolicy};
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
@@ -223,6 +223,10 @@ pub struct AccessBundle {
     pub description: String,
     /// Sorted, without duplicates. Deleting a rule removes it from bundles.
     pub rule_ids: Vec<RuleId>,
+    /// Requests each session minted from it may make; whoever mints one
+    /// may ask for fewer, never more. `None` for no limit.
+    #[serde(default)]
+    pub request_limit: Option<u64>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -297,6 +301,10 @@ pub struct Settings {
     /// for never. Settings saved before it existed get the default.
     #[serde(default = "default_quarantine")]
     pub quarantine: Option<QuarantinePolicy>,
+    /// How fast each session may send requests through a proxy; `None`
+    /// for no limit. Settings saved before it existed get the default.
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: Option<RateLimit>,
     /// Which audit signals raise an alert.
     #[serde(default)]
     pub alerts: AlertSettings,
@@ -310,6 +318,10 @@ fn default_quarantine() -> Option<QuarantinePolicy> {
     Some(QuarantinePolicy::default())
 }
 
+fn default_rate_limit() -> Option<RateLimit> {
+    Some(RateLimit::default())
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -318,6 +330,7 @@ impl Default for Settings {
             passthrough_hosts: Vec::new(),
             max_session_ttl_secs: default_max_session_ttl(),
             quarantine: default_quarantine(),
+            rate_limit: default_rate_limit(),
             alerts: AlertSettings::default(),
         }
     }
@@ -491,6 +504,7 @@ mod tests {
     fn settings_saved_before_quarantine_get_it_and_off_stays_off() {
         let old: Settings = serde_json::from_str(r#"{"unmatched_host_policy":"deny"}"#).unwrap();
         assert_eq!(old.quarantine, Some(QuarantinePolicy::default()));
+        assert_eq!(old.rate_limit, Some(RateLimit::default()));
         let off: Settings =
             serde_json::from_str(r#"{"unmatched_host_policy":"deny","quarantine":null}"#).unwrap();
         assert_eq!(off.quarantine, None);

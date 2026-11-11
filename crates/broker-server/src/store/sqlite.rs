@@ -771,7 +771,7 @@ const RULE_COLUMNS: &str =
 const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
 
 /// Bundle columns plus its rule ids as a JSON array, in one statement.
-const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
+const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.request_limit, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
 
 fn bundle_from_row(row: &SqliteRow) -> Result<AccessBundle, StoreError> {
     let mut rule_ids: Vec<RuleId> = from_json("rule_ids", &get::<String>(row, "rule_ids")?)?;
@@ -782,6 +782,7 @@ fn bundle_from_row(row: &SqliteRow) -> Result<AccessBundle, StoreError> {
         name: get(row, "name")?,
         description: get(row, "description")?,
         rule_ids,
+        request_limit: get::<Option<i64>>(row, "request_limit")?.map(to_u64),
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
@@ -1126,11 +1127,12 @@ impl PolicyStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_bundle").await?;
-        sqlx::query("INSERT INTO access_bundles (id, vault_id, name, description, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO access_bundles (id, vault_id, name, description, request_limit, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(bundle.id.to_string())
             .bind(bundle.vault_id.to_string())
             .bind(&bundle.name)
             .bind(&bundle.description)
+            .bind(bundle.request_limit.map(to_i64))
             .bind(&bundle.created_by)
             .bind(ts(&bundle.created_at))
             .bind(ts(&bundle.updated_at))
@@ -1210,10 +1212,11 @@ impl PolicyStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_bundle").await?;
         let result = sqlx::query(
-            "UPDATE access_bundles SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+            "UPDATE access_bundles SET name = ?, description = ?, request_limit = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&bundle.name)
         .bind(&bundle.description)
+        .bind(bundle.request_limit.map(to_i64))
         .bind(ts(&bundle.updated_at))
         .bind(bundle.id.to_string())
         .execute(&mut *tx)

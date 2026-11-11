@@ -35,6 +35,7 @@ metrics! {
     requests_injected_total: "Requests forwarded with an injected credential",
     requests_denied_total: "Intercepted requests refused by policy",
     sessions_quarantined_total: "Sessions cut off for being refused too often",
+    requests_rate_limited_total: "Intercepted requests refused with 429 because their session went past the rate limit",
     tripwires_tripped_total: "Requests refused for carrying a tripwire's decoy; their session was cut off",
     lease_refusals_total: "Requests refused because the snapshot lease had expired",
     audit_dropped_total: "Audit events that could not be queued; the injection was refused",
