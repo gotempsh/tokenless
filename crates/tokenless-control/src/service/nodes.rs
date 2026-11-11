@@ -732,7 +732,7 @@ impl NodeService {
             warn!(node_id = %node.id, session_id = %id, "a quarantine report names an unknown session; ignored");
             return Ok(false);
         };
-        if !self.served(node, &session, event.at).await? {
+        if !self.served(node, &session).await? {
             warn!(node_id = %node.id, session_id = %id, pinned_to = ?session.node_id, "a quarantine report names a session this node did not serve; ignored");
             return Ok(false);
         }
@@ -773,27 +773,26 @@ impl NodeService {
         Ok(true)
     }
 
-    /// Whether `node` accepted `session`'s token at `at`, when it cut the
-    /// session off: one minted for a node works only there, and a scoped
-    /// node holds only the rules of the sessions minted for it. Those are
-    /// the sessions live then, not when the report arrives, which may be
-    /// after they ended; and up to a lease earlier, as a node serves the
-    /// snapshot it has until it gets the next.
-    async fn served(
-        &self,
-        node: &Node,
-        session: &ProxySession,
-        at: DateTime<Utc>,
-    ) -> Result<bool, ControlError> {
+    /// Whether `node` could have accepted `session`'s token: one minted
+    /// for a node works only there, and a scoped node holds only the rules
+    /// of the sessions minted for it. Those are the ones live at any time
+    /// since `session` was created, not only when the report arrives,
+    /// which may be after they ended; and up to a lease earlier, as a node
+    /// serves the snapshot it has until it gets the next. The report's own
+    /// time is the node's word, so it is not used.
+    async fn served(&self, node: &Node, session: &ProxySession) -> Result<bool, ControlError> {
         match session.node_id {
             Some(pinned) => Ok(pinned == node.id),
             None if !node.scoped_rules => Ok(true),
             None => {
-                let at = at.min(Utc::now());
                 let lease = Duration::seconds(i64::from(self.config.lease_secs));
                 let held: HashSet<RuleId> = self
                     .policy
-                    .list_sessions_for_node_between(&node.id, at - lease, at)
+                    .list_sessions_for_node_between(
+                        &node.id,
+                        session.created_at - lease,
+                        Utc::now(),
+                    )
                     .await?
                     .into_iter()
                     .flat_map(|s| s.rule_ids)
@@ -1441,9 +1440,10 @@ mod tests {
     }
 
     /// A report can arrive well after the node cut the session off: a
-    /// scoped node is judged by the rules it held then.
+    /// scoped node is judged by the rules it held while the session
+    /// existed, never by the time the node puts on its report.
     #[tokio::test]
-    async fn a_late_report_is_judged_by_when_the_node_cut_the_session_off() {
+    async fn a_late_report_is_judged_by_what_the_node_held_while_the_session_lived() {
         use tokenless_core::audit::{AuditEvent, AuditOutcome};
         use tokenless_core::protocol::AuditBatch;
 
@@ -1462,34 +1462,41 @@ mod tests {
             )
             .await
             .unwrap();
-        // The session that gave edge-1 the rule, revoked an hour ago.
         let now = Utc::now();
-        let pinned = ProxySession {
+        let session = |created: TimeDelta, node_id| ProxySession {
             id: SessionId::new(),
             vault_id: vault,
             rule_ids: vec![rule],
             bundle: None,
             labels: BTreeMap::new(),
             request_limit: None,
-            node_id: Some(node.node.id),
+            node_id,
             created_by: "user:test".into(),
-            created_at: now - TimeDelta::hours(3),
+            created_at: now - created,
             expires_at: now + TimeDelta::hours(1),
             revoked_at: None,
         };
-        store.insert_session(pinned.clone(), &[]).await.unwrap();
+        // The session that gave edge-1 the rule, revoked an hour ago.
+        let pinned = session(TimeDelta::hours(3), Some(node.node.id));
+        // Started while edge-1 held the rule, so it may have gone through it.
+        let late = session(TimeDelta::hours(2), None);
+        for s in [&pinned, &late] {
+            store.insert_session(s.clone(), &[]).await.unwrap();
+        }
         store
             .revoke_session(&pinned.id, now - TimeDelta::hours(1), &[])
             .await
             .unwrap();
-        let late = cs
+        let late = late.id;
+        // Started once edge-1 no longer held the rule: never its traffic.
+        let unheld = cs
             .sessions
             .mint(&host, &vault, mint(rule, None, 600))
             .await
             .unwrap()
             .session
             .id;
-        let unheld = cs
+        let backdated = cs
             .sessions
             .mint(&host, &vault, mint(rule, None, 600))
             .await
@@ -1508,10 +1515,11 @@ mod tests {
                 &node.node,
                 AuditBatch {
                     events: vec![
-                        // Cut off while edge-1 still held the rule.
-                        report(late, now - TimeDelta::hours(2)),
-                        // Now, when it no longer does: not its traffic.
+                        report(late, now),
                         report(unheld, now),
+                        // Stamped with a time edge-1 held the rule: the
+                        // node's clock is not taken for it.
+                        report(backdated, now - TimeDelta::hours(2)),
                     ],
                 },
             )
@@ -1531,6 +1539,10 @@ mod tests {
         };
         assert!(revoked(late).await, "the late report still revokes");
         assert!(!revoked(unheld).await);
+        assert!(
+            !revoked(backdated).await,
+            "a backdated report revokes nothing"
+        );
 
         let alerts = cs
             .alerts
