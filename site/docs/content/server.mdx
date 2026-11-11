@@ -127,7 +127,7 @@ the key without the agent ever seeing it:
 
 ```sh
 export TOKENLESS_URL=https://tokenless.example.com
-tokenless login
+tokenless login --username <you>   # without --username, it signs in as admin
 tokenless service add github --vault work --bundle code-review
 ```
 
@@ -142,18 +142,21 @@ point it at the server once for the shell:
 
 ```sh
 export TOKENLESS_URL=https://tokenless.example.com
-tokenless login
+tokenless login --username <you>
 ```
 
 Add `TOKENLESS_URL` to your shell profile so every command uses the server
-without `--server`.
+without `--server`. `login` takes a password, so an account that only
+uses single sign-on skips it: add services in the console, and start
+agents with a session token from the bundle's page, as for
+[CI runners](#hosts-without-a-person-ci-runners).
 
 ### Enrol the host's proxy
 
 An admin enrols it in one step:
 
 ```sh
-tokenless proxy add --name laptop --state ~/.config/tokenless/node.json
+tokenless proxy add --name laptop --state ~/.tokenless/node.json
 ```
 
 Everyone else asks an admin for a join token: **Proxies → Add a proxy** in
@@ -162,7 +165,7 @@ and expires in an hour:
 
 ```sh
 tokenless node join --control-url https://tokenless.example.com:8443 \
-  --token 'cbj1....' --name laptop --state ~/.config/tokenless/node.json
+  --token 'cbj1....' --name laptop --state ~/.tokenless/node.json
 ```
 
 `node.json` (mode 0600) is the host's identity. Keep it: without it the
@@ -173,7 +176,7 @@ host has to enrol again. The host shows on the **Proxies** page.
 Try it in a terminal first:
 
 ```sh
-tokenless node run --state ~/.config/tokenless/node.json
+tokenless node run --state ~/.tokenless/node.json
 ```
 
 It shows as **Connected** on the Proxies page within seconds. Then run it
@@ -191,7 +194,7 @@ On Linux, with systemd, as your user:
 Description=tokenless proxy
 
 [Service]
-ExecStart=/usr/local/bin/tokenless node run --state %h/.config/tokenless/node.json
+ExecStart=/usr/local/bin/tokenless node run --state %h/.tokenless/node.json
 Restart=on-failure
 
 [Install]
@@ -216,7 +219,7 @@ On macOS, with launchd, in `~/Library/LaunchAgents/dev.tokenless.proxy.plist`
   <array>
     <string>/usr/local/bin/tokenless</string>
     <string>node</string><string>run</string>
-    <string>--state</string><string>/Users/you/.config/tokenless/node.json</string>
+    <string>--state</string><string>/Users/you/.tokenless/node.json</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
