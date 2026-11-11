@@ -377,6 +377,35 @@ export interface MintedSession {
   session: ProxySession;
 }
 
+/** An API key that only starts sessions from one access bundle. */
+export interface LauncherKey {
+  id: string;
+  name: string;
+  prefix: string;
+  vault_id: string;
+  bundle_id: string;
+  max_ttl_secs: number;
+  request_limit?: number;
+  node_id?: string;
+  labels: Record<string, string>;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreatedLauncherKey {
+  /** Shown exactly once; only a hash is stored. */
+  key: string;
+  launcher_key: LauncherKey;
+}
+
+export interface RevokedLauncherKey {
+  launcher_key: LauncherKey;
+  sessions_revoked: number;
+}
+
 export interface ApiKey {
   id: string;
   name: string;

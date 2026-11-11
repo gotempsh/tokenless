@@ -1648,6 +1648,9 @@ fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
         expires_at: get_ts(row, "expires_at")?,
         revoked_at: get_opt_ts(row, "revoked_at")?,
         last_used_at: get_opt_ts(row, "last_used_at")?,
+        launch: get::<Option<String>>(row, "launch")?
+            .map(|raw| from_json("launch", &raw))
+            .transpose()?,
     })
 }
 
@@ -1994,7 +1997,12 @@ impl IdentityStore for SqliteStore {
 
     async fn insert_api_key(&self, k: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_api_key").await?;
-        sqlx::query("INSERT INTO api_keys (id, name, prefix, secret_hash, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        let launch = k
+            .launch
+            .as_ref()
+            .map(|l| to_json("launch", l))
+            .transpose()?;
+        sqlx::query("INSERT INTO api_keys (id, name, prefix, secret_hash, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at, launch, launch_bundle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(k.id.to_string())
             .bind(&k.name)
             .bind(&k.prefix)
@@ -2006,6 +2014,8 @@ impl IdentityStore for SqliteStore {
             .bind(ts(&k.expires_at))
             .bind(opt_ts(&k.revoked_at))
             .bind(opt_ts(&k.last_used_at))
+            .bind(launch)
+            .bind(k.launch.as_ref().map(|l| l.bundle_id.to_string()))
             .execute(&mut *tx)
             .await
             .map_err(db("insert api key", "api_key"))?;
@@ -2020,6 +2030,54 @@ impl IdentityStore for SqliteStore {
             .map_err(db("get api key", "api_key"))?
             .map(|r| api_key_from_row(&r))
             .transpose()
+    }
+
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError> {
+        sqlx::query("SELECT * FROM api_keys WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get api key", "api_key"))?
+            .map(|r| api_key_from_row(&r))
+            .transpose()
+    }
+
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError> {
+        const FILTER: &str = "FROM api_keys WHERE vault_id = ? AND launch_bundle_id IS NOT NULL AND (? IS NULL OR launch_bundle_id = ?)";
+        let vault = vault_id.to_string();
+        let bundle = bundle.map(|b| b.to_string());
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {FILTER}"))
+            .bind(&vault)
+            .bind(&bundle)
+            .bind(&bundle)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db("count launcher keys", "api_key"))?;
+        let rows = sqlx::query(&format!(
+            "SELECT * {FILTER} ORDER BY created_at DESC, id LIMIT ? OFFSET ?"
+        ))
+        .bind(&vault)
+        .bind(&bundle)
+        .bind(&bundle)
+        .bind(to_i64(page.page_size))
+        .bind(to_i64(page.offset()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db("list launcher keys", "api_key"))?;
+        Ok(Page {
+            items: rows
+                .iter()
+                .map(api_key_from_row)
+                .collect::<Result<_, _>>()?,
+            total: to_u64(total),
+            page: page.page,
+            page_size: page.page_size,
+        })
     }
 
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError> {

@@ -488,7 +488,16 @@ pub trait IdentityStore: Send + Sync {
     /// `Conflict` if the prefix exists.
     async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_api_key_by_prefix(&self, prefix: &str) -> Result<Option<ApiKey>, StoreError>;
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError>;
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError>;
+    /// The vault's launcher keys, revoked and expired ones included, newest
+    /// first; only those of `bundle` when given.
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError>;
     /// Returns false if already revoked. `NotFound` if missing.
     async fn revoke_api_key(
         &self,

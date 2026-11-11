@@ -7,6 +7,7 @@ mod audit_export;
 mod console;
 mod extract;
 mod handlers;
+mod launcher_keys;
 mod sso;
 
 use std::path::PathBuf;
@@ -159,6 +160,14 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/sessions/{session_id}/services", get(session_services))
+        .route(
+            "/vaults/{vault_id}/launcher-keys",
+            get(launcher_keys::list).post(launcher_keys::create),
+        )
+        .route(
+            "/vaults/{vault_id}/launcher-keys/{api_key_id}/revoke",
+            post(launcher_keys::revoke),
+        )
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(
             "/api-keys/{api_key_id}",

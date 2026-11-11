@@ -105,6 +105,27 @@ approved reaches nothing, and the list says so. `bundle list` shows the
 services each bundle's rules reach. `session list` gives the ID that
 `session revoke --id` takes.
 
+## `bundle key add <bundle>`, `bundle key list`, `bundle key revoke <key>`
+
+Launcher keys: what an agent machine starts its sessions with instead of
+someone's sign-in. A key only starts sessions from its bundle, with its
+limits ([Automation → Launcher keys](./automation.mdx#launcher-keys)).
+`add` prints the key alone on stdout, shown only once, and how to use it on
+stderr. `revoke` takes the key's name, prefix or id, and also ends the live
+sessions the key started.
+
+| Option | Default | |
+|---|---|---|
+| `--vault` | the only vault | By name or id |
+| `--name` (`add`) | | What the key is for, such as the machine it goes on |
+| `--ttl` (`add`) | `15m` | The longest session the key starts |
+| `--request-limit` (`add`) | | Requests each session may make |
+| `--proxy` (`add`) | | Only this proxy accepts the key's sessions; needs the right to manage proxies |
+| `--label` (`add`) | | Stamped on every session the key starts, as key=value (repeatable) |
+| `--expires-in-days` (`add`) | `90` | At most 365 |
+| `--bundle` (`list`) | | Only this bundle's keys |
+| `--json` (`list`) | | The rows as JSON |
+
 ## `proxy add`
 
 | Option | Default | |

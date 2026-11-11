@@ -264,6 +264,30 @@ impl BundleService {
     }
 }
 
+/// `reference` is a bundle id or, failing that, a name in the vault.
+pub(super) async fn find_bundle(
+    policy: &dyn PolicyStore,
+    vault_id: &VaultId,
+    reference: &str,
+) -> Result<AccessBundle, ControlError> {
+    let reference = reference.trim();
+    let by_id = match reference.parse::<BundleId>() {
+        Ok(id) => policy.get_bundle(&id).await?,
+        Err(_) => None,
+    };
+    let found = match by_id {
+        Some(b) => Some(b),
+        None => policy.get_bundle_by_name(vault_id, reference).await?,
+    };
+    match found {
+        Some(b) if &b.vault_id == vault_id => Ok(b),
+        _ => Err(ControlError::NotFound {
+            entity: "access_bundle",
+            id: format!("{reference}' in vault '{vault_id}"),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

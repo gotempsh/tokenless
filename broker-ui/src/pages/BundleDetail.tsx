@@ -78,14 +78,16 @@ import { CommandSnippet } from "./Bundles";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
 import { SessionTable, sessionLabel } from "./Sessions";
+import { BundleLauncherKeys } from "./LauncherKeys";
 import { actorName, type ActorNames } from "../audit";
 
-export type BundleTab = "services" | "sessions" | "connect" | "settings";
+export type BundleTab = "services" | "sessions" | "connect" | "keys" | "settings";
 
 const TABS: { value: BundleTab; label: string }[] = [
   { value: "services", label: "Services" },
   { value: "sessions", label: "Sessions" },
   { value: "connect", label: "Run an agent" },
+  { value: "keys", label: "Launcher keys" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -236,6 +238,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
                 onCreate={() => setCreating(true)}
               />
             )}
+            {b && tab === "keys" && <BundleLauncherKeys bundle={b} vaultName={vault.data?.name} canEdit={canEdit} />}
           </TabSections>
           {b && tab === "connect" && (
             <div className="space-y-10">
@@ -1001,6 +1004,13 @@ function Connect({
               Signed in with <Mono>tokenless login</Mono> on this machine? Skip the token:{" "}
               <Mono>{signedInRunCommand(bundle.name, command, vaultName)}</Mono> creates a session and ends it when the
               agent exits.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              A machine that runs agents on its own, such as CI or a server, shouldn't hold anyone's sign-in: give it a{" "}
+              <a href={`#/bundles/${bundle.id}/keys`} className="underline">
+                launcher key
+              </a>
+              , which starts this bundle's sessions and nothing else.
             </p>
           </Step>
           <Step n={3} title="Teach the agent how the broker works">

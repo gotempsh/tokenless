@@ -5,6 +5,7 @@ pub mod audit;
 pub mod audit_export;
 pub mod auth;
 pub mod bundles;
+pub mod launcher_keys;
 pub mod nodes;
 pub mod overview;
 pub mod policy;
@@ -28,6 +29,7 @@ use tracing::error;
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
+use crate::model::LaunchScope;
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
@@ -67,6 +69,9 @@ pub struct Caller {
     /// with an authenticator enrolled are asked to step up: for a
     /// password-only account it would just ask for the same password again.
     pub second_factor: bool,
+    /// Set for a launcher key: it starts sessions from one bundle and does
+    /// nothing else, whatever its role would allow.
+    pub launch: Option<LaunchScope>,
 }
 
 impl Caller {
@@ -81,6 +86,7 @@ impl Caller {
             principal,
             step_up_at: None,
             second_factor: false,
+            launch: None,
         }
     }
 }
@@ -117,6 +123,17 @@ impl Guard {
         action: Action,
         vault: Option<&VaultId>,
     ) -> Result<(), ControlError> {
+        if let Some(scope) = &caller.launch {
+            if !matches!(action, Action::VaultRead | Action::SessionMint) {
+                return Err(ControlError::Forbidden {
+                    reason: format!(
+                        "{} is a launcher key: it only starts sessions from access bundle {}, so it may not '{action}'",
+                        caller.actor(),
+                        scope.bundle_id
+                    ),
+                });
+            }
+        }
         if let Decision::Deny { reason } = self
             .authorizer
             .authorize(&caller.principal, action, vault)
@@ -295,6 +312,7 @@ impl ControlServices {
 /// Everything the HTTP layer needs, wired once at startup.
 pub struct ControlPlane {
     pub auth: auth::AuthService,
+    pub launcher_keys: launcher_keys::LauncherKeyService,
     pub sso: sso::SsoService,
     pub audit_export: audit_export::AuditExportService,
     pub policy: policy::PolicyService,
@@ -353,6 +371,12 @@ impl ControlPlane {
             AuditRecorder::new(stores.audit.clone()),
             config.clone(),
         )?;
+        let (identity, policy, nodes, launcher_guard) = (
+            stores.identity.clone(),
+            stores.policy.clone(),
+            stores.nodes.clone(),
+            guard.clone(),
+        );
         let services = ControlServices::wire(
             ServiceStores {
                 credentials: stores.credentials,
@@ -367,8 +391,16 @@ impl ControlPlane {
             keys,
         )
         .await?;
+        let launcher_keys = launcher_keys::LauncherKeyService::new(
+            identity,
+            policy,
+            nodes,
+            launcher_guard,
+            services.notifier.clone(),
+        );
         Ok(Self {
             auth,
+            launcher_keys,
             sso,
             audit_export,
             policy: services.policy,
@@ -459,6 +491,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now() - chrono::Duration::seconds(step_up_age_secs)),
             second_factor: true,
+            launch: None,
         }
     }
 
@@ -2257,6 +2290,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now()),
             second_factor: true,
+            launch: None,
         };
         assert!(matches!(
             cp.policy.delete_vault(&editor, &vault.id, true).await,
@@ -2579,6 +2613,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now()),
             second_factor: true,
+            launch: None,
         };
         let mut unbound = mint("sbx-8");
         unbound.binding = None;

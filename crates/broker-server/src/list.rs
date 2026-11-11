@@ -25,7 +25,10 @@ use super::{CliError, TerminalPrompter};
 /// How many sessions `session list` shows without `--limit`.
 pub const DEFAULT_SESSION_LIMIT: usize = 20;
 
-fn open<'p>(server: &str, prompter: &'p TerminalPrompter) -> Result<ConsoleClient<'p>, CliError> {
+pub(crate) fn open<'p>(
+    server: &str,
+    prompter: &'p TerminalPrompter,
+) -> Result<ConsoleClient<'p>, CliError> {
     Ok(ConsoleClient::open(
         &SessionStore::system(),
         server,
@@ -33,7 +36,7 @@ fn open<'p>(server: &str, prompter: &'p TerminalPrompter) -> Result<ConsoleClien
     )?)
 }
 
-fn print_json(value: &impl Serialize) -> Result<(), CliError> {
+pub(crate) fn print_json(value: &impl Serialize) -> Result<(), CliError> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| LauncherError::config(format!("encoding the output as JSON: {e}")))?;
     println!("{text}");
@@ -77,6 +80,28 @@ fn pick_vaults(all: &[Vault], reference: Option<&str>) -> Result<Vec<Vault>, Cli
                 } else {
                     names.join(", ")
                 }
+            ))
+            .into())
+        }
+    }
+}
+
+/// The vault `reference` (a name or id) picks, or the only one there is.
+pub(crate) fn pick_vault(all: &[Vault], reference: Option<&str>) -> Result<Vault, CliError> {
+    if reference.is_some() {
+        return pick_vaults(all, reference).map(|mut v| v.remove(0));
+    }
+    match all {
+        [only] => Ok(only.clone()),
+        [] => Err(LauncherError::config(
+            "no vaults yet; one is created with the first service: tokenless service add <template> --vault personal --bundle my-agent",
+        )
+        .into()),
+        several => {
+            let names: Vec<&str> = several.iter().map(|v| v.name.as_str()).collect();
+            Err(LauncherError::config(format!(
+                "several vaults ({}); say which with --vault",
+                names.join(", ")
             ))
             .into())
         }

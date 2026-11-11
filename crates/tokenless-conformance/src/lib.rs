@@ -21,9 +21,9 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokenless_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, PageRequest,
-    ProxySession, Rule, SessionBundle, SessionCursor, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, LaunchScope, Node,
+    Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, StoredTemplate,
+    TemplateSource, TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
@@ -1685,6 +1685,7 @@ where
         expires_at: at(3600),
         revoked_at: None,
         last_used_at: None,
+        launch: None,
     };
     store
         .insert_api_key(key.clone(), &[])
@@ -2506,6 +2507,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         expires_at: at(3600),
         revoked_at: None,
         last_used_at: None,
+        launch: None,
     };
     store
         .insert_api_key(key.clone(), &[])
@@ -2556,6 +2558,93 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         "key_revoke_missing",
         matches!(missing, Err(StoreError::NotFound { .. })),
         "expected NotFound, got {missing:?}"
+    );
+    launcher_keys(store, key.vault_id).await
+}
+
+/// Launcher keys are API keys with a launch scope: it round-trips, `get`
+/// finds a key by id, and the vault's launcher keys list without ordinary
+/// keys or other vaults', filtered by bundle, newest first.
+async fn launcher_keys(
+    store: &dyn IdentityStore,
+    vault_id: VaultId,
+) -> Result<(), ConformanceFailure> {
+    const S: &str = "identity";
+    let (bundle, other_bundle) = (BundleId::new(), BundleId::new());
+    let launcher = |prefix: &str, vault_id: VaultId, bundle_id: BundleId, secs: i64| ApiKey {
+        id: ApiKeyId::new(),
+        name: prefix.into(),
+        prefix: prefix.into(),
+        secret_hash: "hash".into(),
+        vault_id,
+        role: Role::Editor,
+        created_by: "user:conformance".into(),
+        created_at: at(secs),
+        expires_at: at(secs + 3600),
+        revoked_at: None,
+        last_used_at: None,
+        launch: Some(LaunchScope {
+            bundle_id,
+            max_ttl_secs: 900,
+            request_limit: Some(50),
+            node_id: Some(NodeId::new()),
+            labels: BTreeMap::from([("machine".to_string(), "ci-runner".to_string())]),
+        }),
+    };
+    let older = launcher("cbk_launch_older", vault_id, bundle, 10);
+    let newer = launcher("cbk_launch_newer", vault_id, bundle, 20);
+    let other = launcher("cbk_launch_other", vault_id, other_bundle, 30);
+    let elsewhere = launcher("cbk_launch_elsewhere", VaultId::new(), bundle, 40);
+    for key in [&older, &newer, &other, &elsewhere] {
+        store
+            .insert_api_key(key.clone(), &[])
+            .await
+            .map_err(backend(S, "launcher_insert"))?;
+    }
+    let got = store
+        .get_api_key(&newer.id)
+        .await
+        .map_err(backend(S, "launcher_get"))?;
+    ensure!(
+        S,
+        "launcher_round_trip",
+        got.as_ref() == Some(&newer),
+        "a launcher key must come back with its scope, got {got:?}"
+    );
+    let missing = store
+        .get_api_key(&ApiKeyId::new())
+        .await
+        .map_err(backend(S, "launcher_get"))?;
+    ensure!(
+        S,
+        "launcher_get_missing",
+        missing.is_none(),
+        "an unknown id must be None, got {missing:?}"
+    );
+    let ids = |page: &Page<ApiKey>| page.items.iter().map(|k| k.id).collect::<Vec<_>>();
+    let all = store
+        .list_launcher_keys(&vault_id, None, PageRequest::new(Some(1), Some(10)))
+        .await
+        .map_err(backend(S, "launcher_list"))?;
+    ensure!(
+        S,
+        "launcher_list_vault",
+        all.total == 3 && ids(&all) == vec![other.id, newer.id, older.id],
+        "the vault's launcher keys, newest first, without ordinary keys or other vaults' (got {} total: {:?})",
+        all.total,
+        ids(&all)
+    );
+    let one = store
+        .list_launcher_keys(&vault_id, Some(&bundle), PageRequest::new(Some(1), Some(1)))
+        .await
+        .map_err(backend(S, "launcher_list"))?;
+    ensure!(
+        S,
+        "launcher_list_bundle",
+        one.total == 2 && ids(&one) == vec![newer.id],
+        "one bundle's launcher keys, paged (got {} total: {:?})",
+        one.total,
+        ids(&one)
     );
     Ok(())
 }

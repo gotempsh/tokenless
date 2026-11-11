@@ -58,6 +58,7 @@ fn admin() -> Caller {
         },
         step_up_at: Some(Utc::now()),
         second_factor: false,
+        launch: None,
     }
 }
 

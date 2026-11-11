@@ -814,6 +814,7 @@ impl AuthService {
                 step_up_at: session.step_up_at,
                 // A single sign-on account steps up at its provider.
                 second_factor: user.totp_secret_enc.is_some() || user.sso.is_some(),
+                launch: None,
             },
             token_hash,
             user: UserSummary::from(&user),
@@ -935,6 +936,7 @@ impl AuthService {
             },
             step_up_at: None,
             second_factor: false,
+            launch: key.launch,
         })
     }
 
@@ -976,6 +978,7 @@ impl AuthService {
             expires_at: now + Duration::days(i64::from(req.expires_in_days)),
             revoked_at: None,
             last_used_at: None,
+            launch: None,
         };
         let event = AuditEvent::new(caller.actor(), "api_key.create", AuditOutcome::Success)
             .vault(req.vault_id)

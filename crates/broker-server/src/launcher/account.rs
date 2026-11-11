@@ -25,7 +25,10 @@ use tokenless_control::model::{
     AccessBundle, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Vault,
 };
 use tokenless_control::service::auth::UserSummary;
-use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
+use tokenless_control::service::launcher_keys::{
+    CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
+};
+use tokenless_core::ids::{ApiKeyId, BundleId, CredentialId, RuleId, VaultId};
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -730,6 +733,46 @@ impl<'p> ConsoleClient<'p> {
             "/nodes/join-tokens",
             Some(json!({})),
             "creating a proxy join token",
+        )
+        .await
+    }
+
+    /// A launcher key for `bundle` (a name or id). Creating one is new
+    /// access, so the server may ask to confirm it is you first.
+    pub async fn create_launcher_key(
+        &self,
+        vault: &VaultId,
+        request: &serde_json::Value,
+    ) -> Result<CreatedLauncherKey, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/launcher-keys"),
+            Some(request.clone()),
+            "creating the launcher key",
+        )
+        .await
+    }
+
+    /// The vault's launcher keys, revoked and expired ones included.
+    pub async fn launcher_keys(&self, vault: &VaultId) -> Result<Vec<LauncherKey>, LauncherError> {
+        self.pages(
+            &format!("/vaults/{vault}/launcher-keys"),
+            "listing launcher keys",
+        )
+        .await
+    }
+
+    /// Revokes the key and ends the live sessions it started.
+    pub async fn revoke_launcher_key(
+        &self,
+        vault: &VaultId,
+        id: &ApiKeyId,
+    ) -> Result<RevokedLauncherKey, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/launcher-keys/{id}/revoke"),
+            Some(json!({})),
+            "revoking the launcher key",
         )
         .await
     }

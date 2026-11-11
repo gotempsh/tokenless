@@ -41,6 +41,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
+mod keys;
 mod list;
 mod messages;
 mod setup;
@@ -380,6 +381,79 @@ enum BundleCommand {
         /// Print the rows as JSON, for agents and scripts.
         #[arg(long)]
         json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Launcher keys: what an agent machine starts its sessions with,
+    /// instead of a person's sign-in. A key only starts sessions from its
+    /// bundle, with the limits it was given.
+    Key {
+        #[command(subcommand)]
+        command: BundleKeyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleKeyCommand {
+    /// Create a launcher key for an agent machine. Prints the key on stdout
+    /// (shown only once) and how to use it on stderr.
+    ///
+    /// Examples:
+    ///   tokenless bundle key add code-review --name build-runner > runner.key
+    ///   tokenless bundle key add deploy --vault work --name ci --ttl 10m --request-limit 500
+    #[command(verbatim_doc_comment)]
+    Add {
+        /// The access bundle, by name or id.
+        bundle: String,
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// What the key is for, such as the machine it goes on.
+        #[arg(long)]
+        name: String,
+        /// The longest session the key starts (e.g. 10m, 1h; default 15m).
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Requests each session may make through the proxy.
+        #[arg(long)]
+        request_limit: Option<u64>,
+        /// Only this proxy (name or id) accepts the key's sessions.
+        #[arg(long)]
+        proxy: Option<String>,
+        /// Label stamped on every session the key starts, as key=value
+        /// (repeatable).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Days until the key stops working (default 90, at most 365).
+        #[arg(long)]
+        expires_in_days: Option<u32>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// List launcher keys, newest first, with when each was last used.
+    List {
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Only this bundle's keys, by name or id.
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Revoke a launcher key and end the live sessions it started.
+    Revoke {
+        /// The key's name, prefix (cbk_...) or id.
+        key: String,
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
@@ -1305,6 +1379,42 @@ async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<Stopped, Cl
     }
 }
 
+async fn bundle_key(command: BundleKeyCommand) -> Result<ExitCode, CliError> {
+    match command {
+        BundleKeyCommand::Add {
+            bundle,
+            vault,
+            name,
+            ttl,
+            request_limit,
+            proxy,
+            labels,
+            expires_in_days,
+            server,
+        } => {
+            keys::add(keys::AddKey {
+                bundle,
+                vault,
+                name,
+                ttl,
+                request_limit,
+                proxy,
+                labels,
+                expires_in_days,
+                server,
+            })
+            .await
+        }
+        BundleKeyCommand::List {
+            vault,
+            bundle,
+            json,
+            server,
+        } => keys::list(vault, bundle, json, server).await,
+        BundleKeyCommand::Revoke { key, vault, server } => keys::revoke(key, vault, server).await,
+    }
+}
+
 // ----- agent side -----------------------------------------------------
 
 fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError> {
@@ -2165,6 +2275,9 @@ async fn main() -> ExitCode {
                     server,
                 },
         } => list::bundles(vault, json, server).await,
+        Command::Bundle {
+            command: BundleCommand::Key { command },
+        } => bundle_key(command).await,
         Command::Status { json, server } => setup::status_command(server, json).await,
         Command::Proxy { command } => proxy(command).await,
         Command::Session { command } => session(command, cli.verbose).await,

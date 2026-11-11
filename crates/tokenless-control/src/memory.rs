@@ -1153,8 +1153,33 @@ impl IdentityStore for MemoryStore {
             .cloned())
     }
 
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError> {
+        Ok(self.lock()?.api_keys.get(id).cloned())
+    }
+
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError> {
         let items: Vec<_> = self.lock()?.api_keys.values().cloned().collect();
+        Ok(page.apply(&newest_first(items, |k| k.created_at)))
+    }
+
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError> {
+        let items: Vec<_> = self
+            .lock()?
+            .api_keys
+            .values()
+            .filter(|k| &k.vault_id == vault_id)
+            .filter(|k| match (&k.launch, bundle) {
+                (None, _) => false,
+                (Some(_), None) => true,
+                (Some(l), Some(b)) => &l.bundle_id == b,
+            })
+            .cloned()
+            .collect();
         Ok(page.apply(&newest_first(items, |k| k.created_at)))
     }
 

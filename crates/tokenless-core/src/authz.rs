@@ -70,6 +70,13 @@ pub enum Action {
     /// List API keys (never their secrets).
     ApiKeyRead,
     ApiKeyManage,
+    /// List a vault's launcher keys (never their secrets).
+    LauncherKeyRead,
+    /// Create a launcher key: an API key that only starts sessions from one
+    /// access bundle of the vault.
+    LauncherKeyCreate,
+    /// Revoke a launcher key. No step-up: cutting access off must be quick.
+    LauncherKeyRevoke,
     AuditRead,
     /// List proxies and their status.
     NodeRead,
@@ -99,6 +106,7 @@ impl Action {
                 | Action::VaultDelete
                 | Action::CredentialWiden
                 | Action::ApiKeyManage
+                | Action::LauncherKeyCreate
                 | Action::TemplateImport
                 | Action::TemplateApprove
                 | Action::NodeManage
@@ -241,6 +249,9 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 | Action::SessionRead
                 | Action::SessionMint
                 | Action::SessionRevoke
+                | Action::LauncherKeyRead
+                | Action::LauncherKeyCreate
+                | Action::LauncherKeyRevoke
                 | Action::AuditRead
         ),
         Role::Viewer => matches!(
@@ -250,6 +261,7 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 | Action::CredentialRead
                 | Action::RuleRead
                 | Action::SessionRead
+                | Action::LauncherKeyRead
                 | Action::AuditRead
         ),
     };

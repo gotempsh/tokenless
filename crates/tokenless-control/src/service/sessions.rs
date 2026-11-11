@@ -21,7 +21,9 @@ use tokenless_core::template::{builtin_mcp_path, ServiceKind};
 use super::{Caller, Guard};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle, SessionListing};
+use crate::model::{
+    AccessBundle, LaunchScope, Page, PageRequest, ProxySession, SessionBundle, SessionListing,
+};
 use crate::notify::PolicyNotifier;
 use crate::store::{CredentialStore, NodeStore, PolicyStore};
 
@@ -178,6 +180,10 @@ impl SessionService {
         node_id: &NodeId,
     ) -> Result<(), ControlError> {
         self.guard.check(caller, Action::NodeManage, None).await?;
+        self.check_node_live(node_id).await
+    }
+
+    async fn check_node_live(&self, node_id: &NodeId) -> Result<(), ControlError> {
         let node = self
             .nodes
             .get_node(node_id)
@@ -201,8 +207,16 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(vault_id))
             .await?;
+        let req = match &caller.launch {
+            Some(scope) => launch_request(caller.actor(), scope, req)?,
+            None => req,
+        };
         if let Some(node_id) = &req.node_id {
-            self.check_node_target(caller, node_id).await?;
+            match &caller.launch {
+                // Whoever created the key chose the proxy, with the right to.
+                Some(_) => self.check_node_live(node_id).await?,
+                None => self.check_node_target(caller, node_id).await?,
+            }
         }
         let vault = self
             .policy
@@ -217,6 +231,18 @@ impl SessionService {
             }
             Some(reference) => {
                 let bundle = self.find_bundle(vault_id, reference).await?;
+                if let Some(scope) = &caller.launch {
+                    if bundle.id != scope.bundle_id {
+                        return Err(ControlError::Forbidden {
+                            reason: format!(
+                                "{} is a launcher key for access bundle {}, not '{}'",
+                                caller.actor(),
+                                scope.bundle_id,
+                                bundle.name
+                            ),
+                        });
+                    }
+                }
                 let (enabled, skipped) = self.enabled_rules_of(&bundle).await?;
                 if enabled.is_empty() {
                     return Err(ControlError::validation(format!(
@@ -353,28 +379,12 @@ impl SessionService {
         })
     }
 
-    /// `reference` is a bundle id or, failing that, a name in the vault.
     async fn find_bundle(
         &self,
         vault_id: &VaultId,
         reference: &str,
     ) -> Result<AccessBundle, ControlError> {
-        let reference = reference.trim();
-        let by_id = match reference.parse::<BundleId>() {
-            Ok(id) => self.policy.get_bundle(&id).await?,
-            Err(_) => None,
-        };
-        let found = match by_id {
-            Some(b) => Some(b),
-            None => self.policy.get_bundle_by_name(vault_id, reference).await?,
-        };
-        match found {
-            Some(b) if &b.vault_id == vault_id => Ok(b),
-            _ => Err(ControlError::NotFound {
-                entity: "access_bundle",
-                id: format!("{reference}' in vault '{vault_id}"),
-            }),
-        }
+        super::bundles::find_bundle(self.policy.as_ref(), vault_id, reference).await
     }
 
     /// The bundle's enabled rules, and how many disabled ones were skipped.
@@ -689,6 +699,64 @@ impl SessionService {
             )
             .await?)
     }
+}
+
+/// The request a launcher key's session is minted from: the key's bundle
+/// and limits, whatever the request asks for beyond them. It may ask for
+/// less (a shorter lifetime, fewer requests), never for more.
+fn launch_request(
+    actor: &str,
+    scope: &LaunchScope,
+    mut req: MintSession,
+) -> Result<MintSession, ControlError> {
+    let refuse = |what: String| ControlError::Forbidden {
+        reason: format!(
+            "{actor} is a launcher key for access bundle {}: {what}",
+            scope.bundle_id
+        ),
+    };
+    if !req.rule_ids.is_empty() {
+        return Err(refuse(
+            "it starts sessions from its bundle, not from rules".into(),
+        ));
+    }
+    if req.binding.is_some() {
+        return Err(refuse("it can't start sessions for a binding".into()));
+    }
+    // A name is checked against the key's bundle once it is found.
+    if req.bundle.is_none() {
+        req.bundle = Some(scope.bundle_id.to_string());
+    }
+    if let (Some(asked), Some(pinned)) = (&req.node_id, &scope.node_id) {
+        if asked != pinned {
+            return Err(refuse(format!(
+                "its sessions only work through proxy {pinned}, not {asked}"
+            )));
+        }
+    }
+    if req.node_id.is_some() && scope.node_id.is_none() {
+        return Err(refuse(
+            "it can't choose a proxy; pin one when creating the key".into(),
+        ));
+    }
+    req.node_id = scope.node_id;
+    let ttl = if req.longest {
+        scope.max_ttl_secs
+    } else {
+        req.ttl_secs
+            .unwrap_or(DEFAULT_SESSION_TTL_SECS)
+            .min(scope.max_ttl_secs)
+    };
+    req.longest = false;
+    req.ttl_secs = Some(ttl);
+    req.request_limit = match (req.request_limit, scope.request_limit) {
+        (Some(asked), Some(cap)) => Some(asked.min(cap)),
+        (asked, cap) => asked.or(cap),
+    };
+    for (k, v) in &scope.labels {
+        req.labels.insert(k.clone(), v.clone());
+    }
+    Ok(req)
 }
 
 /// `ttl_secs` shortened so the session ends by `not_after`. Whole seconds,

@@ -382,12 +382,35 @@ pub struct ApiKey {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Set on a launcher key: the key can only start sessions from this
+    /// bundle, within these limits. `None` for an ordinary API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<LaunchScope>,
 }
 
 tokenless_core::redacted_debug!(ApiKey {
-    id, name, prefix, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at;
+    id, name, prefix, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at, launch;
     secret_hash
 });
+
+/// What a launcher key may do: start sessions from one access bundle, for
+/// an agent machine that should hold nothing broader than that. Every
+/// session it starts gets these limits whatever the request asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchScope {
+    pub bundle_id: BundleId,
+    /// The longest session the key starts, at most what Settings allow.
+    pub max_ttl_secs: u64,
+    /// Requests each session may make; the request may ask for fewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_limit: Option<u64>,
+    /// Only this proxy accepts the key's sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    /// Stamped on every session the key starts, over the request's own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct JoinTokenRecord {
@@ -530,6 +553,7 @@ mod tests {
                     expires_at: now,
                     revoked_at: None,
                     last_used_at: None,
+                    launch: None,
                 }
             ),
             format!(

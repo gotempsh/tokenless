@@ -13,6 +13,12 @@ This page is the summary an operator needs.
 - **An agent leaking a credential.** The agent never holds one. A
   compromised agent leaks at most a session token: bound to specific
   rules, valid for an hour or less, and revocable within seconds.
+- **Someone getting onto an agent's machine.** There is no credential
+  on it to steal. They can act as the agent, through the proxy, within its
+  session's rules, until the session ends, and every request is logged.
+  Don't leave a person's sign-in on a machine that runs agents on its own:
+  give it a launcher key, which starts one bundle's sessions and nothing
+  else ([Automation → Launcher keys](./automation.mdx#launcher-keys)).
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over
   HTTPS to the service's own hosts.
