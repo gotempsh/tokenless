@@ -113,11 +113,13 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 That user also has to read the certificate's key, and Let's Encrypt keeps
 `privkey.pem` readable by root only. A certbot deploy hook copies both
 files for it after every renewal, and the server picks up the new ones
-within a minute, without a restart:
+within a minute, without a restart. Certbot runs it after any certificate
+it renews, so it skips the others on the same machine:
 
 ```sh
 #!/bin/sh
 # /etc/letsencrypt/renewal-hooks/deploy/tokenless (chmod +x)
+[ "$RENEWED_LINEAGE" = /etc/letsencrypt/live/tokenless.example.com ] || exit 0
 install -o tokenless -m 0644 "$RENEWED_LINEAGE/fullchain.pem" /etc/tokenless/fullchain.pem
 install -o tokenless -m 0600 "$RENEWED_LINEAGE/privkey.pem" /etc/tokenless/privkey.pem
 ```
