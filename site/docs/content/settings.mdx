@@ -14,8 +14,15 @@ happens to hosts that aren't one of their services:
 
 - **Allow** (the default): the connection is passed through untouched.
   The proxy doesn't decrypt it or add any credential.
-- **Block**: agents reach only the services in their session, plus the
-  [always reachable](#always-reachable) hosts.
+- **Block** (recommended): agents reach only the services in their
+  session, plus the [always reachable](#always-reachable) hosts. So does
+  anyone holding a stolen session, and the proxy also looks for
+  [tripwires](./console/vaults.mdx#tripwires) on the hosts their keys are
+  used with. Add the package registries and other hosts your agents need
+  as always reachable first.
+
+Allow stays the default so a new install works with any agent at once.
+`tokenless status` and the **Proxies** page show which one is in force.
 
 ## Session lifetime
 

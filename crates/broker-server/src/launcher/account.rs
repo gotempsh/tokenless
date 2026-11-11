@@ -22,8 +22,8 @@ use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
-    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Tripwire,
-    Vault,
+    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, Settings, StoredTemplate,
+    Tripwire, Vault,
 };
 use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
@@ -903,6 +903,12 @@ impl<'p> ConsoleClient<'p> {
             .call(Method::GET, "/auth/me", None, "checking the session")
             .await?;
         Ok(me.user)
+    }
+
+    /// The instance's settings. Admins only.
+    pub async fn settings(&self) -> Result<Settings, LauncherError> {
+        self.call(Method::GET, "/settings", None, "reading settings")
+            .await
     }
 
     /// The enrolled proxies. Needs a role that may see them.

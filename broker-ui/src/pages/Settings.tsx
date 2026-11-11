@@ -78,8 +78,9 @@ export function Settings() {
                 },
                 {
                   value: "deny",
-                  title: "Block",
-                  description: "Agents reach only their session's services and the always-reachable hosts.",
+                  title: "Block (recommended)",
+                  description:
+                    "Agents reach only their session's services and the always-reachable hosts, and so does anyone holding a stolen session. Add the package registries and other hosts agents need as always reachable.",
                 },
               ]}
             />
