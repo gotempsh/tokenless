@@ -104,6 +104,15 @@ describe("actionPhrase", () => {
     ).toBe("cut an open connection to api.example.com: the session was revoked");
   });
 
+  test("a tripwire's trip reads as a cut-off", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.tripwire", detail: { tripwire: "build-runner", host: "api.github.com:443" } })),
+    ).toBe("cut off a session that sent tripwire build-runner to api.github.com");
+    expect(sessionHistoryPhrase(event({ action: "session.revoke", detail: { reason: "tripwire", tripwire: "build-runner" } }))).toBe(
+      "revoked the session after it sent tripwire build-runner",
+    );
+  });
+
   // Every action the control plane and the proxies record. A new one goes
   // here, with a phrase in audit.ts, so the log never shows a raw name.
   const RECORDED = [
@@ -120,12 +129,13 @@ describe("actionPhrase", () => {
     "launcher_key.create", "launcher_key.revoke",
     "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
     "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
-    "proxy.quarantine",
+    "proxy.quarantine", "proxy.tripwire",
     "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
     "rule.create", "rule.delete", "rule.update",
     "session.mint", "session.revoke", "session.update_labels",
     "settings.sign_in", "settings.update",
     "template.approve", "template.import",
+    "tripwire.create", "tripwire.delete",
     "user.create", "user.invite", "user.invite.accept", "user.invite.revoke", "user.password_change",
     "user.password_reset", "user.sign_ins_revoke", "user.update",
     "variable.create", "variable.delete", "variable.update",

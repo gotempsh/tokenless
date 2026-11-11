@@ -30,7 +30,8 @@ use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
 use tokenless_core::seal::{open, SealSecretKey};
 use tokenless_core::snapshot::{
-    ca_aad, rule_aad, QuarantinePolicy, SignedSnapshot, UnmatchedHostPolicy,
+    ca_aad, rule_aad, tripwires_aad, QuarantinePolicy, SignedSnapshot, SnapshotTripwire,
+    UnmatchedHostPolicy,
 };
 use tokenless_core::substitution::RenderedSubstitution;
 use zeroize::Zeroizing;
@@ -116,6 +117,8 @@ pub struct ActiveSnapshot {
     /// revoked yet, with their expiry; they are in `revoked` too, and
     /// carried into each new snapshot until the control plane lists them.
     pub quarantined: HashMap<SessionId, DateTime<Utc>>,
+    /// Decoys a request is refused and its session cut off for.
+    pub tripwires: Option<Arc<crate::tripwire::Tripwires>>,
 }
 
 impl ActiveSnapshot {
@@ -356,6 +359,23 @@ pub fn build_active(
         });
     }
 
+    let tripwires = match &body.tripwires {
+        None => None,
+        Some(sealed) => {
+            let plaintext = open(&keys.seal_secret, sealed, &tripwires_aad(&keys.node_id))?;
+            let list: Vec<SnapshotTripwire> = serde_json::from_slice(&plaintext)
+                .map_err(|e| DataPlaneError::rejected(format!("tripwires are invalid: {e}")))?;
+            crate::tripwire::Tripwires::build(list)?.map(Arc::new)
+        }
+    };
+    if let Some(t) = &tripwires {
+        // Under the deny policy the node opens connections to these hosts
+        // to look for the decoys, so it needs their certificates.
+        for host in t.hosts() {
+            hosts.insert(host.certificate_name().to_string());
+        }
+    }
+
     let fingerprint = sha256_hex(&ca_cert_der);
     let reuse = previous
         .map(|p| p.tls.as_ref())
@@ -376,6 +396,7 @@ pub fn build_active(
         revoked,
         quarantined,
         quarantine: body.quarantine,
+        tripwires,
         limits,
         policy: body.unmatched_host_policy,
         egress: body.egress.clone(),
@@ -505,6 +526,7 @@ pub(crate) mod tests {
                     })
                     .collect(),
                 quarantine: None,
+                tripwires: None,
             }
         }
     }

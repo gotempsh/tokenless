@@ -2998,7 +2998,9 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
 mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 
 pub use alerts::alert_store_suite;
 pub use audit_export::audit_export_store_suite;
 pub use sso::sso_store_suite;
+pub use tripwires::tripwire_store_suite;

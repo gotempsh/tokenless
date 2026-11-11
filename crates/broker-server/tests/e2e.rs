@@ -1333,6 +1333,67 @@ async fn end_to_end() {
         );
     }
 
+    // --- a tripwire's decoy cuts its session off everywhere, and alerts --------
+    let wire = api
+        .post(
+            &format!("/vaults/{vault_id}/tripwires"),
+            json!({ "name": "e2e-laptop", "kind": "generic" }),
+        )
+        .await;
+    let decoy = wire["value"].as_str().unwrap().to_string();
+    assert!(
+        wire["plant"].as_array().is_some_and(|p| !p.is_empty()),
+        "{wire}"
+    );
+    let listed = api.get(&format!("/vaults/{vault_id}/tripwires")).await;
+    assert_eq!(listed["items"][0]["name"], "e2e-laptop");
+    assert!(
+        !listed.to_string().contains(&decoy),
+        "listed without the decoy"
+    );
+    let probe = api
+        .post(
+            &format!("/vaults/{vault_id}/sessions"),
+            json!({ "rule_ids": [rule_id], "ttl_secs": 600 }),
+        )
+        .await;
+    let probe_token = probe["token"].as_str().unwrap().to_string();
+    let probe_id = probe["session"]["id"].as_str().unwrap().to_string();
+    // Once the proxy has the tripwire, a request carrying the decoy is refused.
+    eventually("the decoy refused", Duration::from_secs(10), || async {
+        let through = proxied_client(proxy, &probe_token, &[&ca_pem, &upstream.ca_pem]);
+        through
+            .get(format!("https://localhost:{upstream_port}/tripwire"))
+            .header(AUTHORIZATION, format!("Bearer {decoy}"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == StatusCode::FORBIDDEN)
+    })
+    .await;
+    eventually(
+        "the tripped session revoked",
+        Duration::from_secs(10),
+        || async { api.get(&format!("/sessions/{probe_id}")).await["revoked_at"].is_string() },
+    )
+    .await;
+    eventually("a tripwire alert", Duration::from_secs(10), || async {
+        let page = api
+            .get(&format!("/alerts?kind=tripwire&session_id={probe_id}"))
+            .await;
+        page["total"] == 1
+    })
+    .await;
+    let listed = api.get(&format!("/vaults/{vault_id}/tripwires")).await;
+    assert!(
+        listed["items"][0]["last_tripped_at"].is_string(),
+        "{listed}"
+    );
+    let raised = api.get("/audit?action_prefix=proxy.tripwire").await;
+    assert!(
+        !raised.to_string().contains(&decoy),
+        "the decoy is never audited"
+    );
+
     // --- revocation reaches the data plane within seconds ----------------------
     api.post(&format!("/sessions/{session_id}/revoke"), json!({}))
         .await;

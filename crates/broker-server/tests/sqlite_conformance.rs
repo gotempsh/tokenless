@@ -36,6 +36,7 @@ suite!(user_management_suite);
 suite!(sso_store_suite);
 suite!(audit_export_store_suite);
 suite!(alert_store_suite);
+suite!(tripwire_store_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
 suite!(vault_deletion_suite);
@@ -67,6 +68,7 @@ async fn an_embedded_data_plane_on_sqlite_passes_the_dataplane_suite() {
                 audit: store.clone(),
                 nodes: store.clone(),
                 alerts: store.clone(),
+                tripwires: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,

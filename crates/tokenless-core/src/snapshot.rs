@@ -15,21 +15,28 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use crate::ids::{CredentialId, NodeId, RuleId, SessionId};
+use crate::host::HostPattern;
+use crate::ids::{CredentialId, NodeId, RuleId, SessionId, TripwireId};
 use crate::rule::RuleScope;
 use crate::scope::Scope;
 use crate::seal::Sealed;
 use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
-/// `not_after`, format 3 a rule's Git scope, format 4 the quarantine policy. A snapshot is written in the oldest format that carries
+/// `not_after`, format 3 a rule's Git scope, format 4 the quarantine policy,
+/// format 5 tripwires. A snapshot is written in the oldest format that carries
 /// everything in it, and a node says which format it reads when it opens
 /// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
 /// enforce is left out of its snapshot, so an older node stops using that
 /// one service instead of refusing every snapshot.
-pub const SNAPSHOT_FORMAT: u32 = 4;
+pub const SNAPSHOT_FORMAT: u32 = 5;
 /// The format that carries [`SnapshotBody::quarantine`].
 pub const QUARANTINE_FORMAT: u32 = 4;
+/// The format that carries [`SnapshotBody::tripwires`].
+pub const TRIPWIRE_FORMAT: u32 = 5;
+/// What a node reports when a request carries a tripwire's decoy; it has
+/// already cut the session off, and the control plane revokes it.
+pub const TRIPWIRE_ACTION: &str = "proxy.tripwire";
 /// What a node reports when it cuts a session off under its
 /// [`QuarantinePolicy`]; the control plane then revokes the session.
 pub const QUARANTINE_ACTION: &str = "proxy.quarantine";
@@ -201,6 +208,42 @@ pub struct SnapshotBody {
     /// Format 4: left out for a node that reads older formats.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quarantine: Option<QuarantinePolicy>,
+    /// `Vec<SnapshotTripwire>` JSON, sealed to the node, so the decoys are
+    /// never readable from a captured snapshot. Format 5: left out for a
+    /// node that reads older formats, and when there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tripwires: Option<Sealed>,
+}
+
+/// A decoy the node refuses and cuts the session off for.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotTripwire {
+    pub id: TripwireId,
+    /// For the audit event; the value never goes in one.
+    pub name: String,
+    pub value: String,
+    /// Hosts the node opens connections to under the deny policy, to look
+    /// for the decoy where someone holding it would send it.
+    pub hosts: Vec<HostPattern>,
+}
+
+impl std::fmt::Debug for SnapshotTripwire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotTripwire")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("hosts", &self.hosts)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The most tripwires one snapshot carries.
+pub const MAX_SNAPSHOT_TRIPWIRES: usize = 500;
+
+/// AAD binding the sealed tripwires to one node.
+pub fn tripwires_aad(node_id: &NodeId) -> Vec<u8> {
+    format!("tripwires|{node_id}").into_bytes()
 }
 
 /// AAD binding a sealed rule credential to one node, rule and credential.
@@ -277,6 +320,15 @@ impl SignedSnapshot {
                 ),
             ));
         }
+        if body.tripwires.is_some() && body.format < TRIPWIRE_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry tripwires, which need format {TRIPWIRE_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
         if let Some(rule) = body.rules.iter().find(|r| rule_format(r) > body.format) {
             let what = if rule.allow.git.is_some() {
                 "a Git scope"
@@ -324,6 +376,7 @@ mod tests {
             },
             rules: vec![],
             quarantine: None,
+            tripwires: None,
         }
     }
 
@@ -351,6 +404,36 @@ mod tests {
         // Off is not written at all, so older nodes keep reading it.
         b.quarantine = None;
         assert!(!serde_json::to_string(&b).unwrap().contains("quarantine"));
+    }
+
+    #[test]
+    fn tripwires_need_format_5_and_are_left_out_when_none() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = QUARANTINE_FORMAT;
+        b.tripwires = Some(b.interception_ca.key.clone());
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(err.to_string().contains("cannot carry tripwires"), "{err}");
+        b.format = TRIPWIRE_FORMAT;
+        assert!(signed(&b).verify(&key.verifying_key()).is_ok());
+        b.tripwires = None;
+        assert!(!serde_json::to_string(&b).unwrap().contains("tripwires"));
+    }
+
+    #[test]
+    fn a_tripwire_s_decoy_is_never_in_debug() {
+        let t = SnapshotTripwire {
+            id: TripwireId::new(),
+            name: "laptop".into(),
+            value: "sk-decoy-value-0123456789".into(),
+            hosts: vec![],
+        };
+        let shown = format!("{t:?}");
+        assert!(
+            shown.contains("laptop") && !shown.contains("sk-decoy"),
+            "{shown}"
+        );
     }
 
     #[test]

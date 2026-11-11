@@ -531,13 +531,22 @@ async fn handle_proxy_request(
     else {
         return respond(StatusCode::BAD_REQUEST, "CONNECT target must be host:port");
     };
-    let intercept = session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port));
     let excepted = || {
         snapshot
             .passthrough_hosts
             .iter()
             .any(|h| h.matches(&host, port))
     };
+    // Under deny, a host someone holding a tripwire's decoy would use is
+    // opened rather than refused at once, to look for the decoy; a request
+    // without it is still refused, as no rule covers it.
+    let intercept = session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port))
+        || (snapshot.policy == UnmatchedHostPolicy::Deny
+            && !excepted()
+            && snapshot
+                .tripwires
+                .as_ref()
+                .is_some_and(|t| t.covers_host(&host, port)));
     if !intercept && snapshot.policy == UnmatchedHostPolicy::Deny && !excepted() {
         Metrics::inc(&shared.metrics.connect_denied_total);
         audit_best_effort(
@@ -560,6 +569,7 @@ async fn handle_proxy_request(
     let tls_config = if intercept {
         let pattern_host = session_rules(&snapshot, &claims)
             .flat_map(|r| r.allow.hosts.iter())
+            .chain(snapshot.tripwires.iter().flat_map(|t| t.hosts().iter()))
             .find(|h| h.matches(&host, port))
             .map(|h| h.certificate_name().to_string());
         match pattern_host.and_then(|h| snapshot.tls.config_for(&h)) {
@@ -1205,6 +1215,23 @@ pub(crate) async fn handle_intercepted(
             StatusCode::MISDIRECTED_REQUEST,
             "request Host does not match the CONNECT target; credentials are only injected for the tunnel's own host",
         );
+    }
+    if let Some(tripwires) = snapshot.tripwires.as_deref() {
+        if let Some(hit) = tripwires.find(req.headers(), req.uri()) {
+            crate::tripwire::trip(
+                shared,
+                claims,
+                tripwires,
+                &hit,
+                &ctx.host,
+                ctx.port,
+                (req.method().as_str(), req.uri().path()),
+            );
+            return respond(
+                StatusCode::FORBIDDEN,
+                "refused: the request carried a credential planted as a tripwire, so this session is cut off and someone has been alerted",
+            );
+        }
     }
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();

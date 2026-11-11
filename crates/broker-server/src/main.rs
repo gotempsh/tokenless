@@ -47,6 +47,7 @@ mod list;
 mod messages;
 mod setup;
 mod sign_ins;
+mod tripwires;
 
 #[derive(Parser)]
 #[command(
@@ -94,6 +95,13 @@ enum Command {
     Alerts {
         #[command(subcommand)]
         command: AlertCommand,
+    },
+    /// Decoy credentials to plant on an agent's machine: a request that
+    /// carries one cuts its session off and raises an alert. Needs
+    /// `tokenless login`.
+    Tripwire {
+        #[command(subcommand)]
+        command: TripwireCommand,
     },
     /// The browsers and CLI logins signed in as you, and ending them: a
     /// lost laptop, a machine you no longer use. Needs `tokenless login`.
@@ -472,6 +480,51 @@ enum BundleKeyCommand {
         /// The key's name, prefix (cbk_...) or id.
         key: String,
         /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TripwireCommand {
+    /// Create a decoy and print how to plant it. The decoy is shown once.
+    ///
+    /// Examples:
+    ///   tokenless tripwire add --kind aws --name build-runner >> ~/.aws/credentials
+    ///   tokenless tripwire add --kind github --name laptop --vault work >> .env.local
+    #[command(verbatim_doc_comment)]
+    Add {
+        /// What it looks like: aws, github, openai or generic.
+        #[arg(long)]
+        kind: String,
+        /// Where it is planted, such as the machine's name.
+        #[arg(long)]
+        name: String,
+        /// The vault, when there is more than one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// List a vault's tripwires and when each was last tripped.
+    List {
+        #[arg(long)]
+        vault: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Delete one, by name, the start `list` shows or id: proxies stop
+    /// looking for it.
+    Remove {
+        tripwire: String,
         #[arg(long)]
         vault: Option<String>,
         /// Management API URL.
@@ -2353,6 +2406,7 @@ async fn main() -> ExitCode {
             | Command::Logout { .. }
             | Command::SignIns { .. }
             | Command::Alerts { .. }
+            | Command::Tripwire { .. }
             | Command::Service { .. }
             | Command::Vault { .. }
             | Command::Bundle { .. }
@@ -2373,6 +2427,24 @@ async fn main() -> ExitCode {
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
+        Command::Tripwire { command } => match command {
+            TripwireCommand::Add {
+                kind,
+                name,
+                vault,
+                server,
+            } => tripwires::add(kind, name, vault, server).await,
+            TripwireCommand::List {
+                vault,
+                json,
+                server,
+            } => tripwires::list(vault, json, server).await,
+            TripwireCommand::Remove {
+                tripwire,
+                vault,
+                server,
+            } => tripwires::remove(tripwire, vault, server).await,
+        },
         Command::Alerts { command } => match command {
             AlertCommand::List { all, json, server } => alerts::list(all, json, server).await,
             AlertCommand::Ack { alert, server } => alerts::acknowledge(alert, server).await,

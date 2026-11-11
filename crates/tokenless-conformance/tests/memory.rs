@@ -58,6 +58,11 @@ async fn memory_store_passes_alert_suite() {
 }
 
 #[tokio::test]
+async fn memory_store_passes_tripwire_suite() {
+    tripwire_store_suite(&MemoryStore::new()).await.unwrap();
+}
+
+#[tokio::test]
 async fn memory_store_passes_node_suite() {
     node_store_suite(&MemoryStore::new()).await.unwrap();
 }
@@ -134,6 +139,7 @@ async fn an_embedded_data_plane_on_the_memory_store_passes_the_dataplane_suite()
                 audit: store.clone(),
                 nodes: store.clone(),
                 alerts: store.clone(),
+                tripwires: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,

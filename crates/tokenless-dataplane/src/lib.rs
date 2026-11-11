@@ -31,6 +31,7 @@ pub mod state;
 pub mod status;
 pub mod tls;
 mod traffic;
+pub mod tripwire;
 pub mod upstream;
 
 #[cfg(test)]

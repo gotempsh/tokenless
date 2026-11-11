@@ -27,6 +27,7 @@ import { useBundleServices } from "../bundleServices";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
+import { VaultTripwires } from "./Tripwires";
 import {
   fromWidth,
   CheckField,
@@ -67,12 +68,13 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 
-export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "settings";
+export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "tripwires" | "settings";
 const TABS: { value: Tab; label: string }[] = [
   { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
   { value: "bundles", label: "Access bundles" },
   { value: "sessions", label: "Sessions" },
+  { value: "tripwires", label: "Tripwires" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -189,6 +191,7 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         {tab === "rules" && <Rules vaultId={vaultId} />}
         {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
         {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
+        {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
       </TabSections>
       {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin} onDelete={() => setDeleting(true)} />}
       <FormDialog
@@ -218,7 +221,7 @@ function VaultSettings({ vault, isAdmin, onDelete }: { vault: VaultOverview; isA
           <Exact at={vault.created_at} />
         </p>
       </SettingsSection>
-      <SettingsSection title="Delete vault" hint="Deletes its services, rules and access bundles. The audit trail is kept.">
+      <SettingsSection title="Delete vault" hint="Deletes its services, rules, access bundles and tripwires. The audit trail is kept.">
         <div className="space-y-2">
           <Button type="button" variant="outline" className="text-destructive" onClick={onDelete} disabled={!isAdmin}>
             <Trash2 />

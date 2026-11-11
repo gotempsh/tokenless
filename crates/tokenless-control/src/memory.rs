@@ -23,6 +23,7 @@ use tokenless_core::variables::CustomHeader;
 mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 
 use crate::error::StoreError;
 use crate::model::{
@@ -59,6 +60,7 @@ struct Inner {
     audit_destinations:
         HashMap<tokenless_core::ids::AuditDestinationId, crate::model::AuditDestination>,
     alerts: HashMap<tokenless_core::ids::AlertId, crate::model::Alert>,
+    tripwires: HashMap<tokenless_core::ids::TripwireId, crate::model::Tripwire>,
 }
 
 #[derive(Default)]
@@ -396,6 +398,7 @@ impl PolicyStore for MemoryStore {
         let before = inner.bundles.len();
         inner.bundles.retain(|_, bundle| &bundle.vault_id != id);
         done.bundles = count(before, inner.bundles.len());
+        inner.tripwires.retain(|_, t| &t.vault_id != id);
         for session in inner.sessions.values_mut() {
             if &session.vault_id == id
                 && session.revoked_at.is_none()

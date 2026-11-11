@@ -23,7 +23,9 @@ This page is the summary an operator needs.
   again, which raises an [alert](./console/alerts.mdx), and the proxy then
   [cuts the session off](./settings.mdx#cut-off-probing-sessions). A
   session token copied to another machine and used through another proxy
-  raises an alert too.
+  raises an alert too. Plant [tripwires](./console/vaults.mdx#tripwires),
+  fake keys where real ones would be: the session that sends one is cut
+  off at once and you are alerted.
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over
   HTTPS to the service's own hosts.

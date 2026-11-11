@@ -24,9 +24,11 @@ use tokenless_core::variables::CustomHeader;
 mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 pub use alerts::*;
 pub use audit_export::*;
 pub use sso::*;
+pub use tripwires::*;
 
 pub const DEFAULT_PAGE_SIZE: u64 = 20;
 pub const MAX_PAGE_SIZE: u64 = 100;

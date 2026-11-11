@@ -11,6 +11,7 @@ mod handlers;
 mod launcher_keys;
 mod sign_ins;
 mod sso;
+mod tripwires;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -178,6 +179,14 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route(
             "/vaults/{vault_id}/launcher-keys/{api_key_id}/revoke",
             post(launcher_keys::revoke),
+        )
+        .route(
+            "/vaults/{vault_id}/tripwires",
+            get(tripwires::list).post(tripwires::create),
+        )
+        .route(
+            "/tripwires/{tripwire_id}",
+            axum::routing::delete(tripwires::delete),
         )
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(

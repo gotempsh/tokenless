@@ -17,7 +17,7 @@ use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
     AlertId, ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId,
-    OidcProviderId, RuleId, SessionId, SignInId, UserId, VariableId, VaultId,
+    OidcProviderId, RuleId, SessionId, SignInId, TripwireId, UserId, VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
@@ -26,7 +26,8 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
     JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
-    Settings, SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
+    Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User, Variable, Vault,
+    VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -185,7 +186,7 @@ pub trait PolicyStore: Send + Sync {
     async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
-    /// Deletes the vault, its credentials, rules and bundles, and revokes
+    /// Deletes the vault, its credentials, rules, bundles and tripwires, and revokes
     /// at `at` the API keys bound to it and its unrevoked sessions that may
     /// still carry traffic (expiring after
     /// [`open_traffic_horizon(at)`](tokenless_core::session::open_traffic_horizon)),
@@ -629,6 +630,36 @@ pub trait AlertStore: Send + Sync {
         at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError>;
+}
+
+/// Tripwires: decoys planted on agents' machines, sent to every proxy.
+/// Deleting a vault deletes its tripwires.
+#[async_trait]
+pub trait TripwireStore: Send + Sync {
+    /// `Conflict` if the vault already has a tripwire by that name.
+    async fn insert_tripwire(
+        &self,
+        tripwire: Tripwire,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_tripwire(&self, id: &TripwireId) -> Result<Option<Tripwire>, StoreError>;
+    /// A vault's tripwires, newest first.
+    async fn list_tripwires(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<Tripwire>, StoreError>;
+    /// Every vault's tripwires, newest first, at most `limit`: what the
+    /// proxies are sent.
+    async fn all_tripwires(&self, limit: u64) -> Result<Vec<Tripwire>, StoreError>;
+    /// Returns whether it existed, recording `audit` only then.
+    async fn delete_tripwire(
+        &self,
+        id: &TripwireId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Notes that a request carried it. A missing tripwire is ignored.
+    async fn tripwire_tripped(&self, id: &TripwireId, at: DateTime<Utc>) -> Result<(), StoreError>;
 }
 
 /// Audit export (standalone mode): the destinations audit events are sent

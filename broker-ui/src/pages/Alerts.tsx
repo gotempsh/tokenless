@@ -96,7 +96,7 @@ export function Alerts({ me }: { me: UserSummary }) {
           <Empty
             icon={BellRing}
             title={showAll ? "No alerts yet" : "No open alerts"}
-            description="A session cut off for probing, refused again and again, or used through a second proxy raises an alert here."
+            description="A session that sends a tripwire, is cut off for probing, is refused again and again or is used through a second proxy raises an alert here."
             action={showAll ? undefined : toggle}
           />
         ) : (

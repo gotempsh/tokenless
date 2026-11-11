@@ -146,13 +146,34 @@ sessions already started keep running until they expire; end them with
 ## `alerts list`, `alerts ack`
 
 The [alerts](./console/alerts.mdx) nobody has acknowledged yet, newest
-first: a session cut off, refused often or used through a second proxy.
+first: a session that sent a tripwire, was cut off, refused often or used
+through a second proxy.
 `ack` marks one looked at by its id (the first characters `list` shows
 are enough).
 
 | Option | Default | |
 |---|---|---|
 | `--all` (`list`) | | The acknowledged ones too |
+| `--json` (`list`) | | The rows as JSON |
+
+## `tripwire add`, `tripwire list`, `tripwire remove`
+
+[Tripwires](./console/vaults.mdx#tripwires): fake keys to plant on an
+agent's machine. `add` creates one and prints it once, ready to append
+to a file; how else to plant it goes to stderr. `list` shows each one's
+first characters and when it was last tripped. `remove` deletes one by
+name, the start `list` shows, or id.
+
+```sh
+tokenless tripwire add --kind aws --name build-runner >> ~/.aws/credentials
+tokenless tripwire add --kind github --name laptop --vault work >> .env.local
+```
+
+| Option | Default | |
+|---|---|---|
+| `--kind` (`add`) | | `aws`, `github`, `openai` or `generic` |
+| `--name` (`add`) | | Where it is planted, such as the machine's name |
+| `--vault` | the only one | The vault, when there is more than one |
 | `--json` (`list`) | | The rows as JSON |
 
 ## `proxy add`

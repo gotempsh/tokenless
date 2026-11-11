@@ -55,6 +55,7 @@ async fn setup() -> T {
             audit_export: store.clone(),
             nodes: store.clone(),
             alerts: store.clone(),
+            tripwires: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,

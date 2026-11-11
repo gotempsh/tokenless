@@ -25,6 +25,7 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "API keys", prefix: "api_key." },
   { label: "Launcher keys", prefix: "launcher_key." },
   { label: "Alerts", prefix: "alert." },
+  { label: "Tripwires", prefix: "tripwire." },
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
@@ -131,7 +132,9 @@ export function actionPhrase(event: AuditEvent): string {
     case "session.mint":
       return d.bundle ? `started a session with ${d.bundle}` : "started a session";
     case "session.revoke":
-      return d.reason === "quarantine" ? `cut off a session refused ${d.refusals ?? "too many"} times` : "ended a session";
+      if (d.reason === "quarantine") return `cut off a session refused ${d.refusals ?? "too many"} times`;
+      if (d.reason === "tripwire") return `cut off a session that sent tripwire ${d.tripwire ?? "a decoy"}`;
+      return "ended a session";
     case "session.update_labels":
       return "relabelled a session";
     case "vault.create":
@@ -204,6 +207,10 @@ export function actionPhrase(event: AuditEvent): string {
       return `skipped ${d.skipped === "1" ? "1 event" : `${d.skipped ?? "the"} events`} for ${named("audit webhook")}`;
     case "audit_export.test":
       return event.outcome === "success" ? `sent a test to ${named("audit webhook")}` : `failed to send a test to ${named("audit webhook")}`;
+    case "tripwire.create":
+      return `planted ${named("tripwire")}`;
+    case "tripwire.delete":
+      return `deleted ${named("tripwire")}`;
     case "alert.raised":
       return `raised an alert: ${d.summary ?? d.kind ?? "see the Alerts page"}`;
     case "alert.acknowledge":
@@ -220,6 +227,8 @@ export function actionPhrase(event: AuditEvent): string {
       return `refused an MCP call to ${hostOnly(d.host)}`;
     case "proxy.quarantine":
       return `cut off a session after ${d.refusals ?? "repeated"} refusals in ${d.window_secs ? `${d.window_secs}s` : "a short time"}`;
+    case "proxy.tripwire":
+      return `cut off a session that sent tripwire ${d.tripwire ?? "a decoy"} to ${hostOnly(d.host)}`;
     case "proxy.egress_blocked":
       return `blocked a connection to ${hostOnly(d.host)}, a private address`;
     case "proxy.tunnel":
@@ -243,6 +252,8 @@ export function sessionHistoryPhrase(e: AuditEvent): string {
     case "session.revoke":
       if (e.detail.reason === "quarantine")
         return `revoked the session after it was refused ${e.detail.refusals ?? "too many"} times`;
+      if (e.detail.reason === "tripwire")
+        return `revoked the session after it sent tripwire ${e.detail.tripwire ?? "a decoy"}`;
       if (e.detail.already_revoked === "true") return "revoked the session again";
       return e.detail.by === "session token" ? "ended the session with its own token" : "revoked the session";
     case "session.update_labels":

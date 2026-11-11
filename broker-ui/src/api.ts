@@ -495,6 +495,35 @@ export interface AlertSettings {
 
 export type AlertKind = "quarantine" | "tripwire" | "refusals" | "new_proxy";
 
+export type TripwireKind = "aws" | "github" | "openai" | "generic";
+
+/** A decoy planted on an agent's machine. Its value is never returned after it is created. */
+export interface Tripwire {
+  id: string;
+  vault_id: string;
+  /** Where it is planted, such as the machine's name. */
+  name: string;
+  kind: TripwireKind;
+  /** The decoy's first characters. */
+  prefix: string;
+  created_by: string;
+  created_at: string;
+  last_tripped_at: string | null;
+}
+
+export interface Plant {
+  place: string;
+  text: string;
+}
+
+/** Shown once: the decoy and how to plant it. */
+export interface CreatedTripwire {
+  tripwire: Tripwire;
+  value: string;
+  secret: string | null;
+  plant: Plant[];
+}
+
 /** Something the proxies reported that someone should look at now. */
 export interface Alert {
   id: string;

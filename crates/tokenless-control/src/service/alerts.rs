@@ -13,7 +13,7 @@ use serde::Serialize;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
 use tokenless_core::ids::{AlertId, NodeId, SessionId};
-use tokenless_core::snapshot::{QuarantinePolicy, QUARANTINE_ACTION};
+use tokenless_core::snapshot::{QuarantinePolicy, QUARANTINE_ACTION, TRIPWIRE_ACTION};
 use tracing::{error, warn};
 
 use super::{Caller, Guard};
@@ -197,6 +197,26 @@ impl AlertService {
                     acknowledged_by: None,
                 }
             };
+
+            if event.action == TRIPWIRE_ACTION {
+                let mut a = alert(
+                    AlertKind::Tripwire,
+                    format!(
+                        "Session {} sent tripwire '{}' to {} through proxy '{}': someone took it from the agent's machine. The session was cut off and revoked.",
+                        short(&session),
+                        event.detail.get("tripwire").map_or("?", String::as_str),
+                        event.detail.get("host").map_or("a host", String::as_str),
+                        node.name,
+                    ),
+                );
+                for key in ["tripwire", "tripwire_id", "found_in", "host"] {
+                    if let Some(v) = event.detail.get(key) {
+                        a.detail.insert(key.into(), v.clone());
+                    }
+                }
+                raised.push(a);
+                continue;
+            }
 
             if event.action == QUARANTINE_ACTION {
                 let mut a = alert(

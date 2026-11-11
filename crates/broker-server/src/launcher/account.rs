@@ -22,15 +22,18 @@ use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
-    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Vault,
+    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Tripwire,
+    Vault,
 };
 use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
     CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
 };
+use tokenless_control::service::tripwires::CreatedTripwire;
 use tokenless_core::ids::{
-    AlertId, ApiKeyId, BundleId, CredentialId, RuleId, SignInId, UserId, VaultId,
+    AlertId, ApiKeyId, BundleId, CredentialId, RuleId, SignInId, TripwireId, UserId, VaultId,
 };
+use tokenless_core::tripwire::TripwireKind;
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -780,6 +783,37 @@ impl<'p> ConsoleClient<'p> {
             &format!("/vaults/{vault}/launcher-keys/{id}/revoke"),
             Some(json!({})),
             "revoking the launcher key",
+        )
+        .await
+    }
+
+    /// A new tripwire in `vault`, with its decoy and how to plant it.
+    pub async fn create_tripwire(
+        &self,
+        vault: &VaultId,
+        name: &str,
+        kind: TripwireKind,
+    ) -> Result<CreatedTripwire, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/tripwires"),
+            Some(json!({ "name": name, "kind": kind })),
+            "creating the tripwire",
+        )
+        .await
+    }
+
+    pub async fn tripwires(&self, vault: &VaultId) -> Result<Vec<Tripwire>, LauncherError> {
+        self.pages(&format!("/vaults/{vault}/tripwires"), "listing tripwires")
+            .await
+    }
+
+    pub async fn delete_tripwire(&self, id: &TripwireId) -> Result<Tripwire, LauncherError> {
+        self.call(
+            Method::DELETE,
+            &format!("/tripwires/{id}"),
+            None,
+            "deleting the tripwire",
         )
         .await
     }

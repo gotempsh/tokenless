@@ -14,17 +14,18 @@ use serde::Serialize;
 use tokenless_auth::token;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
-use tokenless_core::ids::{NodeId, RuleId, SessionId, VaultId};
+use tokenless_core::ids::{NodeId, RuleId, SessionId, TripwireId, VaultId};
 use tokenless_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
     MAX_AUDIT_BATCH,
 };
-use tokenless_core::seal::{decode_public_key, seal};
+use tokenless_core::seal::{decode_public_key, seal, Sealed};
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
-    ca_aad, format_for, rule_aad, rules_readable_by, InterceptionCa, PublishedKey, SessionLimit,
-    SignedSnapshot, SnapshotBody, SnapshotRule, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION,
-    QUARANTINE_FORMAT, SNAPSHOT_FORMAT,
+    ca_aad, format_for, rule_aad, rules_readable_by, tripwires_aad, InterceptionCa, PublishedKey,
+    SessionLimit, SignedSnapshot, SnapshotBody, SnapshotRule, SnapshotTripwire,
+    MAX_SNAPSHOT_TRIPWIRES, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
+    SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
 };
 use tokio::sync::watch;
 use tracing::{info, warn};
@@ -39,7 +40,7 @@ use crate::keys::KeyRing;
 use crate::model::{JoinTokenRecord, Node, Page, PageRequest, TemplateStatus};
 use crate::notify::{Generation, PolicyNotifier};
 use crate::pki::{self, pem_encode};
-use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore};
+use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore, TripwireStore};
 
 /// A registered embedded data plane: see [`NodeService::register_embedded`].
 #[derive(Debug, Clone)]
@@ -74,6 +75,8 @@ struct CachedContent {
     valid_until: Option<DateTime<Utc>>,
     rules: Vec<SnapshotRule>,
     ca: InterceptionCa,
+    /// Every tripwire, sealed to the node; `None` when there are none.
+    tripwires: Option<Sealed>,
 }
 
 impl CachedContent {
@@ -97,8 +100,34 @@ pub struct NodeService {
     audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
     alerts: Arc<AlertService>,
+    tripwires: Arc<dyn TripwireStore>,
     config: ControlConfig,
     cache: Mutex<HashMap<NodeId, Arc<CachedContent>>>,
+}
+
+/// Why a node cut a session off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CutOff {
+    Refusals,
+    Tripwire,
+}
+
+impl CutOff {
+    /// The revocation's `reason` detail.
+    fn reason(self) -> &'static str {
+        match self {
+            CutOff::Refusals => "quarantine",
+            CutOff::Tripwire => "tripwire",
+        }
+    }
+
+    /// The node's details the revocation repeats.
+    fn copied(self) -> &'static [&'static str] {
+        match self {
+            CutOff::Refusals => &["refusals", "window_secs"],
+            CutOff::Tripwire => &["tripwire", "tripwire_id", "found_in", "host"],
+        }
+    }
 }
 
 fn vault_from_scope(scope: &str) -> Option<VaultId> {
@@ -118,6 +147,7 @@ impl NodeService {
         audit: AuditRecorder,
         notifier: Arc<PolicyNotifier>,
         alerts: Arc<AlertService>,
+        tripwires: Arc<dyn TripwireStore>,
         config: ControlConfig,
     ) -> Self {
         Self {
@@ -131,6 +161,7 @@ impl NodeService {
             audit,
             notifier,
             alerts,
+            tripwires,
             config,
             cache: Mutex::new(HashMap::new()),
         }
@@ -458,12 +489,36 @@ impl NodeService {
                 not_after: meta.not_after,
             });
         }
+        // Every tripwire goes to every node: a decoy is a sign wherever it
+        // turns up, whatever vault it was planted for.
+        let decoys: Vec<SnapshotTripwire> = self
+            .tripwires
+            .all_tripwires(MAX_SNAPSHOT_TRIPWIRES as u64)
+            .await?
+            .into_iter()
+            .map(|t| SnapshotTripwire {
+                id: t.id,
+                name: t.name,
+                hosts: t.kind.hosts(),
+                value: t.value,
+            })
+            .collect();
+        let tripwires = if decoys.is_empty() {
+            None
+        } else {
+            let json = Zeroizing::new(
+                serde_json::to_vec(&decoys)
+                    .map_err(|e| ControlError::crypto("tripwires.encode", e))?,
+            );
+            Some(seal(&recipient, &json, &tripwires_aad(&node.id))?)
+        };
         Ok(CachedContent {
             content_generation: generation.content,
             sessions_generation: node.scoped_rules.then_some(generation.sessions),
             valid_until,
             rules,
             ca,
+            tripwires,
         })
     }
 
@@ -520,11 +575,22 @@ impl NodeService {
         let quarantine = settings
             .quarantine
             .filter(|_| reads_format >= QUARANTINE_FORMAT);
-        let format = if quarantine.is_some() {
-            format_for(&rules).max(QUARANTINE_FORMAT)
-        } else {
-            format_for(&rules)
-        };
+        // Nor tripwires: that node does not look for decoys.
+        let tripwires = content
+            .tripwires
+            .clone()
+            .filter(|_| reads_format >= TRIPWIRE_FORMAT);
+        let format = format_for(&rules)
+            .max(if quarantine.is_some() {
+                QUARANTINE_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if tripwires.is_some() {
+                TRIPWIRE_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            });
         let body = SnapshotBody {
             format,
             version: self.nodes.next_snapshot_version().await?,
@@ -551,6 +617,7 @@ impl NodeService {
             interception_ca: content.ca.clone(),
             rules,
             quarantine,
+            tripwires,
         };
         Ok(NodeSnapshot {
             snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
@@ -587,8 +654,13 @@ impl NodeService {
         self.audit_sink.record(&events).await?;
         // A failed revocation still raises its alert before failing the batch.
         let mut revoked = Ok(());
-        for event in events.iter().filter(|e| e.action == QUARANTINE_ACTION) {
-            if let Err(e) = self.quarantine(node, event).await {
+        for event in &events {
+            let cut_off = match event.action.as_str() {
+                QUARANTINE_ACTION => self.quarantine(node, event, CutOff::Refusals).await,
+                TRIPWIRE_ACTION => self.quarantine(node, event, CutOff::Tripwire).await,
+                _ => continue,
+            };
+            if let Err(e) = cut_off {
                 revoked = Err(e);
             }
         }
@@ -597,12 +669,27 @@ impl NodeService {
         Ok(events.len())
     }
 
-    /// Revokes the session a node cut off for being refused too often, so
-    /// every other node stops serving it too. The node already stopped; a
+    /// Revokes the session a node cut off, for being refused too often or
+    /// for sending a tripwire's decoy, so every other node stops serving it
+    /// too. The node already stopped; a
     /// person reviews the session's refusals and starts a new one if it was
     /// an agent at work. A session already revoked, or one this control
     /// plane never minted, is left alone.
-    async fn quarantine(&self, node: &Node, event: &AuditEvent) -> Result<(), ControlError> {
+    async fn quarantine(
+        &self,
+        node: &Node,
+        event: &AuditEvent,
+        why: CutOff,
+    ) -> Result<(), ControlError> {
+        if why == CutOff::Tripwire {
+            if let Some(id) = event
+                .detail
+                .get("tripwire_id")
+                .and_then(|raw| raw.parse::<TripwireId>().ok())
+            {
+                self.tripwires.tripwire_tripped(&id, event.at).await?;
+            }
+        }
         let Some(id) = event
             .detail
             .get("session_id")
@@ -625,9 +712,9 @@ impl NodeService {
         )
         .vault(session.vault_id)
         .target(format!("session:{id}"))
-        .detail("reason", "quarantine")
+        .detail("reason", why.reason())
         .detail("node", node.name.clone());
-        for key in ["refusals", "window_secs"] {
+        for &key in why.copied() {
             if let Some(value) = event.detail.get(key) {
                 revoke = revoke.detail(key, value.clone());
             }
@@ -638,7 +725,7 @@ impl NodeService {
             .await?
         {
             self.notifier.bump_sessions();
-            warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, "session quarantined: revoked after repeated refusals");
+            warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, reason = why.reason(), "session cut off by a proxy: revoked");
         }
         Ok(())
     }

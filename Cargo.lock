@@ -3112,6 +3112,7 @@ dependencies = [
 name = "tokenless-dataplane"
 version = "0.4.0"
 dependencies = [
+ "aho-corasick",
  "arc-swap",
  "async-trait",
  "base64 0.22.1",

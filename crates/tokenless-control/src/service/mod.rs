@@ -16,6 +16,7 @@ pub mod sessions;
 pub mod sso;
 #[cfg(test)]
 pub(crate) mod testing;
+pub mod tripwires;
 pub mod users;
 pub mod variables;
 
@@ -35,7 +36,7 @@ use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
     AlertStore, AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
-    PolicyStore, SsoStore,
+    PolicyStore, SsoStore, TripwireStore,
 };
 
 #[derive(Debug, Clone)]
@@ -102,6 +103,7 @@ pub struct Stores {
     pub audit_export: Arc<dyn AuditExportStore>,
     pub nodes: Arc<dyn NodeStore>,
     pub alerts: Arc<dyn AlertStore>,
+    pub tripwires: Arc<dyn TripwireStore>,
 }
 
 /// Authorisation plus step-up enforcement, shared by every service.
@@ -219,6 +221,7 @@ pub struct ServiceStores {
     pub audit: Arc<dyn AuditSink>,
     pub nodes: Arc<dyn NodeStore>,
     pub alerts: Arc<dyn AlertStore>,
+    pub tripwires: Arc<dyn TripwireStore>,
 }
 
 /// The control services without accounts, sign-in or API keys, for a
@@ -233,6 +236,7 @@ pub struct ControlServices {
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
     pub alerts: Arc<alerts::AlertService>,
+    pub tripwires: tripwires::TripwireService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -303,7 +307,14 @@ impl ControlServices {
             recorder,
             notifier.clone(),
             alerts.clone(),
+            stores.tripwires.clone(),
             config,
+        );
+        let tripwires = tripwires::TripwireService::new(
+            stores.tripwires,
+            stores.policy.clone(),
+            guard.clone(),
+            notifier.clone(),
         );
         let audit = audit::AuditService::new(stores.audit, guard);
         Ok(Self {
@@ -314,6 +325,7 @@ impl ControlServices {
             variables,
             audit,
             alerts,
+            tripwires,
             keys,
             notifier,
         })
@@ -334,6 +346,7 @@ pub struct ControlPlane {
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
     pub alerts: Arc<alerts::AlertService>,
+    pub tripwires: tripwires::TripwireService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -396,6 +409,7 @@ impl ControlPlane {
                 audit: stores.audit,
                 nodes: stores.nodes,
                 alerts: stores.alerts,
+                tripwires: stores.tripwires,
             },
             guard,
             cipher,
@@ -424,6 +438,7 @@ impl ControlPlane {
             variables: services.variables,
             audit: services.audit,
             alerts: services.alerts,
+            tripwires: services.tripwires,
             keys: services.keys,
             notifier: services.notifier,
         })
@@ -473,6 +488,7 @@ mod tests {
             audit_export: store.clone(),
             nodes: store.clone(),
             alerts: store.clone(),
+            tripwires: store.clone(),
         }
     }
 
@@ -2371,6 +2387,7 @@ mod tests {
                 audit: store.clone(),
                 nodes: store.clone(),
                 alerts: store.clone(),
+                tripwires: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,

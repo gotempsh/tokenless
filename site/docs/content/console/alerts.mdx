@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 title: "Alerts"
-description: "Alerts are what the proxies reported that someone should look at now: a session cut off for probing, refused again and again, or used through a second proxy."
+description: "Alerts are what the proxies reported that someone should look at now: a session that sent a tripwire, was cut off for probing, was refused again and again, or was used through a second proxy."
 ---
 
 An agent at work rarely trips these. Someone who got onto the agent's
@@ -12,6 +12,7 @@ the control plane.
 
 | Alert | Raised when | Tune it |
 |---|---|---|
+| **Tripwire** | A session sent one of your [tripwires](./vaults.mdx#tripwires): someone took it from the agent's machine. The session is cut off and revoked | Always raised |
 | **Session cut off** | A proxy [cut the session off](../settings.mdx#cut-off-probing-sessions) after repeated refusals; it is revoked everywhere | Always raised |
 | **Refused often** | The session was refused 10 times in 5 minutes (by default), across every proxy | [Settings → Alerts](../settings.mdx#alerts) |
 | **Second proxy** | The session was used through a proxy other than the one it first used: its token may have been copied off the machine | [Settings → Alerts](../settings.mdx#alerts) |

@@ -74,6 +74,11 @@ id_type!(
     AlertId,
     "alert"
 );
+id_type!(
+    /// A decoy credential planted on an agent's machine.
+    TripwireId,
+    "tripwire"
+);
 id_type!(InviteId, "invite");
 id_type!(VariableId, "variable");
 id_type!(AuditEventId, "audit_event");

@@ -166,6 +166,23 @@ pub(crate) fn still_quarantined(
 
 /// Counts a refusal of the session behind `claims` and cuts it off when
 /// the snapshot's policy says so.
+/// Stops serving `claims`' session on this node at once, until the control
+/// plane lists it as revoked. False when there is no snapshot to mark it in.
+pub(crate) fn cut_off(shared: &ProxyShared, claims: &SessionClaims) -> bool {
+    let marked = std::sync::atomic::AtomicBool::new(false);
+    shared.snapshot.rcu(|current| {
+        current.as_ref().map(|s| {
+            marked.store(true, Ordering::Relaxed);
+            Arc::new(s.with_quarantined(claims.jti, claims.exp))
+        })
+    });
+    if !marked.load(Ordering::Relaxed) {
+        return false;
+    }
+    shared.snapshot_changed.send_modify(|_| {});
+    true
+}
+
 pub(crate) fn count_refusal(shared: &ProxyShared, claims: &SessionClaims) {
     let Some(policy) = shared.snapshot.load().as_ref().and_then(|s| s.quarantine) else {
         return;
@@ -173,18 +190,9 @@ pub(crate) fn count_refusal(shared: &ProxyShared, claims: &SessionClaims) {
     let Some(refusals) = shared.refusals.refused(&claims.jti, policy) else {
         return;
     };
-    let cut_off = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let marked = cut_off.clone();
-    shared.snapshot.rcu(|current| {
-        current.as_ref().map(|s| {
-            marked.store(true, Ordering::Relaxed);
-            Arc::new(s.with_quarantined(claims.jti, claims.exp))
-        })
-    });
-    if !cut_off.load(Ordering::Relaxed) {
+    if !cut_off(shared, claims) {
         return;
     }
-    shared.snapshot_changed.send_modify(|_| {});
     Metrics::inc(&shared.metrics.sessions_quarantined_total);
     warn!(
         session_id = %claims.jti,

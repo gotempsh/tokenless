@@ -44,6 +44,7 @@ use tokenless_core::variables::CustomHeader;
 mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -847,6 +848,11 @@ impl PolicyStore for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(db("delete vault bundle members", "vault"))?;
+        sqlx::query("DELETE FROM tripwires WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault tripwires", "vault"))?;
         done.bundles = sqlx::query("DELETE FROM access_bundles WHERE vault_id = ?")
             .bind(&vault)
             .execute(&mut *tx)
