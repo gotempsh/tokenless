@@ -99,7 +99,14 @@ apply to them, as they don't to identity providers.
   templates, variables, proxies, single sign-on and audit export) need a
   code entered within the last five minutes. Signing in counts. API keys
   can never take these actions.
-- Changing your password ends your other sessions.
+- Changing your password, or turning your authenticator on or off, ends
+  your other sign-ins. **Account → Where you're signed in** (or
+  `tokenless sign-ins list`) shows each browser and CLI login with when
+  it was last used, to sign out one you don't recognise or every one but
+  this. An admin signs a person out everywhere from **People**.
+- A sign-in ends 12 hours after it started, and earlier when it goes
+  unused for the [idle timeout](./settings.mdx#idle-sign-ins) (2 hours by
+  default).
 - With [single sign-on](./settings.mdx#single-sign-on), the identity
   provider handles passwords and second factors, and the person's groups
   decide their role at every sign-in. A step-up sends them back to the

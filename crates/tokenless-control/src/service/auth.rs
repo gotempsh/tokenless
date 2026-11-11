@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokenless_auth::{cookie, csrf, password, token, totp};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Principal, PrincipalKind, Role};
-use tokenless_core::ids::{ApiKeyId, OidcProviderId, UserId, VaultId};
+use tokenless_core::ids::{ApiKeyId, OidcProviderId, SignInId, UserId, VaultId};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
@@ -22,13 +22,20 @@ use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{ApiKey, Page, PageRequest, PasswordSignIn, UiSession, User};
+use crate::model::{ApiKey, Page, PageRequest, PasswordSignIn, UiSession, User, MAX_USER_AGENT};
 use crate::store::{IdentityStore, SsoStore};
 
 const MAX_FAILED_LOGINS: u32 = 5;
 const LOGIN_WINDOW: StdDuration = StdDuration::from_secs(300);
 const LIMITER_CAPACITY: usize = 10_000;
 const MAX_API_KEY_DAYS: u32 = 365;
+/// How often a sign-in in use records its last use: often enough for idle
+/// expiry, rarely enough not to write on every request.
+const TOUCH_EVERY_SECS: i64 = 60;
+
+mod sign_ins;
+pub use sign_ins::{describe_client, SignIn, SignInClient, SignInsRevoked};
+use sign_ins::{idle_cutoff, idle_words};
 
 /// A person as the API shows them: never the password hash or TOTP secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -151,11 +158,13 @@ tokenless_core::redacted_debug!(LoginOutcome { user, expires_at, max_age_secs; t
 pub struct SessionAuth {
     pub caller: Caller,
     pub token_hash: String,
+    /// The sign-in this session is, as listed by [`AuthService::sign_ins`].
+    pub sign_in_id: SignInId,
     pub user: UserSummary,
     pub expires_at: DateTime<Utc>,
 }
 
-tokenless_core::redacted_debug!(SessionAuth { caller, user, expires_at; token_hash });
+tokenless_core::redacted_debug!(SessionAuth { caller, sign_in_id, user, expires_at; token_hash });
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateApiKey {
@@ -263,13 +272,15 @@ fn local_account(user: &User, what: &str) -> Result<(), ControlError> {
     }
 }
 
-/// Starts a UI session for `user`, recording `event` with it.
+/// Starts a UI session for `user` from the client with `user_agent`,
+/// recording `event` with it.
 pub(super) async fn open_ui_session(
     identity: &dyn IdentityStore,
     keys: &KeyRing,
     config: &ControlConfig,
     user: &User,
     step_up_at: Option<DateTime<Utc>>,
+    user_agent: Option<&str>,
     event: AuditEvent,
 ) -> Result<LoginOutcome, ControlError> {
     let now = Utc::now();
@@ -280,11 +291,14 @@ pub(super) async fn open_ui_session(
     identity
         .insert_ui_session(
             UiSession {
+                id: SignInId::new(),
                 token_hash: token_hash.clone(),
                 user_id: user.id,
                 created_at: now,
                 expires_at,
                 step_up_at,
+                last_used_at: now,
+                user_agent: user_agent.map(clip_user_agent),
             },
             &[event],
         )
@@ -296,6 +310,19 @@ pub(super) async fn open_ui_session(
         expires_at,
         max_age_secs: max_age,
     })
+}
+
+/// `raw` without control characters, cut to [`MAX_USER_AGENT`] bytes at
+/// a character boundary.
+fn clip_user_agent(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.trim().chars().filter(|c| !c.is_control()) {
+        if out.len() + c.len_utf8() > MAX_USER_AGENT {
+            break;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn unix_now() -> u64 {
@@ -530,7 +557,8 @@ impl AuthService {
     }
 
     /// Turns on an authenticator for the signed-in person. From then on,
-    /// signing in asks for its code.
+    /// signing in asks for its code; every other session of the account
+    /// ends, so one opened without the code does not outlive the change.
     pub async fn enable_authenticator(
         &self,
         auth: &SessionAuth,
@@ -566,16 +594,22 @@ impl AuthService {
         )
         .target(format!("user:{}", user.id));
         self.identity
-            .set_user_totp(&user.id, Some(secret_enc), Some(step), &[event])
+            .set_user_totp(
+                &user.id,
+                Some(secret_enc),
+                Some(step),
+                Some(&auth.token_hash),
+                &[event],
+            )
             .await?;
-        info!(user_id = %user.id, "authenticator turned on");
+        info!(user_id = %user.id, "authenticator turned on; other sessions ended");
         let mut summary = UserSummary::from(&user);
         summary.totp_enrolled = true;
         Ok(summary)
     }
 
     /// Turns the signed-in person's authenticator off; it takes the
-    /// password and a current code.
+    /// password and a current code. Every other session of the account ends.
     pub async fn disable_authenticator(
         &self,
         auth: &SessionAuth,
@@ -610,9 +644,9 @@ impl AuthService {
         )
         .target(format!("user:{}", user.id));
         self.identity
-            .set_user_totp(&user.id, None, None, &[event])
+            .set_user_totp(&user.id, None, None, Some(&auth.token_hash), &[event])
             .await?;
-        info!(user_id = %user.id, "authenticator turned off");
+        info!(user_id = %user.id, "authenticator turned off; other sessions ended");
         let mut summary = UserSummary::from(&user);
         summary.totp_enrolled = false;
         Ok(summary)
@@ -652,6 +686,16 @@ impl AuthService {
     }
 
     pub async fn login(&self, req: LoginRequest) -> Result<LoginOutcome, ControlError> {
+        self.login_from(req, None).await
+    }
+
+    /// [`Self::login`] from a client that sent `user_agent`, kept with the
+    /// sign-in so its owner can tell it apart from their others.
+    pub async fn login_from(
+        &self,
+        req: LoginRequest,
+        user_agent: Option<&str>,
+    ) -> Result<LoginOutcome, ControlError> {
         let username = req.username.trim().to_ascii_lowercase();
         self.limiter.check(&username)?;
         let user = self.identity.get_user_by_username(&username).await?;
@@ -726,6 +770,7 @@ impl AuthService {
             &self.config,
             &user,
             Some(Utc::now()),
+            user_agent,
             event,
         )
         .await
@@ -769,9 +814,25 @@ impl AuthService {
             .get_ui_session(&token_hash)
             .await?
             .ok_or_else(|| unauth("session is unknown or has been logged out"))?;
-        if session.expires_at <= Utc::now() {
+        let now = Utc::now();
+        if session.expires_at <= now {
             self.identity.delete_ui_session(&token_hash, &[]).await?;
             return Err(unauth("session has expired"));
+        }
+        let settings = self.sso.get_sign_in_settings().await?;
+        if let Some(since) = idle_cutoff(settings.idle_timeout_secs, now) {
+            if session.last_used_at <= since {
+                self.identity.delete_ui_session(&token_hash, &[]).await?;
+                return Err(ControlError::Unauthenticated {
+                    reason: format!(
+                        "the sign-in ended after {} without use; sign in again",
+                        idle_words(settings.idle_timeout_secs.unwrap_or_default())
+                    ),
+                });
+            }
+        }
+        if now - session.last_used_at >= Duration::seconds(TOUCH_EVERY_SECS) {
+            self.identity.touch_ui_session(&token_hash, now).await?;
         }
         let user = self
             .identity
@@ -817,6 +878,7 @@ impl AuthService {
                 launch: None,
             },
             token_hash,
+            sign_in_id: session.id,
             user: UserSummary::from(&user),
             expires_at: session.expires_at,
         })
@@ -893,9 +955,14 @@ impl AuthService {
         Ok(())
     }
 
-    /// Deletes expired UI sessions; returns how many.
+    /// Deletes expired and idle UI sessions; returns how many.
     pub async fn purge_expired_sessions(&self) -> Result<u64, ControlError> {
-        Ok(self.identity.delete_expired_ui_sessions(Utc::now()).await?)
+        let now = Utc::now();
+        let idle = self.sso.get_sign_in_settings().await?.idle_timeout_secs;
+        Ok(self
+            .identity
+            .delete_expired_ui_sessions(now, idle_cutoff(idle, now))
+            .await?)
     }
 
     pub async fn authenticate_api_key(&self, presented: &str) -> Result<Caller, ControlError> {

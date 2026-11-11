@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
@@ -122,8 +122,16 @@ pub struct SessionInfo {
     sso: Option<SsoSignIn>,
 }
 
-pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResult<Response> {
-    let outcome = s.control.auth.login(req).await?;
+pub async fn login(
+    State(s): St,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<LoginRequest>,
+) -> ApiResult<Response> {
+    let outcome = s
+        .control
+        .auth
+        .login_from(req, super::user_agent(&headers))
+        .await?;
     let cookie = HeaderValue::from_str(&AuthService::session_cookie(&outcome))
         .map_err(|_| ApiError::bad_request("could not encode session cookie"))?;
     let body = SessionInfo {

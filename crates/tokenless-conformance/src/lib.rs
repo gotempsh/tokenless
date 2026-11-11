@@ -34,8 +34,8 @@ use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Decision, Principal, PrincipalKind, Role};
 use tokenless_core::egress::{EgressPolicy, IpCidr};
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, SignInId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
@@ -2100,11 +2100,14 @@ pub async fn user_management_suite(store: &dyn IdentityStore) -> Result<(), Conf
     store
         .insert_ui_session(
             UiSession {
+                id: SignInId::new(),
                 token_hash: "alice-session".into(),
                 user_id: alice.id,
                 created_at: at(-1),
                 expires_at: at(100),
                 step_up_at: None,
+                last_used_at: at(-1),
+                user_agent: None,
             },
             &[],
         )
@@ -2355,13 +2358,17 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
     );
 
     let session = UiSession {
+        id: SignInId::new(),
         token_hash: "h1".into(),
         user_id: user.id,
         created_at: at(-100),
         expires_at: at(100),
         step_up_at: None,
+        last_used_at: at(-100),
+        user_agent: Some("tokenless/0.4.0".into()),
     };
     let stale = UiSession {
+        id: SignInId::new(),
         token_hash: "h2".into(),
         expires_at: at(-1),
         ..session.clone()
@@ -2384,12 +2391,20 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         .map_err(backend(S, "ui_get"))?;
     ensure!(
         S,
+        "ui_round_trip",
+        got.as_ref().is_some_and(|g| g.id == session.id
+            && g.last_used_at == session.last_used_at
+            && g.user_agent == session.user_agent),
+        "got {got:?}"
+    );
+    ensure!(
+        S,
         "ui_step_up",
         got.and_then(|s| s.step_up_at) == Some(at(5)),
         "step-up time not stored"
     );
     let purged = store
-        .delete_expired_ui_sessions(at(0))
+        .delete_expired_ui_sessions(at(0), None)
         .await
         .map_err(backend(S, "ui_purge"))?;
     ensure!(
@@ -2418,6 +2433,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         store
             .insert_ui_session(
                 UiSession {
+                    id: SignInId::new(),
                     token_hash: hash.into(),
                     ..session.clone()
                 },
@@ -2461,7 +2477,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
     );
 
     store
-        .set_user_totp(&user.id, None, None, &[])
+        .set_user_totp(&user.id, None, None, None, &[])
         .await
         .map_err(backend(S, "totp_clear"))?;
     let cleared = store
@@ -2469,7 +2485,7 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         .await
         .map_err(backend(S, "totp_get"))?;
     store
-        .set_user_totp(&user.id, Some(vec![9, 9]), Some(42), &[])
+        .set_user_totp(&user.id, Some(vec![9, 9]), Some(42), None, &[])
         .await
         .map_err(backend(S, "totp_set"))?;
     let set = store
@@ -2487,7 +2503,9 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
             ),
         "the authenticator must be removable and settable (cleared {cleared:?}, set {set:?})"
     );
-    let missing = store.set_user_totp(&UserId::new(), None, None, &[]).await;
+    let missing = store
+        .set_user_totp(&UserId::new(), None, None, None, &[])
+        .await;
     ensure!(
         S,
         "totp_missing",
@@ -2559,7 +2577,132 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         matches!(missing, Err(StoreError::NotFound { .. })),
         "expected NotFound, got {missing:?}"
     );
-    launcher_keys(store, key.vault_id).await
+    launcher_keys(store, key.vault_id).await?;
+    sign_ins(store, user.id).await
+}
+
+/// A person's sign-ins: listed newest first without expired or idle ones,
+/// touched, revoked one at a time (only the owner's) or all but one, and
+/// purged by absolute and idle expiry.
+async fn sign_ins(store: &dyn IdentityStore, user_id: UserId) -> Result<(), ConformanceFailure> {
+    const S: &str = "identity";
+    let other_user = UserId::new();
+    let sign_in = |hash: &str, user_id: UserId, created: i64, used: i64, expires: i64| UiSession {
+        id: SignInId::new(),
+        token_hash: hash.into(),
+        user_id,
+        created_at: at(created),
+        expires_at: at(expires),
+        step_up_at: None,
+        last_used_at: at(used),
+        user_agent: None,
+    };
+    let recent = sign_in("si-recent", user_id, -50, -1, 100);
+    let idle = sign_in("si-idle", user_id, -40, -30, 100);
+    let expired = sign_in("si-expired", user_id, -30, -2, -5);
+    let others = sign_in("si-other", other_user, -20, -20, 100);
+    for s in [&recent, &idle, &expired, &others] {
+        store
+            .insert_ui_session(s.clone(), &[])
+            .await
+            .map_err(backend(S, "sign_in_insert"))?;
+    }
+    let ids = |page: &Page<UiSession>| page.items.iter().map(|s| s.id).collect::<Vec<_>>();
+    let all = PageRequest::new(Some(1), Some(10));
+    let page = store
+        .list_ui_sessions(&user_id, at(0), None, all)
+        .await
+        .map_err(backend(S, "sign_in_list"))?;
+    ensure!(
+        S,
+        "sign_in_list",
+        ids(&page) == vec![idle.id, recent.id] && page.total == 2,
+        "expected the two unexpired sign-ins, newest first; got {:?}",
+        page.items
+    );
+    let page = store
+        .list_ui_sessions(&user_id, at(0), Some(at(-10)), all)
+        .await
+        .map_err(backend(S, "sign_in_list_idle"))?;
+    ensure!(
+        S,
+        "sign_in_list_idle",
+        ids(&page) == vec![recent.id] && page.total == 1,
+        "a sign-in idle since before the cut-off must not be listed; got {:?}",
+        page.items
+    );
+    store
+        .touch_ui_session("si-idle", at(0))
+        .await
+        .map_err(backend(S, "sign_in_touch"))?;
+    store
+        .touch_ui_session("si-missing", at(0))
+        .await
+        .map_err(backend(S, "sign_in_touch_missing"))?;
+    let page = store
+        .list_ui_sessions(&user_id, at(0), Some(at(-10)), all)
+        .await
+        .map_err(backend(S, "sign_in_touch"))?;
+    ensure!(
+        S,
+        "sign_in_touch",
+        ids(&page) == vec![idle.id, recent.id],
+        "a touched sign-in is no longer idle; got {:?}",
+        page.items
+    );
+
+    let foreign = store
+        .delete_user_ui_session(&other_user, &recent.id, &[])
+        .await
+        .map_err(backend(S, "sign_in_revoke_foreign"))?;
+    let revoked = store
+        .delete_user_ui_session(&user_id, &recent.id, &[])
+        .await
+        .map_err(backend(S, "sign_in_revoke"))?;
+    let gone = store
+        .get_ui_session("si-recent")
+        .await
+        .map_err(backend(S, "sign_in_revoke"))?
+        .is_none();
+    ensure!(
+        S,
+        "sign_in_revoke",
+        !foreign && revoked && gone,
+        "only the owner revokes a sign-in (foreign {foreign}, revoked {revoked}, gone {gone})"
+    );
+
+    let removed = store
+        .delete_user_ui_sessions(&user_id, Some("si-idle"), &[])
+        .await
+        .map_err(backend(S, "sign_in_revoke_others"))?;
+    let kept = store
+        .get_ui_session("si-idle")
+        .await
+        .map_err(backend(S, "sign_in_revoke_others"))?
+        .is_some();
+    let untouched = store
+        .get_ui_session("si-other")
+        .await
+        .map_err(backend(S, "sign_in_revoke_others"))?
+        .is_some();
+    ensure!(
+        S,
+        "sign_in_revoke_others",
+        removed == 1 && kept && untouched,
+        "signing out elsewhere keeps the current sign-in and other people's (removed {removed}, kept {kept}, others untouched {untouched})"
+    );
+
+    let purged = store
+        .delete_expired_ui_sessions(at(0), Some(at(10)))
+        .await
+        .map_err(backend(S, "sign_in_purge_idle"))?;
+    ensure!(
+        S,
+        "sign_in_purge_idle",
+        purged == 2,
+        "expected both idle sign-ins purged, got {purged}"
+    );
+    Ok(())
 }
 
 /// Launcher keys are API keys with a launch scope: it round-trips, `get`

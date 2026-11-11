@@ -318,6 +318,7 @@ impl T {
                     ..Default::default()
                 },
                 Some(browser),
+                Some("Mozilla/5.0 test"),
             )
             .await
     }
@@ -489,6 +490,7 @@ async fn an_answer_counts_once_and_only_in_the_browser_that_asked() {
                     ..Default::default()
                 },
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -501,7 +503,7 @@ async fn an_answer_counts_once_and_only_in_the_browser_that_asked() {
     assert!(err.to_string().contains("another sign-in"), "{err}");
     let err =
         t.cp.sso
-            .complete(SsoCallback::default(), Some(&r.browser_token))
+            .complete(SsoCallback::default(), Some(&r.browser_token), None)
             .await
             .unwrap_err();
     assert!(err.error.to_string().contains("no state"));
@@ -564,6 +566,7 @@ async fn a_provider_error_or_wrong_code_is_reported() {
                     ..Default::default()
                 },
                 Some(&r.browser_token),
+                None,
             )
             .await
             .unwrap_err();
@@ -885,6 +888,7 @@ async fn password_sign_in_can_be_kept_for_admins_only() {
 
     let admins_only = SignInSettings {
         password_sign_in: PasswordSignIn::AdminsOnly,
+        ..SignInSettings::default()
     };
     t.cp.sso
         .put_sign_in_settings(&admin(), admins_only.clone())
@@ -1001,6 +1005,7 @@ async fn a_changed_or_expired_flow_cookie_is_refused() {
                     ..Default::default()
                 },
                 Some(&sealed),
+                None,
             )
             .await
             .unwrap_err();

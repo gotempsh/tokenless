@@ -17,7 +17,7 @@ use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
     ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId,
-    SessionId, UserId, VariableId, VaultId,
+    SessionId, SignInId, UserId, VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
@@ -426,13 +426,15 @@ pub trait IdentityStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     /// Sets (`Some`) or removes (`None`) a user's encrypted authenticator
-    /// secret, with the last TOTP step it accepted. `NotFound` if the user
-    /// is missing.
+    /// secret, with the last TOTP step it accepted, and deletes the user's
+    /// UI sessions except `keep_session`, in one step. `NotFound` if the
+    /// user is missing.
     async fn set_user_totp(
         &self,
         id: &UserId,
         secret_enc: Option<Vec<u8>>,
         last_step: Option<u64>,
+        keep_session: Option<&str>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
 
@@ -483,7 +485,42 @@ pub trait IdentityStore: Send + Sync {
         token_hash: &str,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+    /// Records that the session was used at `at`. No audit: it runs on
+    /// sign-in use, throttled by the caller. A missing session is ignored.
+    async fn touch_ui_session(&self, token_hash: &str, at: DateTime<Utc>)
+        -> Result<(), StoreError>;
+    /// The user's sign-ins that have not expired at `now` and, with
+    /// `idle_since`, were used since then; newest first.
+    async fn list_ui_sessions(
+        &self,
+        user_id: &UserId,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+        page: PageRequest,
+    ) -> Result<Page<UiSession>, StoreError>;
+    /// Deletes the user's sign-in `id`. Returns false, recording nothing,
+    /// when the user has no such sign-in.
+    async fn delete_user_ui_session(
+        &self,
+        user_id: &UserId,
+        id: &SignInId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Deletes the user's sign-ins except `keep_session` (a token hash);
+    /// returns how many.
+    async fn delete_user_ui_sessions(
+        &self,
+        user_id: &UserId,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError>;
+    /// Deletes sessions past their expiry at `now` and, with `idle_since`,
+    /// those not used since then; returns how many.
+    async fn delete_expired_ui_sessions(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError>;
 
     /// `Conflict` if the prefix exists.
     async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError>;

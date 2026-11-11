@@ -11,8 +11,8 @@ use tokenless_core::authz::Role;
 use tokenless_core::egress::EgressPolicy;
 use tokenless_core::host::HostPattern;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, SignInId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
@@ -358,14 +358,25 @@ impl Invite {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct UiSession {
+    /// What the person sees and revokes it by; the token hash never
+    /// leaves the server.
+    pub id: SignInId,
     pub token_hash: String,
     pub user_id: UserId,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub step_up_at: Option<DateTime<Utc>>,
+    /// Updated at most once a minute while the sign-in is used.
+    pub last_used_at: DateTime<Utc>,
+    /// The client's `User-Agent` when it signed in, cut to
+    /// [`MAX_USER_AGENT`] bytes.
+    pub user_agent: Option<String>,
 }
 
-tokenless_core::redacted_debug!(UiSession { user_id, created_at, expires_at, step_up_at; token_hash });
+/// The longest `User-Agent` kept with a sign-in.
+pub const MAX_USER_AGENT: usize = 256;
+
+tokenless_core::redacted_debug!(UiSession { id, user_id, created_at, expires_at, step_up_at, last_used_at, user_agent; token_hash });
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -532,11 +543,14 @@ mod tests {
             format!(
                 "{:?}",
                 UiSession {
+                    id: SignInId::new(),
                     token_hash: s(),
                     user_id: UserId::new(),
                     created_at: now,
                     expires_at: now,
                     step_up_at: None,
+                    last_used_at: now,
+                    user_agent: None,
                 }
             ),
             format!(
@@ -630,6 +644,7 @@ mod tests {
                         None,
                     )),
                     token_hash: s(),
+                    sign_in_id: SignInId::new(),
                     user: summary.clone(),
                     expires_at: now,
                 }

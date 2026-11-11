@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::Role;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
-    VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId,
+    SignInId, UserId, VariableId, VaultId,
 };
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
@@ -74,6 +74,11 @@ impl MemoryStore {
             .lock()
             .map_err(|_| StoreError::backend("memory.lock", "mutex poisoned"))
     }
+}
+
+/// Not past its expiry at `now` and, with `idle_since`, used since then.
+fn live_ui_session(s: &UiSession, now: DateTime<Utc>, idle_since: Option<DateTime<Utc>>) -> bool {
+    s.expires_at > now && idle_since.is_none_or(|since| s.last_used_at > since)
 }
 
 fn newest_first<T: Clone>(mut items: Vec<T>, key: impl Fn(&T) -> DateTime<Utc>) -> Vec<T> {
@@ -968,6 +973,7 @@ impl IdentityStore for MemoryStore {
         id: &UserId,
         secret_enc: Option<Vec<u8>>,
         last_step: Option<u64>,
+        keep_session: Option<&str>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
@@ -977,6 +983,9 @@ impl IdentityStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("user", id))?;
         user.totp_secret_enc = secret_enc;
         user.totp_last_step = last_step;
+        inner
+            .ui_sessions
+            .retain(|hash, s| s.user_id != *id || Some(hash.as_str()) == keep_session);
         inner.audit.extend_from_slice(audit);
         Ok(())
     }
@@ -1124,10 +1133,78 @@ impl IdentityStore for MemoryStore {
         Ok(())
     }
 
-    async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+    async fn touch_ui_session(
+        &self,
+        token_hash: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        if let Some(s) = self.lock()?.ui_sessions.get_mut(token_hash) {
+            s.last_used_at = at;
+        }
+        Ok(())
+    }
+
+    async fn list_ui_sessions(
+        &self,
+        user_id: &UserId,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+        page: PageRequest,
+    ) -> Result<Page<UiSession>, StoreError> {
+        let items: Vec<_> = self
+            .lock()?
+            .ui_sessions
+            .values()
+            .filter(|s| s.user_id == *user_id && live_ui_session(s, now, idle_since))
+            .cloned()
+            .collect();
+        Ok(page.apply(&newest_first(items, |s| s.created_at)))
+    }
+
+    async fn delete_user_ui_session(
+        &self,
+        user_id: &UserId,
+        id: &SignInId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let before = inner.ui_sessions.len();
-        inner.ui_sessions.retain(|_, s| s.expires_at > now);
+        inner
+            .ui_sessions
+            .retain(|_, s| s.user_id != *user_id || s.id != *id);
+        if inner.ui_sessions.len() == before {
+            return Ok(false);
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(true)
+    }
+
+    async fn delete_user_ui_sessions(
+        &self,
+        user_id: &UserId,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
+        let mut inner = self.lock()?;
+        let before = inner.ui_sessions.len();
+        inner
+            .ui_sessions
+            .retain(|hash, s| s.user_id != *user_id || Some(hash.as_str()) == keep_session);
+        let removed = before - inner.ui_sessions.len();
+        inner.audit.extend_from_slice(audit);
+        Ok(removed as u64)
+    }
+
+    async fn delete_expired_ui_sessions(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError> {
+        let mut inner = self.lock()?;
+        let before = inner.ui_sessions.len();
+        inner
+            .ui_sessions
+            .retain(|_, s| live_ui_session(s, now, idle_since));
         Ok((before - inner.ui_sessions.len()) as u64)
     }
 

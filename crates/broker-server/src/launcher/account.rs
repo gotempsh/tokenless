@@ -24,11 +24,11 @@ use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
     AccessBundle, CredentialMeta, Node, Page, ProxySession, Rule, StoredTemplate, Vault,
 };
-use tokenless_control::service::auth::UserSummary;
+use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
     CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
 };
-use tokenless_core::ids::{ApiKeyId, BundleId, CredentialId, RuleId, VaultId};
+use tokenless_core::ids::{ApiKeyId, BundleId, CredentialId, RuleId, SignInId, UserId, VaultId};
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -410,8 +410,13 @@ fn normalise(server: &str) -> Result<String, LauncherError> {
     }
 }
 
+/// How the CLI names itself to the control plane, so a person's list of
+/// sign-ins tells a `tokenless login` apart from a browser.
+pub const USER_AGENT: &str = concat!("tokenless/", env!("CARGO_PKG_VERSION"));
+
 fn http_client(base: &str) -> Result<reqwest::Client, LauncherError> {
     reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .timeout(TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .no_proxy()
@@ -773,6 +778,59 @@ impl<'p> ConsoleClient<'p> {
             &format!("/vaults/{vault}/launcher-keys/{id}/revoke"),
             Some(json!({})),
             "revoking the launcher key",
+        )
+        .await
+    }
+
+    /// The signed-in person's sign-ins, the current one marked.
+    pub async fn sign_ins(&self) -> Result<Vec<SignInRecord>, LauncherError> {
+        self.pages("/auth/sign-ins", "listing your sign-ins").await
+    }
+
+    /// Ends one of the signed-in person's sign-ins.
+    pub async fn revoke_sign_in(&self, id: &SignInId) -> Result<(), LauncherError> {
+        self.call::<serde_json::Value>(
+            Method::POST,
+            &format!("/auth/sign-ins/{id}/revoke"),
+            Some(json!({})),
+            "ending the sign-in",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Ends every sign-in of the signed-in person but this one.
+    pub async fn revoke_other_sign_ins(&self) -> Result<SignInsRevoked, LauncherError> {
+        self.call(
+            Method::POST,
+            "/auth/sign-ins/revoke-others",
+            Some(json!({})),
+            "signing out everywhere else",
+        )
+        .await
+    }
+
+    /// Everyone with an account, for an admin.
+    pub async fn users(&self) -> Result<Vec<UserSummary>, LauncherError> {
+        self.pages("/users", "listing people").await
+    }
+
+    /// Someone's sign-ins, for an admin.
+    pub async fn user_sign_ins(&self, user: &UserId) -> Result<Vec<SignInRecord>, LauncherError> {
+        self.pages(&format!("/users/{user}/sign-ins"), "listing their sign-ins")
+            .await
+    }
+
+    /// Signs someone out everywhere, for an admin.
+    pub async fn revoke_user_sign_ins(
+        &self,
+        user: &UserId,
+    ) -> Result<SignInsRevoked, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/users/{user}/sign-ins/revoke"),
+            Some(json!({})),
+            "signing them out everywhere",
         )
         .await
     }

@@ -57,6 +57,11 @@ id_type!(CredentialId, "credential");
 id_type!(RuleId, "rule");
 id_type!(SessionId, "session");
 id_type!(
+    /// One sign-in of a person: a console tab or a CLI login.
+    SignInId,
+    "sign_in"
+);
+id_type!(
     /// A named set of a vault's rules that sessions are minted from.
     BundleId,
     "access_bundle"

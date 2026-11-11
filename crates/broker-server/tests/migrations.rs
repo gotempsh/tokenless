@@ -449,3 +449,46 @@ async fn upgrading_numbers_the_audit_log_for_export_in_write_order() {
     let ids: Vec<String> = events[..3].iter().map(|(_, e)| e.id.to_string()).collect();
     assert_eq!(ids, written);
 }
+
+#[tokio::test]
+async fn upgrading_keeps_sign_ins_and_gives_them_an_id() {
+    let (_dir, url, pool) = database_before(19).await;
+    let user = tokenless_core::ids::UserId::new();
+    for hash in ["sign-in-a", "sign-in-b"] {
+        sqlx::query(
+            "INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, '2099-01-01T00:00:00.000000Z')",
+        )
+        .bind(hash)
+        .bind(user.to_string())
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .expect("sign-in");
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    let a = store
+        .get_ui_session("sign-in-a")
+        .await
+        .expect("get")
+        .expect("the sign-in survives the upgrade");
+    let b = store
+        .get_ui_session("sign-in-b")
+        .await
+        .expect("get")
+        .expect("the sign-in survives the upgrade");
+    assert_ne!(a.id, b.id, "each sign-in gets its own id");
+    assert_eq!(a.last_used_at, a.created_at, "last used starts at sign-in");
+    assert_eq!(a.user_agent, None);
+    let listed = store
+        .list_ui_sessions(
+            &user,
+            chrono::Utc::now(),
+            None,
+            PageRequest::new(Some(1), Some(10)),
+        )
+        .await
+        .expect("list");
+    assert_eq!(listed.total, 2);
+}

@@ -99,6 +99,16 @@ sign-in page offers **Sign in with a local admin account** under the
 provider buttons. Invites can then only create admins. The last provider
 that is on can't be turned off or deleted while this is set.
 
+## Idle sign-ins
+
+A browser or CLI login that goes unused this long is signed out, before
+its 12-hour limit: a forgotten console tab or a `tokenless login` on a
+machine you no longer use stops working on its own. The default is
+2 hours; pick between 15 minutes and 7 days, or **Never**. Changing it
+applies to existing sign-ins at once. Over the API it is
+`idle_timeout_secs` (`null` for never, otherwise 300 to 2,592,000) in
+`PUT /api/v1/auth/sign-in-settings`.
+
 ## Audit export
 
 The audit log lives in the control plane's database. To keep a copy in

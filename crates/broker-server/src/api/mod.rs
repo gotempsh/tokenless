@@ -8,6 +8,7 @@ mod console;
 mod extract;
 mod handlers;
 mod launcher_keys;
+mod sign_ins;
 mod sso;
 
 use std::path::PathBuf;
@@ -35,6 +36,15 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/me", get(me))
         .route("/auth/step-up", post(step_up))
         .route("/auth/password", post(change_password))
+        .route("/auth/sign-ins", get(sign_ins::list_own))
+        .route(
+            "/auth/sign-ins/revoke-others",
+            post(sign_ins::revoke_others),
+        )
+        .route(
+            "/auth/sign-ins/{sign_in_id}/revoke",
+            post(sign_ins::revoke_own),
+        )
         .route(
             "/auth/authenticator/enrollment",
             post(authenticator_enrollment),
@@ -175,6 +185,11 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/users", get(list_users))
         .route("/users/{user_id}", axum::routing::patch(update_user))
+        .route("/users/{user_id}/sign-ins", get(sign_ins::list_user))
+        .route(
+            "/users/{user_id}/sign-ins/revoke",
+            post(sign_ins::revoke_user),
+        )
         .route("/invites", get(list_invites).post(create_invite))
         .route("/invites/inspect", post(inspect_invite))
         .route("/invites/totp", post(invite_totp))
@@ -203,6 +218,15 @@ const UI_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; i
 /// Every response must be revalidated (`no-cache`, answered with a 304
 /// when unchanged): a cached `index.html` keeps pointing at the previous
 /// build's scripts, so an upgraded broker would show the old UI.
+/// The request's `User-Agent`, kept with a new sign-in; `None` when it
+/// is missing or not text.
+fn user_agent(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+}
+
 fn ui_service(dir: PathBuf) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValue> {
     let index = dir.join("index.html");
     SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))

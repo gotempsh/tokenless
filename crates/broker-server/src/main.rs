@@ -45,6 +45,7 @@ mod keys;
 mod list;
 mod messages;
 mod setup;
+mod sign_ins;
 
 #[derive(Parser)]
 #[command(
@@ -85,6 +86,12 @@ enum Command {
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
+    },
+    /// The browsers and CLI logins signed in as you, and ending them: a
+    /// lost laptop, a machine you no longer use. Needs `tokenless login`.
+    SignIns {
+        #[command(subcommand)]
+        command: SignInCommand,
     },
     /// What is set up on this machine (control plane, sign-in, services,
     /// proxy, agent skill) and the one command to run next. Exits 0 when
@@ -459,6 +466,50 @@ enum BundleKeyCommand {
         /// Vault name or id. Not needed when there is only one.
         #[arg(long)]
         vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SignInCommand {
+    /// List sign-ins, newest first, with the client and when each was
+    /// last used.
+    ///
+    /// Examples:
+    ///   tokenless sign-ins list
+    ///   tokenless sign-ins list --user ada
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Someone else's sign-ins (admins only), by username.
+        #[arg(long)]
+        user: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// End a sign-in: one of yours, all of yours but this one, or all of
+    /// someone's (admins only).
+    ///
+    /// Examples:
+    ///   tokenless sign-ins revoke 3f9c2a1b
+    ///   tokenless sign-ins revoke --others
+    ///   tokenless sign-ins revoke --user ada
+    #[command(verbatim_doc_comment)]
+    #[command(group(clap::ArgGroup::new("which").required(true).args(["sign_in", "others", "user"])))]
+    Revoke {
+        /// The sign-in's id, or its start as `list` shows it.
+        sign_in: Option<String>,
+        /// Every sign-in of yours but this one.
+        #[arg(long)]
+        others: bool,
+        /// Every sign-in of this person, by username.
+        #[arg(long)]
+        user: Option<String>,
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
@@ -2259,6 +2310,7 @@ async fn main() -> ExitCode {
             | Command::Admin { .. }
             | Command::Login { .. }
             | Command::Logout { .. }
+            | Command::SignIns { .. }
             | Command::Service { .. }
             | Command::Vault { .. }
             | Command::Bundle { .. }
@@ -2279,6 +2331,28 @@ async fn main() -> ExitCode {
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
+        Command::SignIns { command } => match command {
+            SignInCommand::List { user, json, server } => sign_ins::list(user, json, server).await,
+            SignInCommand::Revoke {
+                sign_in,
+                others,
+                user,
+                server,
+            } => {
+                let what = match (sign_in, others, user) {
+                    (Some(id), _, _) => Ok(sign_ins::Revoke::One(id)),
+                    (None, true, _) => Ok(sign_ins::Revoke::Others),
+                    (None, false, Some(user)) => Ok(sign_ins::Revoke::User(user)),
+                    (None, false, None) => Err(LauncherError::config(
+                        "say which sign-in to end: an id, --others or --user <username>",
+                    )),
+                };
+                match what {
+                    Ok(what) => sign_ins::revoke(what, server).await,
+                    Err(e) => Err(e.into()),
+                }
+            }
+        },
         Command::Service { command } => service(command).await,
         Command::Vault {
             command: VaultCommand::List { json, server },

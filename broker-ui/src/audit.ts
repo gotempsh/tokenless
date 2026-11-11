@@ -23,6 +23,7 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "Vaults", prefix: "vault." },
   { label: "People", prefix: "user." },
   { label: "API keys", prefix: "api_key." },
+  { label: "Launcher keys", prefix: "launcher_key." },
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
@@ -85,6 +86,16 @@ export function actionPhrase(event: AuditEvent): string {
       return event.outcome === "success" ? "turned on an authenticator app" : "tried to turn on an authenticator app";
     case "auth.totp_disable":
       return event.outcome === "success" ? "removed their authenticator app" : "tried to remove their authenticator app";
+    case "auth.sign_in_revoke":
+      return "signed out one of their sign-ins";
+    case "auth.sign_out_elsewhere":
+      return "signed out everywhere else";
+    case "user.sign_ins_revoke":
+      return `signed ${d.username ?? "someone"} out everywhere`;
+    case "launcher_key.create":
+      return `created ${named("launcher key")}${d.bundle ? ` for bundle ${d.bundle}` : ""}`;
+    case "launcher_key.revoke":
+      return `revoked ${named("launcher key")}`;
     case "credential.create":
       return `added ${named("service")}`;
     case "credential.rotate":

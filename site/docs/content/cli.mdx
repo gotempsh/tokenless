@@ -13,6 +13,7 @@ description: "Every command takes --help for its full list of options."
 | `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
 | `tokenless proxy list` | Proxies, and whether each is connected. Admins only. |
 | `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
+| `tokenless sign-ins list`, `revoke` | The browsers and CLI logins signed in as you, and ending one or all but this one. Admins sign someone out everywhere with `--user`. |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
 | `tokenless service templates` | Find a template by name, host or variable. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
@@ -124,6 +125,22 @@ sessions the key started.
 | `--label` (`add`) | | Stamped on every session the key starts, as key=value (repeatable) |
 | `--expires-in-days` (`add`) | `90` | At most 365 |
 | `--bundle` (`list`) | | Only this bundle's keys |
+| `--json` (`list`) | | The rows as JSON |
+
+## `sign-ins list`, `sign-ins revoke`
+
+Where you're signed in: each browser and `tokenless login`, with the client
+and when it was last used. `revoke` ends one by its id (the first
+characters `list` shows are enough), every one but this one with
+`--others`, or, for an admin, every one of a person's with
+`--user <username>`. To end this one, use `tokenless logout`. Agent
+sessions already started keep running until they expire; end them with
+`tokenless session revoke`.
+
+| Option | Default | |
+|---|---|---|
+| `--user` | you | Someone else's sign-ins, by username. Admins only |
+| `--others` (`revoke`) | | Every sign-in of yours but this one |
 | `--json` (`list`) | | The rows as JSON |
 
 ## `proxy add`

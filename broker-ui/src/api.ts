@@ -71,6 +71,28 @@ export type PasswordSignIn = "everyone" | "admins_only";
 
 export interface SignInSettings {
   password_sign_in: PasswordSignIn;
+  /** A sign-in unused this long ends; `null` turns idle expiry off. */
+  idle_timeout_secs: number | null;
+}
+
+export type SignInClient = "cli" | "browser" | "unknown";
+
+/** A browser or CLI login holding someone's session; never its token. */
+export interface SignIn {
+  id: string;
+  client: SignInClient;
+  /** What signed in, for people: "Firefox on macOS". */
+  device: string;
+  user_agent: string | null;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
+  /** The sign-in that asked. */
+  current: boolean;
+}
+
+export interface SignInsRevoked {
+  revoked: number;
 }
 
 /** The product an identity provider is, read from its issuer; `openid` for any other. */
