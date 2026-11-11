@@ -27,6 +27,8 @@ services:
       - --node-listen=0.0.0.0:8443
       # Proxies check the node API's certificate against the name they dial.
       - --node-api-name=${TOKENLESS_DOMAIN:?set TOKENLESS_DOMAIN in .env}
+      # Proxies run on the hosts, next to their agents, not in here.
+      - --no-proxy
     secrets:
       - root_key
     volumes:

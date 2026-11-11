@@ -96,7 +96,8 @@ More on the recipe, backups and upgrades:
 
 Without Docker, [install the binary](./install.mdx) and use the unit in
 [Deploy → systemd](./deploy.mdx#systemd), with your certificate on port
-443. In its `[Service]` section:
+443. `--no-proxy` keeps `serve` from running its own proxy: here the
+proxies run on the hosts. In its `[Service]` section:
 
 ```ini
 ExecStart=/usr/local/bin/tokenless serve --data-dir /var/lib/tokenless \
@@ -105,7 +106,8 @@ ExecStart=/usr/local/bin/tokenless serve --data-dir /var/lib/tokenless \
   --api-tls-cert /etc/tokenless/fullchain.pem \
   --api-tls-key /etc/tokenless/privkey.pem \
   --node-listen 0.0.0.0:8443 \
-  --node-api-name tokenless.example.com
+  --node-api-name tokenless.example.com \
+  --no-proxy
 # The unit runs as the tokenless user: let it bind 443, and nothing else.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ```

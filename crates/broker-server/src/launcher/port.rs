@@ -523,7 +523,7 @@ mod tests {
         assert!(matches!(err, LauncherError::ProxyUnreachable { .. }));
         let shown = err.to_string();
         assert!(
-            shown.contains(&up) && shown.contains("tokenless node run"),
+            shown.contains(&up) && shown.contains("tokenless serve runs one here"),
             "{shown}"
         );
     }

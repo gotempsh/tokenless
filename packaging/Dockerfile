@@ -5,7 +5,8 @@
 # workflow already built (linux/<arch>/tokenless in this directory), so the
 # image runs exactly the binary in the release archives.
 #
-# The default command runs the control plane with its data in /data.
+# The default command runs the control plane with its data in /data, and
+# no built-in proxy: agents outside the container could not reach one.
 # Mount a volume there: it holds the database. Supply the root key from
 # outside it (TOKENLESS_ROOT_KEY or --root-key-file with a mounted secret).
 #   docker run -v tokenless:/data -p 127.0.0.1:8080:8080 -p 8443:8443 \
@@ -28,4 +29,4 @@ EXPOSE 8080 8443
 ARG IMAGE=ghcr.io/gotempsh/tokenless
 ENV TOKENLESS_CONTAINER_IMAGE=${IMAGE}
 ENTRYPOINT ["/usr/local/bin/tokenless"]
-CMD ["serve", "--data-dir", "/data", "--api-listen", "0.0.0.0:8080", "--node-listen", "0.0.0.0:8443"]
+CMD ["serve", "--data-dir", "/data", "--api-listen", "0.0.0.0:8080", "--node-listen", "0.0.0.0:8443", "--no-proxy"]

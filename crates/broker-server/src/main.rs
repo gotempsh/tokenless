@@ -25,6 +25,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
+use broker_server::local_proxy::{self, LocalProxyConfig};
 use broker_server::telemetry::{self, Component, Settings as TelemetrySettings, Telemetry};
 use broker_server::update::{self, Outcome as UpdateOutcome, UpdateError};
 use broker_server::{RootKeyInput, Server, ServerConfig};
@@ -426,6 +427,17 @@ struct ServeArgs {
     /// Snapshot lease in seconds; nodes fail closed when it lapses.
     #[arg(long, default_value_t = 60)]
     lease_secs: u32,
+    /// Do not run the built-in proxy, for a server whose proxies run on the
+    /// agents' machines (tokenless node join, then node run, there).
+    #[arg(long)]
+    no_proxy: bool,
+    /// Where the built-in proxy listens for agents on this machine. Keep it
+    /// on loopback or a private address.
+    #[arg(long, default_value = "127.0.0.1:3128")]
+    proxy_listen: SocketAddr,
+    /// The built-in proxy's MCP gateway (see `tokenless mcp`).
+    #[arg(long, default_value = "127.0.0.1:3129")]
+    proxy_mcp_listen: SocketAddr,
 }
 
 #[derive(Subcommand)]
@@ -763,6 +775,38 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.control.lease_secs = args.lease_secs.max(3);
     config.validation_extra_roots = read_cas(&args.validation_ca)?;
     let running = Server::start(config).await?;
+    // Listening for the stop signal from here on: starting the built-in
+    // proxy takes a moment, and a SIGTERM then must still shut down cleanly.
+    let stop = stop_signal();
+    tokio::pin!(stop);
+    let proxy = if args.no_proxy {
+        None
+    } else {
+        let config = LocalProxyConfig {
+            listen: args.proxy_listen,
+            mcp_listen: Some(args.proxy_mcp_listen),
+            ..LocalProxyConfig::new(&data_dir)
+        };
+        let started = tokio::select! {
+            started = local_proxy::start(&running.control, running.node_addr, config) => started,
+            signal = &mut stop => {
+                let signal = signal?;
+                info!(signal, "shutting down");
+                running.shutdown();
+                return Ok(());
+            }
+        };
+        match started {
+            Ok(proxy) => Some(proxy),
+            Err(e) => {
+                // The server is still useful without it: say why, and go on.
+                warn!(error = %e, "built-in proxy not started");
+                eprintln!("  No built-in proxy: {e}");
+                eprintln!();
+                None
+            }
+        }
+    };
     if let Some(admin) = &running.initial_admin {
         // Printed to the terminal, not the structured log, so it is not
         // shipped to log aggregation. Only its hash is stored.
@@ -795,11 +839,39 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
-    let signal = stop_signal().await?;
+    if let Some(proxy) = &proxy {
+        eprintln!(
+            "  Proxy for agents on this machine: {}. Run one through it with: {}",
+            proxy.listen,
+            run_hint(proxy.listen)
+        );
+        if !proxy.ready {
+            eprintln!("  It has no policy from this server yet and refuses traffic until it does.");
+        }
+        eprintln!("  (Proxies on other machines instead? Start with --no-proxy.)");
+        eprintln!();
+    }
+    let signal = stop.await?;
     info!(signal, "shutting down");
+    if let Some(proxy) = proxy {
+        proxy.shutdown(LOCAL_PROXY_DRAIN).await;
+    }
     running.shutdown();
     Ok(())
 }
+
+/// The command that runs an agent through the built-in proxy: `--proxy`
+/// only when it is not where `tokenless run` looks by default.
+fn run_hint(listen: SocketAddr) -> String {
+    if listen == SocketAddr::from(([127, 0, 0, 1], 3128)) {
+        "tokenless run -- <agent>".into()
+    } else {
+        format!("tokenless run --proxy {listen} -- <agent>")
+    }
+}
+
+/// How long agents' open tunnels get to finish when `serve` stops.
+const LOCAL_PROXY_DRAIN: Duration = Duration::from_secs(10);
 
 /// An address to sign in at: a wildcard listener (`0.0.0.0`, `::`, as in
 /// the container image) is reachable on loopback from this host.
@@ -2059,6 +2131,18 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_run_hint_names_the_proxy_only_off_its_default() {
+        assert_eq!(
+            run_hint("127.0.0.1:3128".parse().unwrap()),
+            "tokenless run -- <agent>"
+        );
+        assert_eq!(
+            run_hint("127.0.0.1:4128".parse().unwrap()),
+            "tokenless run --proxy 127.0.0.1:4128 -- <agent>"
+        );
+    }
 
     #[test]
     fn a_check_in_the_container_says_to_pull_the_image() {

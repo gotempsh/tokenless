@@ -5,6 +5,11 @@ title: "Deploy to production"
 description: "A production setup is one control plane (tokenless serve) and one or more proxies (tokenless node run), usually one on each machine that runs agents."
 ---
 
+`serve` also runs a proxy of its own for agents on its machine, on
+`127.0.0.1:3128`, listed under **Proxies** as *built-in (this server)*.
+Where agents run elsewhere, start it with `--no-proxy`, as the
+[Compose recipe](#docker-compose) and the container image do.
+
 ## Control plane
 
 `serve` has two listeners:
@@ -98,7 +103,7 @@ User=tokenless
 ExecStart=/usr/local/bin/tokenless serve --data-dir /var/lib/tokenless \
   --root-key-file ${CREDENTIALS_DIRECTORY}/root.key \
   --api-listen 127.0.0.1:8080 --node-listen 10.0.0.5:8443 \
-  --node-api-name tokenless.internal
+  --node-api-name tokenless.internal --no-proxy
 # The root key lives outside the data directory. LoadCredentialEncrypted=
 # with a key from `systemd-creds encrypt` binds it to this machine's TPM.
 LoadCredential=root.key:/etc/tokenless/root.key

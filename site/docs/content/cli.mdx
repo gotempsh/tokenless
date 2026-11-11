@@ -7,7 +7,7 @@ description: "Every command takes --help for its full list of options."
 
 | Command | What it does |
 |---|---|
-| `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](./deploy.mdx). |
+| `tokenless serve` | Run the control plane (console, management API and node API) and a proxy for this machine. See [Deploy](./deploy.mdx). |
 | `tokenless status` | What is set up here and the command to run next. Start here. |
 | `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
@@ -41,6 +41,15 @@ description: "Every command takes --help for its full list of options."
 | `--validation-ca` | | Extra CAs for credential tests (repeatable) |
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
+| `--no-proxy` | | Don't run the built-in proxy, for a server whose proxies run on other machines |
+| `--proxy-listen` | `127.0.0.1:3128` | The built-in proxy's listener |
+| `--proxy-mcp-listen` | `127.0.0.1:3129` | The built-in proxy's MCP gateway |
+
+The built-in proxy enrols with the server on its first start, keeps its
+identity in `<data-dir>/builtin-proxy.json` and shows under **Proxies** as
+*built-in (this server)*. If its port is taken, `serve` says so and runs
+without it. Revoked in the console, it stays off until you delete
+`builtin-proxy.json`.
 
 `serve` sends its logs to OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
