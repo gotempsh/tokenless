@@ -160,21 +160,11 @@ Sign in at `https://<your domain>`, not at the `127.0.0.1` address the
 log prints, which is the server's own view of itself. Back up the
 `tokenless-data` volume and `root.key` separately ([Backups](#backups)).
 
-On each machine that runs agents, [install](./install.mdx) tokenless,
-then:
+Then connect each machine that runs agents: sign in, add services, enrol
+its proxy and keep it running, as in
+[One server, many hosts](./server.mdx#4-connect-a-host).
 
-```sh
-export TOKENLESS_URL=https://tokenless.example.com   # your domain
-tokenless login                       # the admin, or anyone you invite
-tokenless service add github --vault work --bundle code-review   # once, from any machine
-tokenless proxy add --name laptop     # enrols with the node API on port 8443
-tokenless node run                    # or as a service, see systemd above
-tokenless run --vault work --bundle code-review -- claude
-```
-
-`TOKENLESS_URL` saves passing `--server` to each command. `service add`
-asks for the key without showing it to the agent, and creates the vault
-and the bundle the first time ([Set up from the terminal](./terminal.mdx)). To upgrade,
+To upgrade,
 change `TOKENLESS_VERSION` in `.env`, then `docker compose pull && docker
 compose up -d`; upgrade the control plane before the proxies
 ([Upgrades](#upgrades)).

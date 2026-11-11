@@ -343,10 +343,10 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
 
 ### Deployment notes
 
-- To reach tokenless from other machines with Docker Compose, with Caddy
-  providing HTTPS, use [`examples/docker-compose`](examples/docker-compose)
-  and its walkthrough in
-  [Deploy → Docker Compose](site/docs/content/deploy.mdx#docker-compose).
+- To run tokenless on a server and connect the machines that run agents to
+  it, follow [One server, many hosts](site/docs/content/server.mdx); the
+  server side is the Compose recipe in
+  [`examples/docker-compose`](examples/docker-compose).
 - The management API serves plain HTTP on loopback by default. For
   anything beyond `localhost`, serve HTTPS directly or put a
   TLS-terminating reverse proxy in front, because the session cookie is

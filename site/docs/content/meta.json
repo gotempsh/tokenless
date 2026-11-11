@@ -15,6 +15,7 @@
     "---Use the console---",
     "...console",
     "---Run it in production---",
+    "server",
     "deploy",
     "settings",
     "security",
