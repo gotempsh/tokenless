@@ -196,9 +196,11 @@ enum Existing {
     /// A link to the shared copy, as [`install_for_agents`] makes it.
     OurLink,
     /// A link somewhere else; `works` when a `SKILL.md` is there, so a
-    /// dangling one loses nothing when replaced.
+    /// dangling one loses nothing when replaced, `same` when that is this
+    /// version's.
     Link {
         works: bool,
+        same: bool,
     },
     /// A folder of its own: `skill` when it holds a `SKILL.md`, `same` when
     /// that is this version's, `alone` when nothing else is in it, so
@@ -227,11 +229,15 @@ fn existing(link: &Path, shared: &Path) -> Result<Existing, LauncherError> {
         Err(e) => return Err(LauncherError::io(format!("checking {}", link.display()))(e)),
     };
     let skill = link.join("SKILL.md").is_file();
+    let same = || std::fs::read_to_string(link.join("SKILL.md")).is_ok_and(|c| c == SKILL_MD);
     if meta.file_type().is_symlink() {
         return Ok(if same_place(link, shared) {
             Existing::OurLink
         } else {
-            Existing::Link { works: skill }
+            Existing::Link {
+                works: skill,
+                same: same(),
+            }
         });
     }
     if same_place(link, shared) {
@@ -246,8 +252,11 @@ fn existing(link: &Path, shared: &Path) -> Result<Existing, LauncherError> {
         .filter_map(Result::ok)
         .map(|e| e.file_name())
         .all(|name| name == "SKILL.md" || name == ".DS_Store");
-    let same = std::fs::read_to_string(link.join("SKILL.md")).is_ok_and(|c| c == SKILL_MD);
-    Ok(Existing::Copy { skill, same, alone })
+    Ok(Existing::Copy {
+        skill,
+        same: same(),
+        alone,
+    })
 }
 
 /// What Claude Code got from a link to the shared copy that was already
@@ -288,6 +297,11 @@ fn place_for_claude_code(
         // whichever version that is, so a kept one is reported as kept.
         (Existing::Shared, _) => return Ok(placed(link.join("SKILL.md"), linked(shared_current))),
         (Existing::OurLink, false) => return Ok(placed(link, linked(shared_current))),
+        // Someone's own link to this version, which there is no reason
+        // to swap for ours.
+        (Existing::Link { same: true, .. }, false) => {
+            return Ok(placed(link.join("SKILL.md"), Installed::Unchanged))
+        }
         // Up to date: the other files in it stay, and a shared copy of
         // another version is no reason to give it up.
         (
@@ -305,7 +319,7 @@ fn place_for_claude_code(
                 same: false,
                 ..
             }
-            | Existing::Link { works: true },
+            | Existing::Link { works: true, .. },
             _,
         ) if !force => return Ok(placed(link.join("SKILL.md"), Installed::Kept)),
         (Existing::File, _) if !force => {
@@ -342,7 +356,7 @@ fn place_for_claude_code(
             skill: true,
             same: false,
             ..
-        } | Existing::Link { works: true }
+        } | Existing::Link { works: true, .. }
             | Existing::File
     );
     if !matches!(found, Existing::Nothing) {
@@ -423,10 +437,23 @@ pub fn missing_hint(program: &str, cwd: &Path, home: Option<&Path>) -> Option<St
     let agent = Agent::of_program(program)?;
     (!agent.has_skill(cwd, home)).then(|| {
         format!(
-            "the tokenless skill isn't installed for {}, so it won't know how to use placeholders or read the proxy's errors. Install it with: tokenless skill --install",
-            agent.name()
+            "the tokenless skill isn't installed for {}, so it won't know how to use placeholders or read the proxy's errors. Install it with: {}",
+            agent.name(),
+            install_command(agent, home)
         )
     })
+}
+
+/// The `skill --install` that places the skill for `agent`. A plain one
+/// leaves Claude Code out where only Codex is set up, so there it takes
+/// `--copy`, which makes Claude Code's folder.
+fn install_command(agent: Agent, home: Option<&Path>) -> &'static str {
+    let codex_only = home.is_some_and(|h| !Agent::ClaudeCode.set_up(h) && Agent::Codex.set_up(h));
+    if agent == Agent::ClaudeCode && codex_only {
+        "tokenless skill --install --copy"
+    } else {
+        "tokenless skill --install"
+    }
 }
 
 /// The agents set up for this user that find no copy of the skill from
@@ -606,6 +633,44 @@ mod tests {
         assert!(same_place(&link, &home.join(".agents/skills/tokenless")));
     }
 
+    /// Whether the hint for Claude Code, from a folder with no skill, ends
+    /// with `command` (newline-terminated).
+    fn hint_names(home: &Path, command: &str) -> bool {
+        let empty = tempfile::tempdir().unwrap();
+        let hint = missing_hint("claude", empty.path(), Some(home)).unwrap();
+        format!("{hint}\n").ends_with(&format!(": {command}"))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_of_their_own_to_this_version_is_left_up_to_date() {
+        // Claude Code's folder links to a checkout holding this version.
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let theirs = home.join("src/tokenless/skills/tokenless");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("SKILL.md"), SKILL_MD).unwrap();
+        let link = home.join(".claude/skills/tokenless");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&theirs, &link).unwrap();
+
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[1].outcome, Installed::Unchanged, "{placed:?}");
+        assert!(same_place(&link, &theirs));
+        // Even --force keeps it: it already is this version.
+        let placed = installed(home, true, false, true);
+        assert_eq!(placed[1].outcome, Installed::Unchanged, "{placed:?}");
+        assert!(same_place(&link, &theirs));
+
+        // Another version behind it is kept, and --force replaces it.
+        std::fs::write(theirs.join("SKILL.md"), "edited").unwrap();
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[1].outcome, Installed::Kept, "{placed:?}");
+        let placed = installed(home, true, false, true);
+        assert_eq!(placed[1].outcome, Installed::Replaced, "{placed:?}");
+        assert!(same_place(&link, &home.join(".agents/skills/tokenless")));
+    }
+
     #[test]
     fn the_hint_names_the_agent_that_would_miss_the_skill() {
         let root = tempfile::tempdir().unwrap();
@@ -627,6 +692,14 @@ mod tests {
         install(&project.join(".claude").join("skills"), false).unwrap();
         assert!(missing_hint("claude", &nested, Some(&home)).is_none());
         assert!(missing_hint("claude", &root.path().join("work"), Some(&home)).is_some());
+
+        // Where only Codex is set up, a plain install leaves Claude Code
+        // out, so the hint names the one that does not.
+        assert!(hint_names(&home, "tokenless skill --install\n"));
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        assert!(hint_names(&home, "tokenless skill --install --copy\n"));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        assert!(hint_names(&home, "tokenless skill --install\n"));
 
         // Personal skills, in any version.
         let personal = home.join(".claude").join("skills").join(SKILL_NAME);
