@@ -2126,6 +2126,9 @@ mod tests {
         ) -> (String, Vec<u8>) {
             stream.write_all(head.as_bytes()).await.unwrap();
             stream.write_all(body).await.unwrap();
+            // TLS may hold the last records of a large body until flushed;
+            // unsent, the proxy waits for them and never answers.
+            stream.flush().await.unwrap();
             read_message(stream).await.unwrap()
         }
 
