@@ -2362,9 +2362,12 @@ fn skill_command(
 
 /// Whether `skill --install` places the skill for Claude Code too: when it
 /// is set up for this user or this project, or asked for with `--copy`,
-/// which only Claude Code's folder takes.
+/// which only Claude Code's folder takes. Also when no agent is set up yet,
+/// as on a fresh machine where Claude Code has not run: only someone who
+/// has set up Codex alone goes without the link.
 fn for_claude_code(home: Option<&Path>, base: &Path, project: bool, copy: bool) -> bool {
-    copy || home.is_some_and(|h| skill::Agent::ClaudeCode.set_up(h))
+    copy || home
+        .is_none_or(|h| skill::Agent::ClaudeCode.set_up(h) || !skill::Agent::Codex.set_up(h))
         || (project && base.join(".claude").is_dir())
 }
 
@@ -2620,10 +2623,23 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_fresh_machine_gets_the_skill_for_claude_code_too() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (h, p) = (Some(home.path()), project.path());
+        // No agent set up yet: Claude Code may simply not have run.
+        assert!(super::for_claude_code(h, p, false, false));
+        assert!(super::for_claude_code(h, p, true, false));
+        assert!(super::for_claude_code(None, p, true, false));
+    }
+
+    #[test]
     fn copy_places_the_skill_for_claude_code_before_it_is_set_up() {
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let (h, p) = (Some(home.path()), project.path());
+        // Only Codex is set up, so Claude Code needs `--copy` or its folder.
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
         assert!(!super::for_claude_code(h, p, false, false));
         assert!(!super::for_claude_code(h, p, true, false));
         assert!(super::for_claude_code(h, p, false, true));

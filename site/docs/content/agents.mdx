@@ -191,8 +191,9 @@ npx skills add https://git.example.com/you/tokenless.git
 
 Or from the binary, which installs the copy built into it, so it always
 matches the CLI you have. It lays it out as `npx skills add -g` does: the
-copy in `~/.agents/skills`, which Codex and most other agents read, and,
-when Claude Code is set up, a link to it in `~/.claude/skills`:
+copy in `~/.agents/skills`, which Codex and most other agents read, and a
+link to it in `~/.claude/skills`, left out only when Codex is set up and
+Claude Code is not:
 
 ```sh
 tokenless skill --install                        # ~/.agents/skills/tokenless, linked from ~/.claude/skills
