@@ -838,7 +838,13 @@ impl<'p> ConsoleClient<'p> {
 
     /// Every alert not acknowledged yet, newest first.
     pub async fn open_alerts(&self) -> Result<Vec<Alert>, LauncherError> {
-        self.pages("/alerts?open=true", "listing alerts").await
+        self.every_alert(false).await
+    }
+
+    /// Every alert, newest first; only those not acknowledged unless `all`.
+    pub async fn every_alert(&self, all: bool) -> Result<Vec<Alert>, LauncherError> {
+        self.pages(&format!("/alerts?open={}", !all), "listing alerts")
+            .await
     }
 
     pub async fn acknowledge_alert(&self, id: &AlertId) -> Result<Alert, LauncherError> {

@@ -157,13 +157,16 @@ are enough).
 | Option | Default | |
 |---|---|---|
 | `--all` (`list`) | | The acknowledged ones too |
-| `--json` (`list`) | | The rows as JSON |
+| `--json` (`list`) | | Every one as JSON; the table shows the newest 50 |
 
 ## `tripwire add`, `tripwire list`, `tripwire remove`
 
 [Tripwires](./console/vaults.mdx#tripwires): fake keys to plant on an
 agent's machine. `add` creates one and prints it once, ready to append
-to a file; how else to plant it goes to stderr. `list` shows each one's
+to a file; how else to plant it goes to stderr. When the AWS credentials
+file on the machine you run it on has a `[default]` profile already, an
+AWS decoy is printed as a profile named after the tripwire, so appending
+it doesn't break the file. `list` shows each one's
 first characters and when it was last tripped. `remove` deletes one by
 name, the start `list` shows, or id.
 

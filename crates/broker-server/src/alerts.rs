@@ -44,10 +44,13 @@ pub fn alert_table(rows: &[Alert], now: DateTime<Utc>) -> String {
 pub async fn list(all: bool, json: bool, server: String) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let client = open(&server, &prompter)?;
-    let page = client.alerts(all, SHOWN).await?;
     if json {
-        print_json(&page.items)?;
-    } else if page.items.is_empty() {
+        // A script gets every one, not the first page.
+        print_json(&client.every_alert(all).await?)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let page = client.alerts(all, SHOWN).await?;
+    if page.items.is_empty() {
         say(if all {
             "no alerts yet: a session cut off, refused often or used through a second proxy raises one"
         } else {

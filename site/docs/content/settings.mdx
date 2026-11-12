@@ -57,7 +57,9 @@ agent's machine trying what else the proxy will do. By default, after
 **20 refusals in 5 minutes** the proxy stops serving the session at once,
 even for what its rules allow, and reports it; the control plane then
 revokes it, so every proxy stops. The agent gets `407` saying the session
-was cut off.
+was cut off. Only what the session asked for counts: connections the proxy
+closes itself, because the session or a rule ended, its lease ran out or
+it is stopping (`proxy.tunnel_cut`), are not refusals.
 
 The session's page shows the refusals that did it and the revocation, as
 `proxy.quarantine` and `session.revoke` with reason `quarantine` in the
@@ -199,7 +201,9 @@ A browser or CLI login that goes unused this long is signed out, before
 its 12-hour limit: a forgotten console tab or a `tokenless login` on a
 machine you no longer use stops working on its own. The default is
 2 hours; pick between 15 minutes and 7 days, or **Never**. Changing it
-applies to existing sign-ins at once. Over the API it is
+applies to existing sign-ins at once. While `tokenless run` renews its
+session with your login, it uses the login every 2 minutes, so a session
+longer than the idle timeout still renews. Over the API it is
 `idle_timeout_secs` (`null` for never, otherwise 300 to 2,592,000) in
 `PUT /api/v1/auth/sign-in-settings`.
 

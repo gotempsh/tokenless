@@ -112,14 +112,33 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
         .trim_start_matches("aws_access_key_id = ")
         .to_string();
 
+    // A credentials file with a default profile gets a profile of its own.
+    std::fs::create_dir_all(home.path().join(".aws")).unwrap();
+    std::fs::write(
+        home.path().join(".aws/credentials"),
+        "[default]\naws_access_key_id = AKIAREAL\n",
+    )
+    .unwrap();
+    let (ok, second, err) = tokenless(
+        home.path(),
+        &url,
+        &["tripwire", "add", "--kind", "aws", "--name", "ci box"],
+    );
+    assert!(ok, "{err}");
+    assert!(
+        second.starts_with("[ci-box]\naws_access_key_id = AKIA"),
+        "{second}"
+    );
+    assert!(err.contains("the 'ci-box' profile"), "{err}");
+
     let (ok, out, err) = tokenless(home.path(), &url, &["tripwire", "list", "--json"]);
     assert!(ok, "{err}");
     assert!(!out.contains(&decoy), "never listed: {out}");
     let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["name"], "build-runner");
-    assert_eq!(rows[0]["kind"], "aws");
-    assert_eq!(rows[0]["prefix"], decoy[..8]);
+    assert_eq!(rows.len(), 2);
+    let row = rows.iter().find(|r| r["name"] == "build-runner").unwrap();
+    assert_eq!(row["kind"], "aws");
+    assert_eq!(row["prefix"], decoy[..8]);
     let (ok, out, _) = tokenless(home.path(), &url, &["tripwire", "list"]);
     assert!(
         ok && out.contains("build-runner") && out.contains("never"),
@@ -149,4 +168,37 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
     let whole = "0123abcd-0000-4000-8000-000000000000";
     let (ok, _, err) = tokenless(home.path(), &url, &["alerts", "ack", whole]);
     assert!(!ok && err.contains("404") && err.contains(whole), "{err}");
+
+    // More open alerts than the table shows: JSON has every one.
+    let edge = tokenless_control::model::Node {
+        id: tokenless_core::ids::NodeId::new(),
+        name: "edge-1".into(),
+        seal_public_key: String::new(),
+        cert_serial: String::new(),
+        cert_not_after: chrono::Utc::now(),
+        enrolled_at: chrono::Utc::now(),
+        last_seen_at: None,
+        revoked_at: None,
+        scoped_rules: false,
+    };
+    let reports: Vec<_> = (0..51)
+        .map(|_| {
+            tokenless_core::audit::AuditEvent::new(
+                "node:x",
+                tokenless_core::snapshot::QUARANTINE_ACTION,
+                tokenless_core::audit::AuditOutcome::Denied,
+            )
+            .detail(
+                "session_id",
+                tokenless_core::ids::SessionId::new().to_string(),
+            )
+        })
+        .collect();
+    server.control.alerts.observe(&edge, &reports).await;
+    let (ok, out, err) = tokenless(home.path(), &url, &["alerts", "list", "--json"]);
+    assert!(ok, "{err}");
+    let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(rows.len(), 51);
+    let (ok, _, err) = tokenless(home.path(), &url, &["alerts", "list"]);
+    assert!(ok && err.contains("1 more"), "{err}");
 }

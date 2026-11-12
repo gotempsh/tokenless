@@ -11,12 +11,12 @@ use super::*;
 use crate::cipher::AesGcmCipher;
 use crate::envelope::Envelope;
 use crate::memory::MemoryStore;
-use crate::model::{AuditQuery, Node};
+use crate::model::{AuditQuery, Node, Settings};
 use crate::service::auth::CreateApiKey;
 use crate::service::bundles::CreateBundle;
 use crate::service::policy::{CreateCredential, CreateRule};
 use crate::service::sessions::MintSession;
-use crate::store::{AuditSink, RbacAuthorizer};
+use crate::store::{AuditSink, PolicyStore, RbacAuthorizer};
 use crate::{ControlConfig, ControlPlane, Stores};
 
 struct T {
@@ -287,6 +287,50 @@ async fn a_key_starts_sessions_from_its_bundle_within_its_limits() {
 }
 
 #[tokio::test]
+async fn a_key_keeps_working_when_settings_allow_less_than_it_did() {
+    let t = setup().await;
+    let (_, key) = t
+        .key(CreateLauncherKey {
+            max_ttl_secs: Some(3600),
+            ..create("build")
+        })
+        .await;
+    let store = &t.store;
+    let lower = |max| async move {
+        let settings = store.get_settings().await.unwrap();
+        store
+            .put_settings(
+                Settings {
+                    max_session_ttl_secs: max,
+                    ..settings
+                },
+                &[],
+            )
+            .await
+            .unwrap();
+    };
+    let lasts = |req: MintSession| async {
+        let s =
+            t.cp.sessions
+                .mint(&key, &t.vault, req)
+                .await
+                .unwrap()
+                .session;
+        (s.expires_at - s.created_at).num_seconds()
+    };
+    lower(1800).await;
+    let longest = MintSession {
+        longest: true,
+        ..mint()
+    };
+    assert_eq!(lasts(longest.clone()).await, 1800);
+    assert_eq!(lasts(mint()).await, 15 * 60);
+    lower(300).await;
+    assert_eq!(lasts(longest).await, 300);
+    assert_eq!(lasts(mint()).await, 300, "the default too");
+}
+
+#[tokio::test]
 async fn a_key_does_nothing_but_start_its_bundle_s_sessions() {
     let t = setup().await;
     let (created, key) = t.key(create("build")).await;
@@ -546,6 +590,46 @@ async fn revoking_a_key_ends_the_sessions_it_started() {
         create_events[0].detail.get("bundle").map(String::as_str),
         Some("build")
     );
+}
+
+#[tokio::test]
+async fn a_mint_signed_in_before_the_key_was_revoked_does_not_outlive_it() {
+    let t = setup().await;
+    let (created, key) = t.key(create("build")).await;
+    // Signed in, then revoked before its session is stored: the revoke
+    // listed the key's sessions without this one.
+    let revoked =
+        t.cp.launcher_keys
+            .revoke(&editor(), &t.vault, &created.launcher_key.id)
+            .await
+            .unwrap();
+    assert_eq!(revoked.sessions_revoked, 0);
+    let err =
+        t.cp.sessions
+            .mint(&key, &t.vault, mint())
+            .await
+            .unwrap_err();
+    assert!(
+        matches!(&err, ControlError::Unauthenticated { reason } if reason.contains("revoked")),
+        "{err}"
+    );
+    let live =
+        t.cp.sessions
+            .list(
+                &admin(),
+                &t.vault,
+                crate::model::SessionListing {
+                    active: true,
+                    after: None,
+                },
+                PageRequest::new(None, None),
+            )
+            .await
+            .unwrap();
+    assert_eq!(live.total, 0, "nothing the key started is live");
+    let ended = t.audit("session.revoke").await;
+    assert_eq!(ended.len(), 1);
+    assert_eq!(ended[0].detail["reason"], "launcher key revoked");
 }
 
 #[tokio::test]

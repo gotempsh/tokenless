@@ -419,7 +419,7 @@ impl ControlPlane {
         )
         .await?;
         let launcher_keys = launcher_keys::LauncherKeyService::new(
-            identity,
+            identity.clone(),
             policy,
             nodes,
             launcher_guard,
@@ -431,7 +431,7 @@ impl ControlPlane {
             sso,
             audit_export,
             policy: services.policy,
-            sessions: services.sessions,
+            sessions: services.sessions.with_identity(identity),
             bundles: services.bundles,
             nodes: services.nodes,
             users,

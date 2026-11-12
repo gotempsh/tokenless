@@ -545,7 +545,8 @@ enum AlertCommand {
         /// The acknowledged ones too.
         #[arg(long)]
         all: bool,
-        /// Print the rows as JSON, for agents and scripts.
+        /// Print every one as JSON, for agents and scripts; the table
+        /// shows the newest 50.
         #[arg(long)]
         json: bool,
         /// Management API URL.

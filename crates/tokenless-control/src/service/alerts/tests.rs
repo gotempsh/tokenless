@@ -5,7 +5,7 @@ use chrono::{TimeDelta, Utc};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Principal, PrincipalKind, Role};
 use tokenless_core::ids::{AlertId, NodeId, SessionId, VaultId};
-use tokenless_core::snapshot::QUARANTINE_ACTION;
+use tokenless_core::snapshot::{QUARANTINE_ACTION, TUNNEL_CUT_ACTION};
 
 use super::*;
 use crate::error::ControlError;
@@ -214,6 +214,23 @@ async fn refusals_raise_an_alert_at_the_threshold_within_the_window() {
     let more: Vec<_> = (0..30).map(|_| refused_at(vault, session, 0)).collect();
     svc.observe(&edge, &more).await;
     assert_eq!(all(&svc).await.len(), 2);
+}
+
+#[tokio::test]
+async fn tunnels_a_proxy_cut_are_not_refusals() {
+    let store = Arc::new(MemoryStore::new());
+    let svc = service(&store);
+    let (vault, session) = (VaultId::new(), SessionId::new());
+    // A busy session's tunnels, all cut when its lease ran out.
+    let cut: Vec<_> = (0..30)
+        .map(|_| {
+            let mut e = refused_at(vault, session, 0);
+            e.action = TUNNEL_CUT_ACTION.into();
+            e
+        })
+        .collect();
+    svc.observe(&node("edge-1"), &cut).await;
+    assert!(all(&svc).await.is_empty());
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@
 //! A request through a proxy that carries one cuts its session off and
 //! raises an alert.
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use broker_server::launcher::account::ConsoleClient;
@@ -36,7 +37,8 @@ pub fn parse_kind(raw: &str) -> Result<TripwireKind, CliError> {
 
 /// Prints the first way to plant it alone on stdout, so
 /// `>> ~/.aws/credentials` or `>> .env` takes just it, and the rest on
-/// stderr.
+/// stderr. An AWS decoy is a profile of its own when this machine's
+/// credentials file has a default one.
 pub async fn add(
     kind: String,
     name: String,
@@ -50,7 +52,17 @@ pub async fn add(
     let created = client.create_tripwire(&vault.id, &name, kind).await?;
     let mut ways = created.plant.iter();
     if let Some(first) = ways.next() {
-        println!("{}", first.text);
+        let mut text = first.text.clone();
+        // Appended to a file that has a default profile already, a second
+        // one would break the AWS tools that read it.
+        if kind == TripwireKind::Aws && has_default_profile(aws_credentials().as_deref()) {
+            let profile = profile_name(&created.tripwire.name);
+            text = text.replacen("[default]", &format!("[{profile}]"), 1);
+            say(format!(
+                "Your AWS credentials file has a default profile already, so the decoy is the '{profile}' profile."
+            ));
+        }
+        println!("{text}");
         say(format!(
             "Tripwire '{}' in vault '{}' ({} decoy). The lines above go in {}; it is shown only once.",
             created.tripwire.name,
@@ -64,6 +76,39 @@ pub async fn add(
     }
     say("Plant it where the agent itself never looks: a request through a proxy that carries it cuts that session off and raises an alert.");
     Ok(ExitCode::SUCCESS)
+}
+
+/// The AWS credentials file on this machine, where the tools read it.
+fn aws_credentials() -> Option<PathBuf> {
+    let set = |name| std::env::var_os(name).filter(|v| !v.is_empty());
+    set("AWS_SHARED_CREDENTIALS_FILE")
+        .map(PathBuf::from)
+        .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".aws/credentials")))
+}
+
+fn has_default_profile(file: Option<&Path>) -> bool {
+    file.and_then(|f| std::fs::read_to_string(f).ok())
+        .is_some_and(|text| text.lines().any(|l| l.trim() == "[default]"))
+}
+
+/// The tripwire's name as an AWS profile name.
+fn profile_name(name: &str) -> String {
+    let profile: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let profile = profile.trim_matches('-');
+    if profile.is_empty() {
+        "backup".into()
+    } else {
+        profile.into()
+    }
 }
 
 fn indent(text: &str) -> String {

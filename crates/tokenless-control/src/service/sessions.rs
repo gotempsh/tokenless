@@ -25,7 +25,7 @@ use crate::model::{
     AccessBundle, LaunchScope, Page, PageRequest, ProxySession, SessionBundle, SessionListing,
 };
 use crate::notify::PolicyNotifier;
-use crate::store::{CredentialStore, NodeStore, PolicyStore};
+use crate::store::{CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MintSession {
@@ -148,6 +148,8 @@ pub struct SessionDiscovery {
 
 pub struct SessionService {
     policy: Arc<dyn PolicyStore>,
+    /// Where launcher keys are, when there are accounts.
+    identity: Option<Arc<dyn IdentityStore>>,
     credentials: Arc<dyn CredentialStore>,
     nodes: Arc<dyn NodeStore>,
     keys: Arc<KeyRing>,
@@ -166,12 +168,20 @@ impl SessionService {
     ) -> Self {
         Self {
             policy,
+            identity: None,
             credentials,
             nodes,
             keys,
             guard,
             notifier,
         }
+    }
+
+    /// Checks a launcher key's sessions against the keys in `identity`.
+    #[must_use]
+    pub fn with_identity(mut self, identity: Arc<dyn IdentityStore>) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     /// A session minted for a node puts its credentials on that node: a
@@ -299,6 +309,13 @@ impl SessionService {
             req.ttl_secs
                 .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl))
         };
+        // A launcher key's longest was checked against Settings when it was
+        // made; Settings may allow less now, and the key keeps working.
+        let ttl = if caller.launch.is_some() {
+            ttl.min(max_ttl)
+        } else {
+            ttl
+        };
         let ttl = match req.not_after {
             Some(not_after) => capped_ttl(ttl, not_after, now)?,
             None => ttl,
@@ -368,12 +385,45 @@ impl SessionService {
         self.policy
             .insert_session(session.clone(), &[event])
             .await?;
+        if caller.launch.is_some() {
+            self.unless_key_revoked(caller, &session).await?;
+        }
         // A limited session is announced to every node; one minted for a
         // node may need rules a scoped node does not hold yet.
         if session.request_limit.is_some() || session.node_id.is_some() {
             self.notifier.bump_sessions();
         }
         Ok(MintedSession { token, session })
+    }
+
+    /// Ends `session`, just minted by a launcher key, if the key has been
+    /// revoked since it signed in. Checked after the session is stored: a
+    /// revoke either finds it among the key's sessions or is seen here.
+    async fn unless_key_revoked(
+        &self,
+        caller: &Caller,
+        session: &ProxySession,
+    ) -> Result<(), ControlError> {
+        let Some(identity) = &self.identity else {
+            return Ok(());
+        };
+        let prefix = caller.actor().strip_prefix("api_key:").unwrap_or_default();
+        let key = identity.get_api_key_by_prefix(prefix).await?;
+        if key.as_ref().is_some_and(|k| k.revoked_at.is_none()) {
+            return Ok(());
+        }
+        let event = AuditEvent::new(caller.actor(), "session.revoke", AuditOutcome::Success)
+            .vault(session.vault_id)
+            .target(format!("session:{}", session.id))
+            .detail("reason", "launcher key revoked")
+            .detail("launcher_key", prefix.to_string());
+        self.policy
+            .revoke_session(&session.id, Utc::now(), &[event])
+            .await?;
+        self.notifier.bump_sessions();
+        Err(ControlError::Unauthenticated {
+            reason: "API key has been revoked".into(),
+        })
     }
 
     /// A renewal replaces a session of the same vault that was not revoked.

@@ -51,6 +51,10 @@ pub const RATE_LIMIT_REPORT_SECS: u64 = 10;
 /// What a node reports when a request carries a tripwire's decoy; it has
 /// already cut the session off, and the control plane revokes it.
 pub const TRIPWIRE_ACTION: &str = "proxy.tripwire";
+/// What a node reports when it closes a session's open traffic because the
+/// session or its grant ended, the lease ran out or the node is stopping.
+/// The node did the cutting, so it is never counted as a refusal.
+pub const TUNNEL_CUT_ACTION: &str = "proxy.tunnel_cut";
 /// What a node reports when it cuts a session off under its
 /// [`QuarantinePolicy`]; the control plane then revokes the session.
 pub const QUARANTINE_ACTION: &str = "proxy.quarantine";

@@ -13,7 +13,9 @@ use serde::Serialize;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
 use tokenless_core::ids::{AlertId, NodeId, SessionId};
-use tokenless_core::snapshot::{QuarantinePolicy, QUARANTINE_ACTION, TRIPWIRE_ACTION};
+use tokenless_core::snapshot::{
+    QuarantinePolicy, QUARANTINE_ACTION, TRIPWIRE_ACTION, TUNNEL_CUT_ACTION,
+};
 use tracing::{error, warn};
 
 use super::{Caller, Guard};
@@ -331,7 +333,10 @@ impl AlertService {
                 }
             }
 
-            if let (Some(threshold), AuditOutcome::Denied) = (settings.refusals, event.outcome) {
+            // A cut tunnel is the node closing traffic, not a refusal.
+            let refused =
+                event.outcome == AuditOutcome::Denied && event.action != TUNNEL_CUT_ACTION;
+            if let (Some(threshold), true) = (settings.refusals, refused) {
                 let window = TimeDelta::seconds(i64::from(threshold.window_secs));
                 if !signals.refusals.contains_key(&session) && !signals.room_for_refusals(event.at)
                 {

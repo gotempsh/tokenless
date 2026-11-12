@@ -38,7 +38,7 @@ use tokenless_core::mcp::{self, McpMessage, NotJsonRpc};
 use tokenless_core::path::check_request_path;
 use tokenless_core::rule::RuleScope;
 use tokenless_core::session::{verify_session, SessionClaims};
-use tokenless_core::snapshot::{UnmatchedHostPolicy, SCRUBBED_ACTION};
+use tokenless_core::snapshot::{UnmatchedHostPolicy, SCRUBBED_ACTION, TUNNEL_CUT_ACTION};
 use tokenless_core::substitution::{
     apply_to_body, apply_to_header, apply_to_target, wants_body, Applied, BodyKind,
     RenderedSubstitution,
@@ -795,16 +795,19 @@ pub(crate) fn tunnel_cut(
 ) {
     Metrics::inc(&shared.metrics.tunnels_cut_total);
     info!(session_id = %claims.jti, %host, port, reason = end.reason(), "cut open traffic");
-    audit_best_effort(
+    // Not a refusal of anything the session asked for: every open tunnel
+    // ends at once, and counting them would quarantine a busy session.
+    let event = proxy_event(
         shared,
         claims,
-        "proxy.tunnel_cut",
+        TUNNEL_CUT_ACTION,
         AuditOutcome::Denied,
         host,
         port,
         None,
-        end.reason(),
-    );
+    )
+    .detail("reason", end.reason().to_string());
+    let _ = shared.audit.try_record(event);
 }
 
 #[allow(clippy::too_many_arguments)]

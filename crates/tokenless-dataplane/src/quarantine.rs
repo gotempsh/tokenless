@@ -223,7 +223,9 @@ mod tests {
     use tokenless_core::egress::EgressPolicy;
     use tokenless_core::scope::Scope;
     use tokenless_core::session::SessionSigner;
-    use tokenless_core::snapshot::{SignedSnapshot, UnmatchedHostPolicy, QUARANTINE_FORMAT};
+    use tokenless_core::snapshot::{
+        SignedSnapshot, UnmatchedHostPolicy, QUARANTINE_FORMAT, TUNNEL_CUT_ACTION,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -314,6 +316,11 @@ mod tests {
     }
 
     async fn connect(r: &Running, target: &str, token: &str) -> String {
+        open(r, target, token).await.0
+    }
+
+    /// A CONNECT's status line, and the connection, left open.
+    async fn open(r: &Running, target: &str, token: &str) -> (String, TcpStream) {
         let mut stream = TcpStream::connect(r.dp.local_addr()).await.unwrap();
         stream
             .write_all(
@@ -332,11 +339,12 @@ mod tests {
             }
             head.push(byte[0]);
         }
-        String::from_utf8_lossy(&head)
+        let status = String::from_utf8_lossy(&head)
             .lines()
             .next()
             .unwrap_or_default()
-            .to_string()
+            .to_string();
+        (status, stream)
     }
 
     fn another_session(r: &Running) -> String {
@@ -422,6 +430,71 @@ mod tests {
         let current = r.dp.snapshot_for_tests();
         assert!(current.quarantined.is_empty());
         assert!(current.revoked.contains(&r.jti));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tunnels_the_node_cuts_are_not_refusals() {
+        let (port, root) = https_upstream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+        let target = format!("localhost:{port}");
+        let audit = Arc::new(Collect::default());
+        let r = running_with(&target, vec![root], 600, audit.clone()).await;
+        r.installer
+            .install(&policy_snapshot(&r, 2, vec![]))
+            .unwrap();
+        // More tunnels open than the policy's refusals.
+        let mut held = Vec::new();
+        for _ in 0..=POLICY.refusals {
+            let (status, stream) = open(&r, &target, &r.token).await;
+            assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+            held.push(stream);
+        }
+        // The control plane can't be reached and the lease runs out: every
+        // one of them is cut at once, while the snapshot is still held.
+        let mut body = r.f.snapshot_body(
+            3,
+            vec![(r.rule, Scope::parse("vault:test").unwrap(), &r.host, "t")],
+        );
+        body.unmatched_host_policy = UnmatchedHostPolicy::Deny;
+        body.quarantine = Some(POLICY);
+        body.format = QUARANTINE_FORMAT;
+        body.lease_secs = 1;
+        r.installer.install(&r.f.sign(&body)).unwrap();
+        let cut = || {
+            audit
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.action == TUNNEL_CUT_ACTION)
+                .count()
+        };
+        for _ in 0..100 {
+            if cut() > POLICY.refusals as usize {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(cut() > POLICY.refusals as usize, "{} cut", cut());
+        assert!(r.dp.snapshot_for_tests().quarantined.is_empty());
+        assert_eq!(
+            r.dp.metrics()
+                .sessions_quarantined_total
+                .load(Ordering::Relaxed),
+            0
+        );
+        // With a fresh lease, the session works.
+        r.installer
+            .install(&policy_snapshot(&r, 4, vec![]))
+            .unwrap();
+        assert!(connect(&r, &target, &r.token)
+            .await
+            .starts_with("HTTP/1.1 200"));
+        assert!(!audit
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e.action == QUARANTINE_ACTION));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

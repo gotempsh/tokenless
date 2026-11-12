@@ -33,6 +33,31 @@ pub fn renew_in(now: DateTime<Utc>, expires_at: DateTime<Utc>, ttl_secs: u64) ->
     Duration::from_secs(u64::try_from(wait).unwrap_or(0).max(5))
 }
 
+/// How often a run that renews with a person's sign-in uses it while it
+/// waits. Well inside the shortest idle timeout (5 minutes), so a session
+/// that lasts longer than the idle timeout can still be renewed.
+const KEEP_SIGNED_IN: Duration = Duration::from_secs(120);
+
+/// Waits `wait`, using the client's sign-in every `every` meanwhile.
+async fn wait_signed_in(client: &ApiClient, wait: Duration, every: Duration) {
+    if !client.signed_in() {
+        tokio::time::sleep(wait).await;
+        return;
+    }
+    let until = tokio::time::Instant::now() + wait;
+    loop {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left <= every {
+            tokio::time::sleep(left).await;
+            return;
+        }
+        tokio::time::sleep(every).await;
+        if let Err(e) = client.keep_signed_in().await {
+            warn!(error = %e, "could not keep the sign-in in use; renewing may need a new sign-in");
+        }
+    }
+}
+
 fn remember(minted: &Minted, expires_at: DateTime<Utc>, token: &str) {
     if let Ok(mut tokens) = minted.lock() {
         let now = Utc::now();
@@ -237,7 +262,7 @@ async fn renew_loop(renewal: Arc<Renewal>) {
     let mut backoff = Duration::from_secs(5);
     let mut wait = renew_in(Utc::now(), renewal.current.load().expires_at, ttl_secs);
     loop {
-        tokio::time::sleep(wait).await;
+        wait_signed_in(&renewal.client, wait, KEEP_SIGNED_IN).await;
         match renewal.once().await {
             Ok(expires_at) => {
                 wait = renew_in(Utc::now(), expires_at, ttl_secs);
@@ -274,7 +299,67 @@ async fn renew_loop(renewal: Arc<Renewal>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::super::client::Credentials;
     use super::*;
+
+    /// A broker that answers every request and counts `/auth/me`.
+    async fn counting_broker() -> (String, Arc<AtomicUsize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(AtomicUsize::new(0));
+        let counted = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let counted = counted.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    if buf[..n].starts_with(b"GET /api/v1/auth/me ") {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                    }
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        )
+                        .await;
+                });
+            }
+        });
+        (url, seen)
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_is_kept_in_use_between_renewals_and_an_api_key_is_not() {
+        let (url, seen) = counting_broker().await;
+        let every = Duration::from_millis(50);
+        let signed_in = ApiClient::new(
+            &url,
+            Some(Credentials::Session {
+                token: Zeroizing::new("cbs_test".into()),
+                csrf_token: "csrf".into(),
+            }),
+        )
+        .unwrap();
+        wait_signed_in(&signed_in, Duration::from_millis(230), every).await;
+        assert!(seen.load(Ordering::SeqCst) >= 3, "{seen:?}");
+
+        let before = seen.load(Ordering::SeqCst);
+        let keyed = ApiClient::new(
+            &url,
+            Some(Credentials::ApiKey(Zeroizing::new("cbk_x".into()))),
+        )
+        .unwrap();
+        wait_signed_in(&keyed, Duration::from_millis(230), every).await;
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            before,
+            "an API key does not idle"
+        );
+    }
 
     #[test]
     fn renewal_leaves_a_bounded_margin() {
