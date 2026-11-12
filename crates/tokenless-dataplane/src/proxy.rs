@@ -54,6 +54,7 @@ use crate::binding::BindingState;
 use crate::clock;
 use crate::cut::{session_end, session_expiry, CutSignal, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
+use crate::scrub;
 use crate::shutdown::{closed, stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::status::UpstreamFailureKind;
@@ -1493,6 +1494,10 @@ pub(crate) async fn handle_intercepted(
         );
     }
     rewrite_headers(req.headers_mut(), rule);
+    let scrubber = rule.scrubber.clone();
+    if !scrubber.is_empty() {
+        scrub::prepare_request(req.headers_mut());
+    }
     let rule_id = rule.id;
     let credential_id = rule.credential_id;
     // Strict sessions and bindings: the upload and the response are cut
@@ -1534,6 +1539,29 @@ pub(crate) async fn handle_intercepted(
             let status = response.status().as_u16();
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
+            let response = response.map(|b| b.map_err(BodyError::from).boxed());
+            // The response may reflect what was injected: it reaches the
+            // client redacted, or not at all.
+            let response = if scrubber.is_empty() {
+                response
+            } else {
+                let redactions =
+                    scrub::Redactions::new(shared.metrics.clone(), rule_id, ctx.host.clone());
+                match scrub::scrub_response(response, scrubber, redactions) {
+                    Ok(response) => response,
+                    Err(withheld) => {
+                        Metrics::inc(&shared.metrics.responses_withheld_total);
+                        warn!(rule_id = %rule_id, host = %ctx.host, %method, status, reason = %withheld, "withheld an upstream response that cannot be checked for the injected credential");
+                        outcome.outcome = AuditOutcome::Failure;
+                        outcome = outcome.detail("withheld", withheld.to_string());
+                        let _ = shared.audit.try_record(outcome);
+                        return respond(
+                            StatusCode::BAD_GATEWAY,
+                            &format!("{withheld}; the response was withheld so the injected credential cannot reach this client"),
+                        );
+                    }
+                }
+            };
             let _ = shared.audit.try_record(outcome);
             if status == StatusCode::UNAUTHORIZED.as_u16() {
                 if let Some(binding) = &ctx.binding {
@@ -1544,7 +1572,6 @@ pub(crate) async fn handle_intercepted(
                     );
                 }
             }
-            let response = response.map(|b| b.map_err(BodyError::from).boxed());
             match &mut cut {
                 Some(cut) => response.map(|b| cut.wrap(b)),
                 None => response,
@@ -1561,9 +1588,14 @@ pub(crate) async fn handle_intercepted(
             if let Some(binding) = &ctx.binding {
                 binding.record_failure(UpstreamFailureKind::Unreachable, &ctx.host, ctx.port);
             }
+            // The cause is the upstream's and the log's; the client
+            // learns only what kind of failure it was.
             respond(
                 StatusCode::BAD_GATEWAY,
-                &format!("upstream request failed: {e}"),
+                &format!(
+                    "upstream request to {}:{} failed (unreachable); the data plane log has the cause",
+                    ctx.host, ctx.port
+                ),
             )
         }
     }
@@ -1719,6 +1751,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrubber: Default::default(),
         }
     }
 
@@ -1788,6 +1821,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrubber: Default::default(),
         };
         let mut h = HeaderMap::new();
         h.insert(
@@ -2138,7 +2172,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         use crate::audit::AuditShipper;
-        use crate::testing::{https_echo_authorization_upstream, running_with};
+        use crate::testing::{https_echo_authorization_upstream, running_with, seen};
 
         #[derive(Default)]
         struct Collect(std::sync::Mutex<Vec<AuditEvent>>);
@@ -2242,10 +2276,10 @@ mod tests {
         install(3, &["/api/*"]);
         let answer = get("/api/v4/projects".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer api"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer api")), "{answer}");
         let answer = get("/acme/widgets.git/info/refs".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer git"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer git")), "{answer}");
         r.dp.abort();
     }
 }

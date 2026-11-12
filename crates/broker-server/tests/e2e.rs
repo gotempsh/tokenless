@@ -30,6 +30,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 const SECRET: &str = "upstream-secret-token-6d1f0c2b9e";
+/// What the echo upstream answers in place of `SECRET`: it proves the
+/// secret arrived without sending it back, which the proxy would redact.
+const SAW: &str = "<upstream received SECRET>";
 const CLIENT_SUPPLIED: &str = "Bearer client-supplied-value";
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -80,7 +83,13 @@ async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallibl
         x_tool_key: header(&req, "x-tool-key"),
         body: received,
     };
-    let bytes = serde_json::to_vec(&body).unwrap();
+    let mut text = serde_json::to_string(&body).unwrap();
+    // `/v1/reflect` sends back what it received as it is, like an echo
+    // endpoint would; the proxy must redact it.
+    if body.path != "/v1/reflect" {
+        text = text.replace(SECRET, SAW);
+    }
+    let bytes = text.into_bytes();
     Ok(Response::builder()
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(bytes)))
@@ -531,7 +540,7 @@ async fn end_to_end() {
         .unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str())
+        Some(format!("Bearer {SAW}").as_str())
     );
     assert_eq!(
         echo.proxy_authorization, None,
@@ -542,6 +551,18 @@ async fn end_to_end() {
         "client credential headers must be stripped on ruled hosts"
     );
     assert_eq!(echo.path, "/v1/things");
+
+    // --- a reflected credential never reaches the agent ----------------------
+    let reflected = client
+        .get(format!("https://localhost:{upstream_port}/v1/reflect"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(!reflected.contains(SECRET), "{reflected}");
+    assert!(reflected.contains("[redacted]"), "{reflected}");
 
     // --- the MCP gateway: plain HTTP, the session token as a bearer token ---
     let gateway = dp.mcp_addr().expect("MCP gateway listening");
@@ -559,7 +580,7 @@ async fn end_to_end() {
     let echo: Echo = response.json().await.unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str()),
+        Some(format!("Bearer {SAW}").as_str()),
         "the gateway swaps the session token for the credential"
     );
     assert_eq!(echo.path, "/mcp");
@@ -620,17 +641,14 @@ async fn end_to_end() {
         .json()
         .await
         .unwrap();
-    assert_eq!(echo.path, format!("/v1/keys/{SECRET}"));
-    assert_eq!(
-        echo.query.as_deref(),
-        Some(format!("key={SECRET}").as_str())
-    );
+    assert_eq!(echo.path, format!("/v1/keys/{SAW}"));
+    assert_eq!(echo.query.as_deref(), Some(format!("key={SAW}").as_str()));
     assert_eq!(
         echo.x_tool_key.as_deref(),
-        Some(format!("Token {SECRET}").as_str())
+        Some(format!("Token {SAW}").as_str())
     );
     let sent: Value = serde_json::from_str(&echo.body).unwrap();
-    assert_eq!(sent["auth"], SECRET);
+    assert_eq!(sent["auth"], SAW);
 
     // --- MCP tool limits ----------------------------------------------------
     let (status, _, limited) = api
@@ -676,7 +694,7 @@ async fn end_to_end() {
         .unwrap();
     let forwarded: Value = serde_json::from_str(&echo.body).unwrap();
     assert_eq!(forwarded["params"]["name"], "search");
-    assert_eq!(forwarded["params"]["arguments"]["token"], SECRET);
+    assert_eq!(forwarded["params"]["arguments"]["token"], SAW);
     // A batch with one refused call is refused whole, one error per request.
     let refused: Value = client
         .post(&mcp_url)
@@ -847,7 +865,7 @@ async fn end_to_end() {
             .unwrap();
         assert_eq!(
             echo.authorization.as_deref(),
-            Some(format!("Bearer {SECRET}").as_str()),
+            Some(format!("Bearer {SAW}").as_str()),
             "the bundle's credential is injected through the session port"
         );
         assert_eq!(echo.proxy_authorization, None);

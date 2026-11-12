@@ -196,11 +196,13 @@ impl InjectionSpec {
                 field: name.to_string(),
             })
         };
+        let mut secrets = Vec::with_capacity(2);
         let header = match self {
             InjectionSpec::Bearer { field } => {
                 let token = get(field)?;
                 validate_header_value(field, token)?;
-                InjectedHeader::new("authorization", format!("Bearer {token}"))
+                secrets.push(SecretMaterial::new(token));
+                InjectedHeader::credential("authorization", format!("Bearer {token}"))
             }
             InjectionSpec::Basic {
                 username_field,
@@ -214,10 +216,11 @@ impl InjectionSpec {
                         reason: "a basic-auth username cannot contain ':'".into(),
                     });
                 }
-                let mut joined = format!("{user}:{pass}");
-                let encoded = STANDARD.encode(joined.as_bytes());
-                joined.zeroize();
-                InjectedHeader::new("authorization", format!("Basic {encoded}"))
+                let joined = SecretMaterial::new(format!("{user}:{pass}"));
+                let encoded = STANDARD.encode(joined.expose().as_bytes());
+                secrets.push(SecretMaterial::new(pass));
+                secrets.push(joined);
+                InjectedHeader::credential("authorization", format!("Basic {encoded}"))
             }
             InjectionSpec::BasicToken {
                 username,
@@ -225,10 +228,11 @@ impl InjectionSpec {
             } => {
                 check_basic_token_username(template_id, username)?;
                 let pass = get(password_field)?;
-                let mut joined = format!("{username}:{pass}");
-                let encoded = STANDARD.encode(joined.as_bytes());
-                joined.zeroize();
-                InjectedHeader::new("authorization", format!("Basic {encoded}"))
+                let joined = SecretMaterial::new(format!("{username}:{pass}"));
+                let encoded = STANDARD.encode(joined.expose().as_bytes());
+                secrets.push(SecretMaterial::new(pass));
+                secrets.push(joined);
+                InjectedHeader::credential("authorization", format!("Basic {encoded}"))
             }
             InjectionSpec::Header {
                 name,
@@ -238,12 +242,17 @@ impl InjectionSpec {
                 let value = get(field)?;
                 validate_header_value(field, value)?;
                 let name = validate_header_name(name)?;
-                InjectedHeader::new(&name, format!("{}{value}", prefix.as_deref().unwrap_or("")))
+                secrets.push(SecretMaterial::new(value));
+                InjectedHeader::credential(
+                    &name,
+                    format!("{}{value}", prefix.as_deref().unwrap_or("")),
+                )
             }
         };
         Ok(InjectedHeaders {
             headers: vec![header],
             substitutions: vec![],
+            secrets,
         })
     }
 }
@@ -322,13 +331,30 @@ impl Drop for SecretFields {
 pub struct InjectedHeader {
     pub name: String,
     pub value: String,
+    /// The value is not credential material (a version pin, an `Accept`
+    /// type), so the data plane does not redact it from responses. Absent
+    /// means credential material: a control plane that predates this field
+    /// gets every injected value redacted, never too little.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed: bool,
 }
 
 impl InjectedHeader {
-    pub(crate) fn new(name: &str, value: String) -> Self {
+    /// A header whose value carries credential material.
+    pub fn credential(name: &str, value: String) -> Self {
         Self {
             name: name.to_string(),
             value,
+            fixed: false,
+        }
+    }
+
+    /// A header whose value is not secret, sent as written.
+    pub fn fixed(name: &str, value: String) -> Self {
+        Self {
+            name: name.to_string(),
+            value,
+            fixed: true,
         }
     }
 }
@@ -338,6 +364,7 @@ impl fmt::Debug for InjectedHeader {
         f.debug_struct("InjectedHeader")
             .field("name", &self.name)
             .field("value", &"<redacted>")
+            .field("fixed", &self.fixed)
             .finish()
     }
 }
@@ -348,6 +375,36 @@ impl Drop for InjectedHeader {
     }
 }
 
+/// A raw secret value a rule's headers were rendered from (a token, a
+/// password, a `user:password` pair). The data plane redacts it from
+/// responses in the encodings an upstream is likely to reflect it in. Never
+/// logged, zeroised on drop.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretMaterial(String);
+
+impl SecretMaterial {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretMaterial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretMaterial(<redacted>)")
+    }
+}
+
+impl Drop for SecretMaterial {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 /// The plaintext that is sealed to a data plane node for each rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectedHeaders {
@@ -355,6 +412,13 @@ pub struct InjectedHeaders {
     /// Placeholders the proxy swaps for real values; see [`crate::substitution`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub substitutions: Vec<crate::substitution::RenderedSubstitution>,
+    /// The raw secrets behind `headers`, so a response that reflects one in
+    /// another form (the bare token, a Basic password) is redacted too. The
+    /// data plane also derives what it can from the header values, so an
+    /// older control plane that leaves this empty is still covered for
+    /// `Bearer` and `Basic`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretMaterial>,
 }
 
 #[cfg(test)]
@@ -484,5 +548,93 @@ mod tests {
         };
         let out = spec.render("t", &f).unwrap();
         assert!(!format!("{out:?}").contains("super-secret-value"));
+    }
+
+    #[test]
+    fn rendering_lists_the_raw_secrets_behind_each_header() {
+        let secrets = |spec: InjectionSpec, pairs: &[(&str, &str)]| {
+            let out = spec.render("t", &fields(pairs)).unwrap();
+            assert!(out.headers.iter().all(|h| !h.fixed));
+            out.secrets
+                .iter()
+                .map(|s| s.expose().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            secrets(
+                InjectionSpec::Bearer {
+                    field: "token".into()
+                },
+                &[("token", "xoxb-test-0000")]
+            ),
+            ["xoxb-test-0000"]
+        );
+        assert_eq!(
+            secrets(
+                InjectionSpec::Header {
+                    name: "X-Api-Key".into(),
+                    field: "key".into(),
+                    prefix: Some("key=".into()),
+                },
+                &[("key", "test-key-0000")]
+            ),
+            ["test-key-0000"]
+        );
+        assert_eq!(
+            secrets(
+                InjectionSpec::BasicToken {
+                    username: "x-access-token".into(),
+                    password_field: "token".into(),
+                },
+                &[("token", "ghp_test0000")]
+            ),
+            ["ghp_test0000", "x-access-token:ghp_test0000"]
+        );
+        assert_eq!(
+            secrets(
+                InjectionSpec::Basic {
+                    username_field: "user".into(),
+                    password_field: "pass".into(),
+                },
+                &[("user", "test-user"), ("pass", "test-pass-0000")]
+            ),
+            ["test-pass-0000", "test-user:test-pass-0000"]
+        );
+    }
+
+    #[test]
+    fn the_sealed_form_stays_compatible_in_both_directions() {
+        // An older control plane's plaintext: no `fixed`, no `secrets`.
+        let old: InjectedHeaders =
+            serde_json::from_str(r#"{"headers":[{"name":"authorization","value":"Bearer t"}]}"#)
+                .unwrap();
+        assert!(!old.headers[0].fixed, "absent means credential material");
+        assert!(old.secrets.is_empty());
+        // Default values are not written, so older data planes read the
+        // same shape they always did.
+        let credential = InjectedHeaders {
+            headers: vec![InjectedHeader::credential(
+                "authorization",
+                "Bearer t".into(),
+            )],
+            substitutions: vec![],
+            secrets: vec![],
+        };
+        assert_eq!(
+            serde_json::to_string(&credential).unwrap(),
+            r#"{"headers":[{"name":"authorization","value":"Bearer t"}]}"#
+        );
+        let fixed = serde_json::to_string(&InjectedHeader::fixed("accept", "a/b".into())).unwrap();
+        assert_eq!(fixed, r#"{"name":"accept","value":"a/b","fixed":true}"#);
+    }
+
+    #[test]
+    fn secret_material_is_never_formatted() {
+        let out = InjectionSpec::Bearer {
+            field: "token".into(),
+        }
+        .render("t", &fields(&[("token", "xoxb-test-0000")]))
+        .unwrap();
+        assert!(!format!("{out:?}").contains("xoxb-test-0000"));
     }
 }

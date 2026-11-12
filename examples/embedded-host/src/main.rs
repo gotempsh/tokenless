@@ -192,8 +192,10 @@ async fn main() -> Result<(), Error> {
         CertificateDer::from(control.keys.interception_ca.cert_der.clone()),
     )
     .await?;
-    if seen != format!("Bearer {API_TOKEN}") {
-        return Err(format!("the upstream saw Authorization '{seen}'").into());
+    // The upstream answers whether it got the credential, never the
+    // credential itself: the data plane redacts an echoed credential.
+    if seen != "injected" {
+        return Err(format!("the upstream did not receive the injected credential: {seen}").into());
     }
     println!("the upstream received the injected credential; the workload never held it");
 
@@ -263,8 +265,8 @@ impl AuditShipper for ToControl {
 }
 
 /// What the workload does: CONNECT through its binding, TLS with the
-/// interception CA it was given, one request. Returns what the upstream
-/// says it received in `Authorization`.
+/// interception CA it was given, one request. Returns the upstream's answer
+/// about the `Authorization` header it received.
 async fn workload_request(
     mut stream: tokio::io::DuplexStream,
     upstream: &str,
@@ -313,8 +315,9 @@ async fn read_head(stream: &mut (impl AsyncReadExt + Unpin)) -> Result<String, E
     Ok(String::from_utf8_lossy(&head).into_owned())
 }
 
-/// A local HTTPS service that answers each request with the
-/// `Authorization` header it received. Returns its port and certificate.
+/// A local HTTPS service that answers `injected` when a request carried the
+/// expected `Authorization` header and `missing` otherwise. It does not echo
+/// the header: the data plane would redact it. Returns its port and certificate.
 async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
     let der = CertificateDer::from(cert.cert.der().to_vec());
@@ -345,6 +348,11 @@ async fn start_upstream() -> Result<(u16, CertificateDer<'static>), Error> {
                             .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default();
+                let seen = if seen == format!("Bearer {API_TOKEN}") {
+                    "injected"
+                } else {
+                    "missing"
+                };
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{seen}",
                     seen.len()

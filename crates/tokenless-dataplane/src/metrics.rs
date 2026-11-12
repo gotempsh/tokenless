@@ -41,6 +41,8 @@ metrics! {
     snapshots_applied_total: "Policy snapshots verified and applied",
     snapshots_rejected_total: "Policy snapshots rejected",
     upstream_errors_total: "Upstream connection or request failures",
+    credentials_redacted_total: "Occurrences of an injected credential redacted from an intercepted response",
+    responses_withheld_total: "Intercepted responses withheld because they could not be scanned for the injected credential",
     gateway_requests_total: "Requests received by the MCP gateway",
     gateway_auth_failures_total: "MCP gateway requests refused with 401 (missing, invalid, expired or revoked session)",
 }

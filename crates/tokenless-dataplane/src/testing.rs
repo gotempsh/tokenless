@@ -305,8 +305,17 @@ pub async fn https_stream_upstream(answer: &'static str) -> (u16, CertificateDer
     https_upstream_with(answer, true).await
 }
 
+/// What an upstream answers instead of the credential it received, so a
+/// test can tell which credential arrived. The proxy redacts a credential
+/// reflected as it is ([`crate::scrub`]); a digest of it passes.
+pub fn seen(credential: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = hex::encode(Sha256::digest(credential.as_bytes()));
+    format!("seen:{}", &digest[..16])
+}
+
 /// A local HTTPS upstream for `localhost` that answers each request with
-/// the `Authorization` header it received as the body.
+/// [`seen`] of the `Authorization` header it received as the body.
 pub async fn https_echo_authorization_upstream() -> (u16, CertificateDer<'static>) {
     let (listener, server, root) = https_listener().await;
     let port = listener.local_addr().unwrap().port();
@@ -326,6 +335,7 @@ pub async fn https_echo_authorization_upstream() -> (u16, CertificateDer<'static
                             .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default();
+                let auth = seen(&auth);
                 let answer = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{auth}",
                     auth.len()

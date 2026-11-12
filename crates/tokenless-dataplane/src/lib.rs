@@ -25,6 +25,7 @@ pub mod gateway;
 pub mod metrics;
 pub mod node;
 pub mod proxy;
+pub mod scrub;
 pub mod shutdown;
 pub mod state;
 pub mod status;
