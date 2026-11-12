@@ -250,6 +250,16 @@ fn existing(link: &Path, shared: &Path) -> Result<Existing, LauncherError> {
     Ok(Existing::Copy { skill, same, alone })
 }
 
+/// What Claude Code got from a link to the shared copy that was already
+/// there: this version, or the other one the shared copy kept.
+fn linked(shared_current: bool) -> Installed {
+    if shared_current {
+        Installed::Unchanged
+    } else {
+        Installed::Kept
+    }
+}
+
 /// Places Claude Code's skill; `shared_current` when the shared copy is
 /// this version, so linking to it never trades this version for another.
 fn place_for_claude_code(
@@ -274,9 +284,10 @@ fn place_for_claude_code(
     };
     let found = existing(&link, &shared)?;
     match (&found, copy) {
-        // Removing it would delete the shared copy.
-        (Existing::Shared, _) => return Ok(placed(link.join("SKILL.md"), Installed::Unchanged)),
-        (Existing::OurLink, false) => return Ok(placed(link, Installed::Unchanged)),
+        // Removing it would delete the shared copy. Claude Code reads
+        // whichever version that is, so a kept one is reported as kept.
+        (Existing::Shared, _) => return Ok(placed(link.join("SKILL.md"), linked(shared_current))),
+        (Existing::OurLink, false) => return Ok(placed(link, linked(shared_current))),
         // Up to date: the other files in it stay, and a shared copy of
         // another version is no reason to give it up.
         (
@@ -524,6 +535,12 @@ mod tests {
         assert_eq!(placed[0].outcome, Installed::Kept);
         assert_eq!(placed[1].outcome, Installed::Linked);
         assert_eq!(std::fs::read_to_string(&shared).unwrap(), "from npx skills");
+
+        // Linked already, Claude Code still reads the kept version, and
+        // is not reported as up to date.
+        let placed = installed(home, true, false, false);
+        assert_eq!(placed[0].outcome, Installed::Kept);
+        assert_eq!(placed[1].outcome, Installed::Kept);
 
         // --force brings both to this version.
         let placed = installed(home, true, false, true);

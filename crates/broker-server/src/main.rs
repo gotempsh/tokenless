@@ -2331,14 +2331,10 @@ fn skill_command(
             };
             let claude_code = for_claude_code(home_dir().as_deref(), &base, project, copy);
             let (placed, failed) = skill::install_for_agents(&base, claude_code, copy, force);
-            let again = if project {
-                "tokenless skill --install --project --force"
-            } else {
-                "tokenless skill --install --force"
-            };
+            let again = force_command(project, copy);
             // What was placed before a failure is still reported.
             for p in &placed {
-                say(skill_installed(p, again));
+                say(skill_installed(p, &again));
             }
             for e in &failed {
                 say(e);
@@ -2369,6 +2365,14 @@ fn for_claude_code(home: Option<&Path>, base: &Path, project: bool, copy: bool) 
     copy || home
         .is_none_or(|h| skill::Agent::ClaudeCode.set_up(h) || !skill::Agent::Codex.set_up(h))
         || (project && base.join(".claude").is_dir())
+}
+
+/// The `skill --install` that replaces a kept copy with this version in
+/// the same place and the same way, a copy staying a copy.
+fn force_command(project: bool, copy: bool) -> String {
+    let project = if project { " --project" } else { "" };
+    let copy = if copy { " --copy" } else { "" };
+    format!("tokenless skill --install{project}{copy} --force")
 }
 
 /// What `skill --install` did for one agent; `force` is the command that
@@ -2658,10 +2662,23 @@ mod tests {
             path: std::path::PathBuf::from("repo/.claude/skills/tokenless/SKILL.md"),
             outcome: super::skill::Installed::Kept,
         };
-        let line = super::skill_installed(&kept, "tokenless skill --install --project --force");
+        let line = super::skill_installed(&kept, &super::force_command(true, false));
         assert!(
             line.contains("; tokenless skill --install --project --force replaces it"),
             "{line}"
+        );
+        // A copy is replaced by a copy, never swapped for a link.
+        assert_eq!(
+            super::force_command(false, true),
+            "tokenless skill --install --copy --force"
+        );
+        assert_eq!(
+            super::force_command(true, true),
+            "tokenless skill --install --project --copy --force"
+        );
+        assert_eq!(
+            super::force_command(false, false),
+            "tokenless skill --install --force"
         );
     }
 
