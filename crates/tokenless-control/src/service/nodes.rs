@@ -14,30 +14,33 @@ use serde::Serialize;
 use tokenless_auth::token;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Action;
-use tokenless_core::ids::{NodeId, RuleId, VaultId};
+use tokenless_core::ids::{NodeId, RuleId, SessionId, TripwireId, VaultId};
 use tokenless_core::protocol::{
     AuditBatch, EnrollRequest, EnrollResponse, JoinToken, RenewRequest, RenewResponse,
     MAX_AUDIT_BATCH,
 };
-use tokenless_core::seal::{decode_public_key, seal};
+use tokenless_core::seal::{decode_public_key, seal, Sealed};
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::snapshot::{
-    ca_aad, format_for, rule_aad, rules_readable_by, InterceptionCa, PublishedKey, SessionLimit,
-    SignedSnapshot, SnapshotBody, SnapshotRule, MIN_SNAPSHOT_FORMAT, SNAPSHOT_FORMAT,
+    ca_aad, format_for, rule_aad, rules_readable_by, tripwires_aad, InterceptionCa, PublishedKey,
+    SessionLimit, SignedSnapshot, SnapshotBody, SnapshotRule, SnapshotTripwire,
+    MAX_SNAPSHOT_TRIPWIRES, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION, QUARANTINE_FORMAT,
+    RATE_LIMIT_FORMAT, SCRUB_FORMAT, SNAPSHOT_FORMAT, TRIPWIRE_ACTION, TRIPWIRE_FORMAT,
 };
 use tokio::sync::watch;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use zeroize::Zeroizing;
 
+use super::alerts::AlertService;
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{JoinTokenRecord, Node, Page, PageRequest, TemplateStatus};
+use crate::model::{JoinTokenRecord, Node, Page, PageRequest, ProxySession, TemplateStatus};
 use crate::notify::{Generation, PolicyNotifier};
 use crate::pki::{self, pem_encode};
-use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore};
+use crate::store::{AuditSink, CredentialStore, NodeStore, PolicyStore, TripwireStore};
 
 /// A registered embedded data plane: see [`NodeService::register_embedded`].
 #[derive(Debug, Clone)]
@@ -72,6 +75,8 @@ struct CachedContent {
     valid_until: Option<DateTime<Utc>>,
     rules: Vec<SnapshotRule>,
     ca: InterceptionCa,
+    /// Every tripwire, sealed to the node; `None` when there are none.
+    tripwires: Option<Sealed>,
 }
 
 impl CachedContent {
@@ -94,8 +99,35 @@ pub struct NodeService {
     guard: Guard,
     audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
+    alerts: Arc<AlertService>,
+    tripwires: Arc<dyn TripwireStore>,
     config: ControlConfig,
     cache: Mutex<HashMap<NodeId, Arc<CachedContent>>>,
+}
+
+/// Why a node cut a session off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CutOff {
+    Refusals,
+    Tripwire,
+}
+
+impl CutOff {
+    /// The revocation's `reason` detail.
+    fn reason(self) -> &'static str {
+        match self {
+            CutOff::Refusals => "quarantine",
+            CutOff::Tripwire => "tripwire",
+        }
+    }
+
+    /// The node's details the revocation repeats.
+    fn copied(self) -> &'static [&'static str] {
+        match self {
+            CutOff::Refusals => &["refusals", "window_secs"],
+            CutOff::Tripwire => &["tripwire", "tripwire_id", "found_in", "host"],
+        }
+    }
 }
 
 fn vault_from_scope(scope: &str) -> Option<VaultId> {
@@ -114,6 +146,8 @@ impl NodeService {
         guard: Guard,
         audit: AuditRecorder,
         notifier: Arc<PolicyNotifier>,
+        alerts: Arc<AlertService>,
+        tripwires: Arc<dyn TripwireStore>,
         config: ControlConfig,
     ) -> Self {
         Self {
@@ -126,6 +160,8 @@ impl NodeService {
             guard,
             audit,
             notifier,
+            alerts,
+            tripwires,
             config,
             cache: Mutex::new(HashMap::new()),
         }
@@ -453,12 +489,43 @@ impl NodeService {
                 not_after: meta.not_after,
             });
         }
+        // Every tripwire goes to every node: a decoy is a sign wherever it
+        // turns up, whatever vault it was planted for.
+        let mut planted = self
+            .tripwires
+            .all_tripwires(MAX_SNAPSHOT_TRIPWIRES as u64 + 1)
+            .await?;
+        // Creating one past the cap is refused; two created at once can
+        // still get there.
+        if planted.len() > MAX_SNAPSHOT_TRIPWIRES {
+            error!(limit = MAX_SNAPSHOT_TRIPWIRES, "more tripwires than a snapshot carries; the oldest are not watched for until some are deleted");
+            planted.truncate(MAX_SNAPSHOT_TRIPWIRES);
+        }
+        let decoys: Vec<SnapshotTripwire> = planted
+            .into_iter()
+            .map(|t| SnapshotTripwire {
+                id: t.id,
+                name: t.name,
+                hosts: t.kind.hosts(),
+                value: t.value,
+            })
+            .collect();
+        let tripwires = if decoys.is_empty() {
+            None
+        } else {
+            let json = Zeroizing::new(
+                serde_json::to_vec(&decoys)
+                    .map_err(|e| ControlError::crypto("tripwires.encode", e))?,
+            );
+            Some(seal(&recipient, &json, &tripwires_aad(&node.id))?)
+        };
         Ok(CachedContent {
             content_generation: generation.content,
             sessions_generation: node.scoped_rules.then_some(generation.sessions),
             valid_until,
             rules,
             ca,
+            tripwires,
         })
     }
 
@@ -510,8 +577,46 @@ impl NodeService {
         );
         let now = Utc::now();
         let settings = self.policy.get_settings().await?;
+        // An older node refuses a snapshot with a field it does not know,
+        // so one that cannot read the policy runs without quarantine.
+        let quarantine = settings
+            .quarantine
+            .filter(|_| reads_format >= QUARANTINE_FORMAT);
+        // Nor tripwires: that node does not look for decoys.
+        let tripwires = content
+            .tripwires
+            .clone()
+            .filter(|_| reads_format >= TRIPWIRE_FORMAT);
+        let rate_limit = settings
+            .rate_limit
+            .filter(|_| reads_format >= RATE_LIMIT_FORMAT);
+        // Redaction is on in a snapshot that says nothing of it; only a
+        // node that reads format 6 can be told to stop, and one that cannot
+        // keeps redacting.
+        let scrub_responses = settings.scrub_responses || reads_format < SCRUB_FORMAT;
+        let format = format_for(&rules)
+            .max(if quarantine.is_some() {
+                QUARANTINE_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if tripwires.is_some() {
+                TRIPWIRE_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if rate_limit.is_some() {
+                RATE_LIMIT_FORMAT
+            } else {
+                MIN_SNAPSHOT_FORMAT
+            })
+            .max(if scrub_responses {
+                MIN_SNAPSHOT_FORMAT
+            } else {
+                SCRUB_FORMAT
+            });
         let body = SnapshotBody {
-            format: format_for(&rules),
+            format,
             version: self.nodes.next_snapshot_version().await?,
             node_id: node.id,
             issued_at: now,
@@ -535,6 +640,10 @@ impl NodeService {
             passthrough_hosts: settings.passthrough_hosts.clone(),
             interception_ca: content.ca.clone(),
             rules,
+            quarantine,
+            tripwires,
+            rate_limit,
+            scrub_responses,
         };
         Ok(NodeSnapshot {
             snapshot: SignedSnapshot::sign(&body, &self.keys.snapshot_key)?,
@@ -568,8 +677,132 @@ impl NodeService {
             event.vault_id = event.detail.get("scope").and_then(|s| vault_from_scope(s));
             events.push(event);
         }
+        // Cut-offs before the batch is recorded: the node resends a batch
+        // that failed, with the same event ids, and a revocation done
+        // already is skipped the second time, where a recorded event
+        // would conflict.
+        let mut ignored = Vec::new();
+        for (i, event) in events.iter().enumerate() {
+            let stands = match event.action.as_str() {
+                QUARANTINE_ACTION => self.quarantine(node, event, CutOff::Refusals).await?,
+                TRIPWIRE_ACTION => self.quarantine(node, event, CutOff::Tripwire).await?,
+                _ => continue,
+            };
+            if !stands {
+                ignored.push(i);
+            }
+        }
         self.audit_sink.record(&events).await?;
+        // A report that revoked nothing raises no alert saying it did; it
+        // stays in the audit log.
+        if ignored.is_empty() {
+            self.alerts.observe(node, &events).await;
+        } else {
+            let alerting: Vec<AuditEvent> = events
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !ignored.contains(i))
+                .map(|(_, e)| e.clone())
+                .collect();
+            self.alerts.observe(node, &alerting).await;
+        }
         Ok(events.len())
+    }
+
+    /// Revokes the session a node cut off, for being refused too often or
+    /// for sending a tripwire's decoy, so every other node stops serving it
+    /// too. The node already stopped; a
+    /// person reviews the session's refusals and starts a new one if it was
+    /// an agent at work. A session already revoked, or one this control
+    /// plane never minted, is left alone, and so is one the node could not
+    /// have served: a node cuts off only its own traffic. False when the
+    /// report is ignored, so it raises no alert.
+    async fn quarantine(
+        &self,
+        node: &Node,
+        event: &AuditEvent,
+        why: CutOff,
+    ) -> Result<bool, ControlError> {
+        let Some(id) = event
+            .detail
+            .get("session_id")
+            .and_then(|raw| raw.parse::<SessionId>().ok())
+        else {
+            warn!(node_id = %node.id, "a quarantine report names no session; ignored");
+            return Ok(false);
+        };
+        let Some(session) = self.policy.get_session(&id).await? else {
+            warn!(node_id = %node.id, session_id = %id, "a quarantine report names an unknown session; ignored");
+            return Ok(false);
+        };
+        if !self.served(node, &session).await? {
+            warn!(node_id = %node.id, session_id = %id, pinned_to = ?session.node_id, "a quarantine report names a session this node did not serve; ignored");
+            return Ok(false);
+        }
+        if why == CutOff::Tripwire {
+            if let Some(tripwire) = event
+                .detail
+                .get("tripwire_id")
+                .and_then(|raw| raw.parse::<TripwireId>().ok())
+            {
+                self.tripwires.tripwire_tripped(&tripwire, event.at).await?;
+            }
+        }
+        if session.revoked_at.is_some() {
+            return Ok(true);
+        }
+        let mut revoke = AuditEvent::new(
+            format!("node:{}", node.id),
+            "session.revoke",
+            AuditOutcome::Success,
+        )
+        .vault(session.vault_id)
+        .target(format!("session:{id}"))
+        .detail("reason", why.reason())
+        .detail("node", node.name.clone());
+        for &key in why.copied() {
+            if let Some(value) = event.detail.get(key) {
+                revoke = revoke.detail(key, value.clone());
+            }
+        }
+        if self
+            .policy
+            .revoke_session(&id, Utc::now(), &[revoke])
+            .await?
+        {
+            self.notifier.bump_sessions();
+            warn!(node_id = %node.id, session_id = %id, vault_id = %session.vault_id, reason = why.reason(), "session cut off by a proxy: revoked");
+        }
+        Ok(true)
+    }
+
+    /// Whether `node` could have accepted `session`'s token: one minted
+    /// for a node works only there, and a scoped node holds only the rules
+    /// of the sessions minted for it. Those are the ones live at any time
+    /// since `session` was created, not only when the report arrives,
+    /// which may be after they ended; and up to a lease earlier, as a node
+    /// serves the snapshot it has until it gets the next. The report's own
+    /// time is the node's word, so it is not used.
+    async fn served(&self, node: &Node, session: &ProxySession) -> Result<bool, ControlError> {
+        match session.node_id {
+            Some(pinned) => Ok(pinned == node.id),
+            None if !node.scoped_rules => Ok(true),
+            None => {
+                let lease = Duration::seconds(i64::from(self.config.lease_secs));
+                let held: HashSet<RuleId> = self
+                    .policy
+                    .list_sessions_for_node_between(
+                        &node.id,
+                        session.created_at - lease,
+                        Utc::now(),
+                    )
+                    .await?
+                    .into_iter()
+                    .flat_map(|s| s.rule_ids)
+                    .collect();
+                Ok(session.rule_ids.iter().any(|r| held.contains(r)))
+            }
+        }
     }
 
     pub async fn list_nodes(
@@ -616,11 +849,14 @@ mod tests {
     use rand::rngs::OsRng;
     use tokenless_core::authz::{Principal, Role};
     use tokenless_core::seal::{encode_public_key, SealPublicKey, SealSecretKey};
-    use tokenless_core::snapshot::{SnapshotBody, MIN_SNAPSHOT_FORMAT};
+    use tokenless_core::snapshot::{
+        QuarantinePolicy, RateLimit, SnapshotBody, MIN_SNAPSHOT_FORMAT, QUARANTINE_ACTION,
+        QUARANTINE_FORMAT, RATE_LIMIT_FORMAT,
+    };
 
-    use tokenless_core::ids::{NodeId, RuleId, VaultId};
+    use tokenless_core::ids::{NodeId, RuleId, SessionId, VaultId};
 
-    use crate::model::Node;
+    use crate::model::{Node, PageRequest};
     use crate::service::policy::{CreateCredential, CreateRule, RotateCredential};
     use crate::service::sessions::MintSession;
     use crate::service::testing::{services, vault_with_rule};
@@ -676,6 +912,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         }
     }
 
@@ -868,6 +1105,12 @@ mod tests {
         let body = old.snapshot.verify(&node.snapshot_verify_key).unwrap();
         assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
         assert_eq!(
+            body.quarantine, None,
+            "a format 1 node is sent no quarantine"
+        );
+        assert_eq!(body.rate_limit, None, "nor a rate limit");
+        assert!(body.scrub_responses, "and it keeps redacting");
+        assert_eq!(
             body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
             vec![other]
         );
@@ -879,7 +1122,550 @@ mod tests {
             .unwrap();
         assert_eq!(current.withheld_rules, 0);
         let body = current.snapshot.verify(&node.snapshot_verify_key).unwrap();
-        assert_eq!((body.format, body.rules.len()), (2, 2));
+        assert_eq!((body.format, body.rules.len()), (RATE_LIMIT_FORMAT, 2));
+        assert_eq!(body.quarantine, Some(QuarantinePolicy::default()));
+        assert_eq!(body.rate_limit, Some(RateLimit::default()));
+        assert!(body.scrub_responses);
+
+        // A node that reads format 5 gets the quarantine and no rate limit.
+        let five = cs.nodes.build_snapshot_for(&node.node, 5).await.unwrap();
+        let body = five.snapshot.verify(&node.snapshot_verify_key).unwrap();
+        assert_eq!((body.format, body.rate_limit), (QUARANTINE_FORMAT, None));
+    }
+
+    #[tokio::test]
+    async fn the_rate_limit_is_set_within_bounds_and_raising_it_needs_a_step_up() {
+        use crate::model::{AuditQuery, Settings};
+        use crate::store::AuditSink;
+
+        let (store, cs) = services().await;
+        let admin = |step_up_age: i64| Caller {
+            principal: Principal {
+                kind: tokenless_core::authz::PrincipalKind::User,
+                actor: "user:admin".into(),
+                role: Role::Admin,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now() - TimeDelta::seconds(step_up_age)),
+            second_factor: true,
+            launch: None,
+        };
+        let with = |per_sec, burst| Settings {
+            rate_limit: Some(RateLimit { per_sec, burst }),
+            ..Settings::default()
+        };
+        for (per_sec, burst) in [(0, 10), (20, 10), (20_000, 20_000), (20, 200_000)] {
+            let err = cs
+                .policy
+                .put_settings(&admin(0), with(per_sec, burst))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ControlError::Validation { .. })
+                    && err.to_string().contains(&format!("{per_sec} a second")),
+                "{err:?}"
+            );
+        }
+        cs.policy
+            .put_settings(&admin(3600), with(5, 50))
+            .await
+            .unwrap();
+        for looser in [
+            with(6, 50),
+            with(5, 51),
+            Settings {
+                rate_limit: None,
+                ..with(5, 50)
+            },
+            Settings {
+                scrub_responses: false,
+                ..with(5, 50)
+            },
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(3600), looser)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ControlError::StepUpRequired { .. }),
+                "{err:?}"
+            );
+        }
+        cs.policy
+            .put_settings(&admin(0), with(10, 10))
+            .await
+            .unwrap();
+        let audit = store
+            .query(&AuditQuery {
+                action_prefix: Some("settings.update".into()),
+                page: crate::model::PageRequest::new(Some(1), Some(1)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(audit.items[0].detail["rate_limit"], "10/s, bursts of 10");
+        assert_eq!(audit.items[0].detail["scrub_responses"], "true");
+    }
+
+    #[tokio::test]
+    async fn a_rules_secrets_are_sealed_to_the_node_for_scrubbing() {
+        use crate::service::policy::{CreateCredential, CreateRule};
+        use tokenless_core::injection::InjectedHeaders;
+        use tokenless_core::seal::open;
+        use tokenless_core::snapshot::{rule_aad, SCRUB_FORMAT, SNAPSHOT_FORMAT};
+
+        let (_, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let vault = cs.policy.create_vault(&host, "v").await.unwrap();
+        let token = "tok_0123456789abcdef";
+        let credential = cs
+            .policy
+            .create_credential(
+                &host,
+                &vault.id,
+                CreateCredential {
+                    name: "api".into(),
+                    template_id: "generic-bearer".into(),
+                    template_version: None,
+                    host_override: vec!["api.example.com".into()],
+                    fields: [("token".to_string(), token.to_string())].into(),
+                    custom_headers: vec![],
+                    substitutions: vec![],
+                    not_after: None,
+                },
+            )
+            .await
+            .unwrap();
+        let rule = cs
+            .policy
+            .create_rule(
+                &host,
+                &vault.id,
+                CreateRule {
+                    name: "api".into(),
+                    credential_id: credential.id,
+                    hosts: None,
+                    paths: None,
+                    methods: None,
+                    mcp_tools: None,
+                    git: None,
+                },
+            )
+            .await
+            .unwrap();
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "n",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        cs.sessions
+            .mint(&host, &vault.id, mint(rule.id, Some(node.node.id), 600))
+            .await
+            .unwrap();
+        let body = cs
+            .nodes
+            .build_snapshot(&node.node)
+            .await
+            .unwrap()
+            .verify(&node.snapshot_verify_key)
+            .unwrap();
+        assert!(body.scrub_responses, "on by default");
+        let sealed = body.rules.iter().find(|r| r.rule_id == rule.id).unwrap();
+        let plain = open(
+            &secret,
+            &sealed.headers,
+            &rule_aad(&node.node.id, &rule.id, &credential.id),
+        )
+        .unwrap();
+        let headers: InjectedHeaders = serde_json::from_slice(&plain).unwrap();
+        let secrets: Vec<&str> = headers.secrets.iter().map(|s| s.expose()).collect();
+        assert_eq!(secrets, [token]);
+
+        // Turned off, only a node that reads format 6 is told to stop.
+        let settings = cs.policy.get_settings(&host).await.unwrap();
+        cs.policy
+            .put_settings(
+                &host,
+                crate::model::Settings {
+                    scrub_responses: false,
+                    ..settings
+                },
+            )
+            .await
+            .unwrap();
+        let built = |format| {
+            let cs = &cs;
+            let node = &node;
+            async move {
+                cs.nodes
+                    .build_snapshot_for(&node.node, format)
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .verify(&node.snapshot_verify_key)
+                    .unwrap()
+            }
+        };
+        let current = built(SNAPSHOT_FORMAT).await;
+        assert!(!current.scrub_responses);
+        assert!(current.format >= SCRUB_FORMAT);
+        assert!(
+            built(SCRUB_FORMAT - 1).await.scrub_responses,
+            "an older node keeps redacting"
+        );
+    }
+
+    /// A proxy that cut a session off reports it, and the control plane
+    /// revokes it so every proxy stops serving it.
+    #[tokio::test]
+    async fn a_quarantine_report_revokes_the_session() {
+        use tokenless_core::audit::{AuditEvent, AuditOutcome};
+        use tokenless_core::protocol::AuditBatch;
+
+        use crate::model::AuditQuery;
+        use crate::store::{AuditSink, PolicyStore};
+
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let secret = SealSecretKey::random_from_rng(OsRng);
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-1",
+                &encode_public_key(&SealPublicKey::from(&secret)),
+            )
+            .await
+            .unwrap();
+        let other = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-2",
+                &encode_public_key(&SealPublicKey::from(&SealSecretKey::random_from_rng(OsRng))),
+            )
+            .await
+            .unwrap();
+        let minted = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, Some(node.node.id), 600))
+            .await
+            .unwrap();
+        // Through edge-1 too: it holds the rule for the session above.
+        let unpinned = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap();
+        let bystander = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap();
+        // Only edge-2 accepts it, so edge-1 cannot cut it off.
+        let elsewhere = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, Some(other.node.id), 600))
+            .await
+            .unwrap();
+        let mut sessions = cs.notifier.subscribe();
+        sessions.mark_unchanged();
+        let report = |id: String| {
+            AuditEvent::new("node:x", QUARANTINE_ACTION, AuditOutcome::Denied)
+                .detail("scope", format!("vault:{vault}"))
+                .detail("session_id", id)
+                .detail("refusals", "20")
+                .detail("window_secs", "300")
+        };
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![
+                        // Before the session that gives edge-1 its rule ends.
+                        report(unpinned.session.id.to_string()),
+                        report(minted.session.id.to_string()),
+                        report(elsewhere.session.id.to_string()),
+                        // Nonsense is recorded and otherwise ignored.
+                        report("not-a-session".into()),
+                        report(SessionId::new().to_string()),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        let revoked = store
+            .get_session(&minted.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        let untouched = store
+            .get_session(&bystander.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(untouched.revoked_at.is_none());
+        let unpinned = store
+            .get_session(&unpinned.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(unpinned.revoked_at.is_some());
+        let elsewhere = store
+            .get_session(&elsewhere.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            elsewhere.revoked_at.is_none(),
+            "a node cuts off only sessions it serves"
+        );
+        assert!(sessions.has_changed().unwrap(), "proxies are told at once");
+
+        let events = store
+            .query(&AuditQuery {
+                action_prefix: Some("session.revoke".into()),
+                page: PageRequest::new(Some(1), Some(10)),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(events.len(), 2, "{events:?}");
+        let target = format!("session:{}", minted.session.id);
+        let e = events
+            .iter()
+            .find(|e| e.target.as_deref() == Some(target.as_str()))
+            .unwrap();
+        assert_eq!(e.actor, format!("node:{}", node.node.id));
+        assert_eq!(e.detail["reason"], "quarantine");
+        assert_eq!(e.detail["refusals"], "20");
+        assert_eq!(e.detail["node"], "edge-1");
+        assert_eq!(e.vault_id, Some(vault));
+
+        // Reported again, by another proxy: nothing more happens.
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![report(minted.session.id.to_string())],
+                },
+            )
+            .await
+            .unwrap();
+        let again = store
+            .query(&AuditQuery {
+                action_prefix: Some("session.revoke".into()),
+                page: PageRequest::new(Some(1), Some(10)),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .items;
+        assert_eq!(again.len(), 2);
+    }
+
+    /// A report can arrive well after the node cut the session off: a
+    /// scoped node is judged by the rules it held while the session
+    /// existed, never by the time the node puts on its report.
+    #[tokio::test]
+    async fn a_late_report_is_judged_by_what_the_node_held_while_the_session_lived() {
+        use tokenless_core::audit::{AuditEvent, AuditOutcome};
+        use tokenless_core::protocol::AuditBatch;
+
+        use crate::model::{AlertFilter, ProxySession};
+        use crate::store::PolicyStore;
+
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        let node = cs
+            .nodes
+            .register_embedded(
+                &host,
+                "edge-1",
+                &encode_public_key(&SealPublicKey::from(&SealSecretKey::random_from_rng(OsRng))),
+            )
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let session = |created: TimeDelta, node_id| ProxySession {
+            id: SessionId::new(),
+            vault_id: vault,
+            rule_ids: vec![rule],
+            bundle: None,
+            labels: BTreeMap::new(),
+            request_limit: None,
+            node_id,
+            created_by: "user:test".into(),
+            created_at: now - created,
+            expires_at: now + TimeDelta::hours(1),
+            revoked_at: None,
+        };
+        // The session that gave edge-1 the rule, revoked an hour ago.
+        let pinned = session(TimeDelta::hours(3), Some(node.node.id));
+        // Started while edge-1 held the rule, so it may have gone through it.
+        let late = session(TimeDelta::hours(2), None);
+        for s in [&pinned, &late] {
+            store.insert_session(s.clone(), &[]).await.unwrap();
+        }
+        store
+            .revoke_session(&pinned.id, now - TimeDelta::hours(1), &[])
+            .await
+            .unwrap();
+        let late = late.id;
+        // Started once edge-1 no longer held the rule: never its traffic.
+        let unheld = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let backdated = cs
+            .sessions
+            .mint(&host, &vault, mint(rule, None, 600))
+            .await
+            .unwrap()
+            .session
+            .id;
+        let report = |id: SessionId, at| {
+            let mut e = AuditEvent::new("node:x", QUARANTINE_ACTION, AuditOutcome::Denied)
+                .detail("scope", format!("vault:{vault}"))
+                .detail("session_id", id.to_string());
+            e.at = at;
+            e
+        };
+        cs.nodes
+            .ingest_audit(
+                &node.node,
+                AuditBatch {
+                    events: vec![
+                        report(late, now),
+                        report(unheld, now),
+                        // Stamped with a time edge-1 held the rule: the
+                        // node's clock is not taken for it.
+                        report(backdated, now - TimeDelta::hours(2)),
+                    ],
+                },
+            )
+            .await
+            .unwrap();
+        let revoked = |id| {
+            let store = store.clone();
+            async move {
+                store
+                    .get_session(&id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revoked_at
+                    .is_some()
+            }
+        };
+        assert!(revoked(late).await, "the late report still revokes");
+        assert!(!revoked(unheld).await);
+        assert!(
+            !revoked(backdated).await,
+            "a backdated report revokes nothing"
+        );
+
+        let alerts = cs
+            .alerts
+            .list(
+                &host,
+                AlertFilter::default(),
+                PageRequest::new(Some(1), Some(10)),
+            )
+            .await
+            .unwrap()
+            .items;
+        let sessions: Vec<_> = alerts.iter().map(|a| a.session_id).collect();
+        assert_eq!(
+            sessions,
+            [Some(late)],
+            "an ignored report raises no alert saying the session was revoked"
+        );
+    }
+
+    #[tokio::test]
+    async fn quarantine_is_set_within_bounds_and_loosening_it_needs_a_step_up() {
+        use crate::model::Settings;
+
+        let (_, cs) = services().await;
+        let admin = |step_up_age: i64| Caller {
+            principal: Principal {
+                kind: tokenless_core::authz::PrincipalKind::User,
+                actor: "user:admin".into(),
+                role: Role::Admin,
+                vault: None,
+            },
+            step_up_at: Some(Utc::now() - TimeDelta::seconds(step_up_age)),
+            second_factor: true,
+            launch: None,
+        };
+        let with = |q: Option<QuarantinePolicy>| Settings {
+            quarantine: q,
+            ..Settings::default()
+        };
+        for bad in [
+            QuarantinePolicy {
+                refusals: 1,
+                window_secs: 300,
+            },
+            QuarantinePolicy {
+                refusals: 20,
+                window_secs: 5,
+            },
+            QuarantinePolicy {
+                refusals: 20_000,
+                window_secs: 300,
+            },
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(0), with(Some(bad)))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ControlError::Validation { .. }), "{err:?}");
+        }
+        // Stricter needs no fresh step-up.
+        let stricter = QuarantinePolicy {
+            refusals: 5,
+            window_secs: 300,
+        };
+        cs.policy
+            .put_settings(&admin(3600), with(Some(stricter)))
+            .await
+            .unwrap();
+        // Off or looser does.
+        for looser in [
+            None,
+            Some(QuarantinePolicy {
+                refusals: 50,
+                window_secs: 300,
+            }),
+        ] {
+            let err = cs
+                .policy
+                .put_settings(&admin(3600), with(looser))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ControlError::StepUpRequired { .. }),
+                "{err:?}"
+            );
+        }
+        let off = cs.policy.put_settings(&admin(0), with(None)).await.unwrap();
+        assert_eq!(off.quarantine, None);
     }
 
     #[tokio::test]
@@ -888,7 +1674,10 @@ mod tests {
         let host = Caller::service(Principal::service("host", Role::Admin, None));
         let (vault, rule) = vault_with_rule(&cs, &host).await;
         let body = snapshot(&cs, &host, vault, rule).await;
-        assert_eq!(body.format, MIN_SNAPSHOT_FORMAT);
+        assert_eq!(
+            tokenless_core::snapshot::format_for(&body.rules),
+            MIN_SNAPSHOT_FORMAT
+        );
         assert_eq!(body.rules[0].not_after, None);
 
         let credential = body.rules[0].credential_id;
@@ -901,7 +1690,7 @@ mod tests {
             .unwrap();
         assert_eq!(rotated.not_after, Some(deadline));
         let body = snapshot(&cs, &host, vault, rule).await;
-        assert_eq!(body.format, 2);
+        assert_eq!(tokenless_core::snapshot::format_for(&body.rules), 2);
         assert_eq!(body.rules[0].not_after, Some(deadline));
 
         // A secret with no deadline clears the old one.
@@ -911,7 +1700,10 @@ mod tests {
             .unwrap();
         let body = snapshot(&cs, &host, vault, rule).await;
         assert_eq!(
-            (body.format, body.rules[0].not_after),
+            (
+                tokenless_core::snapshot::format_for(&body.rules),
+                body.rules[0].not_after
+            ),
             (MIN_SNAPSHOT_FORMAT, None)
         );
 

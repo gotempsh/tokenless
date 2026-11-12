@@ -58,6 +58,7 @@ fn admin() -> Caller {
         },
         step_up_at: Some(Utc::now()),
         second_factor: false,
+        launch: None,
     }
 }
 
@@ -193,6 +194,8 @@ async fn data_from_before_the_root_key_moves_under_it() {
         sso: store.clone(),
         audit_export: store.clone(),
         nodes: store.clone(),
+        alerts: store.clone(),
+        tripwires: store.clone(),
     };
     let old = ControlPlane::new(
         stores,

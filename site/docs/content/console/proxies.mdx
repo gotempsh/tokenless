@@ -33,9 +33,16 @@ also mint the token with `tokenless proxy add`.
 To add a credential to an HTTPS request, the proxy has to read it, so
 agents trust the instance's own certificate authority. The top of the
 page shows its SHA-256 fingerprint (with a copy button) and **Download
-CA** (`broker-ca.pem`). `tokenless run` installs the trust for the
+CA** (`tokenless-ca.pem`). `tokenless run` installs the trust for the
 command it starts; pass `--ca-fingerprint` to refuse a proxy that
 presents a different CA ([Run an agent](../agents.mdx)).
+
+## Other hosts
+
+Below it, **Other hosts** says what every proxy does with hosts no
+session covers: **allowed** (passed through untouched) or **blocked**.
+**Block other hosts** opens [Settings](../settings.mdx#other-hosts),
+where blocking them is recommended.
 
 ## Status
 

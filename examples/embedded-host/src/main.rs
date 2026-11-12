@@ -62,6 +62,8 @@ async fn main() -> Result<(), Error> {
                 policy: store.clone(),
                 audit: store.clone(),
                 nodes: store.clone(),
+                alerts: store.clone(),
+                tripwires: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,
@@ -165,6 +167,7 @@ async fn main() -> Result<(), Error> {
                 not_after: None,
                 rule_not_after: Default::default(),
                 strict: true,
+                renews: None,
             },
         )
         .await?;

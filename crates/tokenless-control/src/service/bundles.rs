@@ -34,6 +34,9 @@ pub struct CreateBundle {
     pub description: String,
     #[serde(default)]
     pub rule_ids: Vec<RuleId>,
+    /// Requests each session minted from it may make; none for no limit.
+    #[serde(default)]
+    pub request_limit: Option<u64>,
 }
 
 /// Fields left out are unchanged; `rule_ids` replaces the whole list.
@@ -42,6 +45,26 @@ pub struct UpdateBundle {
     pub name: Option<String>,
     pub description: Option<String>,
     pub rule_ids: Option<Vec<RuleId>>,
+    /// `null` removes the limit; left out, it is unchanged.
+    #[serde(default, deserialize_with = "some_or_null")]
+    pub request_limit: Option<Option<u64>>,
+}
+
+fn some_or_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<u64>>, D::Error> {
+    Option::<u64>::deserialize(d).map(Some)
+}
+
+/// The most requests a bundle may allow each session; past it, no limit
+/// says the same.
+pub const MAX_BUNDLE_REQUEST_LIMIT: u64 = 1_000_000_000;
+
+fn validate_request_limit(limit: Option<u64>) -> Result<Option<u64>, ControlError> {
+    match limit {
+        Some(n) if n == 0 || n > MAX_BUNDLE_REQUEST_LIMIT => Err(ControlError::validation(format!(
+            "an access bundle's request limit must be 1-{MAX_BUNDLE_REQUEST_LIMIT}, got {n}; leave it out for no limit"
+        ))),
+        other => Ok(other),
+    }
 }
 
 /// Names are typed on command lines (`run --bundle code-review`), so they
@@ -75,6 +98,10 @@ fn validate_description(description: &str) -> Result<String, ControlError> {
         )));
     }
     Ok(description.to_string())
+}
+
+fn limit_detail(limit: Option<u64>) -> String {
+    limit.map_or_else(|| "none".to_string(), |n| n.to_string())
 }
 
 pub struct BundleService {
@@ -147,6 +174,7 @@ impl BundleService {
         let name = validate_bundle_name(&req.name)?;
         let description = validate_description(&req.description)?;
         let rule_ids = self.checked_rules(vault_id, &req.rule_ids).await?;
+        let request_limit = validate_request_limit(req.request_limit)?;
         let now = Utc::now();
         let bundle = AccessBundle {
             id: BundleId::new(),
@@ -154,6 +182,7 @@ impl BundleService {
             name,
             description,
             rule_ids,
+            request_limit,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -162,7 +191,8 @@ impl BundleService {
             .vault(*vault_id)
             .target(format!("access_bundle:{}", bundle.id))
             .detail("name", bundle.name.clone())
-            .detail("rules", bundle.rule_ids.len().to_string());
+            .detail("rules", bundle.rule_ids.len().to_string())
+            .detail("request_limit", limit_detail(bundle.request_limit));
         self.policy.insert_bundle(bundle.clone(), &[event]).await?;
         Ok(bundle)
     }
@@ -186,12 +216,16 @@ impl BundleService {
         if let Some(rule_ids) = &req.rule_ids {
             bundle.rule_ids = self.checked_rules(&bundle.vault_id, rule_ids).await?;
         }
+        if let Some(limit) = req.request_limit {
+            bundle.request_limit = validate_request_limit(limit)?;
+        }
         bundle.updated_at = Utc::now();
         let event = AuditEvent::new(caller.actor(), "bundle.update", AuditOutcome::Success)
             .vault(bundle.vault_id)
             .target(format!("access_bundle:{id}"))
             .detail("name", bundle.name.clone())
-            .detail("rules", bundle.rule_ids.len().to_string());
+            .detail("rules", bundle.rule_ids.len().to_string())
+            .detail("request_limit", limit_detail(bundle.request_limit));
         self.policy.update_bundle(bundle.clone(), &[event]).await?;
         Ok(bundle)
     }
@@ -264,6 +298,30 @@ impl BundleService {
     }
 }
 
+/// `reference` is a bundle id or, failing that, a name in the vault.
+pub(super) async fn find_bundle(
+    policy: &dyn PolicyStore,
+    vault_id: &VaultId,
+    reference: &str,
+) -> Result<AccessBundle, ControlError> {
+    let reference = reference.trim();
+    let by_id = match reference.parse::<BundleId>() {
+        Ok(id) => policy.get_bundle(&id).await?,
+        Err(_) => None,
+    };
+    let found = match by_id {
+        Some(b) => Some(b),
+        None => policy.get_bundle_by_name(vault_id, reference).await?,
+    };
+    match found {
+        Some(b) if &b.vault_id == vault_id => Ok(b),
+        _ => Err(ControlError::NotFound {
+            entity: "access_bundle",
+            id: format!("{reference}' in vault '{vault_id}"),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +352,103 @@ mod tests {
         );
         assert!(validate_description(&"x".repeat(501)).is_err());
         assert!(validate_description("bell\u{7}").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_bundles_request_limit_caps_the_sessions_minted_from_it() {
+        use tokenless_core::authz::{Principal, Role};
+
+        use crate::model::{AuditQuery, PageRequest};
+        use crate::service::sessions::MintSession;
+        use crate::service::testing::{services, vault_with_rule};
+        use crate::store::AuditSink;
+
+        let (store, cs) = services().await;
+        let host = Caller::service(Principal::service("host", Role::Admin, None));
+        let (vault, rule) = vault_with_rule(&cs, &host).await;
+        for bad in [0, MAX_BUNDLE_REQUEST_LIMIT + 1] {
+            let err = cs
+                .bundles
+                .create(
+                    &host,
+                    &vault,
+                    CreateBundle {
+                        name: "bad".into(),
+                        description: String::new(),
+                        rule_ids: vec![rule],
+                        request_limit: Some(bad),
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ControlError::Validation { .. })
+                    && err.to_string().contains("request limit"),
+                "{err:?}"
+            );
+        }
+        let bundle = cs
+            .bundles
+            .create(
+                &host,
+                &vault,
+                CreateBundle {
+                    name: "review".into(),
+                    description: String::new(),
+                    rule_ids: vec![rule],
+                    request_limit: Some(100),
+                },
+            )
+            .await
+            .unwrap();
+        let mint = |asked: Option<u64>| MintSession {
+            bundle: Some("review".into()),
+            ttl_secs: Some(600),
+            request_limit: asked,
+            ..MintSession::default()
+        };
+        let limit_of = |asked| {
+            let cs = &cs;
+            let host = &host;
+            async move {
+                cs.sessions
+                    .mint(host, &vault, mint(asked))
+                    .await
+                    .unwrap()
+                    .session
+                    .request_limit
+            }
+        };
+        assert_eq!(limit_of(None).await, Some(100), "the bundle's by default");
+        assert_eq!(limit_of(Some(10)).await, Some(10), "fewer when asked");
+        assert_eq!(limit_of(Some(1000)).await, Some(100), "never more");
+
+        // Left out, it stays; null removes it.
+        let kept = cs
+            .bundles
+            .update(&host, &bundle.id, UpdateBundle::default())
+            .await
+            .unwrap();
+        assert_eq!(kept.request_limit, Some(100));
+        let update: UpdateBundle = serde_json::from_str(r#"{"request_limit": null}"#).unwrap();
+        let removed = cs.bundles.update(&host, &bundle.id, update).await.unwrap();
+        assert_eq!(removed.request_limit, None);
+        assert_eq!(limit_of(Some(1000)).await, Some(1000));
+        assert_eq!(limit_of(None).await, None);
+
+        let audit = store
+            .query(&AuditQuery {
+                action_prefix: Some("bundle.".into()),
+                page: PageRequest::new(Some(1), Some(10)),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let limits: Vec<&str> = audit
+            .items
+            .iter()
+            .map(|e| e.detail["request_limit"].as_str())
+            .collect();
+        assert_eq!(limits, ["none", "100", "100"], "newest first");
     }
 }

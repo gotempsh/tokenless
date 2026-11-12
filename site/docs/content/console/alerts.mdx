@@ -1,0 +1,57 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Alerts"
+description: "Alerts are what the proxies reported that someone should look at now: a session that sent a tripwire, was cut off for probing, was refused again and again, or was used through a second proxy."
+---
+
+An agent at work rarely trips these. Someone who got onto the agent's
+machine and is trying what else the session reaches usually does. Each
+alert is raised once per session, as soon as the proxy's report reaches
+the control plane.
+
+| Alert | Raised when | Tune it |
+|---|---|---|
+| **Tripwire** | A session sent one of your [tripwires](./vaults.mdx#tripwires): someone took it from the agent's machine. The session is cut off and revoked | Always raised |
+| **Session cut off** | A proxy [cut the session off](../settings.mdx#cut-off-probing-sessions) after repeated refusals; it is revoked everywhere | Always raised |
+| **Refused often** | The session was refused 10 times in 5 minutes (by default), across every proxy | [Settings → Alerts](../settings.mdx#alerts) |
+| **Second proxy** | The session was used through a proxy other than the one it first used: its token may have been copied off the machine | [Settings → Alerts](../settings.mdx#alerts) |
+
+## Where they show
+
+- **Alerts** in the sidebar lists the open ones, newest first; a red dot
+  beside it means there are some. **Show acknowledged too** lists every
+  alert.
+- The **Vaults** page, where the console opens, shows the newest open
+  alert at the top.
+- A [session's page](./sessions.mdx#a-sessions-page) shows its own open
+  alerts above everything else, and its request log shows what it tried.
+- Every alert is also an `alert.raised` event in the
+  [audit log](./audit.mdx), so an
+  [audit webhook](../settings.mdx#audit-export) carries it to your SIEM,
+  chat or pager. The button at the top of the page says how many webhooks
+  get alerts, or **Send alerts to a webhook** when none does. Email is not
+  sent.
+
+## Acknowledge one
+
+Once you have looked at what the session did, choose **Acknowledge** in
+the alert's row. It leaves the open list and the banners, and the audit
+log records who acknowledged it (`alert.acknowledge`). Editors and admins
+can acknowledge alerts; everyone who can read the audit log can see them,
+and a vault-bound API key sees only its vault's.
+
+A session that was cut off stays revoked, and `tokenless run` does not
+renew it. If it was an agent at work, start a new session.
+
+From a terminal, `tokenless alerts list` and `tokenless alerts ack <id>`
+do the same ([CLI](../cli.mdx#alerts-list-alerts-ack)). Over the API:
+`GET /api/v1/alerts` (`?open=true`, `vault_id`, `session_id`, `kind`),
+`GET /api/v1/alerts/summary` and `POST /api/v1/alerts/{id}/acknowledge`.
+
+## What alerts don't see
+
+Alerts come from what the proxies see. Someone who reaches a service
+without the proxy, with a credential found elsewhere, raises none. The
+control plane keeps which proxy a session first used in memory, so a
+restart forgets it and the next proxy a session uses counts as its first.

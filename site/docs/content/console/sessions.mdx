@@ -26,7 +26,8 @@ after the command unless it was given `--name`. The rest are created in the cons
 - **Expires after**: how long the token works: one day by default, and
   at most the instance's [session lifetime](../settings.mdx#session-lifetime).
 - **Request limit** (optional): the proxy refuses the session's
-  requests after this many.
+  requests after this many. A bundle with a
+  [request limit](./bundles.mdx#settings) caps it.
 
 ![New session: choose an access bundle, then a name, a lifetime and an optional request limit](../screenshots/console-new-session.png)
 

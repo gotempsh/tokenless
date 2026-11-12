@@ -17,7 +17,7 @@ use broker_server::launcher::account::{
 };
 use broker_server::launcher::client::{ApiClient, Credentials, MintRequest, PortServices};
 use broker_server::launcher::inject::{self, Assignment};
-use broker_server::launcher::port::{check_listen, check_proxy, SessionPort};
+use broker_server::launcher::port::{check_listen, check_proxy, PortPassword, SessionPort};
 use broker_server::launcher::session::LiveSession;
 use broker_server::launcher::skill;
 use broker_server::launcher::trust::{
@@ -41,9 +41,13 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
+mod alerts;
+mod keys;
 mod list;
 mod messages;
 mod setup;
+mod sign_ins;
+mod tripwires;
 
 #[derive(Parser)]
 #[command(
@@ -84,6 +88,26 @@ enum Command {
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
+    },
+    /// What the proxies reported that someone should look at now: a
+    /// session cut off, refused often or used through a second proxy.
+    /// Needs `tokenless login`.
+    Alerts {
+        #[command(subcommand)]
+        command: AlertCommand,
+    },
+    /// Decoy credentials to plant on an agent's machine: a request that
+    /// carries one cuts its session off and raises an alert. Needs
+    /// `tokenless login`.
+    Tripwire {
+        #[command(subcommand)]
+        command: TripwireCommand,
+    },
+    /// The browsers and CLI logins signed in as you, and ending them: a
+    /// lost laptop, a machine you no longer use. Needs `tokenless login`.
+    SignIns {
+        #[command(subcommand)]
+        command: SignInCommand,
     },
     /// What is set up on this machine (control plane, sign-in, services,
     /// proxy, agent skill) and the one command to run next. Exits 0 when
@@ -301,6 +325,11 @@ struct PortArgs {
     /// system roots, or SSL_CERT_FILE).
     #[arg(long)]
     trust_base: Option<PathBuf>,
+    /// Let the session port take connections without the password it puts
+    /// in HTTPS_PROXY, for a client that can't send proxy credentials. Any
+    /// process on this machine, any user's, can then use the session.
+    #[arg(long)]
+    no_port_password: bool,
 }
 
 /// Where an existing session's token comes from, instead of minting one.
@@ -380,6 +409,202 @@ enum BundleCommand {
         /// Print the rows as JSON, for agents and scripts.
         #[arg(long)]
         json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Launcher keys: what an agent machine starts its sessions with,
+    /// instead of a person's sign-in. A key only starts sessions from its
+    /// bundle, with the limits it was given.
+    Key {
+        #[command(subcommand)]
+        command: BundleKeyCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleKeyCommand {
+    /// Create a launcher key for an agent machine. Prints the key on stdout
+    /// (shown only once) and how to use it on stderr.
+    ///
+    /// Examples:
+    ///   tokenless bundle key add code-review --name build-runner > runner.key
+    ///   tokenless bundle key add deploy --vault work --name ci --ttl 10m --request-limit 500
+    #[command(verbatim_doc_comment)]
+    Add {
+        /// The access bundle, by name or id.
+        bundle: String,
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// What the key is for, such as the machine it goes on.
+        #[arg(long)]
+        name: String,
+        /// The longest session the key starts (e.g. 10m, 1h; default 15m).
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Requests each session may make through the proxy.
+        #[arg(long)]
+        request_limit: Option<u64>,
+        /// Only this proxy (name or id) accepts the key's sessions.
+        #[arg(long)]
+        proxy: Option<String>,
+        /// Label stamped on every session the key starts, as key=value
+        /// (repeatable).
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Days until the key stops working (default 90, at most 365).
+        #[arg(long)]
+        expires_in_days: Option<u32>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// List launcher keys, newest first, with when each was last used.
+    List {
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Only this bundle's keys, by name or id.
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Revoke a launcher key and end the live sessions it started.
+    Revoke {
+        /// The key's name, prefix (cbk_...) or id.
+        key: String,
+        /// Vault name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum TripwireCommand {
+    /// Create a decoy and print how to plant it. The decoy is shown once.
+    ///
+    /// Examples:
+    ///   tokenless tripwire add --kind aws --name build-runner >> ~/.aws/credentials
+    ///   tokenless tripwire add --kind github --name laptop --vault work >> .env.local
+    #[command(verbatim_doc_comment)]
+    Add {
+        /// What it looks like: aws, github, openai or generic.
+        #[arg(long)]
+        kind: String,
+        /// Where it is planted, such as the machine's name.
+        #[arg(long)]
+        name: String,
+        /// The vault, when there is more than one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// List a vault's tripwires and when each was last tripped.
+    List {
+        #[arg(long)]
+        vault: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Delete one, by name, the start `list` shows or id: proxies stop
+    /// looking for it.
+    Remove {
+        tripwire: String,
+        #[arg(long)]
+        vault: Option<String>,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AlertCommand {
+    /// List alerts nobody has acknowledged yet, newest first.
+    ///
+    /// Examples:
+    ///   tokenless alerts list
+    ///   tokenless alerts list --all --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// The acknowledged ones too.
+        #[arg(long)]
+        all: bool,
+        /// Print every one as JSON, for agents and scripts; the table
+        /// shows the newest 50.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Mark an alert looked at, so it leaves the open list.
+    ///
+    /// Example:
+    ///   tokenless alerts ack 3f9c2a1b
+    #[command(verbatim_doc_comment)]
+    Ack {
+        /// The alert's id, or its start as `list` shows it.
+        alert: String,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SignInCommand {
+    /// List sign-ins, newest first, with the client and when each was
+    /// last used.
+    ///
+    /// Examples:
+    ///   tokenless sign-ins list
+    ///   tokenless sign-ins list --user ada
+    #[command(verbatim_doc_comment)]
+    List {
+        /// Someone else's sign-ins (admins only), by username.
+        #[arg(long)]
+        user: Option<String>,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// End a sign-in: one of yours, all of yours but this one, or all of
+    /// someone's (admins only).
+    ///
+    /// Examples:
+    ///   tokenless sign-ins revoke 3f9c2a1b
+    ///   tokenless sign-ins revoke --others
+    ///   tokenless sign-ins revoke --user ada
+    #[command(verbatim_doc_comment)]
+    #[command(group(clap::ArgGroup::new("which").required(true).args(["sign_in", "others", "user"])))]
+    Revoke {
+        /// The sign-in's id, or its start as `list` shows it.
+        sign_in: Option<String>,
+        /// Every sign-in of yours but this one.
+        #[arg(long)]
+        others: bool,
+        /// Every sign-in of this person, by username.
+        #[arg(long)]
+        user: Option<String>,
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
@@ -1305,6 +1530,42 @@ async fn node(command: NodeCommand, telemetry: &Telemetry) -> Result<Stopped, Cl
     }
 }
 
+async fn bundle_key(command: BundleKeyCommand) -> Result<ExitCode, CliError> {
+    match command {
+        BundleKeyCommand::Add {
+            bundle,
+            vault,
+            name,
+            ttl,
+            request_limit,
+            proxy,
+            labels,
+            expires_in_days,
+            server,
+        } => {
+            keys::add(keys::AddKey {
+                bundle,
+                vault,
+                name,
+                ttl,
+                request_limit,
+                proxy,
+                labels,
+                expires_in_days,
+                server,
+            })
+            .await
+        }
+        BundleKeyCommand::List {
+            vault,
+            bundle,
+            json,
+            server,
+        } => keys::list(vault, bundle, json, server).await,
+        BundleKeyCommand::Revoke { key, vault, server } => keys::revoke(key, vault, server).await,
+    }
+}
+
 // ----- agent side -----------------------------------------------------
 
 fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError> {
@@ -1413,6 +1674,7 @@ fn mint_request(args: &MintArgs, extra: &[(&str, String)]) -> Result<MintRequest
         longest: false,
         request_limit: args.request_limit,
         labels,
+        renews: None,
     })
 }
 
@@ -1481,6 +1743,11 @@ async fn open_session(
     let request = mint_request(mint, labels)?;
     let vault = client.resolve_vault(mint.vault.as_deref()).await?;
     Ok(LiveSession::start(client.clone(), vault, request).await?)
+}
+
+/// A fresh password for the session port, unless it was turned off.
+fn port_password(port: &PortArgs) -> Option<PortPassword> {
+    (!port.no_port_password).then(PortPassword::generate)
 }
 
 /// Downloads the interception CA, checks a pinned fingerprint and writes
@@ -1646,17 +1913,22 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
             let dir = private_dir()?;
             let (trust, ca) = prepare_trust(&client, &port, dir.path()).await?;
             let live = open_session(&client, &mint, given, &[]).await?;
-            let session_port =
-                match SessionPort::start(listen, &port.proxy, live.auth.clone(), live.listing())
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        live.end().await;
-                        return Err(e.into());
-                    }
-                };
-            let exports: String = agent_env(session_port.addr, &trust)
+            let session_port = match SessionPort::start(
+                listen,
+                &port.proxy,
+                live.auth.clone(),
+                live.listing(),
+                port_password(&port),
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    live.end().await;
+                    return Err(e.into());
+                }
+            };
+            let exports: String = agent_env(&session_port.url(), &trust)
                 .into_iter()
                 .chain(placeholder_env(&live.services))
                 .map(|(k, v)| format!("export {k}={}\n", shell_quote(&v)))
@@ -1751,6 +2023,7 @@ async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
         longest: args.ttl.is_none(),
         request_limit: None,
         labels,
+        renews: None,
     };
     let client = client(&args.broker)?;
     let vault = client.resolve_vault(args.vault.as_deref()).await?;
@@ -1923,6 +2196,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
         &args.port.proxy,
         live.auth.clone(),
         live.listing(),
+        port_password(&args.port),
     )
     .await
     {
@@ -1932,7 +2206,7 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
             return Err(e.into());
         }
     };
-    let trust_env = agent_env(session_port.addr, &trust);
+    let trust_env = agent_env(&session_port.url(), &trust);
     let reserved: Vec<String> = trust_env.iter().map(|(k, _)| k.clone()).collect();
     let requested = match inject::resolve(&assignments, &live.services, &reserved) {
         Ok(env) => env,
@@ -2133,6 +2407,9 @@ async fn main() -> ExitCode {
             | Command::Admin { .. }
             | Command::Login { .. }
             | Command::Logout { .. }
+            | Command::SignIns { .. }
+            | Command::Alerts { .. }
+            | Command::Tripwire { .. }
             | Command::Service { .. }
             | Command::Vault { .. }
             | Command::Bundle { .. }
@@ -2153,6 +2430,50 @@ async fn main() -> ExitCode {
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
         Command::Login { server, username } => login(server, username).await,
         Command::Logout { server } => logout(server).await,
+        Command::Tripwire { command } => match command {
+            TripwireCommand::Add {
+                kind,
+                name,
+                vault,
+                server,
+            } => tripwires::add(kind, name, vault, server).await,
+            TripwireCommand::List {
+                vault,
+                json,
+                server,
+            } => tripwires::list(vault, json, server).await,
+            TripwireCommand::Remove {
+                tripwire,
+                vault,
+                server,
+            } => tripwires::remove(tripwire, vault, server).await,
+        },
+        Command::Alerts { command } => match command {
+            AlertCommand::List { all, json, server } => alerts::list(all, json, server).await,
+            AlertCommand::Ack { alert, server } => alerts::acknowledge(alert, server).await,
+        },
+        Command::SignIns { command } => match command {
+            SignInCommand::List { user, json, server } => sign_ins::list(user, json, server).await,
+            SignInCommand::Revoke {
+                sign_in,
+                others,
+                user,
+                server,
+            } => {
+                let what = match (sign_in, others, user) {
+                    (Some(id), _, _) => Ok(sign_ins::Revoke::One(id)),
+                    (None, true, _) => Ok(sign_ins::Revoke::Others),
+                    (None, false, Some(user)) => Ok(sign_ins::Revoke::User(user)),
+                    (None, false, None) => Err(LauncherError::config(
+                        "say which sign-in to end: an id, --others or --user <username>",
+                    )),
+                };
+                match what {
+                    Ok(what) => sign_ins::revoke(what, server).await,
+                    Err(e) => Err(e.into()),
+                }
+            }
+        },
         Command::Service { command } => service(command).await,
         Command::Vault {
             command: VaultCommand::List { json, server },
@@ -2165,6 +2486,9 @@ async fn main() -> ExitCode {
                     server,
                 },
         } => list::bundles(vault, json, server).await,
+        Command::Bundle {
+            command: BundleCommand::Key { command },
+        } => bundle_key(command).await,
         Command::Status { json, server } => setup::status_command(server, json).await,
         Command::Proxy { command } => proxy(command).await,
         Command::Session { command } => session(command, cli.verbose).await,

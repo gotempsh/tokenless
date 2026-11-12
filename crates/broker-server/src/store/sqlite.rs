@@ -33,16 +33,18 @@ use tokenless_control::StoreError;
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::Role;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
-    VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId,
+    SignInId, UserId, VariableId, VaultId,
 };
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -769,7 +771,7 @@ const RULE_COLUMNS: &str =
 const SESSION_COLUMNS: &str = "id, vault_id, rule_ids, labels, request_limit, node_id, created_by, created_at, expires_at, revoked_at, bundle_id, bundle_name";
 
 /// Bundle columns plus its rule ids as a JSON array, in one statement.
-const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
+const BUNDLE_SELECT: &str = "SELECT b.id, b.vault_id, b.name, b.description, b.request_limit, b.created_by, b.created_at, b.updated_at, (SELECT json_group_array(r.rule_id) FROM access_bundle_rules r WHERE r.bundle_id = b.id) AS rule_ids FROM access_bundles b";
 
 fn bundle_from_row(row: &SqliteRow) -> Result<AccessBundle, StoreError> {
     let mut rule_ids: Vec<RuleId> = from_json("rule_ids", &get::<String>(row, "rule_ids")?)?;
@@ -780,6 +782,7 @@ fn bundle_from_row(row: &SqliteRow) -> Result<AccessBundle, StoreError> {
         name: get(row, "name")?,
         description: get(row, "description")?,
         rule_ids,
+        request_limit: get::<Option<i64>>(row, "request_limit")?.map(to_u64),
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
@@ -846,6 +849,11 @@ impl PolicyStore for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(db("delete vault bundle members", "vault"))?;
+        sqlx::query("DELETE FROM tripwires WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault tripwires", "vault"))?;
         done.bundles = sqlx::query("DELETE FROM access_bundles WHERE vault_id = ?")
             .bind(&vault)
             .execute(&mut *tx)
@@ -1119,11 +1127,12 @@ impl PolicyStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_bundle").await?;
-        sqlx::query("INSERT INTO access_bundles (id, vault_id, name, description, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO access_bundles (id, vault_id, name, description, request_limit, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(bundle.id.to_string())
             .bind(bundle.vault_id.to_string())
             .bind(&bundle.name)
             .bind(&bundle.description)
+            .bind(bundle.request_limit.map(to_i64))
             .bind(&bundle.created_by)
             .bind(ts(&bundle.created_at))
             .bind(ts(&bundle.updated_at))
@@ -1203,10 +1212,11 @@ impl PolicyStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_bundle").await?;
         let result = sqlx::query(
-            "UPDATE access_bundles SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+            "UPDATE access_bundles SET name = ?, description = ?, request_limit = ?, updated_at = ? WHERE id = ?",
         )
         .bind(&bundle.name)
         .bind(&bundle.description)
+        .bind(bundle.request_limit.map(to_i64))
         .bind(ts(&bundle.updated_at))
         .bind(bundle.id.to_string())
         .execute(&mut *tx)
@@ -1440,6 +1450,26 @@ impl PolicyStore for SqliteStore {
             .collect()
     }
 
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM proxy_sessions WHERE node_id = ? AND expires_at > ? AND created_at <= ? AND (revoked_at IS NULL OR revoked_at > ?) ORDER BY id");
+        sqlx::query(&sql)
+            .bind(node.to_string())
+            .bind(ts(&from))
+            .bind(ts(&to))
+            .bind(ts(&from))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db("list a node's sessions over a time", "session"))?
+            .iter()
+            .map(session_from_row)
+            .collect()
+    }
+
     async fn get_settings(&self) -> Result<Settings, StoreError> {
         let row = sqlx::query("SELECT value FROM settings WHERE key = 'instance'")
             .fetch_optional(&self.pool)
@@ -1635,6 +1665,20 @@ async fn insert_user_tx(tx: &mut Transaction<'static, Sqlite>, u: &User) -> Resu
     Ok(())
 }
 
+fn ui_session_from_row(r: &SqliteRow) -> Result<UiSession, StoreError> {
+    let created_at = get_ts(r, "created_at")?;
+    Ok(UiSession {
+        id: get_id(r, "id")?,
+        token_hash: get(r, "token_hash")?,
+        user_id: get_id(r, "user_id")?,
+        created_at,
+        expires_at: get_ts(r, "expires_at")?,
+        step_up_at: get_opt_ts(r, "step_up_at")?,
+        last_used_at: get_opt_ts(r, "last_used_at")?.unwrap_or(created_at),
+        user_agent: get(r, "user_agent")?,
+    })
+}
+
 fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
     Ok(ApiKey {
         id: get_id(row, "id")?,
@@ -1648,6 +1692,9 @@ fn api_key_from_row(row: &SqliteRow) -> Result<ApiKey, StoreError> {
         expires_at: get_ts(row, "expires_at")?,
         revoked_at: get_opt_ts(row, "revoked_at")?,
         last_used_at: get_opt_ts(row, "last_used_at")?,
+        launch: get::<Option<String>>(row, "launch")?
+            .map(|raw| from_json("launch", &raw))
+            .transpose()?,
     })
 }
 
@@ -1772,6 +1819,7 @@ impl IdentityStore for SqliteStore {
         id: &UserId,
         secret_enc: Option<Vec<u8>>,
         last_step: Option<u64>,
+        keep_session: Option<&str>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("set_user_totp").await?;
@@ -1793,6 +1841,12 @@ impl IdentityStore for SqliteStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("user", id));
         }
+        sqlx::query("DELETE FROM ui_sessions WHERE user_id = ? AND token_hash IS NOT ?")
+            .bind(id.to_string())
+            .bind(keep_session)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("sign the user out elsewhere", "ui_session"))?;
         finish(tx, audit, "set_user_totp").await
     }
 
@@ -1920,12 +1974,15 @@ impl IdentityStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_ui_session").await?;
-        sqlx::query("INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, step_up_at) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, step_up_at, id, last_used_at, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&s.token_hash)
             .bind(s.user_id.to_string())
             .bind(ts(&s.created_at))
             .bind(ts(&s.expires_at))
             .bind(opt_ts(&s.step_up_at))
+            .bind(s.id.to_string())
+            .bind(ts(&s.last_used_at))
+            .bind(&s.user_agent)
             .execute(&mut *tx)
             .await
             .map_err(db("insert ui session", "ui_session"))?;
@@ -1938,16 +1995,7 @@ impl IdentityStore for SqliteStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(db("get ui session", "ui_session"))?;
-        row.map(|r| {
-            Ok(UiSession {
-                token_hash: get(&r, "token_hash")?,
-                user_id: get_id(&r, "user_id")?,
-                created_at: get_ts(&r, "created_at")?,
-                expires_at: get_ts(&r, "expires_at")?,
-                step_up_at: get_opt_ts(&r, "step_up_at")?,
-            })
-        })
-        .transpose()
+        row.as_ref().map(ui_session_from_row).transpose()
     }
 
     async fn set_ui_session_step_up(
@@ -1983,9 +2031,113 @@ impl IdentityStore for SqliteStore {
         finish(tx, audit, "delete_ui_session").await
     }
 
-    async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
-        Ok(sqlx::query("DELETE FROM ui_sessions WHERE expires_at <= ?")
+    async fn touch_ui_session(
+        &self,
+        token_hash: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        sqlx::query("UPDATE ui_sessions SET last_used_at = ? WHERE token_hash = ?")
+            .bind(ts(&at))
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await
+            .map_err(db("record sign-in use", "ui_session"))?;
+        Ok(())
+    }
+
+    async fn list_ui_sessions(
+        &self,
+        user_id: &UserId,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+        page: PageRequest,
+    ) -> Result<Page<UiSession>, StoreError> {
+        const FILTER: &str = "FROM ui_sessions WHERE user_id = ? AND expires_at > ? AND (? IS NULL OR last_used_at > ?)";
+        let user = user_id.to_string();
+        let now = ts(&now);
+        let idle = idle_since.as_ref().map(ts);
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {FILTER}"))
+            .bind(&user)
+            .bind(&now)
+            .bind(&idle)
+            .bind(&idle)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db("count sign-ins", "ui_session"))?;
+        let rows = sqlx::query(&format!(
+            "SELECT * {FILTER} ORDER BY created_at DESC, id LIMIT ? OFFSET ?"
+        ))
+        .bind(&user)
+        .bind(&now)
+        .bind(&idle)
+        .bind(&idle)
+        .bind(to_i64(page.page_size))
+        .bind(to_i64(page.offset()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db("list sign-ins", "ui_session"))?;
+        Ok(Page {
+            items: rows
+                .iter()
+                .map(ui_session_from_row)
+                .collect::<Result<_, _>>()?,
+            total: to_u64(total),
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+
+    async fn delete_user_ui_session(
+        &self,
+        user_id: &UserId,
+        id: &SignInId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("delete_user_ui_session").await?;
+        let result = sqlx::query("DELETE FROM ui_sessions WHERE user_id = ? AND id = ?")
+            .bind(user_id.to_string())
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(db("revoke sign-in", "ui_session"))?;
+        if result.rows_affected() == 0 {
+            return Ok(false);
+        }
+        finish(tx, audit, "delete_user_ui_session")
+            .await
+            .map(|()| true)
+    }
+
+    async fn delete_user_ui_sessions(
+        &self,
+        user_id: &UserId,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
+        let mut tx = self.begin("delete_user_ui_sessions").await?;
+        let result =
+            sqlx::query("DELETE FROM ui_sessions WHERE user_id = ? AND token_hash IS NOT ?")
+                .bind(user_id.to_string())
+                .bind(keep_session)
+                .execute(&mut *tx)
+                .await
+                .map_err(db("revoke sign-ins", "ui_session"))?;
+        finish(tx, audit, "delete_user_ui_sessions").await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_expired_ui_sessions(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError> {
+        let idle = idle_since.as_ref().map(ts);
+        Ok(sqlx::query(
+            "DELETE FROM ui_sessions WHERE expires_at <= ? OR (? IS NOT NULL AND last_used_at <= ?)",
+        )
             .bind(ts(&now))
+            .bind(&idle)
+            .bind(&idle)
             .execute(&self.pool)
             .await
             .map_err(db("purge ui sessions", "ui_session"))?
@@ -1994,7 +2146,12 @@ impl IdentityStore for SqliteStore {
 
     async fn insert_api_key(&self, k: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_api_key").await?;
-        sqlx::query("INSERT INTO api_keys (id, name, prefix, secret_hash, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        let launch = k
+            .launch
+            .as_ref()
+            .map(|l| to_json("launch", l))
+            .transpose()?;
+        sqlx::query("INSERT INTO api_keys (id, name, prefix, secret_hash, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at, launch, launch_bundle_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(k.id.to_string())
             .bind(&k.name)
             .bind(&k.prefix)
@@ -2006,6 +2163,8 @@ impl IdentityStore for SqliteStore {
             .bind(ts(&k.expires_at))
             .bind(opt_ts(&k.revoked_at))
             .bind(opt_ts(&k.last_used_at))
+            .bind(launch)
+            .bind(k.launch.as_ref().map(|l| l.bundle_id.to_string()))
             .execute(&mut *tx)
             .await
             .map_err(db("insert api key", "api_key"))?;
@@ -2020,6 +2179,54 @@ impl IdentityStore for SqliteStore {
             .map_err(db("get api key", "api_key"))?
             .map(|r| api_key_from_row(&r))
             .transpose()
+    }
+
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError> {
+        sqlx::query("SELECT * FROM api_keys WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db("get api key", "api_key"))?
+            .map(|r| api_key_from_row(&r))
+            .transpose()
+    }
+
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError> {
+        const FILTER: &str = "FROM api_keys WHERE vault_id = ? AND launch_bundle_id IS NOT NULL AND (? IS NULL OR launch_bundle_id = ?)";
+        let vault = vault_id.to_string();
+        let bundle = bundle.map(|b| b.to_string());
+        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {FILTER}"))
+            .bind(&vault)
+            .bind(&bundle)
+            .bind(&bundle)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db("count launcher keys", "api_key"))?;
+        let rows = sqlx::query(&format!(
+            "SELECT * {FILTER} ORDER BY created_at DESC, id LIMIT ? OFFSET ?"
+        ))
+        .bind(&vault)
+        .bind(&bundle)
+        .bind(&bundle)
+        .bind(to_i64(page.page_size))
+        .bind(to_i64(page.offset()))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db("list launcher keys", "api_key"))?;
+        Ok(Page {
+            items: rows
+                .iter()
+                .map(api_key_from_row)
+                .collect::<Result<_, _>>()?,
+            total: to_u64(total),
+            page: page.page,
+            page_size: page.page_size,
+        })
     }
 
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError> {

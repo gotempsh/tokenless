@@ -604,6 +604,10 @@ pub struct Redactions {
     rule_id: RuleId,
     host: String,
     logged: bool,
+    /// Occurrences redacted from this response so far.
+    count: usize,
+    /// Told the count once the response is done, if anything was redacted.
+    on_done: Option<Box<dyn FnOnce(usize) + Send + Sync>>,
 }
 
 impl Redactions {
@@ -613,16 +617,29 @@ impl Redactions {
             rule_id,
             host,
             logged: false,
+            count: 0,
+            on_done: None,
         }
+    }
+
+    /// Calls `done` with how many occurrences were redacted once the
+    /// response is relayed or dropped, if there were any: a reader that
+    /// stopped early still has the ones so far reported.
+    #[must_use]
+    pub fn on_done(mut self, done: impl FnOnce(usize) + Send + Sync + 'static) -> Self {
+        self.on_done = Some(Box::new(done));
+        self
     }
 
     fn record(&mut self, count: usize, location: &'static str) {
         if count == 0 {
             return;
         }
+        self.count += count;
         Metrics::add(&self.metrics.credentials_redacted_total, count as u64);
         if !self.logged {
             self.logged = true;
+            Metrics::inc(&self.metrics.responses_scrubbed_total);
             warn!(
                 rule_id = %self.rule_id,
                 host = %self.host,
@@ -630,6 +647,16 @@ impl Redactions {
                 count,
                 "redacted the injected credential from an upstream response that reflected it"
             );
+        }
+    }
+}
+
+impl Drop for Redactions {
+    fn drop(&mut self) {
+        if self.count > 0 {
+            if let Some(done) = self.on_done.take() {
+                done(self.count);
+            }
         }
     }
 }

@@ -71,6 +71,28 @@ export type PasswordSignIn = "everyone" | "admins_only";
 
 export interface SignInSettings {
   password_sign_in: PasswordSignIn;
+  /** A sign-in unused this long ends; `null` turns idle expiry off. */
+  idle_timeout_secs: number | null;
+}
+
+export type SignInClient = "cli" | "browser" | "unknown";
+
+/** A browser or CLI login holding someone's session; never its token. */
+export interface SignIn {
+  id: string;
+  client: SignInClient;
+  /** What signed in, for people: "Firefox on macOS". */
+  device: string;
+  user_agent: string | null;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
+  /** The sign-in that asked. */
+  current: boolean;
+}
+
+export interface SignInsRevoked {
+  revoked: number;
 }
 
 /** The product an identity provider is, read from its issuer; `openid` for any other. */
@@ -325,6 +347,8 @@ export interface AccessBundle {
   name: string;
   description: string;
   rule_ids: string[];
+  /** Requests each session started from it may make; `null` for no limit. */
+  request_limit: number | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -377,6 +401,35 @@ export interface MintedSession {
   session: ProxySession;
 }
 
+/** An API key that only starts sessions from one access bundle. */
+export interface LauncherKey {
+  id: string;
+  name: string;
+  prefix: string;
+  vault_id: string;
+  bundle_id: string;
+  max_ttl_secs: number;
+  request_limit?: number;
+  node_id?: string;
+  labels: Record<string, string>;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreatedLauncherKey {
+  /** Shown exactly once; only a hash is stored. */
+  key: string;
+  launcher_key: LauncherKey;
+}
+
+export interface RevokedLauncherKey {
+  launcher_key: LauncherKey;
+  sessions_revoked: number;
+}
+
 export interface ApiKey {
   id: string;
   name: string;
@@ -388,6 +441,8 @@ export interface ApiKey {
   expires_at: string;
   revoked_at: string | null;
   last_used_at: string | null;
+  /** Set on a launcher key: it only starts sessions from this bundle. */
+  launch?: { bundle_id: string } | null;
 }
 
 export interface NodeInfo {
@@ -424,6 +479,91 @@ export interface Settings {
   passthrough_hosts: string[];
   /** The longest session anyone may mint. */
   max_session_ttl_secs: number;
+  /** When a proxy cuts off a session that keeps being refused; `null` for never. */
+  quarantine: QuarantinePolicy | null;
+  /** How fast each session may send requests through a proxy; `null` for no limit. */
+  rate_limit: RateLimit | null;
+  /** Whether proxies redact the injected credential from the responses they carry back. */
+  scrub_responses: boolean;
+  /** The alert signals that can be tuned; a quarantine always raises one. */
+  alerts: AlertSettings;
+}
+
+export interface RateLimit {
+  per_sec: number;
+  burst: number;
+}
+
+export interface RefusalThreshold {
+  refusals: number;
+  window_secs: number;
+}
+
+export interface AlertSettings {
+  /** An alert for a session refused this often; `null` for never. */
+  refusals: RefusalThreshold | null;
+  /** An alert when a session is used through a second proxy. */
+  new_proxy: boolean;
+}
+
+export type AlertKind = "quarantine" | "tripwire" | "refusals" | "new_proxy";
+
+export type TripwireKind = "aws" | "github" | "openai" | "generic";
+
+/** A decoy planted on an agent's machine. Its value is never returned after it is created. */
+export interface Tripwire {
+  id: string;
+  vault_id: string;
+  /** Where it is planted, such as the machine's name. */
+  name: string;
+  kind: TripwireKind;
+  /** The decoy's first characters. */
+  prefix: string;
+  created_by: string;
+  created_at: string;
+  last_tripped_at: string | null;
+}
+
+export interface Plant {
+  place: string;
+  text: string;
+}
+
+/** Shown once: the decoy and how to plant it. */
+export interface CreatedTripwire {
+  tripwire: Tripwire;
+  value: string;
+  secret: string | null;
+  plant: Plant[];
+}
+
+/** Something the proxies reported that someone should look at now. */
+export interface Alert {
+  id: string;
+  kind: AlertKind;
+  /** What happened, as a sentence. */
+  summary: string;
+  vault_id: string | null;
+  session_id: string | null;
+  node_id: string | null;
+  detail: Record<string, string>;
+  raised_at: string;
+  acknowledged_at: string | null;
+  /** An audit actor, such as `user:<id>`. */
+  acknowledged_by: string | null;
+}
+
+export interface AlertSummary {
+  open: number;
+  /** The newest open alert. */
+  latest: Alert | null;
+  /** When each signal last fired; a signal that never did is left out. */
+  last_raised: { kind: AlertKind; at: string }[];
+}
+
+export interface QuarantinePolicy {
+  refusals: number;
+  window_secs: number;
 }
 
 export interface CredentialValidation {

@@ -165,7 +165,9 @@ tokenless run --vault work --bundle code-review -- claude
 `run` opens a **session port**: a
 loopback proxy address (a free port by default, `--listen` to choose)
 that adds the session to every request and relays it to the proxy. The
-agent is started with `HTTPS_PROXY=http://127.0.0.1:<port>`, trust files
+agent is started with `HTTPS_PROXY=http://tokenless:<password>@127.0.0.1:<port>`
+(a password made up for the run, so no other program on the machine can
+use the session), trust files
 that include the broker's interception CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others), and no session
 token anywhere in its environment. A session it minted is renewed before

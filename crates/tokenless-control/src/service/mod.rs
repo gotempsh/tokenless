@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+pub mod alerts;
 pub mod audit;
 pub mod audit_export;
 pub mod auth;
 pub mod bundles;
+pub mod launcher_keys;
 pub mod nodes;
 pub mod overview;
 pub mod policy;
@@ -14,6 +16,7 @@ pub mod sessions;
 pub mod sso;
 #[cfg(test)]
 pub(crate) mod testing;
+pub mod tripwires;
 pub mod users;
 pub mod variables;
 
@@ -28,11 +31,12 @@ use tracing::error;
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
+use crate::model::LaunchScope;
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
-    AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
-    PolicyStore, SsoStore,
+    AlertStore, AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
+    PolicyStore, SsoStore, TripwireStore,
 };
 
 #[derive(Debug, Clone)]
@@ -67,6 +71,9 @@ pub struct Caller {
     /// with an authenticator enrolled are asked to step up: for a
     /// password-only account it would just ask for the same password again.
     pub second_factor: bool,
+    /// Set for a launcher key: it starts sessions from one bundle and does
+    /// nothing else, whatever its role would allow.
+    pub launch: Option<LaunchScope>,
 }
 
 impl Caller {
@@ -81,6 +88,7 @@ impl Caller {
             principal,
             step_up_at: None,
             second_factor: false,
+            launch: None,
         }
     }
 }
@@ -94,6 +102,8 @@ pub struct Stores {
     pub sso: Arc<dyn SsoStore>,
     pub audit_export: Arc<dyn AuditExportStore>,
     pub nodes: Arc<dyn NodeStore>,
+    pub alerts: Arc<dyn AlertStore>,
+    pub tripwires: Arc<dyn TripwireStore>,
 }
 
 /// Authorisation plus step-up enforcement, shared by every service.
@@ -117,6 +127,17 @@ impl Guard {
         action: Action,
         vault: Option<&VaultId>,
     ) -> Result<(), ControlError> {
+        if let Some(scope) = &caller.launch {
+            if !matches!(action, Action::VaultRead | Action::SessionMint) {
+                return Err(ControlError::Forbidden {
+                    reason: format!(
+                        "{} is a launcher key: it only starts sessions from access bundle {}, so it may not '{action}'",
+                        caller.actor(),
+                        scope.bundle_id
+                    ),
+                });
+            }
+        }
         if let Decision::Deny { reason } = self
             .authorizer
             .authorize(&caller.principal, action, vault)
@@ -199,6 +220,8 @@ pub struct ServiceStores {
     pub policy: Arc<dyn PolicyStore>,
     pub audit: Arc<dyn AuditSink>,
     pub nodes: Arc<dyn NodeStore>,
+    pub alerts: Arc<dyn AlertStore>,
+    pub tripwires: Arc<dyn TripwireStore>,
 }
 
 /// The control services without accounts, sign-in or API keys, for a
@@ -212,6 +235,8 @@ pub struct ControlServices {
     pub nodes: nodes::NodeService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
+    pub alerts: Arc<alerts::AlertService>,
+    pub tripwires: tripwires::TripwireService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -266,6 +291,11 @@ impl ControlServices {
             guard.clone(),
             notifier.clone(),
         );
+        let alerts = Arc::new(alerts::AlertService::new(
+            stores.alerts,
+            stores.policy.clone(),
+            guard.clone(),
+        ));
         let nodes = nodes::NodeService::new(
             stores.nodes.clone(),
             stores.policy.clone(),
@@ -276,7 +306,15 @@ impl ControlServices {
             guard.clone(),
             recorder,
             notifier.clone(),
+            alerts.clone(),
+            stores.tripwires.clone(),
             config,
+        );
+        let tripwires = tripwires::TripwireService::new(
+            stores.tripwires,
+            stores.policy.clone(),
+            guard.clone(),
+            notifier.clone(),
         );
         let audit = audit::AuditService::new(stores.audit, guard);
         Ok(Self {
@@ -286,6 +324,8 @@ impl ControlServices {
             nodes,
             variables,
             audit,
+            alerts,
+            tripwires,
             keys,
             notifier,
         })
@@ -295,6 +335,7 @@ impl ControlServices {
 /// Everything the HTTP layer needs, wired once at startup.
 pub struct ControlPlane {
     pub auth: auth::AuthService,
+    pub launcher_keys: launcher_keys::LauncherKeyService,
     pub sso: sso::SsoService,
     pub audit_export: audit_export::AuditExportService,
     pub policy: policy::PolicyService,
@@ -304,6 +345,8 @@ pub struct ControlPlane {
     pub users: users::UserService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
+    pub alerts: Arc<alerts::AlertService>,
+    pub tripwires: tripwires::TripwireService,
     pub keys: Arc<KeyRing>,
     pub notifier: Arc<PolicyNotifier>,
 }
@@ -353,12 +396,20 @@ impl ControlPlane {
             AuditRecorder::new(stores.audit.clone()),
             config.clone(),
         )?;
+        let (identity, policy, nodes, launcher_guard) = (
+            stores.identity.clone(),
+            stores.policy.clone(),
+            stores.nodes.clone(),
+            guard.clone(),
+        );
         let services = ControlServices::wire(
             ServiceStores {
                 credentials: stores.credentials,
                 policy: stores.policy,
                 audit: stores.audit,
                 nodes: stores.nodes,
+                alerts: stores.alerts,
+                tripwires: stores.tripwires,
             },
             guard,
             cipher,
@@ -367,17 +418,27 @@ impl ControlPlane {
             keys,
         )
         .await?;
+        let launcher_keys = launcher_keys::LauncherKeyService::new(
+            identity.clone(),
+            policy,
+            nodes,
+            launcher_guard,
+            services.notifier.clone(),
+        );
         Ok(Self {
             auth,
+            launcher_keys,
             sso,
             audit_export,
             policy: services.policy,
-            sessions: services.sessions,
+            sessions: services.sessions.with_identity(identity),
             bundles: services.bundles,
             nodes: services.nodes,
             users,
             variables: services.variables,
             audit: services.audit,
+            alerts: services.alerts,
+            tripwires: services.tripwires,
             keys: services.keys,
             notifier: services.notifier,
         })
@@ -426,6 +487,8 @@ mod tests {
             sso: store.clone(),
             audit_export: store.clone(),
             nodes: store.clone(),
+            alerts: store.clone(),
+            tripwires: store.clone(),
         }
     }
 
@@ -459,6 +522,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now() - chrono::Duration::seconds(step_up_age_secs)),
             second_factor: true,
+            launch: None,
         }
     }
 
@@ -1496,6 +1560,7 @@ mod tests {
                 &a,
                 &vault.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "code-review".into(),
                     description: "GitHub for reviews".into(),
                     rule_ids: vec![rules[1].id, rules[0].id, rules[0].id],
@@ -1534,6 +1599,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let minted = cp
             .sessions
@@ -1569,6 +1635,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -1736,6 +1803,7 @@ mod tests {
                     &viewer,
                     &vault.id,
                     CreateBundle {
+                        request_limit: None,
                         name: "mine".into(),
                         description: String::new(),
                         rule_ids: vec![],
@@ -1751,6 +1819,7 @@ mod tests {
                 &a,
                 &other.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "x".into(),
                     description: String::new(),
                     rule_ids: vec![rules[0].id],
@@ -1767,6 +1836,7 @@ mod tests {
                     &a,
                     &vault.id,
                     CreateBundle {
+                        request_limit: None,
                         name: "code-review".into(),
                         description: String::new(),
                         rule_ids: vec![],
@@ -1782,6 +1852,7 @@ mod tests {
                 &a,
                 &other.id,
                 CreateBundle {
+                    request_limit: None,
                     name: "other-job".into(),
                     description: String::new(),
                     rule_ids: vec![],
@@ -1924,6 +1995,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -1946,6 +2018,7 @@ mod tests {
                         not_after: None,
                         rule_not_after: Default::default(),
                         strict: false,
+                        renews: None,
                     },
                 )
                 .await,
@@ -2067,6 +2140,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2243,6 +2317,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2257,6 +2332,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now()),
             second_factor: true,
+            launch: None,
         };
         assert!(matches!(
             cp.policy.delete_vault(&editor, &vault.id, true).await,
@@ -2321,6 +2397,8 @@ mod tests {
                 policy: store.clone(),
                 audit: store.clone(),
                 nodes: store.clone(),
+                alerts: store.clone(),
+                tripwires: store.clone(),
             },
             Arc::new(RbacAuthorizer),
             cipher,
@@ -2378,6 +2456,7 @@ mod tests {
                     not_after: None,
                     rule_not_after: Default::default(),
                     strict: false,
+                    renews: None,
                 },
             )
             .await
@@ -2525,6 +2604,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let minted = cp
             .sessions
@@ -2579,6 +2659,7 @@ mod tests {
             },
             step_up_at: Some(Utc::now()),
             second_factor: true,
+            launch: None,
         };
         let mut unbound = mint("sbx-8");
         unbound.binding = None;
@@ -2653,6 +2734,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         let err = cp
             .sessions
@@ -3129,6 +3211,7 @@ mod tests {
             not_after: None,
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         };
         cp.sessions.mint(&a, &main.id, mint()).await.unwrap();
         let revoked = cp.sessions.mint(&a, &main.id, mint()).await.unwrap();

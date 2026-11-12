@@ -26,6 +26,7 @@ tokenless-dataplane = { path = "crates/tokenless-dataplane" }
 tokenless-conformance = { path = "crates/tokenless-conformance" }
 
 aes-gcm = "0.10"
+aho-corasick = "1.1"
 arc-swap = "1.7"
 argon2 = { version = "0.5", features = ["std"] }
 async-trait = "0.1"

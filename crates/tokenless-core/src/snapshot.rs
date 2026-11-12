@@ -15,19 +15,49 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use crate::ids::{CredentialId, NodeId, RuleId, SessionId};
+use crate::host::HostPattern;
+use crate::ids::{CredentialId, NodeId, RuleId, SessionId, TripwireId};
 use crate::rule::RuleScope;
 use crate::scope::Scope;
 use crate::seal::Sealed;
 use crate::session::key_id;
 
 /// The newest format this build reads and writes. Format 2 adds a rule's
-/// `not_after`, format 3 a rule's Git scope. A snapshot is written in the oldest format that carries
+/// `not_after`, format 3 a rule's Git scope, format 4 the quarantine policy,
+/// format 5 tripwires, format 6 the rate limit and turning response
+/// redaction off. A snapshot is written in the oldest format that carries
 /// everything in it, and a node says which format it reads when it opens
 /// the snapshot stream ([`READS_FORMAT_PARAM`]): a rule it could not
 /// enforce is left out of its snapshot, so an older node stops using that
 /// one service instead of refusing every snapshot.
-pub const SNAPSHOT_FORMAT: u32 = 3;
+pub const SNAPSHOT_FORMAT: u32 = 6;
+/// The format that carries [`SnapshotBody::quarantine`].
+pub const QUARANTINE_FORMAT: u32 = 4;
+/// The format that carries [`SnapshotBody::tripwires`].
+pub const TRIPWIRE_FORMAT: u32 = 5;
+/// The format that carries [`SnapshotBody::rate_limit`].
+pub const RATE_LIMIT_FORMAT: u32 = 6;
+/// The format that can turn [`SnapshotBody::scrub_responses`] off.
+pub const SCRUB_FORMAT: u32 = 6;
+/// What a node reports when it redacted a credential from a response.
+pub const SCRUBBED_ACTION: &str = "proxy.response_scrubbed";
+/// What a node reports, once per session per [`RATE_LIMIT_REPORT_SECS`],
+/// when it refused a session's requests for going past the
+/// [`RateLimit`], with how many.
+pub const RATE_LIMITED_ACTION: &str = "proxy.rate_limited";
+/// How often a node reports a session's rate-limited requests, so a
+/// flood does not flood the audit log.
+pub const RATE_LIMIT_REPORT_SECS: u64 = 10;
+/// What a node reports when a request carries a tripwire's decoy; it has
+/// already cut the session off, and the control plane revokes it.
+pub const TRIPWIRE_ACTION: &str = "proxy.tripwire";
+/// What a node reports when it closes a session's open traffic because the
+/// session or its grant ended, the lease ran out or the node is stopping.
+/// The node did the cutting, so it is never counted as a refusal.
+pub const TUNNEL_CUT_ACTION: &str = "proxy.tunnel_cut";
+/// What a node reports when it cuts a session off under its
+/// [`QuarantinePolicy`]; the control plane then revokes the session.
+pub const QUARANTINE_ACTION: &str = "proxy.quarantine";
 /// The snapshot stream's query parameter with the newest format the node
 /// reads. A node that sends none reads format 1.
 pub const READS_FORMAT_PARAM: &str = "reads_format";
@@ -75,6 +105,71 @@ pub fn decode_verifying_key(value: &str) -> Result<VerifyingKey, CoreError> {
         .try_into()
         .map_err(|_| CoreError::encoding("ed25519 public key", "expected 32 bytes"))?;
     VerifyingKey::from_bytes(&bytes).map_err(|e| CoreError::crypto("ed25519.decode", e.to_string()))
+}
+
+/// When a proxy cuts a session off on its own: after `refusals` refused
+/// requests within `window_secs` of the first. A session that keeps
+/// probing for what it may not reach is more likely an intruder than an
+/// agent at work, and a person reviews it before anything runs again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuarantinePolicy {
+    pub refusals: u32,
+    pub window_secs: u32,
+}
+
+impl QuarantinePolicy {
+    pub const MIN_REFUSALS: u32 = 3;
+    pub const MAX_REFUSALS: u32 = 10_000;
+    pub const MIN_WINDOW_SECS: u32 = 10;
+    pub const MAX_WINDOW_SECS: u32 = 3600;
+}
+
+impl Default for QuarantinePolicy {
+    /// 20 refusals in 5 minutes: an agent at work rarely comes near it,
+    /// something trying host after host does within a minute.
+    fn default() -> Self {
+        Self {
+            refusals: 20,
+            window_secs: 300,
+        }
+    }
+}
+
+/// How fast one session may send requests through a node: `per_sec` on
+/// average, with bursts of up to `burst` at once. Past it the node answers
+/// 429 with `Retry-After` and forwards nothing; nothing is queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimit {
+    pub per_sec: u32,
+    pub burst: u32,
+}
+
+impl RateLimit {
+    pub const MIN_PER_SEC: u32 = 1;
+    pub const MAX_PER_SEC: u32 = 10_000;
+    pub const MAX_BURST: u32 = 100_000;
+
+    /// Whether going from `before` to `after` lets a session send more.
+    pub fn loosened_by(before: Option<Self>, after: Option<Self>) -> bool {
+        match (before, after) {
+            (Some(_), None) => true,
+            (None, _) => false,
+            (Some(b), Some(a)) => a.per_sec > b.per_sec || a.burst > b.burst,
+        }
+    }
+}
+
+impl Default for RateLimit {
+    /// 20 a second with bursts of 100: more than an agent at work sends,
+    /// far less than a script emptying an API.
+    fn default() -> Self {
+        Self {
+            per_sec: 20,
+            burst: 100,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +258,65 @@ pub struct SnapshotBody {
     pub passthrough_hosts: Vec<crate::host::HostPattern>,
     pub interception_ca: InterceptionCa,
     pub rules: Vec<SnapshotRule>,
+    /// When the node cuts a session off on its own; `None` for never.
+    /// Format 4: left out for a node that reads older formats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<QuarantinePolicy>,
+    /// `Vec<SnapshotTripwire>` JSON, sealed to the node, so the decoys are
+    /// never readable from a captured snapshot. Format 5: left out for a
+    /// node that reads older formats, and when there are none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tripwires: Option<Sealed>,
+    /// How fast each session may send requests; `None` for no limit.
+    /// Format 6: left out for a node that reads older formats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimit>,
+    /// Whether the node redacts a rule's credential from the responses to
+    /// the requests it added it to. On unless an admin turned it off, and
+    /// written only then, in format 6: a node that reads older formats is
+    /// never told to stop.
+    #[serde(default = "redacting", skip_serializing_if = "is_redacting")]
+    pub scrub_responses: bool,
+}
+
+fn redacting() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes a reference
+fn is_redacting(on: &bool) -> bool {
+    *on
+}
+
+/// A decoy the node refuses and cuts the session off for.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SnapshotTripwire {
+    pub id: TripwireId,
+    /// For the audit event; the value never goes in one.
+    pub name: String,
+    pub value: String,
+    /// Hosts the node opens connections to under the deny policy, to look
+    /// for the decoy where someone holding it would send it.
+    pub hosts: Vec<HostPattern>,
+}
+
+impl std::fmt::Debug for SnapshotTripwire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SnapshotTripwire")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("hosts", &self.hosts)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The most tripwires one snapshot carries.
+pub const MAX_SNAPSHOT_TRIPWIRES: usize = 500;
+
+/// AAD binding the sealed tripwires to one node.
+pub fn tripwires_aad(node_id: &NodeId) -> Vec<u8> {
+    format!("tripwires|{node_id}").into_bytes()
 }
 
 /// AAD binding a sealed rule credential to one node, rule and credential.
@@ -230,6 +384,42 @@ impl SignedSnapshot {
                 ),
             ));
         }
+        if body.quarantine.is_some() && body.format < QUARANTINE_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry a quarantine policy, which needs format {QUARANTINE_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
+        if body.tripwires.is_some() && body.format < TRIPWIRE_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry tripwires, which need format {TRIPWIRE_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
+        if body.rate_limit.is_some() && body.format < RATE_LIMIT_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot carry a rate limit, which needs format {RATE_LIMIT_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
+        if !body.scrub_responses && body.format < SCRUB_FORMAT {
+            return Err(CoreError::encoding(
+                "snapshot body",
+                format!(
+                    "format {} cannot turn response redaction off, which needs format {SCRUB_FORMAT}",
+                    body.format
+                ),
+            ));
+        }
         if let Some(rule) = body.rules.iter().find(|r| rule_format(r) > body.format) {
             let what = if rule.allow.git.is_some() {
                 "a Git scope"
@@ -276,7 +466,132 @@ mod tests {
                 key: seal(&node_key, b"key", &ca_aad(&node_id)).unwrap(),
             },
             rules: vec![],
+            quarantine: None,
+            tripwires: None,
+            rate_limit: None,
+            scrub_responses: true,
         }
+    }
+
+    #[test]
+    fn redaction_is_on_unless_a_format_6_snapshot_turns_it_off() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        // On is the default and is not written, so any format carries it.
+        assert!(!serde_json::to_string(&b).unwrap().contains("scrub"));
+        assert!(
+            signed(&b)
+                .verify(&key.verifying_key())
+                .unwrap()
+                .scrub_responses
+        );
+        b.format = TRIPWIRE_FORMAT;
+        b.scrub_responses = false;
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot turn response redaction off"),
+            "{err}"
+        );
+        b.format = SCRUB_FORMAT;
+        assert!(
+            !signed(&b)
+                .verify(&key.verifying_key())
+                .unwrap()
+                .scrub_responses
+        );
+    }
+
+    #[test]
+    fn a_rate_limit_needs_format_6_and_is_left_out_when_off() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = TRIPWIRE_FORMAT;
+        b.rate_limit = Some(RateLimit::default());
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot carry a rate limit"),
+            "{err}"
+        );
+        b.format = RATE_LIMIT_FORMAT;
+        let got = signed(&b).verify(&key.verifying_key()).unwrap();
+        assert_eq!(
+            got.rate_limit,
+            Some(RateLimit {
+                per_sec: 20,
+                burst: 100
+            })
+        );
+        b.rate_limit = None;
+        assert!(!serde_json::to_string(&b).unwrap().contains("rate_limit"));
+    }
+
+    #[test]
+    fn a_rate_limit_is_loosened_by_more_or_none() {
+        let r = |per_sec, burst| Some(RateLimit { per_sec, burst });
+        assert!(RateLimit::loosened_by(r(20, 100), None));
+        assert!(RateLimit::loosened_by(r(20, 100), r(21, 100)));
+        assert!(RateLimit::loosened_by(r(20, 100), r(20, 101)));
+        assert!(!RateLimit::loosened_by(r(20, 100), r(10, 50)));
+        assert!(!RateLimit::loosened_by(None, r(1, 1)));
+    }
+
+    #[test]
+    fn a_quarantine_policy_needs_format_4_and_is_left_out_when_off() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = 3;
+        b.quarantine = Some(QuarantinePolicy::default());
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot carry a quarantine policy"),
+            "{err}"
+        );
+        b.format = QUARANTINE_FORMAT;
+        let got = signed(&b).verify(&key.verifying_key()).unwrap();
+        assert_eq!(
+            got.quarantine,
+            Some(QuarantinePolicy {
+                refusals: 20,
+                window_secs: 300
+            })
+        );
+        // Off is not written at all, so older nodes keep reading it.
+        b.quarantine = None;
+        assert!(!serde_json::to_string(&b).unwrap().contains("quarantine"));
+    }
+
+    #[test]
+    fn tripwires_need_format_5_and_are_left_out_when_none() {
+        let key = SigningKey::generate(&mut OsRng);
+        let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
+        let mut b = body();
+        b.format = QUARANTINE_FORMAT;
+        b.tripwires = Some(b.interception_ca.key.clone());
+        let err = signed(&b).verify(&key.verifying_key()).unwrap_err();
+        assert!(err.to_string().contains("cannot carry tripwires"), "{err}");
+        b.format = TRIPWIRE_FORMAT;
+        assert!(signed(&b).verify(&key.verifying_key()).is_ok());
+        b.tripwires = None;
+        assert!(!serde_json::to_string(&b).unwrap().contains("tripwires"));
+    }
+
+    #[test]
+    fn a_tripwire_s_decoy_is_never_in_debug() {
+        let t = SnapshotTripwire {
+            id: TripwireId::new(),
+            name: "laptop".into(),
+            value: "sk-decoy-value-0123456789".into(),
+            hosts: vec![],
+        };
+        let shown = format!("{t:?}");
+        assert!(
+            shown.contains("laptop") && !shown.contains("sk-decoy"),
+            "{shown}"
+        );
     }
 
     #[test]

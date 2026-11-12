@@ -10,7 +10,7 @@ use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use tokenless_control::model::{Page, ProxySession, Vault};
 use tokenless_control::service::sessions::{DiscoveredService, SessionDiscovery};
-use tokenless_core::ids::VaultId;
+use tokenless_core::ids::{SessionId, VaultId};
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -28,6 +28,10 @@ pub struct MintRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_limit: Option<u64>,
     pub labels: BTreeMap<String, String>,
+    /// The session a renewal replaces; the broker refuses it once that
+    /// session was revoked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub renews: Option<SessionId>,
 }
 
 #[derive(Deserialize)]
@@ -240,6 +244,21 @@ impl ApiClient {
                 ))),
             },
         }
+    }
+
+    /// Whether this client acts with a person's sign-in, which ends after
+    /// the instance's idle timeout without use.
+    pub fn signed_in(&self) -> bool {
+        matches!(self.credentials, Some(Credentials::Session { .. }))
+    }
+
+    /// Uses the sign-in, so its idle timeout starts over.
+    pub async fn keep_signed_in(&self) -> Result<(), LauncherError> {
+        const OP: &str = "keeping the sign-in in use";
+        let url = self.url("/auth/me");
+        self.send(self.authed(self.http.get(&url), OP)?, OP, &url)
+            .await
+            .map(drop)
     }
 
     pub async fn mint(&self, vault: &VaultId, req: &MintRequest) -> Result<Minted, LauncherError> {

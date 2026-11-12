@@ -25,12 +25,15 @@ pub mod gateway;
 pub mod metrics;
 pub mod node;
 pub mod proxy;
+pub mod quarantine;
+pub mod ratelimit;
 pub mod scrub;
 pub mod shutdown;
 pub mod state;
 pub mod status;
 pub mod tls;
 mod traffic;
+pub mod tripwire;
 pub mod upstream;
 
 #[cfg(test)]
@@ -214,6 +217,8 @@ impl DataPlane {
             status_changed: watch::channel(0).0,
             lifecycle: watch::channel(Lifecycle::Running).0,
             traffic: Arc::new(traffic::OpenTraffic::default()),
+            refusals: quarantine::RefusalCounter::new(),
+            rate: ratelimit::RateLimiter::new(),
         });
         let (status_tx, status) = watch::channel(status::status(&shared));
         let mut mcp_addr = None;
@@ -246,6 +251,7 @@ impl DataPlane {
                 shared.lifecycle.subscribe(),
             )),
             tokio::spawn(status::run_status_loop(shared.clone(), status_tx)),
+            tokio::spawn(ratelimit::run_reports(shared.clone())),
         ];
         let mut metrics_addr = None;
         if let Some(addr) = config.metrics_listen {
@@ -374,6 +380,22 @@ impl DataPlane {
             .load()
             .as_ref()
             .is_some_and(|s| s.lease_valid())
+    }
+
+    /// The snapshot in force, for tests that look past the proxy.
+    #[cfg(test)]
+    #[allow(clippy::expect_used, reason = "tests install a snapshot first")]
+    pub(crate) fn snapshot_for_tests(&self) -> Arc<state::ActiveSnapshot> {
+        self.shared
+            .snapshot
+            .load_full()
+            .expect("a snapshot is installed")
+    }
+
+    /// The proxy's shared state, for tests that drive its background work.
+    #[cfg(test)]
+    pub(crate) fn shared_for_tests(&self) -> &Arc<ProxyShared> {
+        &self.shared
     }
 
     pub fn metrics(&self) -> Arc<Metrics> {

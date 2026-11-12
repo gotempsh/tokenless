@@ -13,15 +13,17 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::Role;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId, UserId,
-    VariableId, VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId, SessionId,
+    SignInId, UserId, VariableId, VaultId,
 };
 use tokenless_core::session::open_traffic_horizon;
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
 
 use crate::error::StoreError;
 use crate::model::{
@@ -57,6 +59,8 @@ struct Inner {
     sign_in_settings: Option<SignInSettings>,
     audit_destinations:
         HashMap<tokenless_core::ids::AuditDestinationId, crate::model::AuditDestination>,
+    alerts: HashMap<tokenless_core::ids::AlertId, crate::model::Alert>,
+    tripwires: HashMap<tokenless_core::ids::TripwireId, crate::model::Tripwire>,
 }
 
 #[derive(Default)]
@@ -74,6 +78,11 @@ impl MemoryStore {
             .lock()
             .map_err(|_| StoreError::backend("memory.lock", "mutex poisoned"))
     }
+}
+
+/// Not past its expiry at `now` and, with `idle_since`, used since then.
+fn live_ui_session(s: &UiSession, now: DateTime<Utc>, idle_since: Option<DateTime<Utc>>) -> bool {
+    s.expires_at > now && idle_since.is_none_or(|since| s.last_used_at > since)
 }
 
 fn newest_first<T: Clone>(mut items: Vec<T>, key: impl Fn(&T) -> DateTime<Utc>) -> Vec<T> {
@@ -389,6 +398,7 @@ impl PolicyStore for MemoryStore {
         let before = inner.bundles.len();
         inner.bundles.retain(|_, bundle| &bundle.vault_id != id);
         done.bundles = count(before, inner.bundles.len());
+        inner.tripwires.retain(|_, t| &t.vault_id != id);
         for session in inner.sessions.values_mut() {
             if &session.vault_id == id
                 && session.revoked_at.is_none()
@@ -790,6 +800,25 @@ impl PolicyStore for MemoryStore {
         Ok(out)
     }
 
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError> {
+        let mut out: Vec<_> = self
+            .lock()?
+            .sessions
+            .values()
+            .filter(|s| s.node_id.as_ref() == Some(node))
+            .filter(|s| s.created_at <= to && s.expires_at > from)
+            .filter(|s| s.revoked_at.is_none_or(|at| at > from))
+            .cloned()
+            .collect();
+        out.sort_by_key(|s| s.id);
+        Ok(out)
+    }
+
     async fn get_settings(&self) -> Result<Settings, StoreError> {
         Ok(self.lock()?.settings.clone().unwrap_or_default())
     }
@@ -968,6 +997,7 @@ impl IdentityStore for MemoryStore {
         id: &UserId,
         secret_enc: Option<Vec<u8>>,
         last_step: Option<u64>,
+        keep_session: Option<&str>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
@@ -977,6 +1007,9 @@ impl IdentityStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("user", id))?;
         user.totp_secret_enc = secret_enc;
         user.totp_last_step = last_step;
+        inner
+            .ui_sessions
+            .retain(|hash, s| s.user_id != *id || Some(hash.as_str()) == keep_session);
         inner.audit.extend_from_slice(audit);
         Ok(())
     }
@@ -1124,10 +1157,78 @@ impl IdentityStore for MemoryStore {
         Ok(())
     }
 
-    async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError> {
+    async fn touch_ui_session(
+        &self,
+        token_hash: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), StoreError> {
+        if let Some(s) = self.lock()?.ui_sessions.get_mut(token_hash) {
+            s.last_used_at = at;
+        }
+        Ok(())
+    }
+
+    async fn list_ui_sessions(
+        &self,
+        user_id: &UserId,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+        page: PageRequest,
+    ) -> Result<Page<UiSession>, StoreError> {
+        let items: Vec<_> = self
+            .lock()?
+            .ui_sessions
+            .values()
+            .filter(|s| s.user_id == *user_id && live_ui_session(s, now, idle_since))
+            .cloned()
+            .collect();
+        Ok(page.apply(&newest_first(items, |s| s.created_at)))
+    }
+
+    async fn delete_user_ui_session(
+        &self,
+        user_id: &UserId,
+        id: &SignInId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let before = inner.ui_sessions.len();
-        inner.ui_sessions.retain(|_, s| s.expires_at > now);
+        inner
+            .ui_sessions
+            .retain(|_, s| s.user_id != *user_id || s.id != *id);
+        if inner.ui_sessions.len() == before {
+            return Ok(false);
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(true)
+    }
+
+    async fn delete_user_ui_sessions(
+        &self,
+        user_id: &UserId,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError> {
+        let mut inner = self.lock()?;
+        let before = inner.ui_sessions.len();
+        inner
+            .ui_sessions
+            .retain(|hash, s| s.user_id != *user_id || Some(hash.as_str()) == keep_session);
+        let removed = before - inner.ui_sessions.len();
+        inner.audit.extend_from_slice(audit);
+        Ok(removed as u64)
+    }
+
+    async fn delete_expired_ui_sessions(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError> {
+        let mut inner = self.lock()?;
+        let before = inner.ui_sessions.len();
+        inner
+            .ui_sessions
+            .retain(|_, s| live_ui_session(s, now, idle_since));
         Ok((before - inner.ui_sessions.len()) as u64)
     }
 
@@ -1153,8 +1254,33 @@ impl IdentityStore for MemoryStore {
             .cloned())
     }
 
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError> {
+        Ok(self.lock()?.api_keys.get(id).cloned())
+    }
+
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError> {
         let items: Vec<_> = self.lock()?.api_keys.values().cloned().collect();
+        Ok(page.apply(&newest_first(items, |k| k.created_at)))
+    }
+
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError> {
+        let items: Vec<_> = self
+            .lock()?
+            .api_keys
+            .values()
+            .filter(|k| &k.vault_id == vault_id)
+            .filter(|k| match (&k.launch, bundle) {
+                (None, _) => false,
+                (Some(_), None) => true,
+                (Some(l), Some(b)) => &l.bundle_id == b,
+            })
+            .cloned()
+            .collect();
         Ok(page.apply(&newest_first(items, |k| k.created_at)))
     }
 

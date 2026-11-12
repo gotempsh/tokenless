@@ -357,8 +357,10 @@ where
         defaults == SignInSettings::default(),
         "got {defaults:?}"
     );
+    // Idle expiry off round-trips as off, not as the default.
     let admins_only = SignInSettings {
         password_sign_in: PasswordSignIn::AdminsOnly,
+        idle_timeout_secs: None,
     };
     store
         .put_sign_in_settings(admins_only.clone(), &[])

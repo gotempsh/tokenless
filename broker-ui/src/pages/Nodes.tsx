@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, Ban, Download, Plus, Server, ShieldCheck } from "lucide-react";
-import { get, post, type NodeInfo, type Page } from "../api";
+import { AlertTriangle, Ban, Download, Globe, Plus, Server, ShieldCheck } from "lucide-react";
+import { get, post, type NodeInfo, type Page, type Settings } from "../api";
 import { useAction, useLoad } from "../hooks";
 import { proxyAttention, proxyState, type Attention, type ProxyState } from "../proxyHealth";
 import {
@@ -70,6 +70,7 @@ export function Nodes() {
   const [page, setPage] = useState(1);
   const nodes = useLoad(() => get<Page<NodeInfo>>(`/nodes?page=${page}`), [page]);
   const ca = useLoad(caFingerprint, []);
+  const settings = useLoad(() => get<Settings>("/settings"), []);
   const [joinToken, setJoinToken] = useState<string | null>(null);
   const [showRevoked, setShowRevoked] = useState(false);
   const confirm = useConfirm<NodeInfo>();
@@ -141,6 +142,7 @@ export function Nodes() {
           </a>
         </Button>
       </Panel>
+      {settings.data && <OtherHosts policy={settings.data.unmatched_host_policy} />}
       <Panel>
         {revokedCount > 0 && (
           <div className="flex justify-end border-b px-4 py-2">
@@ -258,6 +260,32 @@ function joinCommand(token: string): string {
 }
 
 /** What is wrong with a proxy, and what to do about it. */
+/** What every proxy does with hosts no session covers, and where to change it. */
+export function OtherHosts({ policy }: { policy: Settings["unmatched_host_policy"] }) {
+  const blocked = policy === "deny";
+  return (
+    <Panel className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+      <span className="hidden size-10 shrink-0 items-center justify-center rounded-lg border bg-muted/40 sm:flex">
+        <Globe className="size-5 text-muted-foreground" />
+      </span>
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          Other hosts
+          <Status tone={blocked ? "success" : "warning"}>{blocked ? "blocked" : "allowed"}</Status>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {blocked
+            ? "Agents reach only their sessions' services and the always-reachable hosts."
+            : "Agents reach any host through the proxies, untouched. Block them so a stolen session reaches only its services."}
+        </p>
+      </div>
+      <Button type="button" variant="outline" size="sm" asChild>
+        <a href="#/settings">{blocked ? "Settings" : "Block other hosts"}</a>
+      </Button>
+    </Panel>
+  );
+}
+
 export function problemText(n: NodeInfo, now: Date): ReactNode {
   switch (proxyState(n, now)) {
     case "offline":

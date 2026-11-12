@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { Mail, ShieldCheck, UserPlus } from "lucide-react";
-import { del, get, patch, post, type Invite, type OidcProvider, type Page, type Role, type UserSummary } from "../api";
+import { LogOut, Mail, ShieldCheck, UserPlus } from "lucide-react";
+import { del, get, patch, post, type Invite, type OidcProvider, type Page, type Role, type SignInsRevoked, type UserSummary } from "../api";
+import { revokedMessage } from "../signIns";
 import { actorName } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -20,6 +21,7 @@ import {
   Pager,
   Panel,
   RowActions,
+  RowMenu,
   Section,
   SelectField,
   Status,
@@ -86,6 +88,8 @@ export function People({ me }: { me: UserSummary }) {
   const [link, setLink] = useState<string | null>(null);
   const change = useConfirm<PendingChange>();
   const revokeConfirm = useConfirm<Invite>();
+  const signOutConfirm = useConfirm<UserSummary>();
+  const [signedOut, setSignedOut] = useState<string | null>(null);
   const inviteAction = useAction();
   const action = useAction();
 
@@ -110,6 +114,12 @@ export function People({ me }: { me: UserSummary }) {
     await action.run(() => patch<UserSummary>(`/users/${p.user.id}`, p.change));
     change.close();
     users.reload();
+  };
+
+  const signOut = async (u: UserSummary) => {
+    const result = await action.run(() => post<SignInsRevoked>(`/users/${u.id}/sign-ins/revoke`));
+    signOutConfirm.close();
+    if (result) setSignedOut(revokedMessage(result.revoked, u.username));
   };
 
   const revoke = async (i: Invite) => {
@@ -148,6 +158,11 @@ export function People({ me }: { me: UserSummary }) {
       ) : (
         <>
           <ErrorBanner error={users.error ?? invites.error ?? action.error} />
+          {signedOut && (
+            <p className="text-sm text-muted-foreground" role="status">
+              {signedOut}
+            </p>
+          )}
           <Section title="Accounts">
             <Panel>
               {users.loading && !users.data ? (
@@ -251,6 +266,19 @@ export function People({ me }: { me: UserSummary }) {
                                   Disable
                                 </Button>
                               )
+                            )}
+                            {!u.disabled_at && u.id !== me.id && (
+                              <RowMenu
+                                label={u.username}
+                                items={[
+                                  {
+                                    label: "Sign out everywhere",
+                                    icon: LogOut,
+                                    destructive: true,
+                                    onSelect: () => signOutConfirm.ask(u),
+                                  },
+                                ]}
+                              />
                             )}
                           </RowActions>
                         </TableCell>
@@ -377,6 +405,18 @@ export function People({ me }: { me: UserSummary }) {
           </form>
         )}
       </FormDialog>
+      <ConfirmDialog
+        open={signOutConfirm.open}
+        onOpenChange={signOutConfirm.onOpenChange}
+        title={`Sign ${signOutConfirm.target?.username ?? "them"} out everywhere?`}
+        description="Every browser and CLI login of theirs ends at once; they can sign in again. Agent sessions they already started keep running until they expire: end those from Sessions."
+        confirmLabel="Sign out everywhere"
+        destructive
+        busy={action.busy}
+        onConfirm={() => {
+          if (signOutConfirm.target) void signOut(signOutConfirm.target);
+        }}
+      />
       <ConfirmDialog
         open={change.open}
         onOpenChange={change.onOpenChange}

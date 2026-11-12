@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::Ordering;
 
 use tokenless_core::injection::{InjectedHeader, InjectionSpec, SecretFields, SecretMaterial};
 
@@ -348,6 +349,32 @@ async fn a_credential_split_across_frames_is_redacted_at_every_split() {
         let (frames, _, _) = read(wrap(data(&bytes), s.clone())).await;
         assert_eq!(joined(&frames), expected, "one byte per frame");
     }
+}
+
+#[tokio::test]
+async fn a_response_reports_its_redactions_once_when_it_is_done() {
+    let s = scrubber(&header());
+    let metrics = Arc::new(Metrics::default());
+    let reported = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reader = |body: &str| {
+        let (metrics, reported) = (metrics.clone(), reported.clone());
+        let mut body = wrap(data(&[body.as_bytes()]), s.clone());
+        body.redactions = Redactions::new(metrics, RuleId::new(), "test".into())
+            .on_done(move |n| reported.lock().unwrap().push(n));
+        read(body)
+    };
+    reader(&format!("{KEY} and {KEY} again")).await;
+    reader("nothing to see").await;
+    assert_eq!(
+        *reported.lock().unwrap(),
+        [2],
+        "once, and only with something redacted"
+    );
+    assert_eq!(
+        metrics.credentials_redacted_total.load(Ordering::Relaxed),
+        2
+    );
+    assert_eq!(metrics.responses_scrubbed_total.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

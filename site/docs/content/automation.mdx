@@ -66,10 +66,36 @@ and revoking the session cuts it off:
 tokenless run --server https://tokenless.internal -- ./scripts/release.sh
 ```
 
-For a fresh short session per run, store an editor key as
-`TOKENLESS_API_KEY` instead and add `--bundle release`: `run` mints the
-session and ends it when the job finishes. An editor key can do more than
-mint, so prefer the session token where it fits.
+For a fresh short session per run, give the runner a launcher key
+(below) as `TOKENLESS_API_KEY` and add `--bundle release`: `run` mints the
+session and ends it when the job finishes.
 
 The proxy has to be reachable from the runner: run `tokenless node run` on
 it, or point `--proxy` at a proxy on a private address.
+
+## Launcher keys
+
+A machine that runs agents on its own (a CI runner, a server, a shared
+box) needs something to start sessions with. A person's sign-in reaches
+every bundle of every vault they can see; a launcher key reaches one
+bundle and does nothing else: it can't read rules, services, sessions or
+the audit log, and it can't make other keys. Every session it starts gets
+the key's limits, whatever the request asks for: the longest lifetime
+(15 minutes by default), a request limit, a proxy, labels.
+
+Create one on the bundle's **Launcher keys** tab, or:
+
+```sh
+tokenless bundle key add release --name build-runner --ttl 10m > runner.key
+```
+
+Then, on the machine:
+
+```sh
+tokenless run --api-key-file runner.key --bundle release -- ./scripts/release.sh
+```
+
+Editors create them (confirming their second factor, like any new access)
+and revoke them without it. Revoking a key also ends the live sessions it
+started, so the machine holding it is cut off at once. The list shows when
+each key was last used.

@@ -13,6 +13,7 @@ description: "Every command takes --help for its full list of options."
 | `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
 | `tokenless proxy list` | Proxies, and whether each is connected. Admins only. |
 | `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
+| `tokenless sign-ins list`, `revoke` | The browsers and CLI logins signed in as you, and ending one or all but this one. Admins sign someone out everywhere with `--user`. |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
 | `tokenless service templates` | Find a template by name, host or variable. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
@@ -81,7 +82,10 @@ ones. `--json` adds each template's fields. Exits 1 when nothing matches.
 | `--server` | `http://127.0.0.1:8080` | The control plane to check |
 | `--json` | | The report as JSON: `ready`, each check's `state` and `fix`, and `next` |
 
-Exits 0 when agents can be started behind tokenless, 1 otherwise.
+Exits 0 when agents can be started behind tokenless, 1 otherwise. For
+an admin it also says whether [other hosts](./settings.mdx#other-hosts)
+are blocked; allowed is flagged as a recommendation, and never stops it
+being ready.
 
 ## `vault list`, `service list`, `bundle list`, `session list`, `proxy list`
 
@@ -104,6 +108,80 @@ when its secret expires. A service whose template version is no longer
 approved reaches nothing, and the list says so. `bundle list` shows the
 services each bundle's rules reach. `session list` gives the ID that
 `session revoke --id` takes.
+
+## `bundle key add <bundle>`, `bundle key list`, `bundle key revoke <key>`
+
+Launcher keys: what an agent machine starts its sessions with instead of
+someone's sign-in. A key only starts sessions from its bundle, with its
+limits ([Automation → Launcher keys](./automation.mdx#launcher-keys)).
+`add` prints the key alone on stdout, shown only once, and how to use it on
+stderr. `revoke` takes the key's name, prefix or id, and also ends the live
+sessions the key started.
+
+| Option | Default | |
+|---|---|---|
+| `--vault` | the only vault | By name or id |
+| `--name` (`add`) | | What the key is for, such as the machine it goes on |
+| `--ttl` (`add`) | `15m` | The longest session the key starts |
+| `--request-limit` (`add`) | | Requests each session may make |
+| `--proxy` (`add`) | | Only this proxy accepts the key's sessions; needs the right to manage proxies |
+| `--label` (`add`) | | Stamped on every session the key starts, as key=value (repeatable) |
+| `--expires-in-days` (`add`) | `90` | At most 365 |
+| `--bundle` (`list`) | | Only this bundle's keys |
+| `--json` (`list`) | | The rows as JSON |
+
+## `sign-ins list`, `sign-ins revoke`
+
+Where you're signed in: each browser and `tokenless login`, with the client
+and when it was last used. `revoke` ends one by its id (the first
+characters `list` shows are enough), every one but this one with
+`--others`, or, for an admin, every one of a person's with
+`--user <username>`. To end this one, use `tokenless logout`. Agent
+sessions already started keep running until they expire; end them with
+`tokenless session revoke`.
+
+| Option | Default | |
+|---|---|---|
+| `--user` | you | Someone else's sign-ins, by username. Admins only |
+| `--others` (`revoke`) | | Every sign-in of yours but this one |
+| `--json` (`list`) | | The rows as JSON |
+
+## `alerts list`, `alerts ack`
+
+The [alerts](./console/alerts.mdx) nobody has acknowledged yet, newest
+first: a session that sent a tripwire, was cut off, refused often or used
+through a second proxy.
+`ack` marks one looked at by its id (the first characters `list` shows
+are enough).
+
+| Option | Default | |
+|---|---|---|
+| `--all` (`list`) | | The acknowledged ones too |
+| `--json` (`list`) | | Every one as JSON; the table shows the newest 50 |
+
+## `tripwire add`, `tripwire list`, `tripwire remove`
+
+[Tripwires](./console/vaults.mdx#tripwires): fake keys to plant on an
+agent's machine. `add` creates one and prints it once, ready to append
+to a file; how else to plant it goes to stderr. When the AWS credentials
+file on the machine you run it on has a `[default]` profile already, an
+AWS decoy is printed as a profile named after the tripwire (with a
+number added if the file has that name too), so appending it doesn't
+break the file. `list` shows each one's
+first characters and when it was last tripped. `remove` deletes one by
+name, the start `list` shows, or id.
+
+```sh
+tokenless tripwire add --kind aws --name build-runner >> ~/.aws/credentials
+tokenless tripwire add --kind github --name laptop --vault work >> .env.local
+```
+
+| Option | Default | |
+|---|---|---|
+| `--kind` (`add`) | | `aws`, `github`, `openai` or `generic` |
+| `--name` (`add`) | | Where it is planted, such as the machine's name |
+| `--vault` | the only one | The vault, when there is more than one |
+| `--json` (`list`) | | The rows as JSON |
 
 ## `proxy add`
 
@@ -162,6 +240,7 @@ services each bundle's rules reach. `session list` gives the ID that
 | `--name` (when minting) | | the session's name on the Sessions page |
 | `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
 | `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` says when the skill isn't installed |
+| `--no-port-password` (`run`, `exec`, `session start`) | | off: the session port refuses clients without the password it puts in `HTTPS_PROXY`. Only for a client that can't send proxy credentials: any program on the machine can then use the session |
 
 Inside `run` or behind `session start`, `TOKENLESS_PROXY` is set to the
 session port and `HTTPS_PROXY` points at it.
