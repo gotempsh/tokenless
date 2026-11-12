@@ -111,6 +111,7 @@ fn admin() -> Caller {
         },
         step_up_at: Some(Utc::now()),
         second_factor: true,
+        launch: None,
     }
 }
 
@@ -150,6 +151,8 @@ async fn setup() -> T {
             sso: store.clone(),
             audit_export: store.clone(),
             nodes: store.clone(),
+            alerts: store.clone(),
+            tripwires: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,

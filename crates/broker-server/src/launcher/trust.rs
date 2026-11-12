@@ -10,7 +10,6 @@
 //! exception: `NODE_EXTRA_CA_CERTS` adds to its own roots, so it gets the
 //! broker CA alone.
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use rustls_pki_types::pem::PemObject;
@@ -118,9 +117,10 @@ pub fn write_trust_files(
     })
 }
 
-/// Environment for an agent behind the session port at `port`.
-pub fn agent_env(port: SocketAddr, trust: &TrustFiles) -> Vec<(String, String)> {
-    let proxy = format!("http://{port}");
+/// Environment for an agent behind the session port at `port_url` (with
+/// the port's password in it, when it has one).
+pub fn agent_env(port_url: &str, trust: &TrustFiles) -> Vec<(String, String)> {
+    let proxy = port_url.to_string();
     let bundle = trust.bundle.display().to_string();
     let mut no_proxy = vec!["localhost".to_string(), "127.0.0.1".into(), "::1".into()];
     if let Ok(existing) = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")) {
@@ -252,11 +252,15 @@ mod tests {
             base: None,
         };
         let env: std::collections::HashMap<_, _> =
-            agent_env("127.0.0.1:41000".parse().unwrap(), &files)
+            agent_env("http://tokenless:pw@127.0.0.1:41000", &files)
                 .into_iter()
                 .collect();
-        assert_eq!(env["HTTPS_PROXY"], "http://127.0.0.1:41000");
-        assert_eq!(env["https_proxy"], "http://127.0.0.1:41000");
+        assert_eq!(env["HTTPS_PROXY"], "http://tokenless:pw@127.0.0.1:41000");
+        assert_eq!(env["https_proxy"], "http://tokenless:pw@127.0.0.1:41000");
+        assert_eq!(
+            env["TOKENLESS_PROXY"],
+            "http://tokenless:pw@127.0.0.1:41000"
+        );
         assert_eq!(env["SSL_CERT_FILE"], "/t/trust-bundle.pem");
         assert_eq!(env["NODE_EXTRA_CA_CERTS"], "/t/broker-ca.pem");
         assert_eq!(env["NODE_USE_ENV_PROXY"], "1");

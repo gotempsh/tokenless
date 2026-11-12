@@ -14,8 +14,15 @@ happens to hosts that aren't one of their services:
 
 - **Allow** (the default): the connection is passed through untouched.
   The proxy doesn't decrypt it or add any credential.
-- **Block**: agents reach only the services in their session, plus the
-  [always reachable](#always-reachable) hosts.
+- **Block** (recommended): agents reach only the services in their
+  session, plus the [always reachable](#always-reachable) hosts. So does
+  anyone holding a stolen session, and the proxy also looks for
+  [tripwires](./console/vaults.mdx#tripwires) on the hosts their keys are
+  used with. Add the package registries and other hosts your agents need
+  as always reachable first.
+
+Allow stays the default so a new install works with any agent at once.
+`tokenless status` and the **Proxies** page show which one is in force.
 
 ## Session lifetime
 
@@ -41,6 +48,95 @@ cloud metadata addresses, so an agent can't use it to reach your internal
 network. Allow specific ranges here when a service you broker lives on
 one. This applies to other hosts and to credential tests; a session's own
 services are always reachable.
+
+## Cut off probing sessions
+
+An agent at work is refused now and then. A session refused again and
+again, host after host or path after path, is more likely someone on the
+agent's machine trying what else the proxy will do. By default, after
+**20 refusals in 5 minutes** the proxy stops serving the session at once,
+even for what its rules allow, and reports it; the control plane then
+revokes it, so every proxy stops. The agent gets `407` saying the session
+was cut off. Only what the session asked for counts: connections the proxy
+closes itself, because the session or a rule ended, its lease ran out or
+it is stopping (`proxy.tunnel_cut`), are not refusals.
+
+The session's page shows the refusals that did it and the revocation, as
+`proxy.quarantine` and `session.revoke` with reason `quarantine` in the
+audit log. A cut-off session is never resumed, nor renewed by
+`tokenless run`: once you have looked at what it tried, start a new one. Choose a stricter or looser threshold
+here, or turn it off; loosening it asks you to confirm it's you. Over the
+API it is `quarantine` (`{"refusals": 20, "window_secs": 300}`, or
+`null`) in `PUT /api/v1/settings`. A proxy older than this release keeps
+running without it.
+
+## Rate limit
+
+How fast each session may send requests through a proxy: by default
+**20 a second, with bursts of 100**. An agent at work stays well under
+it; a script emptying an API through a stolen session does not. Past it
+the proxy answers `429` with `Retry-After` and forwards nothing; nothing
+is queued. It counts the requests a proxy adds a credential to, through
+a tunnel or the MCP gateway; hosts passed through untouched are not
+counted.
+
+Each proxy records one `proxy.rate_limited` event per session every 10
+seconds with how many requests it refused, so a flood does not flood the
+audit log, and counts them in `requests_rate_limited_total`. Rate-limited
+requests never count towards [cutting a session off](#cut-off-probing-sessions).
+Choose another rate here, or turn it off; raising or removing it asks
+you to confirm it's you. Over the API it is `rate_limit`
+(`{"per_sec": 20, "burst": 100}`, or `null`) in `PUT /api/v1/settings`.
+Each proxy keeps its own count, so a session used through two proxies
+gets the rate on each. A proxy older than this release keeps running
+without it.
+
+## Secrets in responses
+
+An API that echoes its credential back, in a debug answer, an error that
+quotes the request or a key-introspection call, would hand the secret to
+the agent. By default the proxy redacts the credential it added from the
+answer to that request: headers, redirects, trailers and body, as sent
+and in the forms encoders turn it into (base64, percent-encoded,
+JSON-escaped or as HTML entities). Each occurrence becomes `[redacted]`
+padded with `*`, so lengths and `Content-Length` stay the same, and an
+answer with nothing to redact is passed on byte for byte. The body is
+streamed; only bytes that could still begin the credential are held
+back.
+
+The proxy asks the API for an uncompressed, whole answer. One that comes
+back compressed or partial can't be checked, so it is withheld: the
+agent gets a `502`, the `proxy.response` event is a failure saying why
+(`withheld`), and it counts in `responses_withheld_total`.
+
+Each answer it redacted something in is a `proxy.response_scrubbed`
+event with how many occurrences (`masked`), and counts in
+`responses_scrubbed_total`; the occurrences count in
+`credentials_redacted_total`. A secret shorter than 6 characters is not
+looked for on its own, so ordinary words are left alone. A credential
+the API transforms (hashes, truncates or encrypts) is not recognised.
+
+Turning it off asks you to confirm it's you. Over the API it is
+`scrub_responses` (`true` or `false`) in `PUT /api/v1/settings`. A proxy
+too old to read the setting keeps redacting.
+
+## Alerts
+
+[Alerts](./console/alerts.mdx) point at a session that looks like
+someone other than the agent. A session cut off always raises one; two
+more signals can be tuned here:
+
+- **A session refused again and again**: by default 10 refusals in 5
+  minutes, half the cut-off threshold, so the alert comes first. Choose
+  another threshold or turn it off.
+- **A session used through a second proxy**: on by default.
+
+Each shows when it last fired. Turning one off or making it less
+sensitive asks you to confirm it's you. Over the API it is `alerts`
+(`{"refusals": {"refusals": 10, "window_secs": 300}, "new_proxy": true}`;
+`refusals` is `null` to turn it off) in `PUT /api/v1/settings`. Alerts
+reach you outside the console through an [audit webhook](#audit-export)
+that sends `alert.` events; the section says when none does.
 
 ## Single sign-on
 
@@ -98,6 +194,18 @@ password (and authenticator) to get in when the provider is down: the
 sign-in page offers **Sign in with a local admin account** under the
 provider buttons. Invites can then only create admins. The last provider
 that is on can't be turned off or deleted while this is set.
+
+## Idle sign-ins
+
+A browser or CLI login that goes unused this long is signed out, before
+its 12-hour limit: a forgotten console tab or a `tokenless login` on a
+machine you no longer use stops working on its own. The default is
+2 hours; pick between 15 minutes and 7 days, or **Never**. Changing it
+applies to existing sign-ins at once. While `tokenless run` renews its
+session with your login, it uses the login every 2 minutes, so a session
+longer than the idle timeout still renews. Over the API it is
+`idle_timeout_secs` (`null` for never, otherwise 300 to 2,592,000) in
+`PUT /api/v1/auth/sign-in-settings`.
 
 ## Audit export
 

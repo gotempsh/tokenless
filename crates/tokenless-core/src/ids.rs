@@ -57,6 +57,11 @@ id_type!(CredentialId, "credential");
 id_type!(RuleId, "rule");
 id_type!(SessionId, "session");
 id_type!(
+    /// One sign-in of a person: a console tab or a CLI login.
+    SignInId,
+    "sign_in"
+);
+id_type!(
     /// A named set of a vault's rules that sessions are minted from.
     BundleId,
     "access_bundle"
@@ -64,6 +69,16 @@ id_type!(
 id_type!(NodeId, "node");
 id_type!(UserId, "user");
 id_type!(ApiKeyId, "api_key");
+id_type!(
+    /// Something a person should look at: a session cut off, a tripwire hit.
+    AlertId,
+    "alert"
+);
+id_type!(
+    /// A decoy credential planted on an agent's machine.
+    TripwireId,
+    "tripwire"
+);
 id_type!(InviteId, "invite");
 id_type!(VariableId, "variable");
 id_type!(AuditEventId, "audit_event");

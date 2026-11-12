@@ -45,7 +45,8 @@ use crate::error::{ControlError, StoreError};
 use crate::keys::KeyRing;
 use crate::model::{
     OidcProvider, OidcPurpose, OidcRequest, PasswordSignIn, RoleMapping, SignInSettings,
-    SsoIdentity, User, MAX_OIDC_PROVIDERS, MAX_ROLE_MAPPINGS,
+    SsoIdentity, User, MAX_IDLE_TIMEOUT_SECS, MAX_OIDC_PROVIDERS, MAX_ROLE_MAPPINGS,
+    MIN_IDLE_TIMEOUT_SECS,
 };
 use crate::store::{IdentityStore, SsoStore};
 
@@ -651,6 +652,13 @@ impl SsoService {
                 "enable an identity provider before limiting password sign-in to admins: nobody else could sign in",
             ));
         }
+        if let Some(secs) = settings.idle_timeout_secs {
+            if !(MIN_IDLE_TIMEOUT_SECS..=MAX_IDLE_TIMEOUT_SECS).contains(&secs) {
+                return Err(validation(format!(
+                    "idle_timeout_secs {secs} is out of range: it must be between {MIN_IDLE_TIMEOUT_SECS} (5 minutes) and {MAX_IDLE_TIMEOUT_SECS} (30 days), or null to turn idle expiry off"
+                )));
+            }
+        }
         let event = AuditEvent::new(caller.actor(), "settings.sign_in", AuditOutcome::Success)
             .detail(
                 "password_sign_in",
@@ -658,6 +666,12 @@ impl SsoService {
                     PasswordSignIn::Everyone => "everyone",
                     PasswordSignIn::AdminsOnly => "admins_only",
                 },
+            )
+            .detail(
+                "idle_timeout_secs",
+                settings
+                    .idle_timeout_secs
+                    .map_or_else(|| "off".to_string(), |s| s.to_string()),
             );
         self.sso
             .put_sign_in_settings(settings.clone(), &[event])
@@ -903,6 +917,7 @@ impl SsoService {
         &self,
         callback: SsoCallback,
         browser_token: Option<&str>,
+        user_agent: Option<&str>,
     ) -> Result<SsoCompleted, SsoFailed> {
         let unknown = |error: ControlError| SsoFailed {
             purpose: OidcPurpose::Login,
@@ -947,7 +962,10 @@ impl SsoService {
             }
             Err(e) => return Err(fail(e.into())),
         };
-        match self.finish(&provider, &request, &callback).await {
+        match self
+            .finish(&provider, &request, &callback, user_agent)
+            .await
+        {
             Ok(done) => Ok(done),
             Err(error) => {
                 let action = match request.purpose {
@@ -977,6 +995,7 @@ impl SsoService {
         provider: &OidcProvider,
         request: &OidcRequest,
         callback: &SsoCallback,
+        user_agent: Option<&str>,
     ) -> Result<SsoCompleted, ControlError> {
         if let Some(error) = &callback.error {
             return Err(Self::idp_error(
@@ -1027,8 +1046,15 @@ impl SsoService {
                 let claims = self
                     .with_userinfo(provider, claims, access_token, &id.subject)
                     .await?;
-                self.sign_in(provider, request, &id.subject, &claims, signed_in_at)
-                    .await
+                self.sign_in(
+                    provider,
+                    request,
+                    &id.subject,
+                    &claims,
+                    signed_in_at,
+                    user_agent,
+                )
+                .await
             }
         }
     }
@@ -1192,6 +1218,7 @@ impl SsoService {
         subject: &str,
         claims: &Map<String, Value>,
         signed_in_at: Option<DateTime<Utc>>,
+        user_agent: Option<&str>,
     ) -> Result<SsoCompleted, ControlError> {
         let groups = oidc::groups(oidc::claim(claims, &provider.groups_claim));
         let Some(role) = oidc::mapped_role(&provider.role_mappings, &groups) else {
@@ -1236,6 +1263,7 @@ impl SsoService {
             &self.config,
             &user,
             signed_in_at,
+            user_agent,
             event,
         )
         .await?;

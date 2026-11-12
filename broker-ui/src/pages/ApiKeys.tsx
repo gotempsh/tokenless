@@ -41,6 +41,11 @@ const KEY_ROLES: Choice<KeyRole>[] = [
 
 const EMPTY_FORM = { name: "", vault_id: "", role: "viewer" as KeyRole, expires_in_days: 30 };
 
+/** A launcher key shows as one: its role only lets it start sessions. */
+function keyKind(k: ApiKey) {
+  return k.launch ? "launcher key" : k.role.replace("_", " ");
+}
+
 function keyStatus(k: ApiKey) {
   if (k.revoked_at) return <Status tone="destructive">revoked</Status>;
   if (new Date(k.expires_at) <= new Date()) return <Status tone="neutral">expired</Status>;
@@ -127,7 +132,7 @@ export function ApiKeys() {
                   <TableCell>
                     <div className="font-medium">{k.name}</div>
                     <div className="text-xs text-muted-foreground @3xl:hidden">
-                      {k.role.replace("_", " ")} · {vaultName(k.vault_id)}
+                      {keyKind(k)} · {vaultName(k.vault_id)}
                     </div>
                     <div className="mt-1 @md:hidden">{keyStatus(k)}</div>
                   </TableCell>
@@ -135,7 +140,7 @@ export function ApiKeys() {
                     <Mono>{k.prefix}</Mono>
                   </TableCell>
                   <TableCell className={fromWidth["2xl"]}>{vaultName(k.vault_id)}</TableCell>
-                  <TableCell className={fromWidth["3xl"]}>{k.role.replace("_", " ")}</TableCell>
+                  <TableCell className={fromWidth["3xl"]}>{keyKind(k)}</TableCell>
                   <TableCell className={cn(fromWidth["4xl"], "text-muted-foreground")}>
                     <When at={k.expires_at} />
                   </TableCell>
@@ -250,8 +255,12 @@ export function ApiKeys() {
       <ConfirmDialog
         open={confirm.open}
         onOpenChange={confirm.onOpenChange}
-        title={`Revoke API key "${confirm.target?.name ?? ""}"?`}
-        description="Anything using this key is refused immediately. Sessions it already minted keep running until they expire."
+        title={`Revoke ${confirm.target?.launch ? "launcher key" : "API key"} "${confirm.target?.name ?? ""}"?`}
+        description={
+          confirm.target?.launch
+            ? "Anything using this key is refused immediately, and the sessions it started end now."
+            : "Anything using this key is refused immediately. Sessions it already minted keep running until they expire."
+        }
         confirmLabel="Revoke key"
         busy={action.busy}
         onConfirm={() => {

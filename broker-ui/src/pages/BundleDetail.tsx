@@ -75,17 +75,20 @@ import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { SettingsSection } from "../components/layout";
 import { CommandSnippet } from "./Bundles";
+import { parseRequestLimit, requestLimitLabel } from "../ratelimit";
 import { useActorNames } from "./Audit";
 import { NewSessionDialog } from "./NewSession";
 import { SessionTable, sessionLabel } from "./Sessions";
+import { BundleLauncherKeys } from "./LauncherKeys";
 import { actorName, type ActorNames } from "../audit";
 
-export type BundleTab = "services" | "sessions" | "connect" | "settings";
+export type BundleTab = "services" | "sessions" | "connect" | "keys" | "settings";
 
 const TABS: { value: BundleTab; label: string }[] = [
   { value: "services", label: "Services" },
   { value: "sessions", label: "Sessions" },
   { value: "connect", label: "Run an agent" },
+  { value: "keys", label: "Launcher keys" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -236,6 +239,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
                 onCreate={() => setCreating(true)}
               />
             )}
+            {b && tab === "keys" && <BundleLauncherKeys bundle={b} vaultName={vault.data?.name} canEdit={canEdit} />}
           </TabSections>
           {b && tab === "connect" && (
             <div className="space-y-10">
@@ -263,6 +267,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
               canEdit={canEdit}
               onEdit={() => setEditing(true)}
               onDelete={() => confirmDelete.ask(b)}
+              onChanged={() => bundle.reload()}
             />
           )}
         </>
@@ -324,6 +329,50 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
   );
 }
 
+function RequestLimitForm({ bundle, canEdit, onChanged }: { bundle: AccessBundle; canEdit: boolean; onChanged: () => void }) {
+  const [text, setText] = useState(bundle.request_limit?.toString() ?? "");
+  const action = useAction();
+  const parsed = text.trim() === "" ? null : parseRequestLimit(text);
+  const save = async (limit: number | null) => {
+    const done = await action.run(() => patch<AccessBundle>(`/bundles/${bundle.id}`, { request_limit: limit }));
+    if (done) {
+      setText(done.request_limit?.toString() ?? "");
+      onChanged();
+    }
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (parsed && "limit" in parsed) void save(parsed.limit);
+  };
+  return (
+    <form className="space-y-3" onSubmit={submit}>
+      <ErrorBanner error={action.error} />
+      <p className="text-sm">{requestLimitLabel(bundle.request_limit)}</p>
+      <Field label="Requests per session" htmlFor="bundle-request-limit" error={parsed && "error" in parsed ? parsed.error : undefined}>
+        <Input
+          id="bundle-request-limit"
+          inputMode="numeric"
+          className="w-full sm:w-[200px]"
+          value={text}
+          disabled={!canEdit}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="No limit"
+        />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" variant="outline" disabled={!canEdit || action.busy || !parsed || "error" in parsed}>
+          Save limit
+        </Button>
+        {bundle.request_limit !== null && (
+          <Button type="button" variant="ghost" disabled={!canEdit || action.busy} onClick={() => void save(null)}>
+            Remove limit
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
 /** The bundle's own details and the things done to the bundle itself. */
 function BundleSettings({
   bundle,
@@ -331,12 +380,14 @@ function BundleSettings({
   canEdit,
   onEdit,
   onDelete,
+  onChanged,
 }: {
   bundle: AccessBundle;
   createdBy: string;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onChanged: () => void;
 }) {
   const reason = canEdit ? null : <p className="text-xs text-muted-foreground">Only editors and admins can change bundles.</p>;
   return (
@@ -353,6 +404,9 @@ function BundleSettings({
           </Button>
           {reason}
         </div>
+      </SettingsSection>
+      <SettingsSection title="Request limit" hint="Each session started from it may make this many requests. Whoever starts one may ask for fewer.">
+        <RequestLimitForm bundle={bundle} canEdit={canEdit} onChanged={onChanged} />
       </SettingsSection>
       <SettingsSection title="History">
         <div className="space-y-1 text-sm">
@@ -1001,6 +1055,13 @@ function Connect({
               Signed in with <Mono>tokenless login</Mono> on this machine? Skip the token:{" "}
               <Mono>{signedInRunCommand(bundle.name, command, vaultName)}</Mono> creates a session and ends it when the
               agent exits.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              A machine that runs agents on its own, such as CI or a server, shouldn't hold anyone's sign-in: give it a{" "}
+              <a href={`#/bundles/${bundle.id}/keys`} className="underline">
+                launcher key
+              </a>
+              , which starts this bundle's sessions and nothing else.
             </p>
           </Step>
           <Step n={3} title="Teach the agent how the broker works">

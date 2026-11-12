@@ -13,6 +13,23 @@ This page is the summary an operator needs.
 - **An agent leaking a credential.** The agent never holds one. A
   compromised agent leaks at most a session token: bound to specific
   rules, valid for an hour or less, and revocable within seconds.
+- **Someone getting onto an agent's machine.** There is no credential
+  on it to steal. They can act as the agent, through the proxy, within its
+  session's rules, until the session ends, and every request is logged.
+  Don't leave a person's sign-in on a machine that runs agents on its own:
+  give it a launcher key, which starts one bundle's sessions and nothing
+  else ([Automation → Launcher keys](./automation.mdx#launcher-keys)).
+  Someone probing for what else they can reach is refused again and
+  again, which raises an [alert](./console/alerts.mdx), and the proxy then
+  [cuts the session off](./settings.mdx#cut-off-probing-sessions). A
+  session token copied to another machine and used through another proxy
+  raises an alert too. Plant [tripwires](./console/vaults.mdx#tripwires),
+  fake keys where real ones would be: the session that sends one is cut
+  off at once and you are alerted. Each session is
+  [rate limited](./settings.mdx#rate-limit), so a stolen one can't be
+  used to empty an API in a few seconds. An API that echoes its
+  credential back has it [redacted](./settings.mdx#secrets-in-responses)
+  before the agent sees the answer.
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over
   HTTPS to the service's own hosts.
@@ -93,7 +110,14 @@ apply to them, as they don't to identity providers.
   templates, variables, proxies, single sign-on and audit export) need a
   code entered within the last five minutes. Signing in counts. API keys
   can never take these actions.
-- Changing your password ends your other sessions.
+- Changing your password, or turning your authenticator on or off, ends
+  your other sign-ins. **Account → Where you're signed in** (or
+  `tokenless sign-ins list`) shows each browser and CLI login with when
+  it was last used, to sign out one you don't recognise or every one but
+  this. An admin signs a person out everywhere from **People**.
+- A sign-in ends 12 hours after it started, and earlier when it goes
+  unused for the [idle timeout](./settings.mdx#idle-sign-ins) (2 hours by
+  default).
 - With [single sign-on](./settings.mdx#single-sign-on), the identity
   provider handles passwords and second factors, and the person's groups
   decide their role at every sign-in. A step-up sends them back to the

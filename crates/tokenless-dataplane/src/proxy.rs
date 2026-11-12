@@ -38,7 +38,7 @@ use tokenless_core::mcp::{self, McpMessage, NotJsonRpc};
 use tokenless_core::path::check_request_path;
 use tokenless_core::rule::RuleScope;
 use tokenless_core::session::{verify_session, SessionClaims};
-use tokenless_core::snapshot::UnmatchedHostPolicy;
+use tokenless_core::snapshot::{UnmatchedHostPolicy, SCRUBBED_ACTION, TUNNEL_CUT_ACTION};
 use tokenless_core::substitution::{
     apply_to_body, apply_to_header, apply_to_target, wants_body, Applied, BodyKind,
     RenderedSubstitution,
@@ -54,6 +54,7 @@ use crate::binding::BindingState;
 use crate::clock;
 use crate::cut::{session_end, session_expiry, CutSignal, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
+use crate::scrub;
 use crate::shutdown::{closed, stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::status::UpstreamFailureKind;
@@ -102,6 +103,10 @@ pub struct ProxyShared {
     pub lifecycle: watch::Sender<Lifecycle>,
     /// Open tunnels and gateway streams per session.
     pub(crate) traffic: Arc<crate::traffic::OpenTraffic>,
+    /// Refusals per session, for [`crate::quarantine`].
+    pub(crate) refusals: crate::quarantine::RefusalCounter,
+    /// Requests per session, for [`crate::ratelimit`].
+    pub(crate) rate: crate::ratelimit::RateLimiter,
 }
 
 impl ProxyShared {
@@ -228,6 +233,9 @@ pub(crate) fn check_session(
 ) -> Result<(), &'static str> {
     if clock::now(snapshot) >= claims.exp {
         return Err("proxy session has expired");
+    }
+    if snapshot.quarantined.contains_key(&claims.jti) {
+        return Err("proxy session was cut off after repeated refusals; someone has to review it and start a new session");
     }
     if snapshot.revoked.contains(&claims.jti) {
         return Err("proxy session has been revoked");
@@ -526,13 +534,22 @@ async fn handle_proxy_request(
     else {
         return respond(StatusCode::BAD_REQUEST, "CONNECT target must be host:port");
     };
-    let intercept = session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port));
     let excepted = || {
         snapshot
             .passthrough_hosts
             .iter()
             .any(|h| h.matches(&host, port))
     };
+    // Under deny, a host someone holding a tripwire's decoy would use is
+    // opened rather than refused at once, to look for the decoy; a request
+    // without it is still refused, as no rule covers it.
+    let intercept = session_rules(&snapshot, &claims).any(|r| r.allow.matches_host(&host, port))
+        || (snapshot.policy == UnmatchedHostPolicy::Deny
+            && !excepted()
+            && snapshot
+                .tripwires
+                .as_ref()
+                .is_some_and(|t| t.covers_host(&host, port)));
     if !intercept && snapshot.policy == UnmatchedHostPolicy::Deny && !excepted() {
         Metrics::inc(&shared.metrics.connect_denied_total);
         audit_best_effort(
@@ -555,6 +572,7 @@ async fn handle_proxy_request(
     let tls_config = if intercept {
         let pattern_host = session_rules(&snapshot, &claims)
             .flat_map(|r| r.allow.hosts.iter())
+            .chain(snapshot.tripwires.iter().flat_map(|t| t.hosts().iter()))
             .find(|h| h.matches(&host, port))
             .map(|h| h.certificate_name().to_string());
         match pattern_host.and_then(|h| snapshot.tls.config_for(&h)) {
@@ -777,16 +795,19 @@ pub(crate) fn tunnel_cut(
 ) {
     Metrics::inc(&shared.metrics.tunnels_cut_total);
     info!(session_id = %claims.jti, %host, port, reason = end.reason(), "cut open traffic");
-    audit_best_effort(
+    // Not a refusal of anything the session asked for: every open tunnel
+    // ends at once, and counting them would quarantine a busy session.
+    let event = proxy_event(
         shared,
         claims,
-        "proxy.tunnel_cut",
+        TUNNEL_CUT_ACTION,
         AuditOutcome::Denied,
         host,
         port,
         None,
-        end.reason(),
-    );
+    )
+    .detail("reason", end.reason().to_string());
+    let _ = shared.audit.try_record(event);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1125,6 +1146,25 @@ pub(crate) fn audit_best_effort(
     let event = proxy_event(shared, claims, action, outcome, host, port, request)
         .detail("reason", reason.to_string());
     let _ = shared.audit.try_record(event);
+    if outcome == AuditOutcome::Denied {
+        crate::quarantine::count_refusal(shared, claims);
+    }
+}
+
+/// An event about the session behind `claims`: its scope, id and labels.
+pub(crate) fn session_event(
+    shared: &ProxyShared,
+    claims: &SessionClaims,
+    action: &str,
+    outcome: AuditOutcome,
+) -> AuditEvent {
+    let mut event = AuditEvent::new(format!("node:{}", shared.node_id), action, outcome)
+        .detail("scope", claims.scope.to_string())
+        .detail("session_id", claims.jti.to_string());
+    for (k, v) in &claims.labels {
+        event = event.detail(&format!("label.{k}"), v.clone());
+    }
+    event
 }
 
 fn proxy_event(
@@ -1136,17 +1176,12 @@ fn proxy_event(
     port: u16,
     request: Option<(&str, &str)>,
 ) -> AuditEvent {
-    let mut event = AuditEvent::new(format!("node:{}", shared.node_id), action, outcome)
-        .detail("scope", claims.scope.to_string())
-        .detail("session_id", claims.jti.to_string())
-        .detail("host", format!("{host}:{port}"));
+    let mut event =
+        session_event(shared, claims, action, outcome).detail("host", format!("{host}:{port}"));
     if let Some((method, path)) = request {
         event = event
             .detail("method", method.to_string())
             .detail("path", path.chars().take(512).collect::<String>());
-    }
-    for (k, v) in &claims.labels {
-        event = event.detail(&format!("label.{k}"), v.clone());
     }
     event
 }
@@ -1186,6 +1221,45 @@ pub(crate) async fn handle_intercepted(
             StatusCode::MISDIRECTED_REQUEST,
             "request Host does not match the CONNECT target; credentials are only injected for the tunnel's own host",
         );
+    }
+    if let Some(tripwires) = snapshot.tripwires.as_deref() {
+        if let Some(hit) = tripwires.find(req.headers(), req.uri()) {
+            crate::tripwire::trip(
+                shared,
+                claims,
+                tripwires,
+                &hit,
+                &ctx.host,
+                ctx.port,
+                (req.method().as_str(), req.uri().path()),
+            );
+            return respond(
+                StatusCode::FORBIDDEN,
+                "refused: the request carried a credential planted as a tripwire, so this session is cut off and someone has been alerted",
+            );
+        }
+    }
+    if let Some(limit) = snapshot.rate_limit {
+        if let Err(wait) = shared.rate.check(&claims.jti, limit) {
+            Metrics::inc(&shared.metrics.requests_rate_limited_total);
+            shared.rate.refused(&claims.jti, || {
+                crate::ratelimit::report_event(shared, claims, limit, &ctx.host, ctx.port)
+            });
+            let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            let mut r = respond(
+                StatusCode::TOO_MANY_REQUESTS,
+                &format!(
+                    "this session is sending more than {} requests a second (bursts of {}); nothing was forwarded, retry in {}s",
+                    limit.per_sec,
+                    limit.burst,
+                    secs.max(1)
+                ),
+            );
+            if let Ok(value) = HeaderValue::from_str(&secs.max(1).to_string()) {
+                r.headers_mut().insert("retry-after", value);
+            }
+            return r;
+        }
     }
     let method = req.method().as_str().to_string();
     let path = req.uri().path().to_string();
@@ -1493,6 +1567,12 @@ pub(crate) async fn handle_intercepted(
         );
     }
     rewrite_headers(req.headers_mut(), rule);
+    // Redaction is on unless the settings turned it off.
+    let scrubber = rule.scrubber.clone();
+    let redacting = snapshot.scrub_responses && !scrubber.is_empty();
+    if redacting {
+        scrub::prepare_request(req.headers_mut());
+    }
     let rule_id = rule.id;
     let credential_id = rule.credential_id;
     // Strict sessions and bindings: the upload and the response are cut
@@ -1534,6 +1614,45 @@ pub(crate) async fn handle_intercepted(
             let status = response.status().as_u16();
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
+            let response = response.map(|b| b.map_err(BodyError::from).boxed());
+            // The response may reflect what was injected: it reaches the
+            // client redacted, or not at all.
+            let response = if !redacting {
+                response
+            } else {
+                let report = proxy_event(
+                    shared,
+                    claims,
+                    SCRUBBED_ACTION,
+                    AuditOutcome::Success,
+                    &ctx.host,
+                    ctx.port,
+                    Some((&method, &path)),
+                )
+                .target(format!("rule:{rule_id}"))
+                .detail("credential_id", credential_id.to_string())
+                .detail("request_id", request_id.clone());
+                let audit = shared.audit.clone();
+                let redactions =
+                    scrub::Redactions::new(shared.metrics.clone(), rule_id, ctx.host.clone())
+                        .on_done(move |masked| {
+                            let _ = audit.try_record(report.detail("masked", masked.to_string()));
+                        });
+                match scrub::scrub_response(response, scrubber, redactions) {
+                    Ok(response) => response,
+                    Err(withheld) => {
+                        Metrics::inc(&shared.metrics.responses_withheld_total);
+                        warn!(rule_id = %rule_id, host = %ctx.host, %method, status, reason = %withheld, "withheld an upstream response that cannot be checked for the injected credential");
+                        outcome.outcome = AuditOutcome::Failure;
+                        outcome = outcome.detail("withheld", withheld.to_string());
+                        let _ = shared.audit.try_record(outcome);
+                        return respond(
+                            StatusCode::BAD_GATEWAY,
+                            &format!("{withheld}; the response was withheld so the injected credential cannot reach this client"),
+                        );
+                    }
+                }
+            };
             let _ = shared.audit.try_record(outcome);
             if status == StatusCode::UNAUTHORIZED.as_u16() {
                 if let Some(binding) = &ctx.binding {
@@ -1544,7 +1663,6 @@ pub(crate) async fn handle_intercepted(
                     );
                 }
             }
-            let response = response.map(|b| b.map_err(BodyError::from).boxed());
             match &mut cut {
                 Some(cut) => response.map(|b| cut.wrap(b)),
                 None => response,
@@ -1561,9 +1679,14 @@ pub(crate) async fn handle_intercepted(
             if let Some(binding) = &ctx.binding {
                 binding.record_failure(UpstreamFailureKind::Unreachable, &ctx.host, ctx.port);
             }
+            // The cause is the upstream's and the log's; the client
+            // learns only what kind of failure it was.
             respond(
                 StatusCode::BAD_GATEWAY,
-                &format!("upstream request failed: {e}"),
+                &format!(
+                    "upstream request to {}:{} failed (unreachable); the data plane log has the cause",
+                    ctx.host, ctx.port
+                ),
             )
         }
     }
@@ -1719,6 +1842,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrubber: Default::default(),
         }
     }
 
@@ -1788,6 +1912,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
+            scrubber: Default::default(),
         };
         let mut h = HeaderMap::new();
         h.insert(
@@ -2004,6 +2129,9 @@ mod tests {
         ) -> (String, Vec<u8>) {
             stream.write_all(head.as_bytes()).await.unwrap();
             stream.write_all(body).await.unwrap();
+            // TLS may hold the last records of a large body until flushed;
+            // unsent, the proxy waits for them and never answers.
+            stream.flush().await.unwrap();
             read_message(stream).await.unwrap()
         }
 
@@ -2138,7 +2266,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         use crate::audit::AuditShipper;
-        use crate::testing::{https_echo_authorization_upstream, running_with};
+        use crate::testing::{https_echo_authorization_upstream, running_with, seen};
 
         #[derive(Default)]
         struct Collect(std::sync::Mutex<Vec<AuditEvent>>);
@@ -2242,10 +2370,10 @@ mod tests {
         install(3, &["/api/*"]);
         let answer = get("/api/v4/projects".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer api"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer api")), "{answer}");
         let answer = get("/acme/widgets.git/info/refs".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer git"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer git")), "{answer}");
         r.dp.abort();
     }
 }

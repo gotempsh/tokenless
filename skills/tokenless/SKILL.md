@@ -17,7 +17,8 @@ You are behind the broker when `TOKENLESS_PROXY` is set. Then
 `HTTPS_PROXY` points at a local session port and the broker's CA is
 already trusted (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
 `REQUESTS_CA_BUNDLE`, ...). Leave these variables alone. Unsetting or
-overriding them only makes your requests fail.
+overriding them only makes your requests fail. The proxy URL holds the
+port's password: don't print it or copy it anywhere.
 
 When `TOKENLESS_PROXY` isn't set, you aren't behind it yet: see section 6
 whenever a key comes up.
@@ -305,7 +306,9 @@ its own.
   with a session token from the bundle's page
   (`TOKENLESS_SESSION_TOKEN`, section 3).
 - **Services** may already be there, added once for the team. When
-  `status` reports services and an access bundle, skip step 2. When the
+  `status` reports services and an access bundle, skip step 2.
+  `tokenless bundle list --json` shows each bundle and the services it
+  reaches, and `service list`, `vault list` and `session list` the rest. When the
   one you need is missing, they add it (step 2) to a vault they can
   write, or ask an admin.
 - **A proxy on every machine**, step 3, even with a shared server:

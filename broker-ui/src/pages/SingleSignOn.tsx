@@ -19,6 +19,7 @@ import {
 } from "../api";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { useAction, useLoad } from "../hooks";
+import { idleOptions, idleSecs, idleValue } from "../signIns";
 import {
   CheckField,
   ChoiceCards,
@@ -41,6 +42,7 @@ import { SettingsSection } from "../components/layout";
 import { ProviderLogo } from "../components/ProviderLogo";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import {
@@ -93,10 +95,12 @@ export function SingleSignOnSettings() {
     remove.close();
     if (done) providers.reload();
   };
-  const setPasswordSignIn = async (password_sign_in: PasswordSignIn) => {
-    const done = await action.run(() => put<SignInSettings>("/auth/sign-in-settings", { password_sign_in }));
+  const saveSignIn = async (change: Partial<SignInSettings>) => {
+    if (!signIn.data) return;
+    const done = await action.run(() => put<SignInSettings>("/auth/sign-in-settings", { ...signIn.data, ...change }));
     if (done) signIn.reload();
   };
+  const setPasswordSignIn = (password_sign_in: PasswordSignIn) => saveSignIn({ password_sign_in });
 
   const addButton = (
     <Button asChild variant="outline" size="sm">
@@ -200,6 +204,25 @@ export function SingleSignOnSettings() {
             {!anyEnabled && signIn.data.password_sign_in === "everyone" && (
               <p className="text-xs text-muted-foreground">Limiting passwords to admins needs a provider that is on.</p>
             )}
+          </>
+        )}
+      </SettingsSection>
+      <SettingsSection
+        title="Idle sign-ins"
+        hint="A browser or CLI login unused this long is signed out, so a forgotten one stops working."
+      >
+        {signIn.data && (
+          <>
+            <Label htmlFor="idle-timeout" className="sr-only">
+              Sign out after
+            </Label>
+            <SelectField
+              id="idle-timeout"
+              className="w-full sm:w-[220px]"
+              value={idleValue(signIn.data.idle_timeout_secs)}
+              onChange={(v) => void saveSignIn({ idle_timeout_secs: idleSecs(v) })}
+              options={idleOptions(signIn.data.idle_timeout_secs)}
+            />
           </>
         )}
       </SettingsSection>

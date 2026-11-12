@@ -16,6 +16,7 @@ const bundle = {
   name: "code-review",
   description: "",
   rule_ids: ["r1", "r2", "r3", "r4", "r5", "r6"],
+  request_limit: null,
   created_by: "user:u",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",

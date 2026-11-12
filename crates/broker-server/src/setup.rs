@@ -49,6 +49,7 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
         signed_in: None,
         vaults: None,
         proxies: None,
+        other_hosts: None,
         skill: skill_state(&cwd, home.as_deref()),
         behind_tokenless: std::env::var_os("TOKENLESS_PROXY").is_some_and(|v| !v.is_empty()),
         proxy_state: ProxyStateFile::find(home.as_deref(), &cwd),
@@ -70,6 +71,11 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
                         Some(vault_summaries(&client).await.map_err(|e| e.to_string()));
                     observed.proxies = Some(match client.nodes().await {
                         Ok(nodes) => Ok(Some(nodes)),
+                        Err(LauncherError::Api { status: 403, .. }) => Ok(None),
+                        Err(e) => Err(e.to_string()),
+                    });
+                    observed.other_hosts = Some(match client.settings().await {
+                        Ok(settings) => Ok(Some(settings.unmatched_host_policy)),
                         Err(LauncherError::Api { status: 403, .. }) => Ok(None),
                         Err(e) => Err(e.to_string()),
                     });

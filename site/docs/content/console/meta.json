@@ -1,4 +1,4 @@
 {
   "title": "Use the console",
-  "pages": ["index", "vaults", "bundles", "sessions", "templates", "people", "proxies", "audit", "account"]
+  "pages": ["index", "vaults", "bundles", "sessions", "templates", "people", "proxies", "alerts", "audit", "account"]
 }

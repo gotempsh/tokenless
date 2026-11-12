@@ -25,8 +25,8 @@ const at = "2026-01-01T00:00:00Z";
 function fakeApi(failOnce?: keyof AddServiceApi) {
   const calls: string[] = [];
   const bundles = new Map<string, AccessBundle>([
-    ["b1", { id: "b1", vault_id: "v1", name: "code-review", description: "", rule_ids: ["r0"], created_by: "u", created_at: at, updated_at: at }],
-    ["b2", { id: "b2", vault_id: "v1", name: "research", description: "", rule_ids: [], created_by: "u", created_at: at, updated_at: at }],
+    ["b1", { id: "b1", vault_id: "v1", name: "code-review", description: "", rule_ids: ["r0"], request_limit: null, created_by: "u", created_at: at, updated_at: at }],
+    ["b2", { id: "b2", vault_id: "v1", name: "research", description: "", rule_ids: [], request_limit: null, created_by: "u", created_at: at, updated_at: at }],
   ]);
   let failed = false;
   const guard = (name: keyof AddServiceApi) => {
@@ -81,7 +81,7 @@ function fakeApi(failOnce?: keyof AddServiceApi) {
     },
     async createBundle(vaultId, body) {
       guard("createBundle");
-      const b = { id: "b-new", vault_id: vaultId, ...body, created_by: "u", created_at: at, updated_at: at };
+      const b = { id: "b-new", vault_id: vaultId, ...body, request_limit: null, created_by: "u", created_at: at, updated_at: at };
       bundles.set(b.id, b);
       return b;
     },

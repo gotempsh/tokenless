@@ -23,6 +23,9 @@ export const AUDIT_CATEGORIES: AuditCategory[] = [
   { label: "Vaults", prefix: "vault." },
   { label: "People", prefix: "user." },
   { label: "API keys", prefix: "api_key." },
+  { label: "Launcher keys", prefix: "launcher_key." },
+  { label: "Alerts", prefix: "alert." },
+  { label: "Tripwires", prefix: "tripwire." },
   { label: "Proxies", prefix: "node." },
   { label: "Templates", prefix: "template." },
   { label: "Settings", prefix: "settings." },
@@ -39,6 +42,13 @@ export interface ActorNames {
 }
 
 const short = (id: string) => id.slice(0, 8);
+
+const KIND_ARTICLE: Record<string, string> = {
+  quarantine: "a cut-off session alert",
+  tripwire: "a tripwire alert",
+  refusals: "a refused-session alert",
+  new_proxy: "a second-proxy alert",
+};
 
 /** Who did it, in words: "You", a username, "API key ci-runner", "Proxy edge-1". */
 export function actorLabel(event: AuditEvent, names: ActorNames): string {
@@ -85,6 +95,16 @@ export function actionPhrase(event: AuditEvent): string {
       return event.outcome === "success" ? "turned on an authenticator app" : "tried to turn on an authenticator app";
     case "auth.totp_disable":
       return event.outcome === "success" ? "removed their authenticator app" : "tried to remove their authenticator app";
+    case "auth.sign_in_revoke":
+      return "signed out one of their sign-ins";
+    case "auth.sign_out_elsewhere":
+      return "signed out everywhere else";
+    case "user.sign_ins_revoke":
+      return `signed ${d.username ?? "someone"} out everywhere`;
+    case "launcher_key.create":
+      return `created ${named("launcher key")}${d.bundle ? ` for bundle ${d.bundle}` : ""}`;
+    case "launcher_key.revoke":
+      return `revoked ${named("launcher key")}`;
     case "credential.create":
       return `added ${named("service")}`;
     case "credential.rotate":
@@ -112,6 +132,8 @@ export function actionPhrase(event: AuditEvent): string {
     case "session.mint":
       return d.bundle ? `started a session with ${d.bundle}` : "started a session";
     case "session.revoke":
+      if (d.reason === "quarantine") return `cut off a session refused ${d.refusals ?? "too many"} times`;
+      if (d.reason === "tripwire") return `cut off a session that sent tripwire ${d.tripwire ?? "a decoy"}`;
       return "ended a session";
     case "session.update_labels":
       return "relabelled a session";
@@ -185,6 +207,14 @@ export function actionPhrase(event: AuditEvent): string {
       return `skipped ${d.skipped === "1" ? "1 event" : `${d.skipped ?? "the"} events`} for ${named("audit webhook")}`;
     case "audit_export.test":
       return event.outcome === "success" ? `sent a test to ${named("audit webhook")}` : `failed to send a test to ${named("audit webhook")}`;
+    case "tripwire.create":
+      return `planted ${named("tripwire")}`;
+    case "tripwire.delete":
+      return `deleted ${named("tripwire")}`;
+    case "alert.raised":
+      return `raised an alert: ${d.summary ?? d.kind ?? "see the Alerts page"}`;
+    case "alert.acknowledge":
+      return `acknowledged ${KIND_ARTICLE[d.kind ?? ""] ?? "an alert"}`;
     case "proxy.inject":
       return `added a credential to ${request}`;
     case "proxy.response":
@@ -195,6 +225,16 @@ export function actionPhrase(event: AuditEvent): string {
       return `refused a connection to ${hostOnly(d.host)}`;
     case "proxy.gateway_denied":
       return `refused an MCP call to ${hostOnly(d.host)}`;
+    case "proxy.quarantine":
+      return `cut off a session after ${d.refusals ?? "repeated"} refusals in ${d.window_secs ? `${d.window_secs}s` : "a short time"}`;
+    case "proxy.response_scrubbed":
+      return `redacted the credential ${d.masked === "1" ? "once" : `${d.masked ?? "some"} times`} in the answer for ${request}`;
+    case "proxy.rate_limited": {
+      const n = d.refused ?? "some";
+      return `refused ${n === "1" ? "1 request" : `${n} requests`} to ${hostOnly(d.host)}: the session went past ${d.per_sec ? `${d.per_sec} a second` : "the rate limit"}`;
+    }
+    case "proxy.tripwire":
+      return `cut off a session that sent tripwire ${d.tripwire ?? "a decoy"} to ${hostOnly(d.host)}`;
     case "proxy.egress_blocked":
       return `blocked a connection to ${hostOnly(d.host)}, a private address`;
     case "proxy.tunnel":
@@ -216,6 +256,10 @@ export function sessionHistoryPhrase(e: AuditEvent): string {
     case "session.mint":
       return e.detail.bundle ? `created the session from ${e.detail.bundle}` : "created the session";
     case "session.revoke":
+      if (e.detail.reason === "quarantine")
+        return `revoked the session after it was refused ${e.detail.refusals ?? "too many"} times`;
+      if (e.detail.reason === "tripwire")
+        return `revoked the session after it sent tripwire ${e.detail.tripwire ?? "a decoy"}`;
       if (e.detail.already_revoked === "true") return "revoked the session again";
       return e.detail.by === "session token" ? "ended the session with its own token" : "revoked the session";
     case "session.update_labels":

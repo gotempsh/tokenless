@@ -9,7 +9,7 @@ Open the address `tokenless serve` printed and sign in with the admin
 account it created (see the [Quickstart](../quickstart.mdx)). The sidebar
 groups everything into three parts.
 
-![The console's sidebar: Broker (vaults, access bundles, sessions, templates, variables), Access (people, API keys) and Instance (proxies, audit log, settings)](../screenshots/console-vaults.png)
+![The console's sidebar: Broker (vaults, access bundles, sessions, templates, variables), Access (people, API keys) and Instance (alerts, proxies, audit log, settings)](../screenshots/console-vaults.png)
 
 | Part | Page | What it is for |
 |---|---|---|
@@ -20,7 +20,8 @@ groups everything into three parts.
 | | [Variables](./templates.mdx#variables) | Secrets stored once and used in any service as `{{NAME}}` |
 | Access | [People](./people.mdx) | Who can sign in, and their role |
 | | [API keys](./people.mdx#api-keys) | Keys for scripts and CI to use the console's API |
-| Instance | [Proxies](./proxies.mdx) | The machines agents send their requests through |
+| Instance | [Alerts](./alerts.mdx) | Sessions cut off, refused again and again, or used through a second proxy |
+| | [Proxies](./proxies.mdx) | The machines agents send their requests through |
 | | [Audit log](./audit.mdx) | Everything that happened, who did it and whether it was allowed |
 | | [Settings](../settings.mdx) | What agents may reach outside their services, single sign-on, audit export |
 

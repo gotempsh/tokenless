@@ -3,11 +3,15 @@
 
 //! The management HTTP API (`/api/v1`) used by the UI and automation.
 
+mod alerts;
 mod audit_export;
 mod console;
 mod extract;
 mod handlers;
+mod launcher_keys;
+mod sign_ins;
 mod sso;
+mod tripwires;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,6 +38,15 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/auth/me", get(me))
         .route("/auth/step-up", post(step_up))
         .route("/auth/password", post(change_password))
+        .route("/auth/sign-ins", get(sign_ins::list_own))
+        .route(
+            "/auth/sign-ins/revoke-others",
+            post(sign_ins::revoke_others),
+        )
+        .route(
+            "/auth/sign-ins/{sign_in_id}/revoke",
+            post(sign_ins::revoke_own),
+        )
         .route(
             "/auth/authenticator/enrollment",
             post(authenticator_enrollment),
@@ -159,6 +172,22 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/sessions/{session_id}/revoke", post(revoke_session))
         .route("/sessions/{session_id}/services", get(session_services))
+        .route(
+            "/vaults/{vault_id}/launcher-keys",
+            get(launcher_keys::list).post(launcher_keys::create),
+        )
+        .route(
+            "/vaults/{vault_id}/launcher-keys/{api_key_id}/revoke",
+            post(launcher_keys::revoke),
+        )
+        .route(
+            "/vaults/{vault_id}/tripwires",
+            get(tripwires::list).post(tripwires::create),
+        )
+        .route(
+            "/tripwires/{tripwire_id}",
+            axum::routing::delete(tripwires::delete),
+        )
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(
             "/api-keys/{api_key_id}",
@@ -166,12 +195,20 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/users", get(list_users))
         .route("/users/{user_id}", axum::routing::patch(update_user))
+        .route("/users/{user_id}/sign-ins", get(sign_ins::list_user))
+        .route(
+            "/users/{user_id}/sign-ins/revoke",
+            post(sign_ins::revoke_user),
+        )
         .route("/invites", get(list_invites).post(create_invite))
         .route("/invites/inspect", post(inspect_invite))
         .route("/invites/totp", post(invite_totp))
         .route("/invites/accept", post(accept_invite))
         .route("/invites/{invite_id}", axum::routing::delete(revoke_invite))
         .route("/audit", get(query_audit))
+        .route("/alerts", get(alerts::list))
+        .route("/alerts/summary", get(alerts::summary))
+        .route("/alerts/{alert_id}/acknowledge", post(alerts::acknowledge))
         .route("/nodes", get(list_nodes))
         .route("/nodes/join-tokens", post(create_join_token))
         .route("/nodes/{node_id}", get(get_node))
@@ -194,6 +231,15 @@ const UI_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; i
 /// Every response must be revalidated (`no-cache`, answered with a 304
 /// when unchanged): a cached `index.html` keeps pointing at the previous
 /// build's scripts, so an upgraded broker would show the old UI.
+/// The request's `User-Agent`, kept with a new sign-in; `None` when it
+/// is missing or not text.
+fn user_agent(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+}
+
 fn ui_service(dir: PathBuf) -> SetResponseHeader<ServeDir<ServeFile>, HeaderValue> {
     let index = dir.join("index.html");
     SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))

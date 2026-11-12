@@ -30,6 +30,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 const SECRET: &str = "upstream-secret-token-6d1f0c2b9e";
+/// What the echo upstream answers in place of `SECRET`: it proves the
+/// secret arrived without sending it back, which the proxy would redact.
+const SAW: &str = "<upstream received SECRET>";
 const CLIENT_SUPPLIED: &str = "Bearer client-supplied-value";
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -80,7 +83,13 @@ async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallibl
         x_tool_key: header(&req, "x-tool-key"),
         body: received,
     };
-    let bytes = serde_json::to_vec(&body).unwrap();
+    let mut text = serde_json::to_string(&body).unwrap();
+    // `/v1/reflect` sends back what it received as it is, like an echo
+    // endpoint would; the proxy must redact it.
+    if body.path != "/v1/reflect" {
+        text = text.replace(SECRET, SAW);
+    }
+    let bytes = text.into_bytes();
     Ok(Response::builder()
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(bytes)))
@@ -517,6 +526,53 @@ async fn end_to_end() {
     .await
     .unwrap();
     let client = proxied_client(proxy, &session_token, &[&ca_pem, &upstream.ca_pem]);
+    // --- a reflected credential never reaches the agent ----------------------
+    let reflect = || async {
+        client
+            .get(format!("https://localhost:{upstream_port}/v1/reflect"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+    let reflected = reflect().await;
+    assert!(!reflected.contains(SECRET), "{reflected}");
+    assert!(reflected.contains("[redacted]"), "{reflected}");
+    eventually(
+        "the redaction is recorded",
+        Duration::from_secs(5),
+        || async {
+            let page = api
+                .get("/audit?action_prefix=proxy.response_scrubbed")
+                .await;
+            page["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|e| e["detail"]["masked"].as_str().is_some_and(|n| n != "0"))
+            })
+        },
+    )
+    .await;
+    // The settings can turn it off, and back on.
+    let redaction = |on: bool| {
+        api.call(
+            reqwest::Method::PUT,
+            "/settings",
+            Some(json!({ "unmatched_host_policy": "passthrough", "scrub_responses": on })),
+        )
+    };
+    assert!(redaction(false).await.0.is_success());
+    eventually("redaction turned off", Duration::from_secs(5), || async {
+        reflect().await.contains(SECRET)
+    })
+    .await;
+    assert!(redaction(true).await.0.is_success());
+    eventually("redaction back on", Duration::from_secs(5), || async {
+        !reflect().await.contains(SECRET)
+    })
+    .await;
     let echo: Echo = client
         .get(format!("https://localhost:{upstream_port}/v1/things"))
         .header(AUTHORIZATION, CLIENT_SUPPLIED)
@@ -531,7 +587,7 @@ async fn end_to_end() {
         .unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str())
+        Some(format!("Bearer {SAW}").as_str())
     );
     assert_eq!(
         echo.proxy_authorization, None,
@@ -559,7 +615,7 @@ async fn end_to_end() {
     let echo: Echo = response.json().await.unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str()),
+        Some(format!("Bearer {SAW}").as_str()),
         "the gateway swaps the session token for the credential"
     );
     assert_eq!(echo.path, "/mcp");
@@ -620,17 +676,14 @@ async fn end_to_end() {
         .json()
         .await
         .unwrap();
-    assert_eq!(echo.path, format!("/v1/keys/{SECRET}"));
-    assert_eq!(
-        echo.query.as_deref(),
-        Some(format!("key={SECRET}").as_str())
-    );
+    assert_eq!(echo.path, format!("/v1/keys/{SAW}"));
+    assert_eq!(echo.query.as_deref(), Some(format!("key={SAW}").as_str()));
     assert_eq!(
         echo.x_tool_key.as_deref(),
-        Some(format!("Token {SECRET}").as_str())
+        Some(format!("Token {SAW}").as_str())
     );
     let sent: Value = serde_json::from_str(&echo.body).unwrap();
-    assert_eq!(sent["auth"], SECRET);
+    assert_eq!(sent["auth"], SAW);
 
     // --- MCP tool limits ----------------------------------------------------
     let (status, _, limited) = api
@@ -676,7 +729,7 @@ async fn end_to_end() {
         .unwrap();
     let forwarded: Value = serde_json::from_str(&echo.body).unwrap();
     assert_eq!(forwarded["params"]["name"], "search");
-    assert_eq!(forwarded["params"]["arguments"]["token"], SECRET);
+    assert_eq!(forwarded["params"]["arguments"]["token"], SAW);
     // A batch with one refused call is refused whole, one error per request.
     let refused: Value = client
         .post(&mcp_url)
@@ -746,7 +799,7 @@ async fn end_to_end() {
     assert_eq!(listing["total"], 1);
     {
         use broker_server::launcher::client::{ApiClient, Credentials, MintRequest};
-        use broker_server::launcher::port::SessionPort;
+        use broker_server::launcher::port::{PortPassword, SessionPort};
         use broker_server::launcher::session::LiveSession;
         use broker_server::launcher::trust::placeholder_env;
 
@@ -772,6 +825,7 @@ async fn end_to_end() {
                     longest: false,
                     request_limit: None,
                     labels: Default::default(),
+                    renews: None,
                 },
             )
             .await
@@ -791,6 +845,7 @@ async fn end_to_end() {
                 longest: false,
                 request_limit: None,
                 labels: [("command".to_string(), "e2e".to_string())].into(),
+                renews: None,
             },
         )
         .await
@@ -821,19 +876,34 @@ async fn end_to_end() {
             &proxy.to_string(),
             live.auth.clone(),
             live.listing(),
+            Some(PortPassword::generate()),
         )
         .await
         .unwrap();
 
-        // The agent's client has a plain proxy URL: no token anywhere.
-        let mut builder = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::https(format!("http://{}", port.addr)).unwrap())
-            .tls_built_in_root_certs(false)
-            .timeout(Duration::from_secs(10));
-        for pem in [&ca_pem, &upstream.ca_pem] {
-            builder = builder.add_root_certificate(Certificate::from_pem(pem.as_bytes()).unwrap());
-        }
-        let agent = builder.build().unwrap();
+        // The agent's client has the port's URL, with its password: no
+        // session token anywhere. A client without the password is refused.
+        let client_through = |proxy_url: String| {
+            let mut builder = reqwest::Client::builder()
+                .proxy(reqwest::Proxy::https(proxy_url).unwrap())
+                .tls_built_in_root_certs(false)
+                .timeout(Duration::from_secs(10));
+            for pem in [&ca_pem, &upstream.ca_pem] {
+                builder =
+                    builder.add_root_certificate(Certificate::from_pem(pem.as_bytes()).unwrap());
+            }
+            builder.build().unwrap()
+        };
+        let stranger = client_through(format!("http://{}", port.addr));
+        let refused = stranger
+            .get(format!("https://localhost:{upstream_port}/via-port"))
+            .send()
+            .await;
+        assert!(
+            refused.is_err(),
+            "a client without the port's password got through: {refused:?}"
+        );
+        let agent = client_through(port.url());
         let echo: Echo = agent
             .get(format!("https://localhost:{upstream_port}/via-port"))
             .header(AUTHORIZATION, CLIENT_SUPPLIED)
@@ -847,7 +917,7 @@ async fn end_to_end() {
             .unwrap();
         assert_eq!(
             echo.authorization.as_deref(),
-            Some(format!("Bearer {SECRET}").as_str()),
+            Some(format!("Bearer {SAW}").as_str()),
             "the bundle's credential is injected through the session port"
         );
         assert_eq!(echo.proxy_authorization, None);
@@ -878,14 +948,19 @@ async fn end_to_end() {
                 .map(|s| s["rule"].as_str().unwrap().to_string())
                 .collect()
         };
+        // `curl $TOKENLESS_PROXY/services`: the password from the URL.
         let ask_port = || async {
-            reqwest::get(format!("http://{}/services", port.addr))
+            reqwest::get(format!("{}/services", port.url()))
                 .await
                 .unwrap()
                 .json::<Value>()
                 .await
                 .unwrap()
         };
+        let unasked = reqwest::get(format!("http://{}/services", port.addr))
+            .await
+            .unwrap();
+        assert_eq!(unasked.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(listed(ask_port().await), ["local-upstream"]);
         live.renew_now().await.unwrap();
         assert_eq!(live.current.load().rule_ids.len(), 2);
@@ -924,6 +999,33 @@ async fn end_to_end() {
         )
         .await;
         port.stop();
+
+        // A session revoked under it (cut off by a proxy, or by a person)
+        // is not renewed: that would undo the revocation.
+        let cut = LiveSession::start(
+            launcher.clone(),
+            resolved,
+            MintRequest {
+                bundle: "local-review".into(),
+                ttl_secs: 120,
+                longest: false,
+                request_limit: None,
+                labels: Default::default(),
+                renews: None,
+            },
+        )
+        .await
+        .unwrap();
+        let cut_id = cut.current.load().id;
+        api.post(&format!("/sessions/{cut_id}/revoke"), json!({}))
+            .await;
+        let refused = cut.renew_now().await.unwrap_err().to_string();
+        assert!(
+            refused.contains("409") && refused.contains("revoked"),
+            "{refused}"
+        );
+        assert_eq!(cut.current.load().id, cut_id, "still the revoked one");
+        cut.end().await;
 
         // Self-revocation needs a real session token.
         let bad = launcher
@@ -1095,6 +1197,7 @@ async fn end_to_end() {
             "unmatched_host_policy": "deny",
             "egress": { "block_private": true, "allow": [] },
             "passthrough_hosts": [loopback_target.clone()],
+            "alerts": { "refusals": { "refusals": 3, "window_secs": 600 } },
         })),
     )
     .await;
@@ -1152,6 +1255,52 @@ async fn end_to_end() {
     )
     .await;
 
+    // --- the refusals above raised an alert --------------------------------------
+    eventually(
+        "an alert for the refused session",
+        Duration::from_secs(10),
+        || async {
+            let page = api
+                .get(&format!("/alerts?open=true&session_id={session_id}"))
+                .await;
+            page["items"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|a| a["kind"] == "refusals"))
+        },
+    )
+    .await;
+    let summary = api.get("/alerts/summary").await;
+    let alert = summary["latest"].clone();
+    assert!(
+        summary["open"].as_u64().is_some_and(|n| n >= 1),
+        "{summary}"
+    );
+    assert_eq!(alert["vault_id"], vault_id.as_str(), "{alert}");
+    assert!(alert["dedup_key"].is_null(), "internal: {alert}");
+    let anonymous = api
+        .http
+        .get(format!("{}/alerts", api.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let alert_id = alert["id"].as_str().unwrap();
+    let seen = api
+        .post(&format!("/alerts/{alert_id}/acknowledge"), json!({}))
+        .await;
+    assert!(seen["acknowledged_at"].is_string(), "{seen}");
+    let raised = api.get("/audit?action_prefix=alert.").await;
+    let actions: Vec<&str> = raised["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["action"].as_str())
+        .collect();
+    assert!(
+        actions.contains(&"alert.raised") && actions.contains(&"alert.acknowledge"),
+        "{actions:?}"
+    );
+
     // A service's log: what was done to it and the requests that used it,
     // the API's answers included, and nothing about other services.
     let log = api
@@ -1197,6 +1346,7 @@ async fn end_to_end() {
         "/settings".to_string(),
         "/api-keys".to_string(),
         "/auth/me".to_string(),
+        "/alerts?page_size=100".to_string(),
     ] {
         bodies.push(api.get(&path).await.to_string());
     }
@@ -1264,6 +1414,67 @@ async fn end_to_end() {
             "plaintext secret found on disk"
         );
     }
+
+    // --- a tripwire's decoy cuts its session off everywhere, and alerts --------
+    let wire = api
+        .post(
+            &format!("/vaults/{vault_id}/tripwires"),
+            json!({ "name": "e2e-laptop", "kind": "generic" }),
+        )
+        .await;
+    let decoy = wire["value"].as_str().unwrap().to_string();
+    assert!(
+        wire["plant"].as_array().is_some_and(|p| !p.is_empty()),
+        "{wire}"
+    );
+    let listed = api.get(&format!("/vaults/{vault_id}/tripwires")).await;
+    assert_eq!(listed["items"][0]["name"], "e2e-laptop");
+    assert!(
+        !listed.to_string().contains(&decoy),
+        "listed without the decoy"
+    );
+    let probe = api
+        .post(
+            &format!("/vaults/{vault_id}/sessions"),
+            json!({ "rule_ids": [rule_id], "ttl_secs": 600 }),
+        )
+        .await;
+    let probe_token = probe["token"].as_str().unwrap().to_string();
+    let probe_id = probe["session"]["id"].as_str().unwrap().to_string();
+    // Once the proxy has the tripwire, a request carrying the decoy is refused.
+    eventually("the decoy refused", Duration::from_secs(10), || async {
+        let through = proxied_client(proxy, &probe_token, &[&ca_pem, &upstream.ca_pem]);
+        through
+            .get(format!("https://localhost:{upstream_port}/tripwire"))
+            .header(AUTHORIZATION, format!("Bearer {decoy}"))
+            .send()
+            .await
+            .is_ok_and(|r| r.status() == StatusCode::FORBIDDEN)
+    })
+    .await;
+    eventually(
+        "the tripped session revoked",
+        Duration::from_secs(10),
+        || async { api.get(&format!("/sessions/{probe_id}")).await["revoked_at"].is_string() },
+    )
+    .await;
+    eventually("a tripwire alert", Duration::from_secs(10), || async {
+        let page = api
+            .get(&format!("/alerts?kind=tripwire&session_id={probe_id}"))
+            .await;
+        page["total"] == 1
+    })
+    .await;
+    let listed = api.get(&format!("/vaults/{vault_id}/tripwires")).await;
+    assert!(
+        listed["items"][0]["last_tripped_at"].is_string(),
+        "{listed}"
+    );
+    let raised = api.get("/audit?action_prefix=proxy.tripwire").await;
+    assert!(
+        !raised.to_string().contains(&decoy),
+        "the decoy is never audited"
+    );
 
     // --- revocation reaches the data plane within seconds ----------------------
     api.post(&format!("/sessions/{session_id}/revoke"), json!({}))
