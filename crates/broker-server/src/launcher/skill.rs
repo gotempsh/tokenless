@@ -147,8 +147,10 @@ pub struct Placed {
 /// release, or edited) works, so it is kept without `force` and reported
 /// as [`Installed::Kept`]; Claude Code is still linked to a kept shared
 /// copy. `force` rewrites `SKILL.md` in a folder that holds other files
-/// too, and never deletes them. Returns what was placed with every
-/// failure, so a copy written before a failure is still reported.
+/// too, and never deletes them. When the shared copy cannot be written,
+/// Claude Code still gets one of its own, as there is nothing to link to.
+/// Returns what was placed with every failure, so a copy written before a
+/// failure is still reported.
 pub fn install_for_agents(
     base: &Path,
     claude_code: bool,
@@ -173,12 +175,13 @@ pub fn install_for_agents(
                 path,
                 outcome,
             }),
-            Err(e) => return (placed, vec![e]),
+            Err(e) => failed.push(e),
         }
     }
     if claude_code {
+        let shared_failed = placed.is_empty();
         let shared_current = placed.first().is_some_and(|p| p.outcome != Installed::Kept);
-        match place_for_claude_code(base, copy, force, shared_current) {
+        match place_for_claude_code(base, copy || shared_failed, force, shared_current) {
             Ok(p) => placed.push(p),
             Err(e) => failed.push(e),
         }
@@ -319,7 +322,10 @@ fn place_for_claude_code(
                 same: false,
                 ..
             }
-            | Existing::Link { works: true, .. },
+            | Existing::Link {
+                works: true,
+                same: false,
+            },
             _,
         ) if !force => return Ok(placed(link.join("SKILL.md"), Installed::Kept)),
         (Existing::File, _) if !force => {
@@ -356,8 +362,10 @@ fn place_for_claude_code(
             skill: true,
             same: false,
             ..
-        } | Existing::Link { works: true, .. }
-            | Existing::File
+        } | Existing::Link {
+            works: true,
+            same: false
+        } | Existing::File
     );
     if !matches!(found, Existing::Nothing) {
         remove(&link)?;
@@ -662,6 +670,25 @@ mod tests {
         assert_eq!(placed[1].outcome, Installed::Unchanged, "{placed:?}");
         assert!(same_place(&link, &theirs));
 
+        // With --copy, their link gives way to the copy asked for; what it
+        // points to stays.
+        let placed = installed(home, true, true, false);
+        assert_eq!(placed[1].outcome, Installed::Created, "{placed:?}");
+        assert!(!std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(link.join("SKILL.md")).unwrap(),
+            SKILL_MD
+        );
+        assert_eq!(
+            std::fs::read_to_string(theirs.join("SKILL.md")).unwrap(),
+            SKILL_MD
+        );
+        std::fs::remove_dir_all(&link).unwrap();
+        std::os::unix::fs::symlink(&theirs, &link).unwrap();
+
         // Another version behind it is kept, and --force replaces it.
         std::fs::write(theirs.join("SKILL.md"), "edited").unwrap();
         let placed = installed(home, true, false, false);
@@ -669,6 +696,33 @@ mod tests {
         let placed = installed(home, true, false, true);
         assert_eq!(placed[1].outcome, Installed::Replaced, "{placed:?}");
         assert!(same_place(&link, &home.join(".agents/skills/tokenless")));
+    }
+
+    #[test]
+    fn claude_code_gets_its_own_copy_when_the_shared_one_cannot_be_written() {
+        // `.agents` is a file, so nothing can go under it.
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        std::fs::write(home.join(".agents"), "not a folder").unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+
+        let (placed, failed) = install_for_agents(home, true, false, false);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(placed.len(), 1, "{placed:?}");
+        assert_eq!(placed[0].agents, Agent::ClaudeCode.name());
+        assert_eq!(placed[0].outcome, Installed::Created);
+        assert_eq!(
+            std::fs::read_to_string(home.join(".claude/skills/tokenless/SKILL.md")).unwrap(),
+            SKILL_MD
+        );
+        // Without Claude Code there is only the failure.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join(".agents"), "not a folder").unwrap();
+        let (placed, failed) = install_for_agents(other.path(), false, false, false);
+        assert!(
+            placed.is_empty() && failed.len() == 1,
+            "{placed:?} {failed:?}"
+        );
     }
 
     #[test]
