@@ -130,12 +130,20 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
         "{second}"
     );
     assert!(err.contains("the 'ci-box' profile"), "{err}");
+    // Named after a profile the file has, it takes another name.
+    let (ok, third, err) = tokenless(
+        home.path(),
+        &url,
+        &["tripwire", "add", "--kind", "aws", "--name", "default"],
+    );
+    assert!(ok, "{err}");
+    assert!(third.starts_with("[default-2]\n"), "{third}");
 
     let (ok, out, err) = tokenless(home.path(), &url, &["tripwire", "list", "--json"]);
     assert!(ok, "{err}");
     assert!(!out.contains(&decoy), "never listed: {out}");
     let rows: Vec<Value> = serde_json::from_str(&out).unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     let row = rows.iter().find(|r| r["name"] == "build-runner").unwrap();
     assert_eq!(row["kind"], "aws");
     assert_eq!(row["prefix"], decoy[..8]);

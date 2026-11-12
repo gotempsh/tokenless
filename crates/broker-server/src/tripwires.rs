@@ -55,8 +55,12 @@ pub async fn add(
         let mut text = first.text.clone();
         // Appended to a file that has a default profile already, a second
         // one would break the AWS tools that read it.
-        if kind == TripwireKind::Aws && has_default_profile(aws_credentials().as_deref()) {
-            let profile = profile_name(&created.tripwire.name);
+        let taken = match kind {
+            TripwireKind::Aws => profiles(aws_credentials().as_deref()),
+            _ => Vec::new(),
+        };
+        if taken.iter().any(|p| p == "default") {
+            let profile = free_profile(&created.tripwire.name, &taken);
             text = text.replacen("[default]", &format!("[{profile}]"), 1);
             say(format!(
                 "Your AWS credentials file has a default profile already, so the decoy is the '{profile}' profile."
@@ -86,9 +90,29 @@ fn aws_credentials() -> Option<PathBuf> {
         .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".aws/credentials")))
 }
 
-fn has_default_profile(file: Option<&Path>) -> bool {
-    file.and_then(|f| std::fs::read_to_string(f).ok())
-        .is_some_and(|text| text.lines().any(|l| l.trim() == "[default]"))
+/// The profiles in an AWS credentials file, by their section headers.
+fn profiles(file: Option<&Path>) -> Vec<String> {
+    let Some(text) = file.and_then(|f| std::fs::read_to_string(f).ok()) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.strip_prefix('[')?
+                .strip_suffix(']')
+                .map(|p| p.trim().to_string())
+        })
+        .collect()
+}
+
+/// A profile name for the tripwire that none of `taken` has.
+fn free_profile(name: &str, taken: &[String]) -> String {
+    let base = profile_name(name);
+    let free = |p: &String| !taken.iter().any(|t| t == p);
+    std::iter::once(base.clone())
+        .chain((2..).map(|n| format!("{base}-{n}")))
+        .find(free)
+        .unwrap_or(base)
 }
 
 /// The tripwire's name as an AWS profile name.
@@ -203,6 +227,25 @@ pub async fn remove(
 mod tests {
     use super::*;
     use tokenless_core::ids::{TripwireId, VaultId};
+
+    #[test]
+    fn a_renamed_decoy_never_takes_a_profile_the_file_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("credentials");
+        std::fs::write(
+            &file,
+            "[default]\nx = 1\n\n [prod] \nx = 2\n[ci-box]\n[ci-box-2]\n",
+        )
+        .unwrap();
+        let taken = profiles(Some(&file));
+        assert_eq!(taken, ["default", "prod", "ci-box", "ci-box-2"]);
+        assert_eq!(free_profile("default", &taken), "default-2");
+        assert_eq!(free_profile("prod", &taken), "prod-2");
+        assert_eq!(free_profile("ci box", &taken), "ci-box-3");
+        assert_eq!(free_profile("laptop", &taken), "laptop");
+        assert_eq!(free_profile("!!!", &taken), "backup");
+        assert!(profiles(Some(&dir.path().join("missing"))).is_empty());
+    }
 
     #[test]
     fn kinds_are_named_and_unknown_ones_list_the_rest() {
