@@ -73,8 +73,11 @@ The sessions created from this bundle, with **Revoke** on each live one.
 
 ### Settings
 
-Rename the bundle or change its description, copy its ID, see its
-history, or delete it. **Delete bundle** ends the live sessions started
+Rename the bundle or change its description, set a **request limit**,
+copy its ID, see its history, or delete it. A request limit is the most
+requests each session started from the bundle may make, launcher keys'
+sessions included; whoever starts one may ask for fewer, never more.
+Leave it empty for no limit. **Delete bundle** ends the live sessions started
 from it (proxies refuse them at their next policy refresh), and agents
 can no longer start with it. Its services and their rules stay in the
 vault.

@@ -25,10 +25,36 @@ pub enum PasswordSignIn {
     AdminsOnly,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignInSettings {
     #[serde(default)]
     pub password_sign_in: PasswordSignIn,
+    /// A sign-in not used for this long ends, before its absolute expiry.
+    /// `None` turns idle expiry off. Settings saved before it existed get
+    /// the default.
+    #[serde(default = "default_idle_timeout")]
+    pub idle_timeout_secs: Option<u64>,
+}
+
+/// Two hours: a console tab left overnight or a forgotten CLI sign-in
+/// ends, while a working day of use does not.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 2 * 3600;
+/// The shortest idle timeout: shorter would sign people out mid-task.
+pub const MIN_IDLE_TIMEOUT_SECS: u64 = 5 * 60;
+/// The longest idle timeout.
+pub const MAX_IDLE_TIMEOUT_SECS: u64 = 30 * 24 * 3600;
+
+fn default_idle_timeout() -> Option<u64> {
+    Some(DEFAULT_IDLE_TIMEOUT_SECS)
+}
+
+impl Default for SignInSettings {
+    fn default() -> Self {
+        Self {
+            password_sign_in: PasswordSignIn::default(),
+            idle_timeout_secs: default_idle_timeout(),
+        }
+    }
 }
 
 /// People in `group` at the provider get `role`. A person in several

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 name: tokenless
-description: Use when you need to call an API or run a tool that wants an API key or token and TOKENLESS_PROXY is set in your environment, when a tool served through the tokenless MCP gateway is refused, or when asked to run a command with secrets from a tokenless vault. Also use when TOKENLESS_PROXY is not set and the user pastes an API key or token, asks you to put one in a .env file, a config file or a shell profile, or a tool fails for want of one; then offer to keep the key in a tokenless vault instead and set it up with them, starting from `tokenless status`, with the key handed over in a file or the console so you never see it. Explains how to see which services you can reach, what to give a tool that insists on a key, how placeholders and `tokenless exec NAME=cb://<service>/<field>` work when a service has them, what the proxy's 401, 403, 407 and 429 answers mean, and how to move a key into a vault.
+description: Use when you need to call an API or run a tool that wants an API key or token and TOKENLESS_PROXY is set in your environment, when a tool served through the tokenless MCP gateway is refused, or when asked to run a command with secrets from a tokenless vault. Also use when TOKENLESS_PROXY is not set and the user pastes an API key or token, asks you to put one in a .env file, a config file or a shell profile, or a tool fails for want of one; then offer to keep the key in a tokenless vault instead and set it up with them, starting from `tokenless status`, with the key handed over in a file or the console so you never see it, or when asked to connect this machine to a team's tokenless server. Explains how to see which services you can reach, what to give a tool that insists on a key, how placeholders and `tokenless exec NAME=cb://<service>/<field>` work when a service has them, what the proxy's 401, 403, 407 and 429 answers mean, and how to move a key into a vault.
 ---
 
 # Working behind tokenless
@@ -17,7 +17,8 @@ You are behind the broker when `TOKENLESS_PROXY` is set. Then
 `HTTPS_PROXY` points at a local session port and the broker's CA is
 already trusted (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
 `REQUESTS_CA_BUNDLE`, ...). Leave these variables alone. Unsetting or
-overriding them only makes your requests fail.
+overriding them only makes your requests fail. The proxy URL holds the
+port's password: don't print it or copy it anywhere.
 
 When `TOKENLESS_PROXY` isn't set, you aren't behind it yet: see section 6
 whenever a key comes up.
@@ -209,8 +210,12 @@ tokenless status --json
 
 The steps it leads through:
 
-1. **A control plane.** The person starts it in a terminal of their own
-   and keeps it running: it prints the admin password once, which you must
+1. **A control plane.** One serves a whole team, so first find out
+   whether there is one: `TOKENLESS_URL` is set, `status` finds one
+   answering, or the person says their team runs tokenless on a server.
+   Then don't start another; connect to it as in "On a team's server"
+   below. Otherwise the person starts one in a terminal of their own and
+   keeps it running: it prints the admin password once, which you must
    not see. Its data directory holds the root key, so keep it out of any
    repository. Then they sign in, also in their own terminal, since it
    asks for the password.
@@ -277,6 +282,50 @@ The steps it leads through:
    `tokenless run --vault personal --bundle my-agent -- claude` (or the
    command that starts you). Then `TOKENLESS_PROXY` is set and the
    sections above apply.
+
+### On a team's server
+
+When the control plane runs on another machine, the vaults, services and
+people are there. This machine only signs in to it and runs a proxy of
+its own.
+
+- **Point at it.** The person adds
+  `export TOKENLESS_URL=https://tokenless.example.com` (their server's
+  name) to their shell profile, so every command uses it without
+  `--server`. Use the `https://` name the console is on, not an IP or port
+  8080: signing in only works over HTTPS. When `status` finds nothing
+  answering there, tell them the address it tried and stop; that server
+  isn't yours to start.
+- **Sign in as themselves**, in their own terminal:
+  `tokenless login --username <their username>`. Without `--username` it
+  signs in as `admin`. An account that only uses single sign-on has no
+  password for `login`: they add services in the console, and start you
+  with a session token from the bundle's page
+  (`TOKENLESS_SESSION_TOKEN`, section 3).
+- **Services** may already be there, added once for the team. When
+  `status` reports services and an access bundle, skip step 2.
+  `tokenless bundle list --json` shows each bundle and the services it
+  reaches, and `service list`, `vault list` and `session list` the rest. When the
+  one you need is missing, they add it (step 2) to a vault they can
+  write, or ask an admin.
+- **A proxy on every machine**, step 3, even with a shared server:
+  requests leave through this machine's own proxy. `proxy add` is for
+  admins. Anyone else gets "only an admin can see proxies" from `status`
+  and asks an admin for a join token (**Proxies → Add a proxy** in the
+  console). They run it in their own terminal: it works once, but on any
+  machine, for an hour. Port 8443 on the server's name is where proxies
+  connect.
+
+  ```sh
+  tokenless node join --control-url https://tokenless.example.com:8443 \
+    --token '<the join token>' --name <this machine> --state ~/.tokenless/node.json
+  tokenless node run --state ~/.tokenless/node.json
+  ```
+
+  On a shared server `status` reports the proxy connected when any
+  machine's is. This machine has its own when `~/.tokenless/node.json`
+  exists and `node run` is running; `tokenless run` says so when no proxy
+  answers here.
 
 A command that has no terminal to ask in says so and what to do instead,
 and every other refusal names what is missing (`run tokenless login`, no

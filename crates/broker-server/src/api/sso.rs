@@ -136,7 +136,8 @@ pub async fn callback(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let flow = cookie_value(&headers, sso_flow_from_cookie_header);
-    match s.control.sso.complete(query, flow).await {
+    let user_agent = super::user_agent(&headers);
+    match s.control.sso.complete(query, flow, user_agent).await {
         Ok(SsoCompleted::SignedIn { login, return_to }) => redirect(
             &return_to,
             &[

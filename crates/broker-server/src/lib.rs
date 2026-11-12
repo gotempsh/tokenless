@@ -151,7 +151,9 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
         identity: store.clone(),
         sso: store.clone(),
         audit_export: store.clone(),
-        nodes: store,
+        nodes: store.clone(),
+        alerts: store.clone(),
+        tripwires: store,
     };
     let control = Arc::new(
         ControlPlane::new(

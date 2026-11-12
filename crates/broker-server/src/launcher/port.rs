@@ -8,6 +8,13 @@
 //! sent is dropped and replaced, then the connection becomes a byte relay,
 //! which is all a `CONNECT` tunnel needs. The proxy refuses plain-HTTP
 //! requests itself, so the port does not need to understand them.
+//!
+//! Loopback alone lets every process on the machine, any user's, use the
+//! session. So the port also asks for a password made up when it starts
+//! ([`PortPassword`]), which `run` hands the agent inside its proxy URL
+//! (`HTTPS_PROXY=http://tokenless:<password>@127.0.0.1:<port>`). HTTP
+//! clients send credentials from a proxy URL by themselves; a process that
+//! can't read the agent's environment can't use the port.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,8 +28,85 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
+use zeroize::Zeroizing;
 
 use super::LauncherError;
+
+/// The password of a session port: 32 random bytes as hex, made up when the
+/// port starts and gone when it stops. Never logged, never sent on.
+pub struct PortPassword(Zeroizing<String>);
+
+impl std::fmt::Debug for PortPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PortPassword(***)")
+    }
+}
+
+impl PortPassword {
+    /// The user name in the proxy URL; only the password is checked.
+    pub const USER: &'static str = "tokenless";
+
+    pub fn generate() -> Self {
+        let mut bytes = Zeroizing::new([0u8; 32]);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, bytes.as_mut());
+        Self(Zeroizing::new(hex::encode(bytes.as_ref())))
+    }
+
+    /// Whether `presented` is this password, in time that doesn't depend on
+    /// where they differ.
+    fn matches(&self, presented: &[u8]) -> bool {
+        let expected = self.0.as_bytes();
+        expected.len() == presented.len()
+            && expected
+                .iter()
+                .zip(presented)
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+    }
+}
+
+/// The URL agents use for the port: with its password when it has one.
+pub fn port_url(addr: SocketAddr, password: Option<&PortPassword>) -> String {
+    match password {
+        Some(p) => format!("http://{}:{}@{addr}", PortPassword::USER, p.0.as_str()),
+        None => format!("http://{addr}"),
+    }
+}
+
+/// The password in a `Basic` credentials header named `header` (lowercase,
+/// with its colon), if the head has one.
+fn presented_password(head: &[u8], header: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    head.split(|b| *b == b'\n').skip(1).find_map(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.len() < header.len() || !line[..header.len()].eq_ignore_ascii_case(header) {
+            return None;
+        }
+        let value = std::str::from_utf8(&line[header.len()..]).ok()?.trim();
+        let (scheme, encoded) = value.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("basic") {
+            return None;
+        }
+        let decoded = Zeroizing::new(STANDARD.decode(encoded.trim()).ok()?);
+        let colon = decoded.iter().position(|b| *b == b':')?;
+        Some(Zeroizing::new(decoded[colon + 1..].to_vec()))
+    })
+}
+
+/// Whether the head carries the port's password: as proxy credentials, or,
+/// for a request to the port itself (`curl $TOKENLESS_PROXY/services`), as
+/// ordinary ones.
+fn admitted(head: &[u8], password: &PortPassword, to_the_port: bool) -> bool {
+    let headers: &[&[u8]] = if to_the_port {
+        &[b"proxy-authorization:", b"authorization:"]
+    } else {
+        &[b"proxy-authorization:"]
+    };
+    headers
+        .iter()
+        .any(|h| presented_password(head, h).is_some_and(|presented| password.matches(&presented)))
+}
+
+const REFUSED: &str = "tokenless session port: this port needs the password tokenless run put in HTTPS_PROXY, and this client did not send it. Start the program from tokenless run (or source the exports of tokenless session start); for a client that can't send proxy credentials, start the port with --no-port-password\n";
 
 /// Largest request head accepted before the port gives up on a client.
 pub const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -133,6 +217,7 @@ async fn handle(
     upstream: Arc<str>,
     auth: Arc<ArcSwap<String>>,
     services: Arc<ArcSwap<String>>,
+    password: Option<Arc<PortPassword>>,
 ) {
     let (head, rest) = match tokio::time::timeout(HEAD_TIMEOUT, read_head(&mut client)).await {
         Ok(Ok(parts)) => parts,
@@ -148,7 +233,27 @@ async fn handle(
         }
         Err(_) => return,
     };
-    if asks_for_services(&head) {
+    let to_the_port = asks_for_services(&head);
+    if let Some(password) = &password {
+        if !admitted(&head, password, to_the_port) {
+            debug!(
+                to_the_port,
+                "session port: refused a client without the port's password"
+            );
+            let (status, challenge) = if to_the_port {
+                ("401 Unauthorized", "WWW-Authenticate")
+            } else {
+                ("407 Proxy Authentication Required", "Proxy-Authenticate")
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\n{challenge}: Basic realm=\"tokenless session port\"\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{REFUSED}",
+                REFUSED.len()
+            );
+            let _ = client.write_all(response.as_bytes()).await;
+            return;
+        }
+    }
+    if to_the_port {
         let listing = services.load_full();
         reply_json(&mut client, &listing).await;
         return;
@@ -343,6 +448,7 @@ fn proxy_answer(address: &str, answer: &[u8]) -> Result<(), LauncherError> {
 /// A running session port.
 pub struct SessionPort {
     pub addr: SocketAddr,
+    password: Option<Arc<PortPassword>>,
     task: JoinHandle<()>,
 }
 
@@ -352,11 +458,13 @@ impl SessionPort {
     /// each connection arrives. `services` holds the JSON served at
     /// [`SERVICES_PATH`]: what the session reaches, never a secret; like
     /// `auth`, it changes when a renewal brings a session with other rules.
+    /// With `password`, a client that doesn't send it is refused.
     pub async fn start(
         listen: SocketAddr,
         upstream: &str,
         auth: Arc<ArcSwap<String>>,
         services: Arc<ArcSwap<String>>,
+        password: Option<PortPassword>,
     ) -> Result<Self, LauncherError> {
         check_listen(listen)?;
         let listener = TcpListener::bind(listen)
@@ -368,6 +476,8 @@ impl SessionPort {
             .local_addr()
             .map_err(LauncherError::io("reading the session port address"))?;
         let upstream: Arc<str> = Arc::from(upstream);
+        let password = password.map(Arc::new);
+        let required = password.clone();
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let task = tokio::spawn(async move {
             loop {
@@ -380,8 +490,9 @@ impl SessionPort {
                         let upstream = upstream.clone();
                         let auth = auth.clone();
                         let services = services.clone();
+                        let required = required.clone();
                         tokio::spawn(async move {
-                            handle(client, upstream, auth, services).await;
+                            handle(client, upstream, auth, services, required).await;
                             drop(permit);
                         });
                     }
@@ -392,7 +503,16 @@ impl SessionPort {
                 }
             }
         });
-        Ok(Self { addr, task })
+        Ok(Self {
+            addr,
+            password,
+            task,
+        })
+    }
+
+    /// What agents set `HTTPS_PROXY` to: the port, with its password.
+    pub fn url(&self) -> String {
+        port_url(self.addr, self.password.as_deref())
     }
 
     pub fn stop(&self) {
@@ -577,6 +697,7 @@ mod tests {
             "127.0.0.1:1",
             auth,
             Arc::new(ArcSwap::from_pointee(String::new())),
+            None,
         )
         .await
         .err()
@@ -609,6 +730,7 @@ mod tests {
             &upstream_addr,
             auth.clone(),
             Arc::new(ArcSwap::from_pointee(String::new())),
+            None,
         )
         .await
         .unwrap();
@@ -643,6 +765,7 @@ mod tests {
             "127.0.0.1:1",
             auth,
             services.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -679,6 +802,7 @@ mod tests {
             &free.to_string(),
             auth,
             Arc::new(ArcSwap::from_pointee(String::new())),
+            None,
         )
         .await
         .unwrap();
@@ -691,5 +815,109 @@ mod tests {
         client.read_to_string(&mut got).await.unwrap();
         assert!(got.starts_with("HTTP/1.1 502"), "{got}");
         assert!(got.contains("cannot reach the proxy"), "{got}");
+    }
+
+    fn basic(user: &str, password: &str) -> String {
+        format!("Basic {}", STANDARD.encode(format!("{user}:{password}")))
+    }
+
+    /// With a password, a client without it gets 407 (401 for the port's
+    /// own `/services`) and nothing reaches the proxy; with it, the request
+    /// is relayed and the password goes no further than the port.
+    #[tokio::test]
+    async fn asks_for_its_password() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap().to_string();
+        let fake_proxy = tokio::spawn(async move {
+            let (mut conn, _) = upstream.accept().await.unwrap();
+            let (head, _) = read_head(&mut conn).await.unwrap();
+            conn.write_all(b"HTTP/1.1 200 Connection established\r\n\r\npong")
+                .await
+                .unwrap();
+            String::from_utf8(head).unwrap()
+        });
+        let password = PortPassword::generate();
+        let secret = password.0.to_string();
+        let port = SessionPort::start(
+            "127.0.0.1:0".parse().unwrap(),
+            &upstream_addr,
+            Arc::new(ArcSwap::from_pointee(proxy_authorization("v4.public.t"))),
+            Arc::new(ArcSwap::from_pointee(r#"{"services":[]}"#.to_string())),
+            Some(password),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            port.url(),
+            format!("http://tokenless:{secret}@{}", port.addr)
+        );
+        let send = |head: String| async move {
+            let mut client = TcpStream::connect(port.addr).await.unwrap();
+            client.write_all(head.as_bytes()).await.unwrap();
+            let mut got = String::new();
+            client.read_to_string(&mut got).await.unwrap();
+            got
+        };
+        let connect = |auth: Option<String>| {
+            let header = auth
+                .map(|a| format!("Proxy-Authorization: {a}\r\n"))
+                .unwrap_or_default();
+            format!(
+                "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n{header}\r\n"
+            )
+        };
+        for refused in [
+            None,
+            Some(basic("tokenless", "wrong")),
+            Some(basic("tokenless", &secret[..63])),
+            Some(format!("Bearer {secret}")),
+            Some(basic(&secret, "")),
+        ] {
+            let got = send(connect(refused.clone())).await;
+            assert!(got.starts_with("HTTP/1.1 407"), "{refused:?}: {got}");
+            assert!(got.contains("Proxy-Authenticate: Basic"), "{got}");
+            assert!(got.contains("--no-port-password"), "{got}");
+        }
+        // The user name is not checked, and the header name is any case.
+        let got = send(
+            connect(Some(basic("anyone", &secret)))
+                .replace("Proxy-Authorization", "proxy-authorization"),
+        )
+        .await;
+        assert!(got.ends_with("pong"), "{got}");
+        let forwarded = fake_proxy.await.unwrap();
+        assert!(
+            !forwarded.contains(&secret),
+            "the password went on to the proxy: {forwarded}"
+        );
+        assert!(
+            forwarded.contains(&proxy_authorization("v4.public.t")),
+            "{forwarded}"
+        );
+
+        let services = |auth: &str| format!("GET /services HTTP/1.1\r\nHost: x\r\n{auth}\r\n");
+        let got = send(services("")).await;
+        assert!(
+            got.starts_with("HTTP/1.1 401") && got.contains("WWW-Authenticate: Basic"),
+            "{got}"
+        );
+        let got = send(services(&format!(
+            "Authorization: {}\r\n",
+            basic("tokenless", &secret)
+        )))
+        .await;
+        assert!(got.ends_with(r#"{"services":[]}"#), "{got}");
+    }
+
+    #[test]
+    fn the_password_never_prints() {
+        let password = PortPassword::generate();
+        assert_eq!(password.0.len(), 64);
+        assert_eq!(format!("{password:?}"), "PortPassword(***)");
+        assert_ne!(PortPassword::generate().0.as_str(), password.0.as_str());
+        assert_eq!(
+            port_url("127.0.0.1:4000".parse().unwrap(), None),
+            "http://127.0.0.1:4000"
+        );
     }
 }

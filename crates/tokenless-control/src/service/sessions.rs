@@ -21,9 +21,11 @@ use tokenless_core::template::{builtin_mcp_path, ServiceKind};
 use super::{Caller, Guard};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{AccessBundle, Page, PageRequest, ProxySession, SessionBundle};
+use crate::model::{
+    AccessBundle, LaunchScope, Page, PageRequest, ProxySession, SessionBundle, SessionListing,
+};
 use crate::notify::PolicyNotifier;
-use crate::store::{CredentialStore, NodeStore, PolicyStore};
+use crate::store::{CredentialStore, IdentityStore, NodeStore, PolicyStore};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MintSession {
@@ -68,6 +70,11 @@ pub struct MintSession {
     /// expires. For access promised for a set time.
     #[serde(default)]
     pub strict: bool,
+    /// The session this one replaces, for a caller that renews on a
+    /// timer. Refused when that session was revoked: a session cut off,
+    /// or ended by a person, is not replaced without anyone looking.
+    #[serde(default)]
+    pub renews: Option<SessionId>,
 }
 
 /// Which binding a session is minted for: the workload's id and which start
@@ -141,6 +148,8 @@ pub struct SessionDiscovery {
 
 pub struct SessionService {
     policy: Arc<dyn PolicyStore>,
+    /// Where launcher keys are, when there are accounts.
+    identity: Option<Arc<dyn IdentityStore>>,
     credentials: Arc<dyn CredentialStore>,
     nodes: Arc<dyn NodeStore>,
     keys: Arc<KeyRing>,
@@ -159,12 +168,20 @@ impl SessionService {
     ) -> Self {
         Self {
             policy,
+            identity: None,
             credentials,
             nodes,
             keys,
             guard,
             notifier,
         }
+    }
+
+    /// Checks a launcher key's sessions against the keys in `identity`.
+    #[must_use]
+    pub fn with_identity(mut self, identity: Arc<dyn IdentityStore>) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     /// A session minted for a node puts its credentials on that node: a
@@ -178,6 +195,10 @@ impl SessionService {
         node_id: &NodeId,
     ) -> Result<(), ControlError> {
         self.guard.check(caller, Action::NodeManage, None).await?;
+        self.check_node_live(node_id).await
+    }
+
+    async fn check_node_live(&self, node_id: &NodeId) -> Result<(), ControlError> {
         let node = self
             .nodes
             .get_node(node_id)
@@ -201,15 +222,26 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(vault_id))
             .await?;
+        let req = match &caller.launch {
+            Some(scope) => launch_request(caller.actor(), scope, req)?,
+            None => req,
+        };
         if let Some(node_id) = &req.node_id {
-            self.check_node_target(caller, node_id).await?;
+            match &caller.launch {
+                // Whoever created the key chose the proxy, with the right to.
+                Some(_) => self.check_node_live(node_id).await?,
+                None => self.check_node_target(caller, node_id).await?,
+            }
         }
         let vault = self
             .policy
             .get_vault(vault_id)
             .await?
             .ok_or_else(|| ControlError::not_found("vault", vault_id))?;
-        let (mut rule_ids, bundle, skipped) = match &req.bundle {
+        if let Some(previous) = &req.renews {
+            self.check_renewable(vault_id, previous).await?;
+        }
+        let (mut rule_ids, bundle, skipped, bundle_limit) = match &req.bundle {
             Some(_) if !req.rule_ids.is_empty() => {
                 return Err(ControlError::validation(
                     "give either rule_ids or a bundle, not both",
@@ -217,6 +249,18 @@ impl SessionService {
             }
             Some(reference) => {
                 let bundle = self.find_bundle(vault_id, reference).await?;
+                if let Some(scope) = &caller.launch {
+                    if bundle.id != scope.bundle_id {
+                        return Err(ControlError::Forbidden {
+                            reason: format!(
+                                "{} is a launcher key for access bundle {}, not '{}'",
+                                caller.actor(),
+                                scope.bundle_id,
+                                bundle.name
+                            ),
+                        });
+                    }
+                }
                 let (enabled, skipped) = self.enabled_rules_of(&bundle).await?;
                 if enabled.is_empty() {
                     return Err(ControlError::validation(format!(
@@ -228,9 +272,15 @@ impl SessionService {
                     id: bundle.id,
                     name: bundle.name,
                 };
-                (enabled, Some(reference), skipped)
+                (enabled, Some(reference), skipped, bundle.request_limit)
             }
-            None => (req.rule_ids.clone(), None, 0),
+            None => (req.rule_ids.clone(), None, 0, None),
+        };
+        // The bundle's limit is the most a session of it gets; the request
+        // may ask for fewer.
+        let request_limit = match (req.request_limit, bundle_limit) {
+            (Some(asked), Some(cap)) => Some(asked.min(cap)),
+            (asked, cap) => asked.or(cap),
         };
         rule_ids.sort();
         rule_ids.dedup();
@@ -259,6 +309,13 @@ impl SessionService {
             req.ttl_secs
                 .unwrap_or(DEFAULT_SESSION_TTL_SECS.min(max_ttl))
         };
+        // A launcher key's longest was checked against Settings when it was
+        // made; Settings may allow less now, and the key keeps working.
+        let ttl = if caller.launch.is_some() {
+            ttl.min(max_ttl)
+        } else {
+            ttl
+        };
         let ttl = match req.not_after {
             Some(not_after) => capped_ttl(ttl, not_after, now)?,
             None => ttl,
@@ -267,7 +324,7 @@ impl SessionService {
             Scope::for_vault(&vault.id),
             rule_ids.clone(),
             ttl,
-            req.request_limit,
+            request_limit,
             req.labels.clone(),
             now,
             max_ttl,
@@ -289,7 +346,7 @@ impl SessionService {
             rule_ids,
             bundle,
             labels: req.labels,
-            request_limit: req.request_limit,
+            request_limit,
             node_id: claims.aud,
             created_by: caller.actor().to_string(),
             created_at: claims.iat,
@@ -328,12 +385,71 @@ impl SessionService {
         self.policy
             .insert_session(session.clone(), &[event])
             .await?;
+        if caller.launch.is_some() {
+            self.unless_key_revoked(caller, &session).await?;
+        }
         // A limited session is announced to every node; one minted for a
         // node may need rules a scoped node does not hold yet.
         if session.request_limit.is_some() || session.node_id.is_some() {
             self.notifier.bump_sessions();
         }
         Ok(MintedSession { token, session })
+    }
+
+    /// Ends `session`, just minted by a launcher key, if the key has been
+    /// revoked since it signed in. Checked after the session is stored: a
+    /// revoke either finds it among the key's sessions or is seen here.
+    async fn unless_key_revoked(
+        &self,
+        caller: &Caller,
+        session: &ProxySession,
+    ) -> Result<(), ControlError> {
+        let Some(identity) = &self.identity else {
+            return Ok(());
+        };
+        let prefix = caller.actor().strip_prefix("api_key:").unwrap_or_default();
+        let key = identity.get_api_key_by_prefix(prefix).await?;
+        if key.as_ref().is_some_and(|k| k.revoked_at.is_none()) {
+            return Ok(());
+        }
+        let event = AuditEvent::new(caller.actor(), "session.revoke", AuditOutcome::Success)
+            .vault(session.vault_id)
+            .target(format!("session:{}", session.id))
+            .detail("reason", "launcher key revoked")
+            .detail("launcher_key", prefix.to_string());
+        self.policy
+            .revoke_session(&session.id, Utc::now(), &[event])
+            .await?;
+        self.notifier.bump_sessions();
+        Err(ControlError::Unauthenticated {
+            reason: "API key has been revoked".into(),
+        })
+    }
+
+    /// A renewal replaces a session of the same vault that was not revoked.
+    async fn check_renewable(
+        &self,
+        vault_id: &VaultId,
+        previous: &SessionId,
+    ) -> Result<(), ControlError> {
+        let session = self
+            .policy
+            .get_session(previous)
+            .await?
+            .filter(|s| &s.vault_id == vault_id)
+            .ok_or_else(|| {
+                ControlError::validation(format!(
+                    "session {previous} is not a session of vault {vault_id}, so it can't be renewed"
+                ))
+            })?;
+        match session.revoked_at {
+            Some(at) => Err(ControlError::Conflict {
+                message: format!(
+                    "session {previous} was revoked at {at}, so it is not renewed; once you have looked at why, start a new one"
+                ),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The lifetimes a caller allowed to mint in the vault may choose from.
@@ -353,28 +469,12 @@ impl SessionService {
         })
     }
 
-    /// `reference` is a bundle id or, failing that, a name in the vault.
     async fn find_bundle(
         &self,
         vault_id: &VaultId,
         reference: &str,
     ) -> Result<AccessBundle, ControlError> {
-        let reference = reference.trim();
-        let by_id = match reference.parse::<BundleId>() {
-            Ok(id) => self.policy.get_bundle(&id).await?,
-            Err(_) => None,
-        };
-        let found = match by_id {
-            Some(b) => Some(b),
-            None => self.policy.get_bundle_by_name(vault_id, reference).await?,
-        };
-        match found {
-            Some(b) if &b.vault_id == vault_id => Ok(b),
-            _ => Err(ControlError::NotFound {
-                entity: "access_bundle",
-                id: format!("{reference}' in vault '{vault_id}"),
-            }),
-        }
+        super::bundles::find_bundle(self.policy.as_ref(), vault_id, reference).await
     }
 
     /// The bundle's enabled rules, and how many disabled ones were skipped.
@@ -412,6 +512,17 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(&session.vault_id))
             .await?;
+        // A launcher key only starts sessions: relabelling one, its own
+        // included, would let it drop the labels it stamps on them.
+        if let Some(scope) = &caller.launch {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is a launcher key: it only starts sessions from access bundle {}, so it may not change a session's labels",
+                    caller.actor(),
+                    scope.bundle_id
+                ),
+            });
+        }
         validate_labels(&labels)?;
         let mut event = AuditEvent::new(
             caller.actor(),
@@ -613,10 +724,13 @@ impl SessionService {
             .ok_or_else(|| ControlError::not_found("session", id))
     }
 
+    /// Newest first; only the live ones (neither revoked nor expired)
+    /// when `active`.
     pub async fn list(
         &self,
         caller: &Caller,
         vault_id: &VaultId,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         self.guard
@@ -624,7 +738,13 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(vault_id), None, page)
+            .list_sessions(
+                Some(vault_id),
+                None,
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
 
@@ -633,6 +753,7 @@ impl SessionService {
     pub async fn list_all(
         &self,
         caller: &Caller,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let vault = caller.principal.vault;
@@ -641,7 +762,13 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(vault.as_ref(), None, page)
+            .list_sessions(
+                vault.as_ref(),
+                None,
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
 
@@ -651,6 +778,7 @@ impl SessionService {
         &self,
         caller: &Caller,
         bundle_id: &BundleId,
+        listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
         let bundle = self
@@ -663,9 +791,73 @@ impl SessionService {
             .await?;
         Ok(self
             .policy
-            .list_sessions(Some(&bundle.vault_id), Some(bundle_id), page)
+            .list_sessions(
+                Some(&bundle.vault_id),
+                Some(bundle_id),
+                listing.active.then(Utc::now),
+                listing.after.as_ref(),
+                page,
+            )
             .await?)
     }
+}
+
+/// The request a launcher key's session is minted from: the key's bundle
+/// and limits, whatever the request asks for beyond them. It may ask for
+/// less (a shorter lifetime, fewer requests), never for more.
+fn launch_request(
+    actor: &str,
+    scope: &LaunchScope,
+    mut req: MintSession,
+) -> Result<MintSession, ControlError> {
+    let refuse = |what: String| ControlError::Forbidden {
+        reason: format!(
+            "{actor} is a launcher key for access bundle {}: {what}",
+            scope.bundle_id
+        ),
+    };
+    if !req.rule_ids.is_empty() {
+        return Err(refuse(
+            "it starts sessions from its bundle, not from rules".into(),
+        ));
+    }
+    if req.binding.is_some() {
+        return Err(refuse("it can't start sessions for a binding".into()));
+    }
+    // A name is checked against the key's bundle once it is found.
+    if req.bundle.is_none() {
+        req.bundle = Some(scope.bundle_id.to_string());
+    }
+    if let (Some(asked), Some(pinned)) = (&req.node_id, &scope.node_id) {
+        if asked != pinned {
+            return Err(refuse(format!(
+                "its sessions only work through proxy {pinned}, not {asked}"
+            )));
+        }
+    }
+    if req.node_id.is_some() && scope.node_id.is_none() {
+        return Err(refuse(
+            "it can't choose a proxy; pin one when creating the key".into(),
+        ));
+    }
+    req.node_id = scope.node_id;
+    let ttl = if req.longest {
+        scope.max_ttl_secs
+    } else {
+        req.ttl_secs
+            .unwrap_or(DEFAULT_SESSION_TTL_SECS)
+            .min(scope.max_ttl_secs)
+    };
+    req.longest = false;
+    req.ttl_secs = Some(ttl);
+    req.request_limit = match (req.request_limit, scope.request_limit) {
+        (Some(asked), Some(cap)) => Some(asked.min(cap)),
+        (asked, cap) => asked.or(cap),
+    };
+    for (k, v) in &scope.labels {
+        req.labels.insert(k.clone(), v.clone());
+    }
+    Ok(req)
 }
 
 /// `ttl_secs` shortened so the session ends by `not_after`. Whole seconds,
@@ -767,6 +959,7 @@ mod tests {
             not_after: Some(not_after),
             rule_not_after: Default::default(),
             strict: false,
+            renews: None,
         }
     }
 

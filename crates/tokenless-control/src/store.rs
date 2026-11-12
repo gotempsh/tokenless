@@ -16,17 +16,18 @@ use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
 use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, Role};
 use tokenless_core::ids::{
-    ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId, OidcProviderId, RuleId,
-    SessionId, UserId, VariableId, VaultId,
+    AlertId, ApiKeyId, AuditDestinationId, BundleId, CredentialId, InviteId, NodeId,
+    OidcProviderId, RuleId, SessionId, SignInId, TripwireId, UserId, VariableId, VaultId,
 };
 use tokenless_core::substitution::Substitution;
 use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite, JoinTokenRecord,
-    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, Settings, SignInSettings,
-    StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion,
+    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
+    JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
+    Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User, Variable, Vault,
+    VaultDeletion,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -185,7 +186,7 @@ pub trait PolicyStore: Send + Sync {
     async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
     async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
-    /// Deletes the vault, its credentials, rules and bundles, and revokes
+    /// Deletes the vault, its credentials, rules, bundles and tripwires, and revokes
     /// at `at` the API keys bound to it and its unrevoked sessions that may
     /// still carry traffic (expiring after
     /// [`open_traffic_horizon(at)`](tokenless_core::session::open_traffic_horizon)),
@@ -280,12 +281,17 @@ pub trait PolicyStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     async fn get_session(&self, id: &SessionId) -> Result<Option<ProxySession>, StoreError>;
-    /// Newest first; every vault when `vault_id` is `None`, and only those
-    /// minted from `bundle_id` when it is given.
+    /// Newest first, ties by id; every vault when `vault_id` is `None`,
+    /// only those minted from `bundle_id` when it is given, only those
+    /// neither revoked nor expired at `active_at` when it is given, and
+    /// only those after `after` in that order when it is given (`total`
+    /// counts those too).
     async fn list_sessions(
         &self,
         vault_id: Option<&VaultId>,
         bundle_id: Option<&BundleId>,
+        active_at: Option<DateTime<Utc>>,
+        after: Option<&SessionCursor>,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, StoreError>;
     /// Returns false if it was already revoked. `NotFound` if missing.
@@ -319,6 +325,15 @@ pub trait PolicyStore: Send + Sync {
         &self,
         node: &NodeId,
         now: DateTime<Utc>,
+    ) -> Result<Vec<ProxySession>, StoreError>;
+    /// Sessions minted for `node` that were live at some moment from
+    /// `from` to `to`: created by `to`, and neither expired nor revoked by
+    /// `from`. Revoked ones included, ordered by id.
+    async fn list_sessions_for_node_between(
+        &self,
+        node: &NodeId,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
     ) -> Result<Vec<ProxySession>, StoreError>;
 
     async fn get_settings(&self) -> Result<Settings, StoreError>;
@@ -421,13 +436,15 @@ pub trait IdentityStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     /// Sets (`Some`) or removes (`None`) a user's encrypted authenticator
-    /// secret, with the last TOTP step it accepted. `NotFound` if the user
-    /// is missing.
+    /// secret, with the last TOTP step it accepted, and deletes the user's
+    /// UI sessions except `keep_session`, in one step. `NotFound` if the
+    /// user is missing.
     async fn set_user_totp(
         &self,
         id: &UserId,
         secret_enc: Option<Vec<u8>>,
         last_step: Option<u64>,
+        keep_session: Option<&str>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
 
@@ -478,12 +495,56 @@ pub trait IdentityStore: Send + Sync {
         token_hash: &str,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    async fn delete_expired_ui_sessions(&self, now: DateTime<Utc>) -> Result<u64, StoreError>;
+    /// Records that the session was used at `at`. No audit: it runs on
+    /// sign-in use, throttled by the caller. A missing session is ignored.
+    async fn touch_ui_session(&self, token_hash: &str, at: DateTime<Utc>)
+        -> Result<(), StoreError>;
+    /// The user's sign-ins that have not expired at `now` and, with
+    /// `idle_since`, were used since then; newest first.
+    async fn list_ui_sessions(
+        &self,
+        user_id: &UserId,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+        page: PageRequest,
+    ) -> Result<Page<UiSession>, StoreError>;
+    /// Deletes the user's sign-in `id`. Returns false, recording nothing,
+    /// when the user has no such sign-in.
+    async fn delete_user_ui_session(
+        &self,
+        user_id: &UserId,
+        id: &SignInId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Deletes the user's sign-ins except `keep_session` (a token hash);
+    /// returns how many.
+    async fn delete_user_ui_sessions(
+        &self,
+        user_id: &UserId,
+        keep_session: Option<&str>,
+        audit: &[AuditEvent],
+    ) -> Result<u64, StoreError>;
+    /// Deletes sessions past their expiry at `now` and, with `idle_since`,
+    /// those not used since then; returns how many.
+    async fn delete_expired_ui_sessions(
+        &self,
+        now: DateTime<Utc>,
+        idle_since: Option<DateTime<Utc>>,
+    ) -> Result<u64, StoreError>;
 
     /// `Conflict` if the prefix exists.
     async fn insert_api_key(&self, key: ApiKey, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_api_key_by_prefix(&self, prefix: &str) -> Result<Option<ApiKey>, StoreError>;
+    async fn get_api_key(&self, id: &ApiKeyId) -> Result<Option<ApiKey>, StoreError>;
     async fn list_api_keys(&self, page: PageRequest) -> Result<Page<ApiKey>, StoreError>;
+    /// The vault's launcher keys, revoked and expired ones included, newest
+    /// first; only those of `bundle` when given.
+    async fn list_launcher_keys(
+        &self,
+        vault_id: &VaultId,
+        bundle: Option<&BundleId>,
+        page: PageRequest,
+    ) -> Result<Page<ApiKey>, StoreError>;
     /// Returns false if already revoked. `NotFound` if missing.
     async fn revoke_api_key(
         &self,
@@ -554,6 +615,60 @@ pub trait SsoStore: Send + Sync {
         settings: SignInSettings,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
+}
+
+/// Alerts raised from audit signals.
+#[async_trait]
+pub trait AlertStore: Send + Sync {
+    /// Inserts `alert` unless one with its `dedup_key` exists; returns
+    /// whether it was inserted, recording `audit` only then.
+    async fn insert_alert(&self, alert: Alert, audit: &[AuditEvent]) -> Result<bool, StoreError>;
+    async fn get_alert(&self, id: &AlertId) -> Result<Option<Alert>, StoreError>;
+    /// Newest first.
+    async fn list_alerts(
+        &self,
+        filter: &AlertFilter,
+        page: PageRequest,
+    ) -> Result<Page<Alert>, StoreError>;
+    /// Marks an open alert acknowledged; returns false, recording nothing,
+    /// when it already was. `NotFound` if missing.
+    async fn acknowledge_alert(
+        &self,
+        id: &AlertId,
+        by: &str,
+        at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+}
+
+/// Tripwires: decoys planted on agents' machines, sent to every proxy.
+/// Deleting a vault deletes its tripwires.
+#[async_trait]
+pub trait TripwireStore: Send + Sync {
+    /// `Conflict` if the vault already has a tripwire by that name.
+    async fn insert_tripwire(
+        &self,
+        tripwire: Tripwire,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    async fn get_tripwire(&self, id: &TripwireId) -> Result<Option<Tripwire>, StoreError>;
+    /// A vault's tripwires, newest first.
+    async fn list_tripwires(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<Tripwire>, StoreError>;
+    /// Every vault's tripwires, newest first, at most `limit`: what the
+    /// proxies are sent.
+    async fn all_tripwires(&self, limit: u64) -> Result<Vec<Tripwire>, StoreError>;
+    /// Returns whether it existed, recording `audit` only then.
+    async fn delete_tripwire(
+        &self,
+        id: &TripwireId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Notes that a request carried it. A missing tripwire is ignored.
+    async fn tripwire_tripped(&self, id: &TripwireId, at: DateTime<Utc>) -> Result<(), StoreError>;
 }
 
 /// Audit export (standalone mode): the destinations audit events are sent

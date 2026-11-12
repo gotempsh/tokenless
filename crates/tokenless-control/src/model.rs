@@ -11,20 +11,24 @@ use tokenless_core::authz::Role;
 use tokenless_core::egress::EgressPolicy;
 use tokenless_core::host::HostPattern;
 use tokenless_core::ids::{
-    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, UserId, VariableId,
-    VaultId,
+    ApiKeyId, BundleId, CredentialId, InviteId, NodeId, RuleId, SessionId, SignInId, UserId,
+    VariableId, VaultId,
 };
 use tokenless_core::rule::RuleScope;
 use tokenless_core::scope::Scope;
-use tokenless_core::snapshot::UnmatchedHostPolicy;
+use tokenless_core::snapshot::{QuarantinePolicy, RateLimit, UnmatchedHostPolicy};
 use tokenless_core::substitution::Substitution;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::CustomHeader;
 
+mod alerts;
 mod audit_export;
 mod sso;
+mod tripwires;
+pub use alerts::*;
 pub use audit_export::*;
 pub use sso::*;
+pub use tripwires::*;
 
 pub const DEFAULT_PAGE_SIZE: u64 = 20;
 pub const MAX_PAGE_SIZE: u64 = 100;
@@ -219,6 +223,10 @@ pub struct AccessBundle {
     pub description: String,
     /// Sorted, without duplicates. Deleting a rule removes it from bundles.
     pub rule_ids: Vec<RuleId>,
+    /// Requests each session minted from it may make; whoever mints one
+    /// may ask for fewer, never more. `None` for no limit.
+    #[serde(default)]
+    pub request_limit: Option<u64>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -249,6 +257,33 @@ pub struct ProxySession {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// Where the previous page of a session list ended. Lists are newest
+/// first, ties broken by id, so the next page starts after this session
+/// whatever was minted or ended in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCursor {
+    pub created_at: DateTime<Utc>,
+    pub id: SessionId,
+}
+
+impl From<&ProxySession> for SessionCursor {
+    fn from(session: &ProxySession) -> Self {
+        Self {
+            created_at: session.created_at,
+            id: session.id,
+        }
+    }
+}
+
+/// Which sessions a list returns within its vault or bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionListing {
+    /// Only those neither revoked nor expired.
+    pub active: bool,
+    /// Only those after this one.
+    pub after: Option<SessionCursor>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub unmatched_host_policy: UnmatchedHostPolicy,
@@ -262,10 +297,38 @@ pub struct Settings {
     /// The longest session anyone may mint, in seconds.
     #[serde(default = "default_max_session_ttl")]
     pub max_session_ttl_secs: u64,
+    /// When a proxy cuts off a session that keeps being refused; `None`
+    /// for never. Settings saved before it existed get the default.
+    #[serde(default = "default_quarantine")]
+    pub quarantine: Option<QuarantinePolicy>,
+    /// How fast each session may send requests through a proxy; `None`
+    /// for no limit. Settings saved before it existed get the default.
+    #[serde(default = "default_rate_limit")]
+    pub rate_limit: Option<RateLimit>,
+    /// Whether proxies redact the injected credential from the responses
+    /// to the requests they added it to. Settings saved before it existed
+    /// get it on.
+    #[serde(default = "default_true")]
+    pub scrub_responses: bool,
+    /// Which audit signals raise an alert.
+    #[serde(default)]
+    pub alerts: AlertSettings,
 }
 
 fn default_max_session_ttl() -> u64 {
     tokenless_core::session::DEFAULT_MAX_SESSION_TTL_SECS
+}
+
+fn default_quarantine() -> Option<QuarantinePolicy> {
+    Some(QuarantinePolicy::default())
+}
+
+fn default_rate_limit() -> Option<RateLimit> {
+    Some(RateLimit::default())
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -275,6 +338,10 @@ impl Default for Settings {
             egress: EgressPolicy::default(),
             passthrough_hosts: Vec::new(),
             max_session_ttl_secs: default_max_session_ttl(),
+            quarantine: default_quarantine(),
+            rate_limit: default_rate_limit(),
+            scrub_responses: true,
+            alerts: AlertSettings::default(),
         }
     }
 }
@@ -331,14 +398,25 @@ impl Invite {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct UiSession {
+    /// What the person sees and revokes it by; the token hash never
+    /// leaves the server.
+    pub id: SignInId,
     pub token_hash: String,
     pub user_id: UserId,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub step_up_at: Option<DateTime<Utc>>,
+    /// Updated at most once a minute while the sign-in is used.
+    pub last_used_at: DateTime<Utc>,
+    /// The client's `User-Agent` when it signed in, cut to
+    /// [`MAX_USER_AGENT`] bytes.
+    pub user_agent: Option<String>,
 }
 
-tokenless_core::redacted_debug!(UiSession { user_id, created_at, expires_at, step_up_at; token_hash });
+/// The longest `User-Agent` kept with a sign-in.
+pub const MAX_USER_AGENT: usize = 256;
+
+tokenless_core::redacted_debug!(UiSession { id, user_id, created_at, expires_at, step_up_at, last_used_at, user_agent; token_hash });
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -355,12 +433,35 @@ pub struct ApiKey {
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Set on a launcher key: the key can only start sessions from this
+    /// bundle, within these limits. `None` for an ordinary API key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<LaunchScope>,
 }
 
 tokenless_core::redacted_debug!(ApiKey {
-    id, name, prefix, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at;
+    id, name, prefix, vault_id, role, created_by, created_at, expires_at, revoked_at, last_used_at, launch;
     secret_hash
 });
+
+/// What a launcher key may do: start sessions from one access bundle, for
+/// an agent machine that should hold nothing broader than that. Every
+/// session it starts gets these limits whatever the request asks for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchScope {
+    pub bundle_id: BundleId,
+    /// The longest session the key starts, at most what Settings allow.
+    pub max_ttl_secs: u64,
+    /// Requests each session may make; the request may ask for fewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_limit: Option<u64>,
+    /// Only this proxy accepts the key's sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    /// Stamped on every session the key starts, over the request's own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct JoinTokenRecord {
@@ -408,6 +509,19 @@ pub struct AuditQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_saved_before_quarantine_get_it_and_off_stays_off() {
+        let old: Settings = serde_json::from_str(r#"{"unmatched_host_policy":"deny"}"#).unwrap();
+        assert_eq!(old.quarantine, Some(QuarantinePolicy::default()));
+        assert_eq!(old.rate_limit, Some(RateLimit::default()));
+        assert!(old.scrub_responses);
+        let off: Settings =
+            serde_json::from_str(r#"{"unmatched_host_policy":"deny","quarantine":null}"#).unwrap();
+        assert_eq!(off.quarantine, None);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert_eq!(back.quarantine, None);
+    }
 
     /// Every public type holding a secret prints `***` for it under `{:?}`,
     /// whatever reaches a log line, an error or a panic. A freshly minted
@@ -482,11 +596,14 @@ mod tests {
             format!(
                 "{:?}",
                 UiSession {
+                    id: SignInId::new(),
                     token_hash: s(),
                     user_id: UserId::new(),
                     created_at: now,
                     expires_at: now,
                     step_up_at: None,
+                    last_used_at: now,
+                    user_agent: None,
                 }
             ),
             format!(
@@ -503,6 +620,7 @@ mod tests {
                     expires_at: now,
                     revoked_at: None,
                     last_used_at: None,
+                    launch: None,
                 }
             ),
             format!(
@@ -579,6 +697,7 @@ mod tests {
                         None,
                     )),
                     token_hash: s(),
+                    sign_in_id: SignInId::new(),
                     user: summary.clone(),
                     expires_at: now,
                 }

@@ -14,7 +14,7 @@ one for you.
 
 ## A vault's tabs
 
-Open a vault to see it in five tabs:
+Open a vault to see it in six tabs:
 
 | Tab | What it holds |
 |---|---|
@@ -22,6 +22,7 @@ Open a vault to see it in five tabs:
 | **Rules** | What each service may be used for: hosts, paths, methods and MCP tools |
 | **Access bundles** | The bundles built from this vault's rules |
 | **Sessions** | The sessions minted in this vault; you can mint a one-off session here |
+| **Tripwires** | Fake keys planted on agents' machines, and when each was last sent |
 | **Settings** | The vault's ID, and deleting the vault |
 
 ![A vault's services: Slack, Stripe, OpenAI and GitHub, each with its hosts and a stored, unreadable secret](../screenshots/console-vault-services.png)
@@ -102,10 +103,38 @@ sessions that include it stop getting its credential until it is
 turned back on. **⋯ › Delete rule** deletes it: sessions that included
 it can no longer use it. Editors and admins manage rules.
 
+## Tripwires
+
+A tripwire is a fake key that looks like a real one: an AWS access key,
+a GitHub token, an OpenAI key or a generic API key. Plant it on an
+agent's machine where real keys would be, somewhere the agent itself
+never reads. An agent at work never sends it; someone who got onto the
+machine and is collecting keys will. When a session sends it, the proxy
+refuses the request, cuts the session off, and the control plane revokes
+it everywhere and raises a [tripwire alert](./alerts.mdx).
+
+**Plant a tripwire** asks where it goes (the machine's name, so the
+alert says which one was entered) and what it looks like, then shows the
+key **once**, ready to paste into `~/.aws/credentials`, a shell profile
+or a `.env` file. The list shows each tripwire's first characters and
+when it was last tripped. **⋯ › Delete tripwire** stops the proxies
+looking for it; with an authenticator or single sign-on it asks for a
+[recent code](./account.mdx#authenticator-app). Editors and admins
+manage tripwires; a vault holds up to 20, and the instance up to 500,
+the most every proxy looks for.
+
+Every proxy looks for every vault's tripwires, in the URL and headers of
+each request it opens to add a credential (Basic credentials included).
+It does not read request bodies. When
+[other hosts are blocked](../settings.mdx#other-hosts), it also opens
+connections to the hosts a kind's key is used with (AWS's STS, IAM and
+S3; GitHub) to look for it. When other hosts are allowed, they pass
+through unread, so a key sent to a host no rule covers is not seen.
+
 ## Delete a vault
 
 On the vault's **Settings** tab, **Delete vault** deletes its services
-(and their secrets), rules and access bundles, and revokes the API keys
+(and their secrets), rules, access bundles and tripwires, and revokes the API keys
 bound to it. The audit trail is kept. It is refused while an agent is
 using the vault unless you tick **End live sessions**. Only admins can
 delete a vault; with an authenticator or single sign-on, it asks for a

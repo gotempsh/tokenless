@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -22,10 +22,18 @@ use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
-    AccessBundle, CredentialMeta, Node, Page, Rule, StoredTemplate, Vault,
+    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, Settings, StoredTemplate,
+    Tripwire, Vault,
 };
-use tokenless_control::service::auth::UserSummary;
-use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
+use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
+use tokenless_control::service::launcher_keys::{
+    CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
+};
+use tokenless_control::service::tripwires::CreatedTripwire;
+use tokenless_core::ids::{
+    AlertId, ApiKeyId, BundleId, CredentialId, RuleId, SignInId, TripwireId, UserId, VaultId,
+};
+use tokenless_core::tripwire::TripwireKind;
 use zeroize::Zeroizing;
 
 use super::LauncherError;
@@ -407,8 +415,13 @@ fn normalise(server: &str) -> Result<String, LauncherError> {
     }
 }
 
+/// How the CLI names itself to the control plane, so a person's list of
+/// sign-ins tells a `tokenless login` apart from a browser.
+pub const USER_AGENT: &str = concat!("tokenless/", env!("CARGO_PKG_VERSION"));
+
 fn http_client(base: &str) -> Result<reqwest::Client, LauncherError> {
     reqwest::Client::builder()
+        .user_agent(USER_AGENT)
         .timeout(TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .no_proxy()
@@ -514,6 +527,26 @@ pub async fn sign_in(
         csrf_token: reply.csrf_token,
         expires_at: reply.expires_at,
     }))
+}
+
+/// How many items a list call asks for at a time: the API's maximum.
+const PAGE_SIZE: usize = 100;
+
+/// The sessions `sessions` found, and whether more matched past its
+/// limit.
+#[derive(Debug, Clone)]
+pub struct Sessions {
+    pub sessions: Vec<ProxySession>,
+    pub more: bool,
+}
+
+/// Which sessions `ConsoleClient::sessions` lists.
+#[derive(Debug, Clone)]
+pub enum SessionScope {
+    /// Every vault the person can see.
+    Everywhere,
+    Vault(VaultId),
+    Bundle(BundleId),
 }
 
 /// The management API as the signed-in person.
@@ -655,11 +688,36 @@ impl<'p> ConsoleClient<'p> {
             .await
     }
 
+    /// Every item of a paginated list, `PAGE_SIZE` at a time.
+    async fn pages<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        operation: &'static str,
+    ) -> Result<Vec<T>, LauncherError> {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        let mut items = Vec::new();
+        let mut page: u64 = 1;
+        loop {
+            let got: Page<T> = self
+                .call(
+                    Method::GET,
+                    &format!("{path}{sep}page={page}&page_size={PAGE_SIZE}"),
+                    None,
+                    operation,
+                )
+                .await?;
+            let fetched = got.items.len();
+            items.extend(got.items);
+            if fetched < PAGE_SIZE || u64::try_from(items.len()).unwrap_or(u64::MAX) >= got.total {
+                break;
+            }
+            page += 1;
+        }
+        Ok(items)
+    }
+
     pub async fn vaults(&self) -> Result<Vec<Vault>, LauncherError> {
-        let page: Page<Vault> = self
-            .call(Method::GET, "/vaults?page_size=100", None, "listing vaults")
-            .await?;
-        Ok(page.items)
+        self.pages("/vaults", "listing vaults").await
     }
 
     pub async fn create_vault(&self, name: &str) -> Result<Vault, LauncherError> {
@@ -673,15 +731,11 @@ impl<'p> ConsoleClient<'p> {
     }
 
     pub async fn bundles(&self, vault: &VaultId) -> Result<Vec<AccessBundle>, LauncherError> {
-        let page: Page<AccessBundle> = self
-            .call(
-                Method::GET,
-                &format!("/vaults/{vault}/bundles?page_size=100"),
-                None,
-                "listing access bundles",
-            )
-            .await?;
-        Ok(page.items)
+        self.pages(
+            &format!("/vaults/{vault}/bundles"),
+            "listing access bundles",
+        )
+        .await
     }
 
     pub async fn create_join_token(&self) -> Result<JoinToken, LauncherError> {
@@ -690,6 +744,163 @@ impl<'p> ConsoleClient<'p> {
             "/nodes/join-tokens",
             Some(json!({})),
             "creating a proxy join token",
+        )
+        .await
+    }
+
+    /// A launcher key for `bundle` (a name or id). Creating one is new
+    /// access, so the server may ask to confirm it is you first.
+    pub async fn create_launcher_key(
+        &self,
+        vault: &VaultId,
+        request: &serde_json::Value,
+    ) -> Result<CreatedLauncherKey, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/launcher-keys"),
+            Some(request.clone()),
+            "creating the launcher key",
+        )
+        .await
+    }
+
+    /// The vault's launcher keys, revoked and expired ones included.
+    pub async fn launcher_keys(&self, vault: &VaultId) -> Result<Vec<LauncherKey>, LauncherError> {
+        self.pages(
+            &format!("/vaults/{vault}/launcher-keys"),
+            "listing launcher keys",
+        )
+        .await
+    }
+
+    /// Revokes the key and ends the live sessions it started.
+    pub async fn revoke_launcher_key(
+        &self,
+        vault: &VaultId,
+        id: &ApiKeyId,
+    ) -> Result<RevokedLauncherKey, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/launcher-keys/{id}/revoke"),
+            Some(json!({})),
+            "revoking the launcher key",
+        )
+        .await
+    }
+
+    /// A new tripwire in `vault`, with its decoy and how to plant it.
+    pub async fn create_tripwire(
+        &self,
+        vault: &VaultId,
+        name: &str,
+        kind: TripwireKind,
+    ) -> Result<CreatedTripwire, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/tripwires"),
+            Some(json!({ "name": name, "kind": kind })),
+            "creating the tripwire",
+        )
+        .await
+    }
+
+    pub async fn tripwires(&self, vault: &VaultId) -> Result<Vec<Tripwire>, LauncherError> {
+        self.pages(&format!("/vaults/{vault}/tripwires"), "listing tripwires")
+            .await
+    }
+
+    pub async fn delete_tripwire(&self, id: &TripwireId) -> Result<Tripwire, LauncherError> {
+        self.call(
+            Method::DELETE,
+            &format!("/tripwires/{id}"),
+            None,
+            "deleting the tripwire",
+        )
+        .await
+    }
+
+    /// The signed-in person's sign-ins, the current one marked.
+    pub async fn sign_ins(&self) -> Result<Vec<SignInRecord>, LauncherError> {
+        self.pages("/auth/sign-ins", "listing your sign-ins").await
+    }
+
+    /// The newest alerts, up to `limit`; only those not acknowledged
+    /// unless `all`.
+    pub async fn alerts(&self, all: bool, limit: u64) -> Result<Page<Alert>, LauncherError> {
+        self.call(
+            Method::GET,
+            &format!("/alerts?open={}&page_size={limit}", !all),
+            None,
+            "listing alerts",
+        )
+        .await
+    }
+
+    /// Every alert not acknowledged yet, newest first.
+    pub async fn open_alerts(&self) -> Result<Vec<Alert>, LauncherError> {
+        self.every_alert(false).await
+    }
+
+    /// Every alert, newest first; only those not acknowledged unless `all`.
+    pub async fn every_alert(&self, all: bool) -> Result<Vec<Alert>, LauncherError> {
+        self.pages(&format!("/alerts?open={}", !all), "listing alerts")
+            .await
+    }
+
+    pub async fn acknowledge_alert(&self, id: &AlertId) -> Result<Alert, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/alerts/{id}/acknowledge"),
+            Some(json!({})),
+            "acknowledging the alert",
+        )
+        .await
+    }
+
+    /// Ends one of the signed-in person's sign-ins.
+    pub async fn revoke_sign_in(&self, id: &SignInId) -> Result<(), LauncherError> {
+        self.call::<serde_json::Value>(
+            Method::POST,
+            &format!("/auth/sign-ins/{id}/revoke"),
+            Some(json!({})),
+            "ending the sign-in",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Ends every sign-in of the signed-in person but this one.
+    pub async fn revoke_other_sign_ins(&self) -> Result<SignInsRevoked, LauncherError> {
+        self.call(
+            Method::POST,
+            "/auth/sign-ins/revoke-others",
+            Some(json!({})),
+            "signing out everywhere else",
+        )
+        .await
+    }
+
+    /// Everyone with an account, for an admin.
+    pub async fn users(&self) -> Result<Vec<UserSummary>, LauncherError> {
+        self.pages("/users", "listing people").await
+    }
+
+    /// Someone's sign-ins, for an admin.
+    pub async fn user_sign_ins(&self, user: &UserId) -> Result<Vec<SignInRecord>, LauncherError> {
+        self.pages(&format!("/users/{user}/sign-ins"), "listing their sign-ins")
+            .await
+    }
+
+    /// Signs someone out everywhere, for an admin.
+    pub async fn revoke_user_sign_ins(
+        &self,
+        user: &UserId,
+    ) -> Result<SignInsRevoked, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/users/{user}/sign-ins/revoke"),
+            Some(json!({})),
+            "signing them out everywhere",
         )
         .await
     }
@@ -706,38 +917,72 @@ impl<'p> ConsoleClient<'p> {
         Ok(me.user)
     }
 
-    /// The enrolled proxies (the first 100). Needs a role that may see them.
+    /// The instance's settings. Admins only.
+    pub async fn settings(&self) -> Result<Settings, LauncherError> {
+        self.call(Method::GET, "/settings", None, "reading settings")
+            .await
+    }
+
+    /// The enrolled proxies. Needs a role that may see them.
     pub async fn nodes(&self) -> Result<Vec<Node>, LauncherError> {
-        let page: Page<Node> = self
-            .call(Method::GET, "/nodes?page_size=100", None, "listing proxies")
-            .await?;
-        Ok(page.items)
+        self.pages("/nodes", "listing proxies").await
     }
 
-    /// The rules in `vault` (the first 100).
+    /// The rules in `vault`.
     pub async fn rules(&self, vault: &VaultId) -> Result<Vec<Rule>, LauncherError> {
-        let page: Page<Rule> = self
-            .call(
-                Method::GET,
-                &format!("/vaults/{vault}/rules?page_size=100"),
-                None,
-                "listing rules",
-            )
-            .await?;
-        Ok(page.items)
+        self.pages(&format!("/vaults/{vault}/rules"), "listing rules")
+            .await
     }
 
-    /// The services in `vault` (the first 100).
+    /// The services in `vault`.
     pub async fn credentials(&self, vault: &VaultId) -> Result<Vec<CredentialMeta>, LauncherError> {
-        let page: Page<CredentialMeta> = self
-            .call(
-                Method::GET,
-                &format!("/vaults/{vault}/credentials?page_size=100"),
-                None,
-                "listing services",
-            )
-            .await?;
-        Ok(page.items)
+        self.pages(&format!("/vaults/{vault}/credentials"), "listing services")
+            .await
+    }
+
+    /// The newest sessions in `scope`, up to `limit`; only the live ones
+    /// (neither revoked nor expired) when `active`. Each page continues
+    /// after the last session of the one before, not at an offset, so
+    /// sessions minted or ended meanwhile neither repeat nor skip a row.
+    pub async fn sessions(
+        &self,
+        scope: &SessionScope,
+        active: bool,
+        limit: usize,
+    ) -> Result<Sessions, LauncherError> {
+        let path = match scope {
+            SessionScope::Everywhere => "/sessions".to_string(),
+            SessionScope::Vault(vault) => format!("/vaults/{vault}/sessions"),
+            SessionScope::Bundle(bundle) => format!("/bundles/{bundle}/sessions"),
+        };
+        let mut items: Vec<ProxySession> = Vec::new();
+        let mut more = false;
+        while items.len() < limit {
+            let want = (limit - items.len()).min(PAGE_SIZE);
+            let mut url = format!("{path}?active={active}&page_size={want}");
+            if let Some(last) = items.last() {
+                url.push_str(&format!(
+                    "&after_created_at={}&after_id={}",
+                    last.created_at.to_rfc3339_opts(SecondsFormat::AutoSi, true),
+                    last.id
+                ));
+            }
+            let got: Page<ProxySession> = self
+                .call(Method::GET, &url, None, "listing sessions")
+                .await?;
+            let fetched = got.items.len();
+            // After a cursor, `total` counts what is left from there.
+            more = got.total > u64::try_from(fetched).unwrap_or(u64::MAX);
+            items.extend(got.items);
+            if fetched < want {
+                break;
+            }
+        }
+        items.truncate(limit);
+        Ok(Sessions {
+            sessions: items,
+            more,
+        })
     }
 }
 

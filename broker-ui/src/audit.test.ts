@@ -50,6 +50,16 @@ describe("actionPhrase", () => {
     expect(actionPhrase(event({ action: "rule.delete" }))).toBe("deleted a rule");
   });
 
+  test("alerts say what happened and which one was seen", () => {
+    expect(
+      actionPhrase(event({ action: "alert.raised", actor: "node:n1", detail: { kind: "refusals", summary: "Session 3f9c2a1b was refused 10 times within 300s." } })),
+    ).toBe("raised an alert: Session 3f9c2a1b was refused 10 times within 300s.");
+    expect(actionPhrase(event({ action: "alert.acknowledge", detail: { kind: "new_proxy" } }))).toBe(
+      "acknowledged a second-proxy alert",
+    );
+    expect(actionPhrase(event({ action: "alert.acknowledge" }))).toBe("acknowledged an alert");
+  });
+
   test("audit export changes name the webhook", () => {
     expect(actionPhrase(event({ action: "audit_export.create", detail: { name: "SIEM" } }))).toBe("added audit webhook SIEM");
     expect(actionPhrase(event({ action: "audit_export.skip", detail: { name: "SIEM", skipped: "12" } }))).toBe(
@@ -94,26 +104,52 @@ describe("actionPhrase", () => {
     ).toBe("cut an open connection to api.example.com: the session was revoked");
   });
 
+  test("a redacted answer says how many times it held the credential", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.response_scrubbed", detail: { masked: "2", host: "api.example.com:443", method: "GET", path: "/debug" } })),
+    ).toContain("redacted the credential 2 times in the answer for GET");
+  });
+
+  test("rate-limited requests read as one refusal with a count", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.rate_limited", detail: { refused: "37", host: "api.example.com:443", per_sec: "20" } })),
+    ).toBe("refused 37 requests to api.example.com: the session went past 20 a second");
+  });
+
+  test("a tripwire's trip reads as a cut-off", () => {
+    expect(
+      actionPhrase(event({ action: "proxy.tripwire", detail: { tripwire: "build-runner", host: "api.github.com:443" } })),
+    ).toBe("cut off a session that sent tripwire build-runner to api.github.com");
+    expect(sessionHistoryPhrase(event({ action: "session.revoke", detail: { reason: "tripwire", tripwire: "build-runner" } }))).toBe(
+      "revoked the session after it sent tripwire build-runner",
+    );
+  });
+
   // Every action the control plane and the proxies record. A new one goes
   // here, with a phrase in audit.ts, so the log never shows a raw name.
   const RECORDED = [
+    "alert.acknowledge", "alert.raised",
     "api_key.create", "api_key.revoke",
     "audit_export.create", "audit_export.delete", "audit_export.pause", "audit_export.resume",
     "audit_export.rotate_secret", "audit_export.skip", "audit_export.test", "audit_export.update",
-    "auth.login", "auth.logout", "auth.setup", "auth.step_up", "auth.totp_disable", "auth.totp_enable",
+    "auth.login", "auth.logout", "auth.setup", "auth.sign_in_revoke", "auth.sign_out_elsewhere", "auth.step_up",
+    "auth.totp_disable", "auth.totp_enable",
     "bundle.create", "bundle.delete", "bundle.update",
     "credential.create", "credential.delete", "credential.rotate", "credential.update_headers",
     "credential.update_substitutions", "credential.validate",
     "identity_provider.create", "identity_provider.delete", "identity_provider.update",
+    "launcher_key.create", "launcher_key.revoke",
     "node.enroll", "node.join_token.create", "node.register_embedded", "node.renew", "node.revoke",
     "proxy.connect_denied", "proxy.deny", "proxy.egress_blocked", "proxy.gateway_denied", "proxy.inject",
+    "proxy.quarantine", "proxy.rate_limited", "proxy.response_scrubbed", "proxy.tripwire",
     "proxy.response", "proxy.tunnel", "proxy.tunnel_cut",
     "rule.create", "rule.delete", "rule.update",
     "session.mint", "session.revoke", "session.update_labels",
     "settings.sign_in", "settings.update",
     "template.approve", "template.import",
+    "tripwire.create", "tripwire.delete",
     "user.create", "user.invite", "user.invite.accept", "user.invite.revoke", "user.password_change",
-    "user.password_reset", "user.update",
+    "user.password_reset", "user.sign_ins_revoke", "user.update",
     "variable.create", "variable.delete", "variable.update",
     "vault.create", "vault.delete",
   ];
@@ -148,6 +184,12 @@ describe("a session's history", () => {
   test("says what was done to the session", () => {
     expect(sessionHistoryPhrase(event({ action: "session.mint", detail: { bundle: "code-review" } }))).toBe(
       "created the session from code-review",
+    );
+    expect(
+      sessionHistoryPhrase(event({ action: "session.revoke", actor: "node:n1", detail: { reason: "quarantine", refusals: "20" } })),
+    ).toBe("revoked the session after it was refused 20 times");
+    expect(actionPhrase(event({ action: "proxy.quarantine", detail: { refusals: "20", window_secs: "300" } }))).toBe(
+      "cut off a session after 20 refusals in 300s",
     );
     expect(sessionHistoryPhrase(event({ action: "session.revoke", detail: { already_revoked: "false" } }))).toBe(
       "revoked the session",

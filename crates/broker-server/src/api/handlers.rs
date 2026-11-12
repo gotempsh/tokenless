@@ -9,13 +9,15 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_auth::cookie::clear_session_cookie;
-use tokenless_control::model::{AuditQuery, Page, PageRequest, Settings};
+use tokenless_control::model::{
+    AuditQuery, Page, PageRequest, SessionCursor, SessionListing, Settings,
+};
 use tokenless_control::service::auth::{
     AuthService, ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator,
     LoginRequest, StepUpProof, TotpEnrollment, UserSummary,
@@ -60,6 +62,45 @@ impl PageQuery {
     }
 }
 
+/// A page of sessions; `active=true` keeps the live ones (neither revoked
+/// nor expired). `after_created_at` with `after_id` (the last session of
+/// the previous page) continues after it, so sessions minted or ended in
+/// between neither repeat nor skip a row the way `page` can.
+#[derive(Debug, Default, Deserialize)]
+pub struct SessionPageQuery {
+    pub page: Option<u64>,
+    pub page_size: Option<u64>,
+    #[serde(default)]
+    pub active: bool,
+    pub after_created_at: Option<DateTime<Utc>>,
+    pub after_id: Option<String>,
+}
+
+impl SessionPageQuery {
+    fn request(&self) -> PageRequest {
+        PageRequest::new(self.page, self.page_size)
+    }
+
+    fn listing(&self) -> ApiResult<SessionListing> {
+        let after = match (&self.after_created_at, &self.after_id) {
+            (Some(created_at), Some(id)) => Some(SessionCursor {
+                created_at: *created_at,
+                id: parse_id("session", id)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(ApiError::bad_request(
+                    "after_created_at and after_id go together: pass the last session's created_at and id, or neither",
+                ))
+            }
+        };
+        Ok(SessionListing {
+            active: self.active,
+            after,
+        })
+    }
+}
+
 pub async fn not_found() -> ApiError {
     ApiError::Control(tokenless_control::ControlError::not_found(
         "route",
@@ -81,8 +122,16 @@ pub struct SessionInfo {
     sso: Option<SsoSignIn>,
 }
 
-pub async fn login(State(s): St, ApiJson(req): ApiJson<LoginRequest>) -> ApiResult<Response> {
-    let outcome = s.control.auth.login(req).await?;
+pub async fn login(
+    State(s): St,
+    headers: HeaderMap,
+    ApiJson(req): ApiJson<LoginRequest>,
+) -> ApiResult<Response> {
+    let outcome = s
+        .control
+        .auth
+        .login_from(req, super::user_agent(&headers))
+        .await?;
     let cookie = HeaderValue::from_str(&AuthService::session_cookie(&outcome))
         .map_err(|_| ApiError::bad_request("could not encode session cookie"))?;
     let body = SessionInfo {
@@ -707,13 +756,13 @@ pub async fn list_sessions(
     State(s): St,
     authed: Authed,
     Path(vault_id): Path<String>,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     let id: VaultId = parse_id("vault", &vault_id)?;
     Ok(Json(
         s.control
             .sessions
-            .list(&authed.caller, &id, q.request())
+            .list(&authed.caller, &id, q.listing()?, q.request())
             .await?,
     ))
 }
@@ -722,12 +771,12 @@ pub async fn list_sessions(
 pub async fn list_all_sessions(
     State(s): St,
     authed: Authed,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     Ok(Json(
         s.control
             .sessions
-            .list_all(&authed.caller, q.request())
+            .list_all(&authed.caller, q.listing()?, q.request())
             .await?,
     ))
 }
@@ -737,13 +786,13 @@ pub async fn list_bundle_sessions(
     State(s): St,
     authed: Authed,
     Path(bundle_id): Path<String>,
-    ApiQuery(q): ApiQuery<PageQuery>,
+    ApiQuery(q): ApiQuery<SessionPageQuery>,
 ) -> ApiResult<impl IntoResponse> {
     let id: BundleId = parse_id("access bundle", &bundle_id)?;
     Ok(Json(
         s.control
             .sessions
-            .list_for_bundle(&authed.caller, &id, q.request())
+            .list_for_bundle(&authed.caller, &id, q.listing()?, q.request())
             .await?,
     ))
 }
@@ -837,7 +886,15 @@ pub async fn revoke_api_key(
     Path(api_key_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let id: ApiKeyId = parse_id("api key", &api_key_id)?;
-    s.control.auth.revoke_api_key(&authed.caller, &id).await?;
+    // A launcher key listed here is revoked as one: its sessions end too.
+    if s.control
+        .launcher_keys
+        .revoke_api_key(&authed.caller, &id)
+        .await?
+        .is_none()
+    {
+        s.control.auth.revoke_api_key(&authed.caller, &id).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

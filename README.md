@@ -165,7 +165,9 @@ tokenless run --vault work --bundle code-review -- claude
 `run` opens a **session port**: a
 loopback proxy address (a free port by default, `--listen` to choose)
 that adds the session to every request and relays it to the proxy. The
-agent is started with `HTTPS_PROXY=http://127.0.0.1:<port>`, trust files
+agent is started with `HTTPS_PROXY=http://tokenless:<password>@127.0.0.1:<port>`
+(a password made up for the run, so no other program on the machine can
+use the session), trust files
 that include the broker's interception CA (`SSL_CERT_FILE`,
 `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and others), and no session
 token anywhere in its environment. A session it minted is renewed before
@@ -343,6 +345,10 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
 
 ### Deployment notes
 
+- To run tokenless on a server and connect the machines that run agents to
+  it, follow [One server, many hosts](site/docs/content/server.mdx); the
+  server side is the Compose recipe in
+  [`examples/docker-compose`](examples/docker-compose).
 - The management API serves plain HTTP on loopback by default. For
   anything beyond `localhost`, serve HTTPS directly or put a
   TLS-terminating reverse proxy in front, because the session cookie is

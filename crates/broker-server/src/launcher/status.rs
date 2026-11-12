@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokenless_control::model::Node;
+use tokenless_core::snapshot::UnmatchedHostPolicy;
 
 use super::trust::shell_word;
 
@@ -71,6 +72,9 @@ pub struct Observed {
     pub vaults: Option<Result<Vec<VaultSummary>, String>>,
     /// `Ok(None)`: this person may not see proxies.
     pub proxies: Option<Result<Option<Vec<Node>>, String>>,
+    /// What proxies do with hosts no session covers. `Ok(None)`: this
+    /// person may not see the settings.
+    pub other_hosts: Option<Result<Option<UnmatchedHostPolicy>, String>>,
     pub skill: Skill,
     pub behind_tokenless: bool,
     /// Where `proxy add` should write, or where an enrolled proxy's file is.
@@ -350,6 +354,29 @@ pub fn assess(o: Observed) -> Report {
         None => unknown("proxy", "Proxy", signed_in, true),
     });
 
+    // Recommended, never required: allowing other hosts is a working setup.
+    let other_hosts = |state, detail: &str| Check {
+        id: "other_hosts",
+        label: "Other hosts",
+        state,
+        detail: detail.into(),
+        fix: None,
+        required: false,
+    };
+    checks.push(match &o.other_hosts {
+        Some(Ok(Some(UnmatchedHostPolicy::Deny))) => other_hosts(
+            State::Ok,
+            "blocked: agents reach only their sessions' services and the always-reachable hosts",
+        ),
+        Some(Ok(Some(UnmatchedHostPolicy::Passthrough))) => other_hosts(
+            State::Missing,
+            "allowed: an agent reaches any host through the proxy, and a stolen session token does too; block them in the console under Settings > Other hosts",
+        ),
+        Some(Ok(None)) => other_hosts(State::Unknown, "only an admin can see the settings"),
+        Some(Err(why)) => other_hosts(State::Unknown, &format!("could not read the settings: {why}")),
+        None => unknown("other_hosts", "Other hosts", signed_in, false),
+    });
+
     checks.push(match &o.skill {
         Skill::Installed(agents) => Check {
             required: false,
@@ -529,6 +556,7 @@ mod tests {
                 bundles: vec!["code-review".into()],
             }])),
             proxies: Some(Ok(Some(vec![node("laptop", Some(5), now)]))),
+            other_hosts: Some(Ok(Some(UnmatchedHostPolicy::Deny))),
             skill: Skill::Installed(vec!["Claude Code"]),
             behind_tokenless: false,
             proxy_state: ProxyStateFile {
@@ -722,6 +750,37 @@ mod tests {
             report.next.as_deref(),
             Some("tokenless run --vault 'Work stuff' --bundle code-review -- <command>")
         );
+    }
+
+    #[test]
+    fn other_hosts_allowed_is_flagged_but_still_ready() {
+        let now = Utc::now();
+        let report = assess(Observed {
+            other_hosts: Some(Ok(Some(UnmatchedHostPolicy::Passthrough))),
+            ..observed(now)
+        });
+        let c = check(&report, "other_hosts");
+        assert_eq!((c.state, c.required), (State::Missing, false));
+        assert!(c.detail.contains("Settings > Other hosts"), "{}", c.detail);
+        assert!(report.ready);
+        let shown = render(&report);
+        assert!(
+            shown.contains("--  Other hosts    allowed: an agent reaches any host"),
+            "{shown}"
+        );
+        assert!(shown.contains("Ready. Start an agent with:"), "{shown}");
+
+        let blocked = assess(observed(now));
+        assert_eq!(check(&blocked, "other_hosts").state, State::Ok);
+        let editor = assess(Observed {
+            other_hosts: Some(Ok(None)),
+            ..observed(now)
+        });
+        assert_eq!(
+            check(&editor, "other_hosts").detail,
+            "only an admin can see the settings"
+        );
+        assert!(editor.ready);
     }
 
     #[test]

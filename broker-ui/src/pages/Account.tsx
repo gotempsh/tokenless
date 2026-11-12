@@ -12,6 +12,7 @@ import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { CodeField, EnrollmentBox, type TotpEnrollment } from "./Auth";
+import { SignIns } from "./SignIns";
 
 /**
  * The signed-in person's own sign-in: password and authenticator app, or
@@ -28,6 +29,9 @@ export function Account({ user, sso, onChanged }: { user: UserSummary; sso?: Sso
             <strong>{user.role}</strong> role follows your groups at each sign-in.
           </p>
         </SettingsSection>
+        <SettingsSection title="Where you're signed in" hint="A browser or CLI login you don't recognise: sign it out.">
+          <SignIns />
+        </SettingsSection>
       </PageContainer>
     );
   return (
@@ -42,6 +46,9 @@ export function Account({ user, sso, onChanged }: { user: UserSummary; sso?: Sso
           hint={<Status tone={user.totp_enrolled ? "success" : "neutral"}>{user.totp_enrolled ? "On" : "Off"}</Status>}
         >
           {user.totp_enrolled ? <RemoveAuthenticator onDone={onChanged} /> : <AddAuthenticator onDone={onChanged} />}
+        </SettingsSection>
+        <SettingsSection title="Where you're signed in" hint="A browser or CLI login you don't recognise: sign it out.">
+          <SignIns />
         </SettingsSection>
       </div>
     </PageContainer>

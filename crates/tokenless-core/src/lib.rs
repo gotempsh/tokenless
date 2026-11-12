@@ -30,6 +30,7 @@ pub mod session;
 pub mod snapshot;
 pub mod substitution;
 pub mod template;
+pub mod tripwire;
 pub mod variables;
 
 pub use error::CoreError;

@@ -38,6 +38,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1416,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-auth"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1435,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-control"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1464,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-core"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1484,8 +1493,9 @@ dependencies = [
 
 [[package]]
 name = "tokenless-dataplane"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
+ "aho-corasick",
  "arc-swap",
  "async-trait",
  "base64 0.22.1",
