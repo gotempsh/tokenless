@@ -38,6 +38,7 @@ use tracing::debug;
 
 use crate::error::DataPlaneError;
 use crate::metrics::Metrics;
+use crate::scrub::Scrubber;
 use crate::tls::{leaf_server_config, sha256_hex};
 
 /// Maximum clock skew accepted for a snapshot's `issued_at` in the future.
@@ -63,6 +64,9 @@ pub struct ActiveRule {
     pub substitutions: Vec<RenderedSubstitution>,
     /// When the credential stops being valid upstream, if it does.
     pub not_after: Option<chrono::DateTime<chrono::Utc>>,
+    /// The forms of this rule's credential a response must not carry,
+    /// built once here so the request path only scans.
+    pub scrubber: Arc<Scrubber>,
 }
 
 impl ActiveRule {
@@ -314,6 +318,10 @@ pub fn build_active(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // Never inject what could not be redacted from the response.
+        let scrubber = Scrubber::for_rule(&headers).map_err(|e| {
+            DataPlaneError::rejected(format!("rule {} cannot be injected: {e}", rule.rule_id))
+        })?;
         for host in &rule.allow.hosts {
             hosts.insert(host.certificate_name().to_string());
         }
@@ -326,6 +334,7 @@ pub fn build_active(
             inject,
             substitutions: headers.substitutions.clone(),
             not_after: rule.not_after,
+            scrubber: Arc::new(scrubber),
         });
     }
 
@@ -444,11 +453,12 @@ pub(crate) mod tests {
                     .map(|(rule_id, scope, host, token)| {
                         let credential_id = CredentialId::new();
                         let headers = InjectedHeaders {
-                            headers: vec![InjectedHeader {
-                                name: "authorization".into(),
-                                value: format!("Bearer {token}"),
-                            }],
+                            headers: vec![InjectedHeader::credential(
+                                "authorization",
+                                format!("Bearer {token}"),
+                            )],
                             substitutions: vec![],
+                            secrets: vec![],
                         };
                         SnapshotRule {
                             rule_id,

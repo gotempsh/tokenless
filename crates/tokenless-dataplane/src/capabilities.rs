@@ -45,6 +45,11 @@ pub enum Capability {
     /// [`Binding::revoke_and_wait`](crate::Binding::revoke_and_wait)
     /// resolve once a revocation is enforced.
     RevocationAck,
+    /// An intercepted response never carries the credential the proxy
+    /// injected: every form of it found in headers and body is redacted,
+    /// and a response that cannot be scanned (compressed, partial) is
+    /// withheld. See [`crate::scrub`].
+    ResponseRedaction,
 }
 
 impl Capability {
@@ -57,6 +62,7 @@ impl Capability {
             Capability::CredentialExpiry => "credential_expiry",
             Capability::GitScope => "git_scope",
             Capability::RevocationAck => "revocation_ack",
+            Capability::ResponseRedaction => "response_redaction",
         }
     }
 }
@@ -76,6 +82,7 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability::CredentialExpiry,
     Capability::GitScope,
     Capability::RevocationAck,
+    Capability::ResponseRedaction,
 ];
 
 /// What a data plane enforces and which snapshots it reads.

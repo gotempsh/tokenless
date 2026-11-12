@@ -29,6 +29,7 @@ use crate::audit::AuditShipper;
 use crate::error::DataPlaneError;
 use crate::state::tests::Fixture;
 use crate::state::NodeKeys;
+use crate::testing::seen;
 use crate::tls::{leaf_server_config, upstream_client_config};
 use crate::{Binding, BindingSpec, BindingUpdate, DataPlane, DataPlaneConfig, SnapshotInstaller};
 
@@ -51,8 +52,8 @@ fn scope() -> Scope {
 }
 
 /// A local HTTPS upstream for `localhost`. `GET` is answered with a
-/// chunked response that starts with the `Authorization` it received and
-/// never ends; `POST` bodies are read until the proxy closes the
+/// chunked response that starts with [`seen`] of the `Authorization` it
+/// received and never ends; `POST` bodies are read until the proxy closes the
 /// connection, counting the bytes.
 struct Upstream {
     port: u16,
@@ -101,6 +102,7 @@ async fn upstream() -> Upstream {
                             .then(|| value.trim().to_string())
                     })
                     .unwrap_or_default();
+                let auth = seen(&auth);
                 let answer = format!(
                     "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{auth}\r\n",
                     auth.len()
@@ -350,10 +352,10 @@ async fn a_strict_grant_ends_its_streams_and_requests_while_the_other_runs() {
     let mut b = p.tunnel(up.port, &token).await;
     assert!(get(&mut a, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     assert!(get(&mut b, "/b/stream", up.port)
         .await
-        .contains("Bearer tb"));
+        .contains(&seen("Bearer tb")));
 
     let ended = ends_by(&mut a, a_at + LATE)
         .await
@@ -369,7 +371,9 @@ async fn a_strict_grant_ends_its_streams_and_requests_while_the_other_runs() {
     let refused = get(&mut again, "/a/next", up.port).await;
     assert!(refused.contains(" 403 "), "{refused}");
     let mut b2 = p.tunnel(up.port, &token).await;
-    assert!(get(&mut b2, "/b/next", up.port).await.contains("Bearer tb"));
+    assert!(get(&mut b2, "/b/next", up.port)
+        .await
+        .contains(&seen("Bearer tb")));
     refresh.abort();
 }
 
@@ -437,10 +441,10 @@ async fn a_credential_expiring_mid_stream_cuts_a_strict_stream() {
     let mut b = p.tunnel(up.port, &token).await;
     assert!(get(&mut a, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     assert!(get(&mut b, "/b/stream", up.port)
         .await
-        .contains("Bearer tb"));
+        .contains(&seen("Bearer tb")));
     let ended = ends_by(&mut a, at + LATE).await.expect("A's stream is cut");
     assert!(ended + Duration::from_millis(100) >= at, "cut early");
     assert!(
@@ -468,7 +472,7 @@ async fn without_strict_a_grant_deadline_refuses_new_requests_only() {
     let mut a = p.tunnel(up.port, &token).await;
     assert!(get(&mut a, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     assert!(
         ends_by(&mut a, a_at + LATE).await.is_none(),
         "the stream was cut without strict"
@@ -508,7 +512,7 @@ async fn without_strict_a_bound_stream_outlives_its_grant_deadline() {
     let mut a = p.bound_tunnel(&binding, up.port).await;
     assert!(get(&mut a, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     assert!(
         ends_by(&mut a, a_at + LATE).await.is_none(),
         "a bound stream was cut at its grant's deadline without strict"
@@ -536,11 +540,11 @@ async fn an_ended_grant_leaves_its_requests_to_a_broader_rule_still_held() {
     let token = p.sign(&claims);
     let mut before = p.tunnel(up.port, &token).await;
     let answer = get(&mut before, "/b/x", up.port).await;
-    assert!(answer.contains("Bearer tb"), "{answer}");
+    assert!(answer.contains(&seen("Bearer tb")), "{answer}");
     tokio::time::sleep_until(b_at + Duration::from_millis(200)).await;
     let mut after = p.tunnel(up.port, &token).await;
     let answer = get(&mut after, "/b/x", up.port).await;
-    assert!(answer.contains("Bearer ta"), "{answer}");
+    assert!(answer.contains(&seen("Bearer ta")), "{answer}");
     refresh.abort();
 }
 
@@ -627,10 +631,10 @@ async fn updating_a_binding_cuts_only_the_grant_it_removes() {
     let mut b = p.bound_tunnel(&binding, up.port).await;
     assert!(get(&mut a, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     assert!(get(&mut b, "/b/stream", up.port)
         .await
-        .contains("Bearer tb"));
+        .contains(&seen("Bearer tb")));
 
     binding
         .update(BindingUpdate {
@@ -681,7 +685,9 @@ async fn updating_a_binding_cuts_only_the_grant_it_removes() {
     let refused = get(&mut a2, "/a/next", up.port).await;
     assert!(refused.contains(" 403 "), "{refused}");
     let mut b2 = p.bound_tunnel(&binding, up.port).await;
-    assert!(get(&mut b2, "/b/next", up.port).await.contains("Bearer tb"));
+    assert!(get(&mut b2, "/b/next", up.port)
+        .await
+        .contains(&seen("Bearer tb")));
     assert_eq!(binding.version(), 3);
     refresh.abort();
 }
@@ -718,7 +724,7 @@ async fn revoke_and_wait_returns_once_the_bindings_traffic_has_stopped() {
     let mut streaming = p.bound_tunnel(&binding, up.port).await;
     assert!(get(&mut streaming, "/a/stream", up.port)
         .await
-        .contains("Bearer ta"));
+        .contains(&seen("Bearer ta")));
     let mut idle = p.bound_tunnel(&binding, up.port).await;
 
     let report = binding
@@ -799,7 +805,7 @@ async fn session_cut_waits_for_the_revocation_and_the_traffic() {
     let mut streaming = p.tunnel(up.port, &token).await;
     assert!(get(&mut streaming, "/b/stream", up.port)
         .await
-        .contains("Bearer tb"));
+        .contains(&seen("Bearer tb")));
     let mut idle = p.tunnel(up.port, &token).await;
 
     // Not delivered yet, as when the control plane cannot reach the node.
