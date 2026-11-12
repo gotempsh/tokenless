@@ -30,6 +30,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 const SECRET: &str = "upstream-secret-token-6d1f0c2b9e";
+/// What the echo upstream answers in place of `SECRET`: it proves the
+/// secret arrived without sending it back, which the proxy would redact.
+const SAW: &str = "<upstream received SECRET>";
 const CLIENT_SUPPLIED: &str = "Bearer client-supplied-value";
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -80,7 +83,13 @@ async fn echo(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallibl
         x_tool_key: header(&req, "x-tool-key"),
         body: received,
     };
-    let bytes = serde_json::to_vec(&body).unwrap();
+    let mut text = serde_json::to_string(&body).unwrap();
+    // `/v1/reflect` sends back what it received as it is, like an echo
+    // endpoint would; the proxy must redact it.
+    if body.path != "/v1/reflect" {
+        text = text.replace(SECRET, SAW);
+    }
+    let bytes = text.into_bytes();
     Ok(Response::builder()
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(bytes)))
@@ -517,42 +526,51 @@ async fn end_to_end() {
     .await
     .unwrap();
     let client = proxied_client(proxy, &session_token, &[&ca_pem, &upstream.ca_pem]);
-    // --- an echoed secret reaches the agent masked ------------------------------
-    let echoed = || async {
+    // --- a reflected credential never reaches the agent ----------------------
+    let reflect = || async {
         client
-            .get(format!("https://localhost:{upstream_port}/v1/echo"))
+            .get(format!("https://localhost:{upstream_port}/v1/reflect"))
             .send()
             .await
             .unwrap()
-            .json::<Echo>()
+            .text()
             .await
             .unwrap()
-            .authorization
     };
-    let masked = "*".repeat(format!("Bearer {SECRET}").len());
-    assert_eq!(echoed().await.as_deref(), Some(masked.as_str()));
+    let reflected = reflect().await;
+    assert!(!reflected.contains(SECRET), "{reflected}");
+    assert!(reflected.contains("[redacted]"), "{reflected}");
     eventually(
-        "the masking is recorded",
+        "the redaction is recorded",
         Duration::from_secs(5),
         || async {
             let page = api
                 .get("/audit?action_prefix=proxy.response_scrubbed")
                 .await;
-            page["items"]
-                .as_array()
-                .is_some_and(|items| items.iter().any(|e| e["detail"]["masked"] == "1"))
+            page["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|e| e["detail"]["masked"].as_str().is_some_and(|n| n != "0"))
+            })
         },
     )
     .await;
-    // Off, so the checks below see what the upstream got.
-    api.call(
-        reqwest::Method::PUT,
-        "/settings",
-        Some(json!({ "unmatched_host_policy": "passthrough", "scrub_responses": false })),
-    )
+    // The settings can turn it off, and back on.
+    let redaction = |on: bool| {
+        api.call(
+            reqwest::Method::PUT,
+            "/settings",
+            Some(json!({ "unmatched_host_policy": "passthrough", "scrub_responses": on })),
+        )
+    };
+    assert!(redaction(false).await.0.is_success());
+    eventually("redaction turned off", Duration::from_secs(5), || async {
+        reflect().await.contains(SECRET)
+    })
     .await;
-    eventually("scrubbing turned off", Duration::from_secs(5), || async {
-        echoed().await.as_deref() == Some(format!("Bearer {SECRET}").as_str())
+    assert!(redaction(true).await.0.is_success());
+    eventually("redaction back on", Duration::from_secs(5), || async {
+        !reflect().await.contains(SECRET)
     })
     .await;
     let echo: Echo = client
@@ -569,7 +587,7 @@ async fn end_to_end() {
         .unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str())
+        Some(format!("Bearer {SAW}").as_str())
     );
     assert_eq!(
         echo.proxy_authorization, None,
@@ -597,7 +615,7 @@ async fn end_to_end() {
     let echo: Echo = response.json().await.unwrap();
     assert_eq!(
         echo.authorization.as_deref(),
-        Some(format!("Bearer {SECRET}").as_str()),
+        Some(format!("Bearer {SAW}").as_str()),
         "the gateway swaps the session token for the credential"
     );
     assert_eq!(echo.path, "/mcp");
@@ -658,17 +676,14 @@ async fn end_to_end() {
         .json()
         .await
         .unwrap();
-    assert_eq!(echo.path, format!("/v1/keys/{SECRET}"));
-    assert_eq!(
-        echo.query.as_deref(),
-        Some(format!("key={SECRET}").as_str())
-    );
+    assert_eq!(echo.path, format!("/v1/keys/{SAW}"));
+    assert_eq!(echo.query.as_deref(), Some(format!("key={SAW}").as_str()));
     assert_eq!(
         echo.x_tool_key.as_deref(),
-        Some(format!("Token {SECRET}").as_str())
+        Some(format!("Token {SAW}").as_str())
     );
     let sent: Value = serde_json::from_str(&echo.body).unwrap();
-    assert_eq!(sent["auth"], SECRET);
+    assert_eq!(sent["auth"], SAW);
 
     // --- MCP tool limits ----------------------------------------------------
     let (status, _, limited) = api
@@ -714,7 +729,7 @@ async fn end_to_end() {
         .unwrap();
     let forwarded: Value = serde_json::from_str(&echo.body).unwrap();
     assert_eq!(forwarded["params"]["name"], "search");
-    assert_eq!(forwarded["params"]["arguments"]["token"], SECRET);
+    assert_eq!(forwarded["params"]["arguments"]["token"], SAW);
     // A batch with one refused call is refused whole, one error per request.
     let refused: Value = client
         .post(&mcp_url)
@@ -902,7 +917,7 @@ async fn end_to_end() {
             .unwrap();
         assert_eq!(
             echo.authorization.as_deref(),
-            Some(format!("Bearer {SECRET}").as_str()),
+            Some(format!("Bearer {SAW}").as_str()),
             "the bundle's credential is injected through the session port"
         );
         assert_eq!(echo.proxy_authorization, None);

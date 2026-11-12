@@ -93,19 +93,30 @@ without it.
 
 An API that echoes its credential back, in a debug answer, an error that
 quotes the request or a key-introspection call, would hand the secret to
-the agent. By default the proxy masks a service's secret in the answers
-to the requests it added it to: every character becomes `*`, so lengths
-and `Content-Length` stay the same. Headers are always checked; a body
-is checked when it is text (or says nothing of its type) and not
-compressed, for its first 8 MiB. A compressed body is passed on as it
-came, and its `proxy.response` event says so (`body_not_scrubbed`).
+the agent. By default the proxy redacts the credential it added from the
+answer to that request: headers, redirects, trailers and body, as sent
+and in the forms encoders turn it into (base64, percent-encoded,
+JSON-escaped or as HTML entities). Each occurrence becomes `[redacted]`
+padded with `*`, so lengths and `Content-Length` stay the same, and an
+answer with nothing to redact is passed on byte for byte. The body is
+streamed; only bytes that could still begin the credential are held
+back.
 
-Each answer it masked something in is a `proxy.response_scrubbed` event
-with how many, and counts in `responses_scrubbed_total`. Values shorter
-than 8 characters are never masked, so ordinary words are left alone.
+The proxy asks the API for an uncompressed, whole answer. One that comes
+back compressed or partial can't be checked, so it is withheld: the
+agent gets a `502`, the `proxy.response` event is a failure saying why
+(`withheld`), and it counts in `responses_withheld_total`.
+
+Each answer it redacted something in is a `proxy.response_scrubbed`
+event with how many occurrences (`masked`), and counts in
+`responses_scrubbed_total`; the occurrences count in
+`credentials_redacted_total`. A secret shorter than 6 characters is not
+looked for on its own, so ordinary words are left alone. A credential
+the API transforms (hashes, truncates or encrypts) is not recognised.
+
 Turning it off asks you to confirm it's you. Over the API it is
 `scrub_responses` (`true` or `false`) in `PUT /api/v1/settings`. A proxy
-older than this release passes answers on unmasked.
+too old to read the setting keeps redacting.
 
 ## Alerts
 

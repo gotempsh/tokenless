@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use tokenless_core::injection::{InjectedHeaders, ScrubValues, SecretFields};
+use tokenless_core::injection::{InjectedHeaders, SecretFields};
 use tokenless_core::substitution::render_substitutions;
 use tokenless_core::template::ServiceTemplate;
 use tokenless_core::variables::render_custom_headers;
@@ -73,7 +73,6 @@ pub(crate) async fn render_credential(
     drop(fields);
     let mut headers = template.injection.render(&template.id, &resolved)?;
     headers.substitutions = render_substitutions(&template.id, &meta.substitutions, &resolved)?;
-    headers.scrub = ScrubValues::for_rendered(&template.injection, &resolved, &headers);
     drop(resolved);
     render_custom_headers(&meta.custom_headers, &mut headers, lookup)?;
     let mut strip = template.injection.strip_set();

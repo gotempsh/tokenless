@@ -245,9 +245,9 @@ export function Settings() {
           >
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1">
-                <Label htmlFor="scrub-responses">Mask a service's secret in the answers to its requests</Label>
+                <Label htmlFor="scrub-responses">Redact a service's credential from the answers to its requests</Label>
                 <p className="text-sm text-muted-foreground">
-                  In headers, and in text bodies that are not compressed, up to 8 MiB. Each character becomes *.
+                  In headers and bodies, as sent or encoded. An answer that comes back compressed or partial is withheld.
                 </p>
               </div>
               <Switch

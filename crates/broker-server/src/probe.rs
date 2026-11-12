@@ -168,7 +168,7 @@ mod tests {
             headers: InjectedHeaders {
                 headers: vec![],
                 substitutions: vec![],
-                scrub: Default::default(),
+                secrets: vec![],
             },
         }
     }

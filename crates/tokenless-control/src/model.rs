@@ -305,9 +305,9 @@ pub struct Settings {
     /// for no limit. Settings saved before it existed get the default.
     #[serde(default = "default_rate_limit")]
     pub rate_limit: Option<RateLimit>,
-    /// Whether proxies mask a service's secrets in the responses to the
-    /// requests they added them to. Settings saved before it existed get
-    /// it on.
+    /// Whether proxies redact the injected credential from the responses
+    /// to the requests they added it to. Settings saved before it existed
+    /// get it on.
     #[serde(default = "default_true")]
     pub scrub_responses: bool,
     /// Which audit signals raise an alert.

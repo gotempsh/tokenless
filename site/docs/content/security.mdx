@@ -28,7 +28,7 @@ This page is the summary an operator needs.
   off at once and you are alerted. Each session is
   [rate limited](./settings.mdx#rate-limit), so a stolen one can't be
   used to empty an API in a few seconds. An API that echoes its
-  credential back has it [masked](./settings.mdx#secrets-in-responses)
+  credential back has it [redacted](./settings.mdx#secrets-in-responses)
   before the agent sees the answer.
 - **A credential being used outside its scope.** The proxy adds a
   credential only to requests a session's rules allow, and only over

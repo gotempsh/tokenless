@@ -54,6 +54,7 @@ use crate::binding::BindingState;
 use crate::clock;
 use crate::cut::{session_end, session_expiry, CutSignal, SessionEnd, SessionWatch};
 use crate::metrics::Metrics;
+use crate::scrub;
 use crate::shutdown::{closed, stopping, Lifecycle};
 use crate::state::{ActiveRule, ActiveSnapshot, SnapshotHandle};
 use crate::status::UpstreamFailureKind;
@@ -1563,7 +1564,12 @@ pub(crate) async fn handle_intercepted(
         );
     }
     rewrite_headers(req.headers_mut(), rule);
-    let scrubber = rule.scrub.clone().filter(|_| snapshot.scrub_responses);
+    // Redaction is on unless the settings turned it off.
+    let scrubber = rule.scrubber.clone();
+    let redacting = snapshot.scrub_responses && !scrubber.is_empty();
+    if redacting {
+        scrub::prepare_request(req.headers_mut());
+    }
     let rule_id = rule.id;
     let credential_id = rule.credential_id;
     // Strict sessions and bindings: the upload and the response are cut
@@ -1606,54 +1612,43 @@ pub(crate) async fn handle_intercepted(
             debug!(rule_id = %rule_id, session_id = %claims.jti, host = %ctx.host, %method, status, "injected credential");
             outcome = outcome.detail("status", status.to_string());
             let response = response.map(|b| b.map_err(BodyError::from).boxed());
-            let response = match &scrubber {
-                Some(scrubber) => {
-                    let (mut parts, body) = response.into_parts();
-                    let in_headers = scrubber.mask_headers(&mut parts.headers);
-                    if in_headers > 0 {
-                        Metrics::inc(&shared.metrics.responses_scrubbed_total);
-                        outcome = outcome.detail("scrubbed_headers", in_headers.to_string());
+            // The response may reflect what was injected: it reaches the
+            // client redacted, or not at all.
+            let response = if !redacting {
+                response
+            } else {
+                let report = proxy_event(
+                    shared,
+                    claims,
+                    SCRUBBED_ACTION,
+                    AuditOutcome::Success,
+                    &ctx.host,
+                    ctx.port,
+                    Some((&method, &path)),
+                )
+                .target(format!("rule:{rule_id}"))
+                .detail("credential_id", credential_id.to_string())
+                .detail("request_id", request_id.clone());
+                let audit = shared.audit.clone();
+                let redactions =
+                    scrub::Redactions::new(shared.metrics.clone(), rule_id, ctx.host.clone())
+                        .on_done(move |masked| {
+                            let _ = audit.try_record(report.detail("masked", masked.to_string()));
+                        });
+                match scrub::scrub_response(response, scrubber, redactions) {
+                    Ok(response) => response,
+                    Err(withheld) => {
+                        Metrics::inc(&shared.metrics.responses_withheld_total);
+                        warn!(rule_id = %rule_id, host = %ctx.host, %method, status, reason = %withheld, "withheld an upstream response that cannot be checked for the injected credential");
+                        outcome.outcome = AuditOutcome::Failure;
+                        outcome = outcome.detail("withheld", withheld.to_string());
+                        let _ = shared.audit.try_record(outcome);
+                        return respond(
+                            StatusCode::BAD_GATEWAY,
+                            &format!("{withheld}; the response was withheld so the injected credential cannot reach this client"),
+                        );
                     }
-                    let body = match crate::scrub::body_skipped(&parts.headers) {
-                        Some(reason) => {
-                            outcome = outcome.detail("body_not_scrubbed", reason);
-                            body
-                        }
-                        None => {
-                            let report = proxy_event(
-                                shared,
-                                claims,
-                                SCRUBBED_ACTION,
-                                AuditOutcome::Success,
-                                &ctx.host,
-                                ctx.port,
-                                Some((&method, &path)),
-                            )
-                            .target(format!("rule:{rule_id}"))
-                            .detail("credential_id", credential_id.to_string())
-                            .detail("request_id", request_id.clone());
-                            let shared = ctx.shared.clone();
-                            crate::scrub::ScrubBody::wrap(body, scrubber.clone(), move |done| {
-                                if done.masked == 0 {
-                                    return;
-                                }
-                                if in_headers == 0 {
-                                    Metrics::inc(&shared.metrics.responses_scrubbed_total);
-                                }
-                                let mut report = report.detail("masked", done.masked.to_string());
-                                if done.truncated {
-                                    report = report.detail(
-                                        "read_up_to",
-                                        crate::scrub::MAX_SCRUB_BODY.to_string(),
-                                    );
-                                }
-                                let _ = shared.audit.try_record(report);
-                            })
-                        }
-                    };
-                    Response::from_parts(parts, body)
                 }
-                None => response,
             };
             let _ = shared.audit.try_record(outcome);
             if status == StatusCode::UNAUTHORIZED.as_u16() {
@@ -1681,9 +1676,14 @@ pub(crate) async fn handle_intercepted(
             if let Some(binding) = &ctx.binding {
                 binding.record_failure(UpstreamFailureKind::Unreachable, &ctx.host, ctx.port);
             }
+            // The cause is the upstream's and the log's; the client
+            // learns only what kind of failure it was.
             respond(
                 StatusCode::BAD_GATEWAY,
-                &format!("upstream request failed: {e}"),
+                &format!(
+                    "upstream request to {}:{} failed (unreachable); the data plane log has the cause",
+                    ctx.host, ctx.port
+                ),
             )
         }
     }
@@ -1839,7 +1839,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
-            scrub: None,
+            scrubber: Default::default(),
         }
     }
 
@@ -1909,7 +1909,7 @@ mod tests {
             )],
             substitutions: vec![],
             not_after: None,
-            scrub: None,
+            scrubber: Default::default(),
         };
         let mut h = HeaderMap::new();
         h.insert(
@@ -2263,7 +2263,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         use crate::audit::AuditShipper;
-        use crate::testing::{https_echo_authorization_upstream, running_with};
+        use crate::testing::{https_echo_authorization_upstream, running_with, seen};
 
         #[derive(Default)]
         struct Collect(std::sync::Mutex<Vec<AuditEvent>>);
@@ -2367,10 +2367,10 @@ mod tests {
         install(3, &["/api/*"]);
         let answer = get("/api/v4/projects".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer api"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer api")), "{answer}");
         let answer = get("/acme/widgets.git/info/refs".into()).await;
         assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-        assert!(answer.ends_with("Bearer git"), "{answer}");
+        assert!(answer.ends_with(&seen("Bearer git")), "{answer}");
         r.dp.abort();
     }
 }

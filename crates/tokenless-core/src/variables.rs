@@ -16,7 +16,7 @@ use zeroize::Zeroizing;
 
 use crate::error::CoreError;
 use crate::injection::{
-    validate_header_name, validate_header_value, InjectedHeader, InjectedHeaders,
+    validate_header_name, validate_header_value, InjectedHeader, InjectedHeaders, SecretMaterial,
 };
 
 pub const MAX_KEY_LEN: usize = 64;
@@ -192,8 +192,22 @@ pub fn render_custom_headers<'v>(
         let value = substitute(&context, &header.value, lookup)?;
         validate_header_value(&header.name, &value)?;
         let name = validate_header_name(&header.name)?;
+        // Literal text is configuration; a header that references a
+        // variable carries a secret, which the data plane redacts from
+        // responses in whatever form they reflect it.
+        let keys = references(&context, &header.value)?;
+        if keys.is_empty() {
+            out.headers
+                .push(InjectedHeader::fixed(&name, value.to_string()));
+            continue;
+        }
+        for key in keys {
+            if let Some(secret) = lookup(&key) {
+                out.secrets.push(SecretMaterial::new(secret));
+            }
+        }
         out.headers
-            .push(InjectedHeader::new(&name, value.to_string()));
+            .push(InjectedHeader::credential(&name, value.to_string()));
     }
     Ok(())
 }
@@ -285,7 +299,7 @@ mod tests {
         let mut out = InjectedHeaders {
             headers: vec![],
             substitutions: vec![],
-            scrub: Default::default(),
+            secrets: vec![],
         };
         render_custom_headers(
             &[CustomHeader {
@@ -303,7 +317,7 @@ mod tests {
         let mut out = InjectedHeaders {
             headers: vec![],
             substitutions: vec![],
-            scrub: Default::default(),
+            secrets: vec![],
         };
         assert!(render_custom_headers(
             &[CustomHeader {
@@ -314,5 +328,36 @@ mod tests {
             bad,
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_literal_custom_header_is_fixed_and_a_variable_one_is_credential_material() {
+        let mut out = InjectedHeaders {
+            headers: vec![],
+            substitutions: vec![],
+            secrets: vec![],
+        };
+        render_custom_headers(
+            &[
+                CustomHeader {
+                    name: "X-Api-Version".into(),
+                    value: "2024-01-01".into(),
+                },
+                CustomHeader {
+                    name: "X-Org-Token".into(),
+                    value: "tok-{{GITHUB_TOKEN}}".into(),
+                },
+            ],
+            &mut out,
+            lookup,
+        )
+        .unwrap();
+        assert!(out.headers[0].fixed, "a literal value is configuration");
+        assert!(
+            !out.headers[1].fixed,
+            "a variable makes it credential material"
+        );
+        let secrets: Vec<&str> = out.secrets.iter().map(SecretMaterial::expose).collect();
+        assert_eq!(secrets, ["ghp_secret"]);
     }
 }

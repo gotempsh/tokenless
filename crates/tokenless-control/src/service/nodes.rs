@@ -590,7 +590,10 @@ impl NodeService {
         let rate_limit = settings
             .rate_limit
             .filter(|_| reads_format >= RATE_LIMIT_FORMAT);
-        let scrub_responses = settings.scrub_responses && reads_format >= SCRUB_FORMAT;
+        // Redaction is on in a snapshot that says nothing of it; only a
+        // node that reads format 6 can be told to stop, and one that cannot
+        // keeps redacting.
+        let scrub_responses = settings.scrub_responses || reads_format < SCRUB_FORMAT;
         let format = format_for(&rules)
             .max(if quarantine.is_some() {
                 QUARANTINE_FORMAT
@@ -608,9 +611,9 @@ impl NodeService {
                 MIN_SNAPSHOT_FORMAT
             })
             .max(if scrub_responses {
-                SCRUB_FORMAT
-            } else {
                 MIN_SNAPSHOT_FORMAT
+            } else {
+                SCRUB_FORMAT
             });
         let body = SnapshotBody {
             format,
@@ -1106,7 +1109,7 @@ mod tests {
             "a format 1 node is sent no quarantine"
         );
         assert_eq!(body.rate_limit, None, "nor a rate limit");
-        assert!(!body.scrub_responses, "nor scrubbing");
+        assert!(body.scrub_responses, "and it keeps redacting");
         assert_eq!(
             body.rules.iter().map(|r| r.rule_id).collect::<Vec<_>>(),
             vec![other]
@@ -1210,7 +1213,7 @@ mod tests {
         use crate::service::policy::{CreateCredential, CreateRule};
         use tokenless_core::injection::InjectedHeaders;
         use tokenless_core::seal::open;
-        use tokenless_core::snapshot::rule_aad;
+        use tokenless_core::snapshot::{rule_aad, SCRUB_FORMAT, SNAPSHOT_FORMAT};
 
         let (_, cs) = services().await;
         let host = Caller::service(Principal::service("host", Role::Admin, None));
@@ -1281,9 +1284,40 @@ mod tests {
         )
         .unwrap();
         let headers: InjectedHeaders = serde_json::from_slice(&plain).unwrap();
-        assert_eq!(
-            headers.scrub.values(),
-            [token.to_string(), format!("Bearer {token}")]
+        let secrets: Vec<&str> = headers.secrets.iter().map(|s| s.expose()).collect();
+        assert_eq!(secrets, [token]);
+
+        // Turned off, only a node that reads format 6 is told to stop.
+        let settings = cs.policy.get_settings(&host).await.unwrap();
+        cs.policy
+            .put_settings(
+                &host,
+                crate::model::Settings {
+                    scrub_responses: false,
+                    ..settings
+                },
+            )
+            .await
+            .unwrap();
+        let built = |format| {
+            let cs = &cs;
+            let node = &node;
+            async move {
+                cs.nodes
+                    .build_snapshot_for(&node.node, format)
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .verify(&node.snapshot_verify_key)
+                    .unwrap()
+            }
+        };
+        let current = built(SNAPSHOT_FORMAT).await;
+        assert!(!current.scrub_responses);
+        assert!(current.format >= SCRUB_FORMAT);
+        assert!(
+            built(SCRUB_FORMAT - 1).await.scrub_responses,
+            "an older node keeps redacting"
         );
     }
 

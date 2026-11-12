@@ -104,10 +104,10 @@ describe("actionPhrase", () => {
     ).toBe("cut an open connection to api.example.com: the session was revoked");
   });
 
-  test("a masked answer says how many secrets it held", () => {
+  test("a redacted answer says how many times it held the credential", () => {
     expect(
       actionPhrase(event({ action: "proxy.response_scrubbed", detail: { masked: "2", host: "api.example.com:443", method: "GET", path: "/debug" } })),
-    ).toContain("masked 2 secrets in the answer for GET");
+    ).toContain("redacted the credential 2 times in the answer for GET");
   });
 
   test("rate-limited requests read as one refusal with a count", () => {
