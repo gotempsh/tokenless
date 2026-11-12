@@ -6,7 +6,33 @@
 // the step-up prompt and the request is retried once; a read never prompts,
 // since pages read in the background and nobody asked to confirm anything.
 
-export type Role = "admin" | "editor" | "viewer";
+/** A person's role on the instance: admins run it, members work in the vaults they belong to. */
+export type InstanceRole = "admin" | "member";
+/** A role inside one vault. */
+export type VaultRole = "admin" | "editor" | "viewer" | "runner";
+/** What an API key may do in its vault. */
+export type ApiKeyRole = "editor" | "viewer" | "runner";
+export type Role = InstanceRole | VaultRole;
+
+/** A role in one vault. */
+export interface VaultGrant {
+  vault_id: string;
+  role: VaultRole;
+}
+
+/** Someone who works in a vault. */
+export interface VaultMember {
+  vault_id: string;
+  user_id: string;
+  username: string;
+  role: VaultRole;
+  /** Who added them or last set their role; `sso:<provider>` when their groups gave it. */
+  added_by: string;
+  added_at: string;
+}
+
+/** What a sign-in may do: everything the person may, or only start sessions. */
+export type SignInScope = "full" | "launch";
 
 export interface Problem {
   title: string;
@@ -34,7 +60,7 @@ export interface Page<T> {
 export interface UserSummary {
   id: string;
   username: string;
-  role: Role;
+  role: InstanceRole;
   created_at: string;
   disabled_at: string | null;
   totp_enrolled: boolean;
@@ -44,7 +70,9 @@ export interface UserSummary {
 
 export interface Invite {
   id: string;
-  role: Role;
+  role: InstanceRole;
+  /** The vaults accepting it makes the person a member of. */
+  vaults: VaultGrant[];
   created_by: string;
   created_at: string;
   expires_at: string;
@@ -53,8 +81,16 @@ export interface Invite {
   revoked_at: string | null;
 }
 
+/** A vault an invitation gives a role in. */
+export interface InvitedVault {
+  vault_id: string;
+  name: string;
+  role: VaultRole;
+}
+
 export interface InviteInfo {
-  role: Role;
+  role: InstanceRole;
+  vaults: InvitedVault[];
   expires_at: string;
 }
 
@@ -65,6 +101,9 @@ export interface SessionInfo {
   step_up_at: string | null;
   /** The identity provider this person signs in with, if any. */
   sso?: SsoSignIn;
+  scope: SignInScope;
+  /** The vaults the person is a member of, with their role in each. */
+  vaults: VaultGrant[];
 }
 
 export type PasswordSignIn = "everyone" | "admins_only";
@@ -89,6 +128,7 @@ export interface SignIn {
   expires_at: string;
   /** The sign-in that asked. */
   current: boolean;
+  scope: SignInScope;
 }
 
 export interface SignInsRevoked {
@@ -118,7 +158,9 @@ export interface SsoSignIn {
 
 export interface RoleMapping {
   group: string;
-  role: Role;
+  role: InstanceRole;
+  /** The vaults members of the group belong to, and with which role. */
+  vaults: VaultGrant[];
 }
 
 export interface OidcProvider {
@@ -362,6 +404,8 @@ export interface VaultOverview extends Vault {
   live_sessions: number;
   /** When a proxy last added one of its credentials; null if never or not visible. */
   last_request_at: string | null;
+  /** The person's role in it; null for an instance admin overseeing it. */
+  my_role: VaultRole | null;
 }
 
 export interface ProxySession {
@@ -435,7 +479,7 @@ export interface ApiKey {
   name: string;
   prefix: string;
   vault_id: string;
-  role: Role;
+  role: ApiKeyRole;
   created_by: string;
   created_at: string;
   expires_at: string;

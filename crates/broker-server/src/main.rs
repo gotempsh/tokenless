@@ -44,6 +44,7 @@ use zeroize::Zeroizing;
 mod alerts;
 mod keys;
 mod list;
+mod members;
 mod messages;
 mod setup;
 mod sign_ins;
@@ -70,18 +71,29 @@ struct Cli {
 enum Command {
     /// Run the control plane: management API, UI and node API.
     Serve(ServeArgs),
-    /// Sign in as a person and keep the session in the OS keychain, for
-    /// the commands that set up the broker (`service add`, `proxy add`).
+    /// Sign in as a person and keep the session in the OS keychain.
     ///
-    /// Example:
-    ///   tokenless login --username admin
+    /// By default the sign-in only finds access bundles and starts sessions
+    /// from them (`tokenless run`), whatever your roles allow: keep it on
+    /// machines that run agents. With --manage it can do everything your
+    /// roles allow for an hour, for the commands that change the broker
+    /// (`service add`, `proxy add`, ...); it is kept apart, and `run` never
+    /// uses it.
+    ///
+    /// Examples:
+    ///   tokenless login --username ana
+    ///   tokenless login --manage --username ana
     #[command(verbatim_doc_comment)]
     Login {
         /// Management API URL.
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
-        #[arg(long, default_value = "admin")]
-        username: String,
+        /// Asked for when not given.
+        #[arg(long)]
+        username: Option<String>,
+        /// Sign in for an hour with everything your roles allow.
+        #[arg(long)]
+        manage: bool,
     },
     /// Sign out and remove the session from the OS keychain.
     Logout {
@@ -91,20 +103,20 @@ enum Command {
     },
     /// What the proxies reported that someone should look at now: a
     /// session cut off, refused often or used through a second proxy.
-    /// Needs `tokenless login`.
+    /// Needs `tokenless login --manage`.
     Alerts {
         #[command(subcommand)]
         command: AlertCommand,
     },
     /// Decoy credentials to plant on an agent's machine: a request that
     /// carries one cuts its session off and raises an alert. Needs
-    /// `tokenless login`.
+    /// `tokenless login --manage`.
     Tripwire {
         #[command(subcommand)]
         command: TripwireCommand,
     },
     /// The browsers and CLI logins signed in as you, and ending them: a
-    /// lost laptop, a machine you no longer use. Needs `tokenless login`.
+    /// lost laptop, a machine you no longer use. Needs `tokenless login --manage`.
     SignIns {
         #[command(subcommand)]
         command: SignInCommand,
@@ -125,23 +137,27 @@ enum Command {
         #[arg(long, env = "TOKENLESS_URL", default_value = setup::DEFAULT_SERVER)]
         server: String,
     },
-    /// Vaults: where services, rules and bundles live. Needs `tokenless login`.
+    /// Vaults: where services, rules and bundles live, and who works in
+    /// each. Listing needs `tokenless login`; the rest `tokenless login --manage`.
     Vault {
         #[command(subcommand)]
         command: VaultCommand,
     },
-    /// Services agents can use. Needs `tokenless login`.
+    /// Services agents can use. Listing needs `tokenless login`; adding
+    /// and changing them `tokenless login --manage`.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
     },
     /// Access bundles: the services a kind of job may use, that sessions
-    /// are minted from. Needs `tokenless login`.
+    /// are minted from. Listing needs `tokenless login`; the rest
+    /// `tokenless login --manage`.
     Bundle {
         #[command(subcommand)]
         command: BundleCommand,
     },
-    /// Proxies that inject credentials. Needs `tokenless login`.
+    /// Proxies that inject credentials. Needs `tokenless login --manage`
+    /// to add or approve one.
     Proxy {
         #[command(subcommand)]
         command: ProxyCommand,
@@ -392,6 +408,83 @@ enum VaultCommand {
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
     },
+    /// Who works in a vault, and with which role: admin (manages the vault
+    /// and its members), editor (adds services, rules and bundles), viewer
+    /// (reads them) or runner (only starts sessions from its bundles).
+    Member {
+        #[command(subcommand)]
+        command: MemberCommand,
+    },
+    /// Joins a vault you oversee as an instance admin, as one of its
+    /// admins. Instance admins see every vault but cannot read or change
+    /// one they are not a member of; joining is recorded in the audit log
+    /// and asks you to confirm it is you.
+    ///
+    /// Examples:
+    ///   tokenless vault join work
+    #[command(verbatim_doc_comment)]
+    Join {
+        /// The vault, by name or id.
+        vault: String,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemberCommand {
+    /// Lists a vault's members and their roles.
+    ///
+    /// Examples:
+    ///   tokenless vault member list work
+    ///   tokenless vault member list work --json
+    #[command(verbatim_doc_comment)]
+    List {
+        /// The vault, by name or id.
+        vault: String,
+        /// Print the rows as JSON, for agents and scripts.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Adds a person to a vault, or changes their role there. Needs the
+    /// vault's admin role, and asks you to confirm it is you.
+    ///
+    /// Examples:
+    ///   tokenless vault member set work alice --role editor
+    ///   tokenless vault member set work ci-laptop-owner --role runner
+    #[command(verbatim_doc_comment)]
+    Set {
+        /// The vault, by name or id.
+        vault: String,
+        /// The person's username.
+        username: String,
+        /// Their role in the vault.
+        #[arg(long, value_enum)]
+        role: members::VaultRoleArg,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Removes a person from a vault. Their sign-ins stay, but they no
+    /// longer reach anything in it. Anyone may leave a vault; a vault always
+    /// keeps one admin.
+    ///
+    /// Examples:
+    ///   tokenless vault member remove work alice
+    #[command(verbatim_doc_comment)]
+    Remove {
+        /// The vault, by name or id.
+        vault: String,
+        /// The person's username.
+        username: String,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -615,7 +708,7 @@ enum SignInCommand {
 enum SessionCommand {
     /// List sessions, newest first: the active ones, or with --all also
     /// those that expired or were revoked. The ID is what `session revoke
-    /// --id` takes. Needs `tokenless login`.
+    /// --id` takes. Needs `tokenless login --manage`.
     ///
     /// Examples:
     ///   tokenless session list
@@ -1180,18 +1273,55 @@ fn no_terminal(label: &str, e: std::io::Error) -> LauncherError {
         return LauncherError::io(format!("reading {label} from the terminal"))(e);
     }
     LauncherError::config(format!(
-        "this needs {label}, and there is no terminal to type it in. Run tokenless login in a terminal (a sign-in also confirms it is you for a few minutes), then run this again; for a credential, pass --secret-file or --web instead"
+        "this needs {label}, and there is no terminal to type it in. Run tokenless login --manage in a terminal (a sign-in also confirms it is you for a few minutes), then run this again; for a credential, pass --secret-file or --web instead"
     ))
 }
 
-async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
+/// The username from the terminal.
+fn ask_username() -> Result<String, CliError> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            LauncherError::config("pass --username: there is no terminal to ask for it").into(),
+        );
+    }
+    eprint!("Username: ");
+    std::io::stderr()
+        .flush()
+        .map_err(LauncherError::io("asking for the username"))?;
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(LauncherError::io("reading the username"))?;
+    let username = line.trim().to_string();
+    if username.is_empty() {
+        return Err(LauncherError::config("no username given").into());
+    }
+    Ok(username)
+}
+
+async fn login(
+    server: String,
+    username: Option<String>,
+    manage: bool,
+) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
+    let username = match username {
+        Some(username) => username,
+        None => ask_username()?,
+    };
+    let purpose = if manage {
+        account::SignInFor::Manage
+    } else {
+        account::SignInFor::Launch
+    };
     let password = prompter.secret(&format!("Password for {username}"))?;
-    let session = match account::sign_in(&server, &username, &password, None).await? {
+    let session = match account::sign_in(&server, &username, &password, None, purpose).await? {
         SignIn::Done(session) => session,
         SignIn::CodeNeeded => {
             let code = prompter.secret("Authenticator code")?;
-            match account::sign_in(&server, &username, &password, Some(&code)).await? {
+            match account::sign_in(&server, &username, &password, Some(&code), purpose).await? {
                 SignIn::Done(session) => session,
                 SignIn::CodeNeeded => {
                     return Err(
@@ -1211,6 +1341,7 @@ async fn login(server: String, username: String) -> Result<ExitCode, CliError> {
         &session.server,
         &session.username,
         &until,
+        session.manage,
         file.as_ref().map(|(p, r)| (p.as_str(), r.as_str())),
     ));
     offer_skill();
@@ -1265,14 +1396,24 @@ fn offer_skill() {
 async fn logout(server: String) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
     let store = SessionStore::system();
-    // Ending it on the server is best effort; the keychain entry goes
-    // either way.
-    let ended = match ConsoleClient::open(&store, &server, &prompter) {
-        Ok(client) => client.logout().await.err(),
-        Err(_) => None,
-    };
+    // Both sign-ins: `open` takes the --manage one first, then the one
+    // `run` uses. Ending each on the server is best effort; the keychain
+    // entries go either way.
+    let mut removed = false;
+    let mut ended = None;
+    for _ in 0..2 {
+        let Ok(client) = ConsoleClient::open(&store, &server, &prompter) else {
+            break;
+        };
+        if let Err(e) = client.logout().await {
+            ended.get_or_insert(e);
+        }
+        removed |= store.delete(&client.session().key())?;
+    }
     let server = server.trim().trim_end_matches('/');
-    let removed = store.delete(server)?;
+    // Ended ones too.
+    removed |= store.delete(server)?;
+    removed |= store.delete(&account::manage_key(server))?;
     match (removed, ended) {
         (false, _) => say(format_args!("not signed in to {server}")),
         (true, None) => say("signed out"),
@@ -1582,10 +1723,10 @@ fn read_api_key(args: &BrokerArgs) -> Result<Option<Zeroizing<String>>, CliError
         .filter(|k| !k.is_empty()))
 }
 
-/// An API key when one is given; otherwise the session of `tokenless login`
-/// for this server, when there is one.
+/// An API key when one is given; otherwise the session of `tokenless login
+/// --manage` for this server, or else that of `tokenless login`.
 fn client(args: &BrokerArgs) -> Result<Arc<ApiClient>, CliError> {
-    signed_in_client(args, &SessionStore::system())
+    signed_in_client(args, &SessionStore::system(), true)
 }
 
 /// The client `run` and `session start` use. A given session token needs no
@@ -1601,26 +1742,36 @@ fn launcher_client(
     if given {
         return Ok(Arc::new(ApiClient::new(&args.server, None)?));
     }
-    signed_in_client(args, saved)
+    // Never the --manage sign-in: what an agent's machine keeps for `run`
+    // can only start sessions.
+    signed_in_client(args, saved, false)
 }
 
 fn signed_in_client(
     args: &BrokerArgs,
     saved: &dyn SessionVault,
+    manage_first: bool,
 ) -> Result<Arc<ApiClient>, CliError> {
     let credentials = match read_api_key(args)? {
         Some(key) => Some(Credentials::ApiKey(key)),
         None => {
             let server = args.server.trim().trim_end_matches('/');
+            let live = |s: &account::SavedSession| s.expires_at > chrono::Utc::now();
+            let manage = manage_first
+                .then(|| saved.load(&account::manage_key(server)).ok().flatten())
+                .flatten()
+                .filter(live);
             // A session store that cannot be read is the same as not signed
             // in: the error then says how to authenticate.
-            match saved.load(server) {
-                Ok(Some(saved)) if saved.expires_at > chrono::Utc::now() => {
-                    Some(Credentials::Session {
-                        token: Zeroizing::new(saved.token),
-                        csrf_token: saved.csrf_token,
-                    })
-                }
+            let session = match manage {
+                Some(m) => Ok(Some(m)),
+                None => saved.load(server).map(|s| s.filter(live)),
+            };
+            match session {
+                Ok(Some(saved)) => Some(Credentials::Session {
+                    token: Zeroizing::new(saved.token),
+                    csrf_token: saved.csrf_token,
+                }),
                 Ok(_) => None,
                 Err(e) => {
                     tracing::debug!(error = %e, "no saved session");
@@ -1826,7 +1977,7 @@ async fn session(command: SessionCommand, verbose: bool) -> Result<ExitCode, Cli
         SessionCommand::Create { mint, json } => {
             // A missing bundle fails before any network call.
             let request = mint_request(&mint, &[])?;
-            let client = client(&mint.broker)?;
+            let client = launcher_client(&mint.broker, false, &SessionStore::system())?;
             let vault = client.resolve_vault(mint.vault.as_deref()).await?;
             let minted = client.mint(&vault, &request).await?;
             if json {
@@ -2025,7 +2176,7 @@ async fn mcp_command(args: McpArgs) -> Result<ExitCode, CliError> {
         labels,
         renews: None,
     };
-    let client = client(&args.broker)?;
+    let client = launcher_client(&args.broker, false, &SessionStore::system())?;
     let vault = client.resolve_vault(args.vault.as_deref()).await?;
     let minted = client.mint(&vault, &request).await?;
     let discovery = client.discover(&minted.token).await?;
@@ -2428,7 +2579,11 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }),
         Command::Admin { command } => admin(command).await.map(|()| ExitCode::SUCCESS),
-        Command::Login { server, username } => login(server, username).await,
+        Command::Login {
+            server,
+            username,
+            manage,
+        } => login(server, username, manage).await,
         Command::Logout { server } => logout(server).await,
         Command::Tripwire { command } => match command {
             TripwireCommand::Add {
@@ -2478,6 +2633,29 @@ async fn main() -> ExitCode {
         Command::Vault {
             command: VaultCommand::List { json, server },
         } => list::vaults(json, server).await,
+        Command::Vault {
+            command: VaultCommand::Join { vault, server },
+        } => members::join(vault, server).await,
+        Command::Vault {
+            command: VaultCommand::Member { command },
+        } => match command {
+            MemberCommand::List {
+                vault,
+                json,
+                server,
+            } => members::list(vault, json, server).await,
+            MemberCommand::Set {
+                vault,
+                username,
+                role,
+                server,
+            } => members::set(vault, username, role, server).await,
+            MemberCommand::Remove {
+                vault,
+                username,
+                server,
+            } => members::remove(vault, username, server).await,
+        },
         Command::Bundle {
             command:
                 BundleCommand::List {
@@ -2732,6 +2910,46 @@ mod tests {
             launcher_client(&args.mint.broker, false, &vault).unwrap();
             assert_eq!(vault.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         }
+    }
+
+    /// Remembers which saved sign-ins were read.
+    #[derive(Default)]
+    struct RecordingVault(std::sync::Mutex<Vec<String>>);
+
+    impl SessionVault for RecordingVault {
+        fn load(&self, key: &str) -> Result<Option<account::SavedSession>, LauncherError> {
+            self.0.lock().unwrap().push(key.to_owned());
+            Ok(Some(account::SavedSession {
+                server: "http://127.0.0.1:9".into(),
+                username: "someone".into(),
+                totp_enrolled: false,
+                token: "t".into(),
+                csrf_token: "c".into(),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                manage: key.ends_with("#manage"),
+            }))
+        }
+        fn save(&self, _session: &account::SavedSession) -> Result<(), LauncherError> {
+            Ok(())
+        }
+        fn delete(&self, _server: &str) -> Result<bool, LauncherError> {
+            Ok(false)
+        }
+    }
+
+    #[test]
+    fn run_never_reads_the_manage_sign_in_and_management_prefers_it() {
+        if std::env::var_os("TOKENLESS_API_KEY").is_some() {
+            return;
+        }
+        let args = run_args(&["--server", "http://127.0.0.1:9/"]);
+        let vault = RecordingVault::default();
+        launcher_client(&args.mint.broker, false, &vault).unwrap();
+        assert_eq!(*vault.0.lock().unwrap(), ["http://127.0.0.1:9"]);
+
+        let vault = RecordingVault::default();
+        signed_in_client(&args.mint.broker, &vault, true).unwrap();
+        assert_eq!(*vault.0.lock().unwrap(), ["http://127.0.0.1:9#manage"]);
     }
 
     #[test]

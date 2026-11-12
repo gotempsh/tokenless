@@ -15,9 +15,9 @@ import {
   type DiscoveredService,
   type Page,
   type ProxySession,
-  type UserSummary,
   type Vault,
 } from "../api";
+import { can, onlyFor, type Me } from "../access";
 import { actorName, sessionHistoryPhrase, type ActorNames } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { useAction, useLoad, usePolling } from "../hooks";
@@ -57,7 +57,7 @@ import { isActive, sessionLabel, sessionStatus } from "./Sessions";
 /** Proxies report traffic every few seconds; a live session's page follows it. */
 const REFRESH_MS = 5_000;
 
-export function SessionPage({ sessionId, user }: { sessionId: string; user: UserSummary }) {
+export function SessionPage({ sessionId, user }: { sessionId: string; user: Me }) {
   // A session that does not exist loads as null, not as an error.
   const session = useLoad(
     () =>
@@ -79,7 +79,9 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
   const [editing, setEditing] = useState(false);
   const confirm = useConfirm<ProxySession>();
   const action = useAction();
-  const canChange = user.role === "admin" || user.role === "editor";
+  // Relabelling is part of starting sessions; revoking one is stopping it.
+  const canChange = can(user, vaultId, "start");
+  const canRevoke = can(user, vaultId, "stop");
   const active = s ? isActive(s) : false;
   // A live session can end elsewhere (revoked by someone else, ended by
   // the agent's own `tokenless run`, or expired): follow it, so the
@@ -122,7 +124,7 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
                   icon: Pencil,
                   onSelect: () => setEditing(true),
                   disabled: !canChange,
-                  reason: "Only editors and admins can change sessions",
+                  reason: onlyFor("edit"),
                 },
                 ...(active
                   ? [
@@ -131,8 +133,8 @@ export function SessionPage({ sessionId, user }: { sessionId: string; user: User
                         icon: Ban,
                         onSelect: () => confirm.ask(s),
                         destructive: true,
-                        disabled: !canChange,
-                        reason: "Only editors and admins can revoke sessions",
+                        disabled: !canRevoke,
+                        reason: onlyFor("stop"),
                       },
                     ]
                   : []),

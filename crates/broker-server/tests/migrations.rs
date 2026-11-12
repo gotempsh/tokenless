@@ -499,3 +499,185 @@ async fn upgrading_keeps_sign_ins_and_gives_them_an_id() {
         .expect("list");
     assert_eq!(listed.total, 2);
 }
+
+#[tokio::test]
+async fn upgrading_keeps_everyone_s_access_as_vault_memberships() {
+    use tokenless_control::model::{SignInScope, VaultGrant};
+    use tokenless_control::store::{MembershipStore, SsoStore};
+    use tokenless_core::authz::Role;
+    use tokenless_core::ids::{InviteId, OidcProviderId, UserId};
+
+    let (_dir, url, pool) = database_before(23).await;
+    let (work, side) = (VaultId::new(), VaultId::new());
+    for (id, name) in [(work, "work"), (side, "side")] {
+        sqlx::query("INSERT INTO vaults (id, name, scope, created_at) VALUES (?, ?, ?, ?)")
+            .bind(id.to_string())
+            .bind(name)
+            .bind(format!("vault:{id}"))
+            .bind(AT)
+            .execute(&pool)
+            .await
+            .expect("vault");
+    }
+    let provider = OidcProviderId::new();
+    sqlx::query(
+        "INSERT INTO oidc_providers (id, slug, name, issuer, client_id, client_secret_enc, redirect_uri, scopes, groups_claim, username_claim, role_mappings, enabled, created_at, updated_at) \
+         VALUES (?, 'corp', 'Corp', 'https://idp.example.test', 'tokenless', NULL, 'https://broker.example.test/api/v1/auth/oidc/callback', '[]', 'groups', 'preferred_username', ?, 1, ?, ?)",
+    )
+    .bind(provider.to_string())
+    .bind(r#"[{"group":"devs","role":"editor"},{"group":"ops","role":"admin"}]"#)
+    .bind(AT)
+    .bind(AT)
+    .execute(&pool)
+    .await
+    .expect("provider");
+    let people = [
+        ("root", "admin", None),
+        ("dev", "editor", None),
+        ("auditor", "viewer", None),
+        ("sso-dev", "editor", Some(provider)),
+    ];
+    let mut ids = Vec::new();
+    for (name, role, sso) in people {
+        let id = UserId::new();
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, created_at, sso_provider_id, sso_subject) VALUES (?, ?, 'hash', ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(name)
+        .bind(role)
+        .bind(AT)
+        .bind(sso.map(|p| p.to_string()))
+        .bind(sso.map(|_| format!("subject-{name}")))
+        .execute(&pool)
+        .await
+        .expect("user");
+        ids.push(id);
+    }
+    for (hash, role) in [("invite-editor", "editor"), ("invite-admin", "admin")] {
+        sqlx::query(
+            "INSERT INTO invites (id, token_hash, role, created_by, created_at, expires_at) VALUES (?, ?, ?, 'user:test', ?, '2099-01-01T00:00:00.000000Z')",
+        )
+        .bind(InviteId::new().to_string())
+        .bind(hash)
+        .bind(role)
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .expect("invite");
+    }
+    sqlx::query(
+        "INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, id, last_used_at) VALUES ('sign-in', ?, ?, '2099-01-01T00:00:00.000000Z', ?, ?)",
+    )
+    .bind(ids[1].to_string())
+    .bind(AT)
+    .bind(tokenless_core::ids::SignInId::new().to_string())
+    .bind(AT)
+    .execute(&pool)
+    .await
+    .expect("sign-in");
+    sqlx::query(
+        "INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, id, last_used_at, user_agent) VALUES ('cli-sign-in', ?, ?, '2099-01-01T00:00:00.000000Z', ?, ?, 'tokenless/0.9.0')",
+    )
+    .bind(ids[1].to_string())
+    .bind(AT)
+    .bind(tokenless_core::ids::SignInId::new().to_string())
+    .bind(AT)
+    .execute(&pool)
+    .await
+    .expect("CLI sign-in");
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("upgrade");
+    let both = |role| {
+        let mut grants = vec![
+            VaultGrant {
+                vault_id: work,
+                role,
+            },
+            VaultGrant {
+                vault_id: side,
+                role,
+            },
+        ];
+        grants.sort_by_key(|g| g.vault_id.to_string());
+        grants
+    };
+    for (id, (name, old, _)) in ids.iter().zip(people) {
+        let user = store.get_user(id).await.expect("get").expect("user kept");
+        let instance = if old == "admin" {
+            Role::Admin
+        } else {
+            Role::Member
+        };
+        assert_eq!(user.role, instance, "{name} is an instance {instance}");
+        let vault_role = Role::parse(old).expect("old role");
+        assert_eq!(
+            store.user_vaults(id).await.expect("vaults"),
+            both(vault_role),
+            "{name} keeps the {old} role in every vault"
+        );
+    }
+    let sso_member = store
+        .list_vault_members(&work, PageRequest::new(None, None))
+        .await
+        .expect("members")
+        .items
+        .into_iter()
+        .find(|m| m.username == "sso-dev")
+        .expect("listed");
+    assert_eq!(
+        sso_member.added_by, "sso:corp",
+        "its groups can take it back"
+    );
+
+    let editor_invite = store
+        .get_invite_by_token_hash("invite-editor")
+        .await
+        .expect("get")
+        .expect("kept");
+    assert_eq!(editor_invite.role, Role::Member);
+    assert_eq!(editor_invite.vaults, both(Role::Editor));
+    let admin_invite = store
+        .get_invite_by_token_hash("invite-admin")
+        .await
+        .expect("get")
+        .expect("kept");
+    assert_eq!(
+        (admin_invite.role, admin_invite.vaults.len()),
+        (Role::Admin, 0)
+    );
+
+    let mappings = store
+        .get_oidc_provider(&provider)
+        .await
+        .expect("get")
+        .expect("kept")
+        .role_mappings;
+    assert_eq!(mappings[0].group, "devs");
+    assert_eq!(mappings[0].role, Role::Member);
+    let mut mapped = mappings[0].vaults.clone();
+    mapped.sort_by_key(|g| g.vault_id.to_string());
+    assert_eq!(mapped, both(Role::Editor));
+    assert_eq!(
+        (mappings[1].role, mappings[1].vaults.len()),
+        (Role::Admin, 0)
+    );
+
+    let sign_in = store
+        .get_ui_session("sign-in")
+        .await
+        .expect("get")
+        .expect("kept");
+    assert_eq!(sign_in.scope, SignInScope::Full);
+    let cli = store
+        .get_ui_session("cli-sign-in")
+        .await
+        .expect("get")
+        .expect("kept");
+    assert_eq!(
+        cli.scope,
+        SignInScope::Launch,
+        "a terminal sign-in from before only starts sessions"
+    );
+}

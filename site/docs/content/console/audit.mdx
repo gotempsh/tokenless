@@ -59,5 +59,6 @@ of the page says how many webhooks the log is sent to (or **Send to a
 webhook** when it goes nowhere), and the page warns while one is not
 receiving events.
 
-Everyone who can sign in can read the audit log, viewers included. An
-API key reads only its own vault's events.
+A vault's viewers, editors and admins read its events, and instance admins
+read every vault's and the instance's own. Runners don't read the audit
+log. An API key reads only its own vault's events.

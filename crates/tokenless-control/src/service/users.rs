@@ -3,9 +3,10 @@
 
 //! People management: invitations, role changes and disabling accounts.
 //!
-//! People hold one instance-wide role (admin, editor or viewer). The store
-//! refuses any change that would leave no enabled admin, so the instance
-//! can never lock itself out.
+//! People hold one instance role (admin or member) and a role in each vault
+//! they belong to. An invitation can give vault roles with the account. The
+//! store refuses any change that would leave no enabled admin, so the
+//! instance can never lock itself out.
 
 use std::sync::Arc;
 
@@ -14,24 +15,40 @@ use serde::{Deserialize, Serialize};
 use tokenless_auth::{token, totp};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Role};
-use tokenless_core::ids::{InviteId, UserId};
+use tokenless_core::ids::{InviteId, UserId, VaultId};
 use tracing::info;
 
 use super::auth::{build_user, check_new_account, validate_username, TotpEnrollment, UserSummary};
+use super::members::check_vault_role;
 use super::{Caller, Guard};
 use crate::cipher::SecretCipher;
 use crate::error::{ControlError, StoreError};
-use crate::model::{Invite, Page, PageRequest, PasswordSignIn};
-use crate::store::{IdentityStore, SsoStore};
+use crate::model::{Invite, Page, PageRequest, PasswordSignIn, VaultGrant};
+use crate::store::{IdentityStore, PolicyStore, SsoStore};
 
 pub const DEFAULT_INVITE_HOURS: u32 = 72;
 pub const MAX_INVITE_HOURS: u32 = 7 * 24;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateInvite {
+    /// The instance role: admin or member.
     pub role: Role,
     /// Defaults to 72 hours; at most 7 days.
     pub expires_in_hours: Option<u32>,
+    /// The vaults the account joins, with its role in each.
+    #[serde(default)]
+    pub vaults: Vec<VaultGrant>,
+}
+
+/// The most vaults one invitation gives roles in.
+pub const MAX_INVITE_VAULTS: usize = 100;
+
+/// A vault an invitation gives a role in, by name for the invitee.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InvitedVault {
+    pub vault_id: VaultId,
+    pub name: String,
+    pub role: Role,
 }
 
 /// The invitation and its token, which is shown exactly once.
@@ -48,6 +65,9 @@ tokenless_core::redacted_debug!(InviteIssued { invite; token });
 pub struct InviteInfo {
     pub role: Role,
     pub expires_at: DateTime<Utc>,
+    /// Vaults deleted since the invitation was made are left out.
+    #[serde(default)]
+    pub vaults: Vec<InvitedVault>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -73,6 +93,25 @@ pub struct UpdateUser {
     pub disabled: Option<bool>,
 }
 
+/// Checks that `role` can be held on the instance.
+pub fn check_instance_role(role: Role) -> Result<(), ControlError> {
+    if role.is_instance_role() {
+        return Ok(());
+    }
+    Err(ControlError::validation(format!(
+        "'{role}' is not an instance role: a person is an admin or a member of the instance, and gets editor, viewer or runner inside each vault"
+    )))
+}
+
+/// `name=role` for each vault, for the audit log.
+fn describe_vaults(vaults: &[InvitedVault]) -> String {
+    vaults
+        .iter()
+        .map(|v| format!("{}={}", v.name, v.role))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn invalid_invite() -> ControlError {
     ControlError::Unauthenticated {
         reason: "invite is invalid, expired, revoked or already used".into(),
@@ -81,6 +120,7 @@ fn invalid_invite() -> ControlError {
 
 pub struct UserService {
     identity: Arc<dyn IdentityStore>,
+    policy: Arc<dyn PolicyStore>,
     sso: Arc<dyn SsoStore>,
     cipher: Arc<dyn SecretCipher>,
     guard: Guard,
@@ -89,6 +129,7 @@ pub struct UserService {
 impl UserService {
     pub fn new(
         identity: Arc<dyn IdentityStore>,
+        policy: Arc<dyn PolicyStore>,
         sso: Arc<dyn SsoStore>,
         cipher: Arc<dyn SecretCipher>,
         guard: Guard,
@@ -96,6 +137,7 @@ impl UserService {
         Self {
             sso,
             identity,
+            policy,
             cipher,
             guard,
         }
@@ -136,6 +178,9 @@ impl UserService {
             .await?
             .ok_or_else(|| ControlError::not_found("user", id))?;
         let role = req.role.unwrap_or(user.role);
+        if role != user.role {
+            check_instance_role(role)?;
+        }
         if role != user.role && user.sso.is_some() {
             return Err(ControlError::validation(format!(
                 "'{}' gets its role from its groups at its single sign-on provider at every sign-in; change the provider's group mappings instead",
@@ -199,6 +244,8 @@ impl UserService {
     ) -> Result<InviteIssued, ControlError> {
         self.guard.check(caller, Action::UserManage, None).await?;
         let role = req.role;
+        check_instance_role(role)?;
+        let vaults = self.check_invite_vaults(&req.vaults).await?;
         let hours = req.expires_in_hours.unwrap_or(DEFAULT_INVITE_HOURS);
         if hours == 0 || hours > MAX_INVITE_HOURS {
             return Err(ControlError::validation(format!(
@@ -225,10 +272,12 @@ impl UserService {
             accepted_at: None,
             accepted_by: None,
             revoked_at: None,
+            vaults: req.vaults.clone(),
         };
         let event = AuditEvent::new(caller.actor(), "user.invite", AuditOutcome::Success)
             .target(format!("invite:{}", invite.id))
             .detail("role", role.as_str())
+            .detail("vaults", describe_vaults(&vaults))
             .detail("expires_at", invite.expires_at.to_rfc3339());
         self.identity
             .insert_invite(invite.clone(), &[event])
@@ -264,10 +313,55 @@ impl UserService {
     /// Unauthenticated: shows the holder of a token what it offers.
     pub async fn inspect_invite(&self, invite_token: &str) -> Result<InviteInfo, ControlError> {
         let invite = self.pending_invite(invite_token).await?;
+        let mut vaults = Vec::new();
+        for grant in &invite.vaults {
+            if let Some(vault) = self.policy.get_vault(&grant.vault_id).await? {
+                vaults.push(InvitedVault {
+                    vault_id: vault.id,
+                    name: vault.name,
+                    role: grant.role,
+                });
+            }
+        }
         Ok(InviteInfo {
             role: invite.role,
             expires_at: invite.expires_at,
+            vaults,
         })
+    }
+
+    /// The vaults an invitation gives roles in, each existing and once.
+    async fn check_invite_vaults(
+        &self,
+        grants: &[VaultGrant],
+    ) -> Result<Vec<InvitedVault>, ControlError> {
+        if grants.len() > MAX_INVITE_VAULTS {
+            return Err(ControlError::validation(format!(
+                "an invitation gives roles in at most {MAX_INVITE_VAULTS} vaults, not {}",
+                grants.len()
+            )));
+        }
+        let mut vaults: Vec<InvitedVault> = Vec::new();
+        for grant in grants {
+            check_vault_role(grant.role)?;
+            if vaults.iter().any(|v| v.vault_id == grant.vault_id) {
+                return Err(ControlError::validation(format!(
+                    "vault {} is in the invitation twice; give it one role",
+                    grant.vault_id
+                )));
+            }
+            let vault = self
+                .policy
+                .get_vault(&grant.vault_id)
+                .await?
+                .ok_or_else(|| ControlError::not_found("vault", grant.vault_id))?;
+            vaults.push(InvitedVault {
+                vault_id: vault.id,
+                name: vault.name,
+                role: grant.role,
+            });
+        }
+        Ok(vaults)
     }
 
     /// Unauthenticated: a TOTP secret for the invitee to enrol. It is bound

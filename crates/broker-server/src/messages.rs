@@ -76,11 +76,22 @@ pub fn added_service(a: &AddedService<'_>) -> String {
 
 /// `login`. Where the session is kept is only news when it is not the
 /// keychain.
-pub fn signed_in(server: &str, user: &str, until: &str, file: Option<(&str, &str)>) -> String {
+pub fn signed_in(
+    server: &str,
+    user: &str,
+    until: &str,
+    manage: bool,
+    file: Option<(&str, &str)>,
+) -> String {
+    let what = if manage {
+        "to manage the broker"
+    } else {
+        "to start sessions (tokenless run); to change the broker, tokenless login --manage"
+    };
     match file {
-        None => format!("signed in to {server} as {user} until {until}"),
+        None => format!("signed in to {server} as {user} until {until}, {what}"),
         Some((path, reason)) => format!(
-            "signed in to {server} as {user} until {until}. No OS keychain here ({reason}), so the session is in {path}, readable only by you"
+            "signed in to {server} as {user} until {until}, {what}. No OS keychain here ({reason}), so the session is in {path}, readable only by you"
         ),
     }
 }
@@ -141,16 +152,26 @@ mod tests {
         assert_eq!(
             signed_in(
                 "https://broker.example",
-                "admin",
+                "ana",
                 "2026-11-09 10:00 UTC",
+                false,
                 None
             ),
-            "signed in to https://broker.example as admin until 2026-11-09 10:00 UTC"
+            "signed in to https://broker.example as ana until 2026-11-09 10:00 UTC, to start sessions (tokenless run); to change the broker, tokenless login --manage"
         );
+        assert!(signed_in(
+            "https://broker.example",
+            "ana",
+            "2026-11-09 10:00 UTC",
+            true,
+            None
+        )
+        .ends_with("to manage the broker"));
         let file = signed_in(
             "https://broker.example",
-            "admin",
+            "ana",
             "2026-11-09 10:00 UTC",
+            false,
             Some((
                 "/home/a/.config/tokenless/session.json",
                 "no secret service",

@@ -32,7 +32,8 @@ fn provider(slug: &str, created_offset: i64) -> OidcProvider {
         username_claim: "preferred_username".into(),
         role_mappings: vec![RoleMapping {
             group: "eng".into(),
-            role: Role::Editor,
+            role: Role::Member,
+            vaults: Vec::new(),
         }],
         enabled: true,
         created_at: at(created_offset),

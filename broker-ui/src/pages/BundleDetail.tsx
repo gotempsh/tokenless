@@ -31,9 +31,9 @@ import {
   type ProxySession,
   type Rule,
   type StoredTemplate,
-  type UserSummary,
   type Vault,
 } from "../api";
+import { can, onlyFor, type Me } from "../access";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
 import { AGENTS, envFile, envReferences, execCommand, runAgentCommand, shellQuote, signedInRunCommand } from "../bundleConnect";
@@ -107,7 +107,7 @@ function verdict(bundle: AccessBundle, rules: Rule[] | undefined) {
   return <Status tone="success">Ready</Status>;
 }
 
-export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: BundleTab; user: UserSummary }) {
+export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: BundleTab; user: Me }) {
   const bundle = useLoad(() => get<AccessBundle>(`/bundles/${bundleId}`), [bundleId]);
   const vaultId = bundle.data?.vault_id;
   const vault = useLoad(
@@ -137,8 +137,9 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
   const confirmDelete = useConfirm<AccessBundle>();
   const deleteAction = useAction();
 
-  const canEdit = user.role === "admin" || user.role === "editor";
-  const canAdd = user.role === "admin";
+  const canEdit = can(user, vaultId, "edit");
+  const canAdd = can(user, vaultId, "manage");
+  const canStart = can(user, vaultId, "start");
   const here = `bundles/${bundleId}`;
   const goTab = (t: BundleTab) => {
     window.location.hash = `#/${here}/${t}`;
@@ -192,7 +193,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
                 variant="outline"
                 onClick={goAdd}
                 disabled={!canAdd}
-                title={canAdd ? undefined : "Only admins can add services"}
+                title={canAdd ? undefined : onlyFor("manage")}
               >
                 <Plus />
                 <span className="hidden sm:inline">Add a service</span>
@@ -234,7 +235,8 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
               <BundleSessions
                 bundle={b}
                 actors={actors}
-                canChange={canEdit}
+                canStart={canStart}
+                canRevoke={can(user, vaultId, "stop")}
                 refresh={created}
                 onCreate={() => setCreating(true)}
               />
@@ -255,7 +257,7 @@ export function BundleDetail({ bundleId, tab, user }: { bundleId: string; tab: B
                 vaultName={vault.data?.name}
                 credentials={memberCredentials}
                 empty={members.length === 0}
-                canCreate={canEdit}
+                canCreate={canStart}
                 onCreate={() => setCreating(true)}
               />
             </div>
@@ -389,7 +391,7 @@ function BundleSettings({
   onDelete: () => void;
   onChanged: () => void;
 }) {
-  const reason = canEdit ? null : <p className="text-xs text-muted-foreground">Only editors and admins can change bundles.</p>;
+  const reason = canEdit ? null : <p className="text-xs text-muted-foreground">Only the vault's editors and admins can change bundles.</p>;
   return (
     <div className="max-w-[1040px]">
       <SettingsSection title="Name and description">
@@ -499,7 +501,7 @@ function BundleServices({
       disabled={!canEdit || others.length === 0}
       title={
         !canEdit
-          ? "Only editors and admins can change bundles"
+          ? "Only the vault's editors and admins can change bundles"
           : others.length === 0
             ? "Every rule in the vault is already in this bundle"
             : undefined
@@ -526,7 +528,7 @@ function BundleServices({
             description="Add one from the catalogue (it is stored in the vault, given a rule and put here in one step), or include a rule the vault already has."
             action={
               <div className="flex flex-wrap justify-center gap-2">
-                <Button type="button" onClick={onAdd} disabled={!canAdd} title={canAdd ? undefined : "Only admins can add services"}>
+                <Button type="button" onClick={onAdd} disabled={!canAdd} title={canAdd ? undefined : "Only a vault's admins can add services"}>
                   <Plus />
                   Add a service
                 </Button>
@@ -617,7 +619,7 @@ function BundleServices({
                               onSelect: () => confirm.ask(rule),
                               destructive: true,
                               disabled: !canEdit,
-                              reason: "Only editors and admins can change bundles",
+                              reason: "Only the vault's editors and admins can change bundles",
                             },
                           ]}
                         />
@@ -765,13 +767,15 @@ function DetailsForm({ bundle, onCancel, onSaved }: { bundle: AccessBundle; onCa
 function BundleSessions({
   bundle,
   actors,
-  canChange,
+  canStart,
+  canRevoke,
   refresh,
   onCreate,
 }: {
   bundle: AccessBundle;
   actors: ActorNames;
-  canChange: boolean;
+  canStart: boolean;
+  canRevoke: boolean;
   /** Changes when a session was created elsewhere on the page. */
   refresh: number;
   onCreate: () => void;
@@ -792,8 +796,8 @@ function BundleSessions({
     <Button
       type="button"
       onClick={onCreate}
-      disabled={!canChange}
-      title={canChange ? undefined : "Only editors and admins can create sessions"}
+      disabled={!canStart}
+      title={canStart ? undefined : onlyFor("start")}
     >
       <Plus />
       New session
@@ -817,7 +821,7 @@ function BundleSessions({
             sessions={sessions.data?.items ?? []}
             actors={actors}
             showBundle={false}
-            canRevoke={canChange}
+            canRevoke={() => canRevoke}
             onRevoke={confirm.ask}
           />
         )}
@@ -914,7 +918,7 @@ function McpConnect({
             variant="outline"
             onClick={onAdd}
             disabled={!canAdd}
-            title={canAdd ? undefined : "Only admins can add services"}
+            title={canAdd ? undefined : "Only a vault's admins can add services"}
           >
             <Plus className="size-4" /> Add an MCP server
           </Button>
@@ -1030,7 +1034,7 @@ function Connect({
               type="button"
               onClick={onCreate}
               disabled={!canCreate}
-              title={canCreate ? undefined : "Only editors and admins can create sessions"}
+              title={canCreate ? undefined : "Starting sessions takes the runner, editor or admin role in the vault"}
             >
               <Plus />
               New session

@@ -56,13 +56,24 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
         .expect("generated on first start");
 
     // A wrong password is refused; the generated one signs in.
-    assert!(account::sign_in(&url, "admin", "not the password", None)
-        .await
-        .is_err());
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    assert!(account::sign_in(
+        &url,
+        "admin",
+        "not the password",
+        None,
+        account::SignInFor::Manage
+    )
+    .await
+    .is_err());
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let vault = MemoryVault::default();
@@ -188,7 +199,11 @@ async fn a_lost_admin_password_is_reset_from_the_server_host() {
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let lost = server.initial_admin.as_ref().unwrap().password.clone();
-    let SignIn::Done(before) = account::sign_in(&url, "admin", &lost, None).await.unwrap() else {
+    let SignIn::Done(before) =
+        account::sign_in(&url, "admin", &lost, None, account::SignInFor::Manage)
+            .await
+            .unwrap()
+    else {
         panic!("no authenticator yet");
     };
 
@@ -202,11 +217,21 @@ async fn a_lost_admin_password_is_reset_from_the_server_host() {
         .await
         .is_err());
 
-    assert!(account::sign_in(&url, "admin", &lost, None).await.is_err());
-    assert!(matches!(
-        account::sign_in(&url, "admin", &reset.password, None)
+    assert!(
+        account::sign_in(&url, "admin", &lost, None, account::SignInFor::Manage)
             .await
-            .unwrap(),
+            .is_err()
+    );
+    assert!(matches!(
+        account::sign_in(
+            &url,
+            "admin",
+            &reset.password,
+            None,
+            account::SignInFor::Manage
+        )
+        .await
+        .unwrap(),
         SignIn::Done(_)
     ));
     // The session signed in with the old password has ended.
@@ -251,10 +276,15 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
     let why = account::probe(&nowhere).await.unwrap_err();
     assert_eq!(why, "nothing is listening there");
 
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let vault = MemoryVault::default();
@@ -418,10 +448,15 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let admin = server.initial_admin.as_ref().unwrap();
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let cli = Cli::new(&url, &session);

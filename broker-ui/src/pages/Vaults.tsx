@@ -41,7 +41,7 @@ export function Vaults({ canCreate }: { canCreate: boolean }) {
       type="button"
       onClick={() => setOpen(true)}
       disabled={!canCreate}
-      title={canCreate ? undefined : "Only admins can create vaults"}
+      title={canCreate ? undefined : "Only instance admins can create vaults"}
     >
       <Plus />
       Create vault

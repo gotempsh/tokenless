@@ -65,7 +65,10 @@ The proxy shows as **Connected** within a few seconds. It listens on
 tokenless login
 ```
 
-`run` then mints sessions with your account. For an agent on another
+`run` then mints sessions with your account. This sign-in can only start
+sessions, so an agent that finds it can't change anything; for terminal
+commands that do, sign in with `tokenless login --manage`, which lasts an
+hour ([Access and least privilege](./access.mdx)). For an agent on another
 machine, or a CI job, create a session instead: on the bundle's page,
 **Run an agent → New session**, then
 `export TOKENLESS_SESSION_TOKEN=v4.public...` there and

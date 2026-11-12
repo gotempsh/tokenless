@@ -14,7 +14,7 @@ use base64::Engine;
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokenless_auth::jwt::testing::TestKey;
-use tokenless_core::authz::{Principal, PrincipalKind, Role};
+use tokenless_core::authz::Role;
 use url::Url;
 
 use super::oidc::{HttpReply, OidcTransport, TransportError};
@@ -204,17 +204,7 @@ struct T {
 }
 
 fn admin() -> Caller {
-    Caller {
-        principal: Principal {
-            kind: PrincipalKind::User,
-            actor: "user:test-admin".into(),
-            role: Role::Admin,
-            vault: None,
-        },
-        step_up_at: Some(Utc::now()),
-        second_factor: true,
-        launch: None,
-    }
+    crate::service::testing::person_caller("test-admin", Role::Admin)
 }
 
 fn input() -> OidcProviderInput {
@@ -231,14 +221,17 @@ fn input() -> OidcProviderInput {
         username_claim: default_username_claim(),
         role_mappings: vec![
             RoleMapping {
+                vaults: Vec::new(),
                 group: "engineering".into(),
-                role: Role::Editor,
+                role: Role::Member,
             },
             RoleMapping {
+                vaults: Vec::new(),
                 group: "auditors".into(),
-                role: Role::Viewer,
+                role: Role::Member,
             },
             RoleMapping {
+                vaults: Vec::new(),
                 group: "platform-admins".into(),
                 role: Role::Admin,
             },
@@ -274,6 +267,7 @@ async fn setup() -> T {
             nodes: store.clone(),
             alerts: store.clone(),
             tripwires: store.clone(),
+            members: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,
@@ -371,7 +365,7 @@ async fn first_sign_in_creates_the_account_with_its_groups_role() {
     assert!(provider.has_client_secret);
     let session = t.session().await;
     assert_eq!(session.user.username, "ada");
-    assert_eq!(session.user.role, Role::Editor);
+    assert_eq!(session.user.role, Role::Member);
     assert_eq!(session.user.sso_provider_id, Some(provider.id));
     // It steps up at the provider, so it counts as having a second factor.
     assert!(session.caller.second_factor);
@@ -399,7 +393,7 @@ async fn the_role_follows_the_groups_at_every_sign_in() {
     // Someone else is an admin, so the person's role can change.
     t.cp.auth.create_initial_admin().await.unwrap();
     let (first_token, first) = t.signed_in().await;
-    assert_eq!(first.user.role, Role::Editor);
+    assert_eq!(first.user.role, Role::Member);
     t.idp
         .set_person(|p| p.groups = vec!["auditors".into(), "platform-admins".into()]);
     let second = t.session().await;
@@ -408,7 +402,7 @@ async fn the_role_follows_the_groups_at_every_sign_in() {
     let before = t.cp.auth.authenticate_session(&first_token).await.unwrap();
     assert_eq!(before.caller.principal.role, Role::Admin);
     t.idp.set_person(|p| p.groups = vec!["auditors".into()]);
-    assert_eq!(t.session().await.user.role, Role::Viewer);
+    assert_eq!(t.session().await.user.role, Role::Member);
     let updates = t.audit("user.update").await;
     assert_eq!(updates.len(), 2);
     assert!(updates
@@ -421,7 +415,7 @@ async fn the_role_follows_the_groups_at_every_sign_in() {
                 &admin(),
                 &second.user.id,
                 UpdateUser {
-                    role: Some(Role::Editor),
+                    role: Some(Role::Admin),
                     disabled: None,
                 },
             )
@@ -613,6 +607,8 @@ async fn an_sso_account_has_no_password_or_authenticator_here() {
     let err =
         t.cp.auth
             .login(LoginRequest {
+                scope: Default::default(),
+                ttl_secs: None,
                 username: "ada".into(),
                 password: String::new(),
                 totp_code: None,
@@ -781,6 +777,7 @@ async fn providers_are_checked_and_never_show_their_secret() {
             Box::new(|i| {
                 let first = i.role_mappings[0].clone();
                 i.role_mappings.push(RoleMapping {
+                    vaults: Vec::new(),
                     role: Role::Admin,
                     ..first
                 })
@@ -832,7 +829,7 @@ async fn providers_are_checked_and_never_show_their_secret() {
     assert!(!cleared.has_client_secret);
     // Admins only, and with a fresh step-up.
     let mut editor = admin();
-    editor.principal.role = Role::Editor;
+    editor.principal.role = Role::Member;
     assert!(matches!(
         t.cp.sso.create_provider(&editor, input()).await,
         Err(ControlError::Forbidden { .. })
@@ -861,7 +858,8 @@ async fn password_sign_in_can_be_kept_for_admins_only() {
             .create_invite(
                 &admin(),
                 CreateInvite {
-                    role: Role::Editor,
+                    vaults: Vec::new(),
+                    role: Role::Member,
                     expires_in_hours: None,
                 },
             )
@@ -878,6 +876,8 @@ async fn password_sign_in_can_be_kept_for_admins_only() {
         .await
         .unwrap();
     let login = |username: &str, password: &str| LoginRequest {
+        scope: Default::default(),
+        ttl_secs: None,
         username: username.into(),
         password: password.into(),
         totp_code: None,
@@ -919,7 +919,8 @@ async fn password_sign_in_can_be_kept_for_admins_only() {
         .create_invite(
             &admin(),
             CreateInvite {
-                role: Role::Viewer,
+                vaults: Vec::new(),
+                role: Role::Member,
                 expires_in_hours: None,
             },
         )
@@ -1055,4 +1056,120 @@ async fn the_last_admin_is_not_demoted_by_its_groups() {
     let err = refused(t.sign_in().await);
     assert!(matches!(err, ControlError::SsoRefused { .. }), "{err}");
     assert!(err.to_string().contains("last enabled admin"), "{err}");
+}
+
+#[tokio::test]
+async fn groups_give_vault_roles_and_take_back_only_their_own() {
+    use crate::model::VaultGrant;
+    use crate::store::MembershipStore;
+
+    let t = setup().await;
+    crate::service::testing::enrol(t.store.as_ref(), &admin()).await;
+    let team = t.cp.policy.create_vault(&admin(), "team").await.unwrap();
+    let side = t.cp.policy.create_vault(&admin(), "side").await.unwrap();
+    let mut with_vaults = input();
+    with_vaults.role_mappings[0].vaults = vec![VaultGrant {
+        vault_id: team.id,
+        role: Role::Editor,
+    }];
+    t.cp.sso
+        .create_provider(&admin(), with_vaults)
+        .await
+        .unwrap();
+
+    let ada = t.session().await.user;
+    assert_eq!(ada.role, Role::Member);
+    assert_eq!(
+        t.store.user_vaults(&ada.id).await.unwrap(),
+        [VaultGrant {
+            vault_id: team.id,
+            role: Role::Editor
+        }]
+    );
+    let given = t.audit("vault.member.put").await;
+    assert_eq!(given.len(), 1);
+    assert_eq!(given[0].vault_id, Some(team.id));
+    // Signing in again changes nothing.
+    t.session().await;
+    assert_eq!(t.audit("vault.member.put").await.len(), 1);
+
+    // A vault admin adds them elsewhere by hand.
+    t.cp.members
+        .put(
+            &admin(),
+            &side.id,
+            crate::service::members::PutMember {
+                username: "ada".into(),
+                role: Role::Runner,
+            },
+        )
+        .await
+        .unwrap();
+    // Enough people listed before ada that she is past the first page of
+    // the vault's members: what her groups gave is still found.
+    for n in 0..crate::model::MAX_PAGE_SIZE {
+        let id = crate::service::testing::person_id(&format!("crowd-{n}"));
+        t.store
+            .insert_user(
+                crate::model::User {
+                    id,
+                    username: format!("aa-{n:03}"),
+                    password_hash: String::new(),
+                    totp_secret_enc: None,
+                    totp_last_step: None,
+                    role: Role::Member,
+                    created_at: chrono::Utc::now(),
+                    disabled_at: None,
+                    sso: None,
+                },
+                &[],
+            )
+            .await
+            .unwrap();
+        t.store
+            .put_vault_member(
+                crate::model::VaultMember {
+                    vault_id: team.id,
+                    user_id: id,
+                    username: String::new(),
+                    role: Role::Viewer,
+                    added_by: "user:test".into(),
+                    added_at: chrono::Utc::now(),
+                },
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+    // Out of the group: the role it gave goes, the one set by hand stays.
+    t.idp.set_person(|p| p.groups = vec!["auditors".into()]);
+    t.session().await;
+    assert_eq!(
+        t.store.user_vaults(&ada.id).await.unwrap(),
+        [VaultGrant {
+            vault_id: side.id,
+            role: Role::Runner
+        }]
+    );
+    let removed = t.audit("vault.member.remove").await;
+    assert_eq!(removed.len(), 1);
+    assert!(removed[0].detail["reason"].contains("no longer give it"));
+
+    // A mapping names an instance role, and vault roles only inside vaults.
+    let mut bad = input();
+    bad.slug = "other".into();
+    bad.role_mappings[0].role = Role::Editor;
+    let err = t.cp.sso.create_provider(&admin(), bad).await.unwrap_err();
+    assert!(err.to_string().contains("not an instance role"), "{err}");
+    let mut bad = input();
+    bad.slug = "other".into();
+    bad.role_mappings[0].vaults = vec![VaultGrant {
+        vault_id: team.id,
+        role: Role::Member,
+    }];
+    let err = t.cp.sso.create_provider(&admin(), bad).await.unwrap_err();
+    assert!(
+        err.to_string().contains("not a role inside a vault"),
+        "{err}"
+    );
 }

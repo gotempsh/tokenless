@@ -3,7 +3,23 @@
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { LogOut, Mail, ShieldCheck, UserPlus } from "lucide-react";
-import { del, get, patch, post, type Invite, type OidcProvider, type Page, type Role, type SignInsRevoked, type UserSummary } from "../api";
+import {
+  del,
+  get,
+  patch,
+  post,
+  type InstanceRole,
+  type Invite,
+  type OidcProvider,
+  type Page,
+  type SignInsRevoked,
+  type UserSummary,
+  type Vault,
+  type VaultGrant,
+} from "../api";
+import type { Me } from "../access";
+import { roleLabel } from "../members";
+import { VaultGrants } from "../components/VaultGrants";
 import { revokedMessage } from "../signIns";
 import { actorName } from "../audit";
 import { useAction, useLoad } from "../hooks";
@@ -37,12 +53,18 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-type PersonRole = Extract<Role, "admin" | "editor" | "viewer">;
-
-const PERSON_ROLES: Choice<PersonRole>[] = [
-  { value: "viewer", title: "Viewer", description: "Read vaults, rules, sessions and the audit log" },
-  { value: "editor", title: "Editor", description: "Also manage rules and mint or revoke sessions" },
-  { value: "admin", title: "Admin", description: "Full control, including credentials and people" },
+const PERSON_ROLES: Choice<InstanceRole>[] = [
+  {
+    value: "member",
+    title: "Member",
+    description: "Works in the vaults they are given a role in, and nothing else",
+  },
+  {
+    value: "admin",
+    title: "Instance admin",
+    description:
+      "Runs the instance: people, templates, proxies, settings. Sees every vault's sessions and audit log, and joins a vault to change it",
+  },
 ];
 
 function inviteStatus(i: Invite): { label: string; tone: Tone } {
@@ -54,15 +76,19 @@ function inviteStatus(i: Invite): { label: string; tone: Tone } {
 
 interface PendingChange {
   user: UserSummary;
-  change: { role?: Role; disabled?: boolean };
+  change: { role?: InstanceRole; disabled?: boolean };
   title: string;
   description: ReactNode;
   confirmLabel: string;
   destructive: boolean;
 }
 
+function instanceRoleLabel(role: InstanceRole): string {
+  return role === "admin" ? "Instance admin" : "Member";
+}
+
 /** People: invite with a role, change roles, disable accounts. */
-export function People({ me }: { me: UserSummary }) {
+export function People({ me }: { me: Me }) {
   const isAdmin = me.role === "admin";
   const [userPage, setUserPage] = useState(1);
   const [invitePage, setInvitePage] = useState(1);
@@ -78,13 +104,16 @@ export function People({ me }: { me: UserSummary }) {
     () => (isAdmin ? get<OidcProvider[]>("/identity-providers") : Promise.resolve(undefined)),
     [isAdmin],
   );
+  const vaults = useLoad(() => (isAdmin ? get<Page<Vault>>("/vaults?page_size=100") : Promise.resolve(undefined)), [isAdmin]);
+  const vaultName = (id: string) => vaults.data?.items.find((v) => v.id === id)?.name ?? id.slice(0, 8);
+  const vaultOptions = (vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name }));
   const providerName = (id: string) => providers.data?.find((p) => p.id === id)?.name ?? "single sign-on";
   const names = useMemo(
     () => ({ meId: me.id, users: new Map(users.data?.items.map((u) => [u.id, u.username])) }),
     [me.id, users.data],
   );
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ role: "editor" as PersonRole, expires_in_hours: 72 });
+  const [form, setForm] = useState({ role: "member" as InstanceRole, vaults: [] as VaultGrant[], expires_in_hours: 72 });
   const [link, setLink] = useState<string | null>(null);
   const change = useConfirm<PendingChange>();
   const revokeConfirm = useConfirm<Invite>();
@@ -95,7 +124,8 @@ export function People({ me }: { me: UserSummary }) {
 
   const invite = async (e: FormEvent) => {
     e.preventDefault();
-    const result = await inviteAction.run(() => post<{ token: string; invite: Invite }>("/invites", form));
+    const body = { ...form, vaults: form.vaults.filter((g) => g.vault_id !== "") };
+    const result = await inviteAction.run(() => post<{ token: string; invite: Invite }>("/invites", body));
     if (result) {
       setLink(`${window.location.origin}${window.location.pathname}#/invite/${result.token}`);
       invites.reload();
@@ -133,7 +163,7 @@ export function People({ me }: { me: UserSummary }) {
       type="button"
       onClick={() => setOpen(true)}
       disabled={!isAdmin}
-      title={isAdmin ? undefined : "Only admins can invite people"}
+      title={isAdmin ? undefined : "Only instance admins can invite people"}
     >
       <UserPlus />
       Invite someone
@@ -149,10 +179,12 @@ export function People({ me }: { me: UserSummary }) {
       {!isAdmin ? (
         <Alert>
           <ShieldCheck className="size-4" />
-          <AlertTitle>Only admins can manage people</AlertTitle>
+          <AlertTitle>Only instance admins manage people</AlertTitle>
           <AlertDescription>
-            You are signed in as <strong>{me.username}</strong> with the <strong>{me.role}</strong> role. Ask an admin
-            if you need more access.
+            You are signed in as <strong>{me.username}</strong>, a member
+            {me.vaults.length === 0
+              ? " of no vault yet. Ask a vault's admin to add you."
+              : ` of ${me.vaults.length === 1 ? "1 vault" : `${me.vaults.length} vaults`}. A vault's admins add people to it from its Members tab.`}
           </AlertDescription>
         </Alert>
       ) : (
@@ -185,12 +217,12 @@ export function People({ me }: { me: UserSummary }) {
                         <TableCell className="font-medium">
                           {u.username}
                           {u.id === me.id && <span className="ml-1 font-normal text-muted-foreground">(you)</span>}
-                          <div className="text-xs font-normal text-muted-foreground @2xl:hidden">{u.role}</div>
+                          <div className="text-xs font-normal text-muted-foreground @2xl:hidden">{instanceRoleLabel(u.role)}</div>
                         </TableCell>
                         <TableCell className={cn(fromWidth["2xl"], "w-40")}>
                           {u.sso_provider_id ? (
                             <span title={`Set by their groups at ${providerName(u.sso_provider_id)} at each sign-in`}>
-                              {u.role}
+                              {instanceRoleLabel(u.role)}
                             </span>
                           ) : (
                             <SelectField
@@ -198,15 +230,17 @@ export function People({ me }: { me: UserSummary }) {
                               onChange={(role) =>
                                 change.ask({
                                   user: u,
-                                  change: { role: role as Role },
-                                  title: `Make ${u.username} ${role}?`,
+                                  change: { role: role as InstanceRole },
+                                  title: `Make ${u.username} ${instanceRoleLabel(role as InstanceRole).toLowerCase()}?`,
                                   description:
-                                    PERSON_ROLES.find((r) => r.value === role)?.description ?? "Their access changes immediately.",
-                                  confirmLabel: `Make ${role}`,
+                                    role === "admin"
+                                      ? "They run the instance and oversee every vault; they still join a vault before changing it."
+                                      : "They keep their roles in the vaults they are a member of, and lose the rest of the instance.",
+                                  confirmLabel: `Make ${instanceRoleLabel(role as InstanceRole).toLowerCase()}`,
                                   destructive: false,
                                 })
                               }
-                              options={PERSON_ROLES.map((r) => ({ value: r.value, label: r.value }))}
+                              options={PERSON_ROLES.map((r) => ({ value: r.value, label: r.title }))}
                               className="h-9"
                             />
                           )}
@@ -306,6 +340,7 @@ export function People({ me }: { me: UserSummary }) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Role</TableHead>
+                      <TableHead className={fromWidth.md}>Vaults</TableHead>
                       <TableHead className={fromWidth.xl}>Created by</TableHead>
                       <TableHead className={fromWidth.lg}>Expires</TableHead>
                       <TableHead>Status</TableHead>
@@ -317,7 +352,12 @@ export function People({ me }: { me: UserSummary }) {
                       const status = inviteStatus(i);
                       return (
                         <TableRow key={i.id}>
-                          <TableCell className="font-medium">{i.role}</TableCell>
+                          <TableCell className="font-medium">{instanceRoleLabel(i.role)}</TableCell>
+                          <TableCell className={cn(fromWidth.md, "text-muted-foreground")}>
+                            {(i.vaults ?? []).length === 0
+                              ? "none"
+                              : (i.vaults ?? []).map((g) => `${vaultName(g.vault_id)} (${roleLabel(g.role).toLowerCase()})`).join(", ")}
+                          </TableCell>
                           <TableCell className={fromWidth.xl}>
                             {actorName(i.created_by, names)}
                           </TableCell>
@@ -383,6 +423,16 @@ export function People({ me }: { me: UserSummary }) {
                 choices={PERSON_ROLES}
               />
             </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Vaults</p>
+              <VaultGrants
+                group={0}
+                grants={form.vaults}
+                vaults={vaultOptions}
+                onChange={(vaults) => setForm({ ...form, vaults })}
+                empty="None yet: they join with no access, and a vault's admins add them later."
+              />
+            </div>
             <Field label="Link expires in (hours)" htmlFor="invite-hours" hint="At most 168 (7 days).">
               <Input
                 id="invite-hours"
@@ -432,7 +482,7 @@ export function People({ me }: { me: UserSummary }) {
       <ConfirmDialog
         open={revokeConfirm.open}
         onOpenChange={revokeConfirm.onOpenChange}
-        title={`Revoke the pending ${revokeConfirm.target?.role ?? ""} invite?`}
+        title="Revoke the pending invite?"
         description="The link stops working immediately."
         confirmLabel="Revoke invite"
         busy={action.busy}

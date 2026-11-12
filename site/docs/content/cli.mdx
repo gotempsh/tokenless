@@ -12,8 +12,10 @@ description: "Every command takes --help for its full list of options."
 | `tokenless vault list`, `service list`, `bundle list` | What you can see in the console's Vaults, Services and Access bundles pages, as a table or `--json`. |
 | `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
 | `tokenless proxy list` | Proxies, and whether each is connected. Admins only. |
-| `tokenless login`, `logout` | Sign in to the control plane; the session is kept in the OS keychain. See [Set up from the terminal](./terminal.mdx). |
+| `tokenless login`, `logout` | Sign in to the control plane, kept in the OS keychain. `login` only starts sessions; `login --manage` can change things, for an hour. See [Set up from the terminal](./terminal.mdx). |
 | `tokenless sign-ins list`, `revoke` | The browsers and CLI logins signed in as you, and ending one or all but this one. Admins sign someone out everywhere with `--user`. |
+| `tokenless vault member list`, `set`, `remove` | Who works in a vault, with which role; adding people and changing their role. |
+| `tokenless vault join` | An instance admin joins a vault they oversee, as one of its admins. |
 | `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
 | `tokenless service templates` | Find a template by name, host or variable. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
@@ -90,8 +92,10 @@ being ready.
 ## `vault list`, `service list`, `bundle list`, `session list`, `proxy list`
 
 Each prints a table, or the same rows as JSON with `--json` (`[]` when
-there are none). They need `tokenless login`, not an API key, and show
-what the console shows the person signed in; no secret is ever printed.
+there are none). They need a person's sign-in, not an API key, and show
+what the console shows that person; no secret is ever printed.
+`vault list`, `service list` and `bundle list` work with `tokenless login`;
+`session list` and `proxy list` need `tokenless login --manage`.
 They read no `TOKENLESS_VAULT` or `TOKENLESS_BUNDLE`: without the flags
 they list every vault you can see.
 
@@ -129,6 +133,23 @@ sessions the key started.
 | `--expires-in-days` (`add`) | `90` | At most 365 |
 | `--bundle` (`list`) | | Only this bundle's keys |
 | `--json` (`list`) | | The rows as JSON |
+
+## `vault member list|set|remove <vault>`, `vault join <vault>`
+
+Who works in a vault ([Access and least privilege](./access.mdx)):
+
+```sh
+tokenless vault member list work
+tokenless vault member set work alice --role editor
+tokenless vault member remove work alice
+tokenless vault join work            # an instance admin, into a vault they oversee
+```
+
+`set` adds the person, or changes their role, to `runner`, `viewer`,
+`editor` or `admin`. It needs the vault's admin role, and asks you to
+confirm it is you. Anyone may `remove` themselves; a vault always keeps
+one admin. `join` makes an instance admin one of the vault's admins and is
+recorded in the audit log. All but `list` need `tokenless login --manage`.
 
 ## `sign-ins list`, `sign-ins revoke`
 
@@ -228,7 +249,7 @@ tokenless tripwire add --kind github --name laptop --vault work >> .env.local
 
 ## Client commands
 
-`login`, `vault`, `service`, `bundle`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; `run`, `exec`, `mcp` and the `session` commands other than `session list` also take the rest. Without an API key they use the session from `tokenless login`. The `list` commands only use that sign-in, and take `--vault` and `--bundle` as flags only: `TOKENLESS_VAULT` and `TOKENLESS_BUNDLE` do not narrow them.
+`login`, `vault`, `service`, `bundle`, `proxy`, `run`, `exec`, `session` and `mcp` take `--server`; `run`, `exec`, `mcp` and the `session` commands other than `session list` also take the rest. Without an API key, `run`, `exec`, `mcp`, `session create` and `session start` use the sign-in from `tokenless login`, never the one from `--manage`; the other commands use the `--manage` one while it lasts, and otherwise the `tokenless login` one. The `list` commands only use a sign-in, and take `--vault` and `--bundle` as flags only: `TOKENLESS_VAULT` and `TOKENLESS_BUNDLE` do not narrow them.
 
 | Flag | Environment | Default |
 |---|---|---|

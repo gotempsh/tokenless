@@ -71,10 +71,15 @@ async fn sign_ins_are_listed_and_ended_one_at_a_time_or_all_at_once() {
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let admin = server.initial_admin.as_ref().unwrap();
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let home = tempfile::tempdir().unwrap();

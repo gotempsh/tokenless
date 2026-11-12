@@ -7,6 +7,7 @@ pub mod audit_export;
 pub mod auth;
 pub mod bundles;
 pub mod launcher_keys;
+pub mod members;
 pub mod nodes;
 pub mod overview;
 pub mod policy;
@@ -24,19 +25,19 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tokenless_core::audit::AuditEvent;
-use tokenless_core::authz::{Action, Decision, Principal, PrincipalKind};
-use tokenless_core::ids::VaultId;
+use tokenless_core::authz::{rbac_decide, Action, Decision, Principal, PrincipalKind, Role};
+use tokenless_core::ids::{UserId, VaultId};
 use tracing::error;
 
 use crate::cipher::SecretCipher;
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::LaunchScope;
+use crate::model::{LaunchScope, SignInScope, VaultScope};
 use crate::notify::PolicyNotifier;
 use crate::probe::CredentialProber;
 use crate::store::{
-    AlertStore, AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore, NodeStore,
-    PolicyStore, SsoStore, TripwireStore,
+    AlertStore, AuditExportStore, AuditSink, Authorizer, CredentialStore, IdentityStore,
+    MembershipStore, NoMembers, NodeStore, PolicyStore, SsoStore, TripwireStore,
 };
 
 #[derive(Debug, Clone)]
@@ -74,6 +75,9 @@ pub struct Caller {
     /// Set for a launcher key: it starts sessions from one bundle and does
     /// nothing else, whatever its role would allow.
     pub launch: Option<LaunchScope>,
+    /// What a person's sign-in may do: a `tokenless login` sign-in only
+    /// starts sessions, whatever the person's roles allow.
+    pub sign_in: SignInScope,
 }
 
 impl Caller {
@@ -89,7 +93,21 @@ impl Caller {
             step_up_at: None,
             second_factor: false,
             launch: None,
+            sign_in: SignInScope::Full,
         }
+    }
+
+    /// The person behind a person's caller.
+    pub fn user_id(&self) -> Option<UserId> {
+        if self.principal.kind != PrincipalKind::User {
+            return None;
+        }
+        self.principal.actor.strip_prefix("user:")?.parse().ok()
+    }
+
+    /// Whether the caller runs the instance.
+    pub fn is_instance_admin(&self) -> bool {
+        self.principal.kind == PrincipalKind::User && self.principal.role == Role::Admin
     }
 }
 
@@ -104,12 +122,25 @@ pub struct Stores {
     pub nodes: Arc<dyn NodeStore>,
     pub alerts: Arc<dyn AlertStore>,
     pub tripwires: Arc<dyn TripwireStore>,
+    /// Who is a member of each vault, with which role.
+    pub members: Arc<dyn MembershipStore>,
 }
 
 /// Authorisation plus step-up enforcement, shared by every service.
+///
+/// A person acts with their instance role on the instance and with their
+/// role in a vault inside it: an instance admin who is not a member of a
+/// vault only oversees it ([`Action::admin_oversight`]) until they join.
+///
+/// Without a membership store ([`Guard::new`], as [`ControlServices`]
+/// wires it for an embedder) every caller acts with its own role, and the
+/// embedder's [`Authorizer`] decides.
 #[derive(Clone)]
 pub struct Guard {
     authorizer: Arc<dyn Authorizer>,
+    members: Arc<dyn MembershipStore>,
+    /// Whether people act inside a vault with their role there.
+    people: bool,
     step_up_window_secs: u64,
 }
 
@@ -117,8 +148,23 @@ impl Guard {
     pub fn new(authorizer: Arc<dyn Authorizer>, step_up_window_secs: u64) -> Self {
         Self {
             authorizer,
+            members: Arc::new(NoMembers),
+            people: false,
             step_up_window_secs,
         }
+    }
+
+    /// People act inside each vault with their role in `members`.
+    pub fn with_members(self, members: Arc<dyn MembershipStore>) -> Self {
+        Self {
+            members,
+            people: true,
+            ..self
+        }
+    }
+
+    fn is_person(&self, caller: &Caller) -> bool {
+        self.people && caller.principal.kind == PrincipalKind::User
     }
 
     pub async fn check(
@@ -127,6 +173,32 @@ impl Guard {
         action: Action,
         vault: Option<&VaultId>,
     ) -> Result<(), ControlError> {
+        self.check_sign_in(caller, action)?;
+        let principal = self.acting_as(caller, action, vault).await?;
+        if let Decision::Deny { reason } =
+            self.authorizer.authorize(&principal, action, vault).await
+        {
+            return Err(ControlError::Forbidden { reason });
+        }
+        if action.requires_step_up() {
+            self.require_step_up(caller, action)?;
+        }
+        Ok(())
+    }
+
+    /// For a list across vaults: a person may list what is in their own
+    /// vaults, which [`Self::vault_scope`] then narrows the list to. Anyone
+    /// else is checked as [`Self::check`] does, on their bound vault.
+    pub async fn check_list(&self, caller: &Caller, action: Action) -> Result<(), ControlError> {
+        if self.is_person(caller) && !action.instance_level() {
+            return self.check_sign_in(caller, action);
+        }
+        self.check(caller, action, caller.principal.vault.as_ref())
+            .await
+    }
+
+    /// What a launcher key, or a sign-in that only starts sessions, may do.
+    fn check_sign_in(&self, caller: &Caller, action: Action) -> Result<(), ControlError> {
         if let Some(scope) = &caller.launch {
             if !matches!(action, Action::VaultRead | Action::SessionMint) {
                 return Err(ControlError::Forbidden {
@@ -138,21 +210,132 @@ impl Guard {
                 });
             }
         }
-        if let Decision::Deny { reason } = self
-            .authorizer
-            .authorize(&caller.principal, action, vault)
-            .await
-        {
-            return Err(ControlError::Forbidden { reason });
-        }
-        if action.requires_step_up() {
-            self.require_step_up(caller, action)?;
+        if caller.sign_in == SignInScope::Launch && !action.launch_only() {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} signed in with `tokenless login`, which only starts sessions; '{action}' needs the console or `tokenless login --manage`",
+                    caller.actor()
+                ),
+            });
         }
         Ok(())
     }
 
-    /// People with a second factor prove it again before sensitive
-    /// actions; API keys may not take them at all. A service is exempt: the
+    /// Who the caller acts as for `action` on `vault`: a person inside a
+    /// vault acts with their role there, and with their instance role on
+    /// what belongs to no vault (so only an admin acts on those).
+    async fn acting_as(
+        &self,
+        caller: &Caller,
+        action: Action,
+        vault: Option<&VaultId>,
+    ) -> Result<Principal, ControlError> {
+        let principal = &caller.principal;
+        let Some(vault) = vault else {
+            return Ok(principal.clone());
+        };
+        if !self.is_person(caller) || action.instance_level() || action == Action::TemplateRead {
+            return Ok(principal.clone());
+        }
+        let Some(user) = caller.user_id() else {
+            return Err(ControlError::Forbidden {
+                reason: format!("{} is not a person's sign-in", caller.actor()),
+            });
+        };
+        match self.members.vault_role(vault, &user).await? {
+            Some(role) => Ok(Principal {
+                role,
+                vault: Some(*vault),
+                ..principal.clone()
+            }),
+            None if caller.is_instance_admin() && action.admin_oversight() => {
+                Ok(principal.clone())
+            }
+            None if caller.is_instance_admin() => Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is an instance admin but not a member of vault {vault}, so it may not '{action}' there; join the vault first (recorded in the audit log)",
+                    caller.actor()
+                ),
+            }),
+            None => Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is not a member of vault {vault}; ask one of its admins to add you",
+                    caller.actor()
+                ),
+            }),
+        }
+    }
+
+    /// The vaults a list for `action` covers for this caller: a bound key's
+    /// one vault, every vault for an unbound service and for an instance
+    /// admin overseeing ([`Action::admin_oversight`]), and otherwise the
+    /// vaults the person is a member of with a role that allows it.
+    pub async fn vault_scope(
+        &self,
+        caller: &Caller,
+        action: Action,
+    ) -> Result<VaultScope, ControlError> {
+        let principal = &caller.principal;
+        if let Some(bound) = principal.vault {
+            return Ok(VaultScope::one(bound));
+        }
+        if !self.is_person(caller) {
+            return Ok(VaultScope::All);
+        }
+        if caller.is_instance_admin() && action.admin_oversight() {
+            return Ok(VaultScope::All);
+        }
+        let Some(user) = caller.user_id() else {
+            return Ok(VaultScope::Only(Vec::new()));
+        };
+        let vaults = self
+            .members
+            .user_vaults(&user)
+            .await?
+            .into_iter()
+            .filter(|g| {
+                let acting = Principal {
+                    role: g.role,
+                    vault: Some(g.vault_id),
+                    ..principal.clone()
+                };
+                rbac_decide(&acting, action, Some(&g.vault_id)) == Decision::Allow
+            })
+            .map(|g| g.vault_id)
+            .collect();
+        Ok(VaultScope::Only(vaults))
+    }
+
+    /// The caller's role in the vault: a person's membership role, a
+    /// key's or service's own role when bound to it. `None` when the
+    /// caller is not a member.
+    pub async fn role_in(
+        &self,
+        caller: &Caller,
+        vault: &VaultId,
+    ) -> Result<Option<Role>, ControlError> {
+        let principal = &caller.principal;
+        if !self.is_person(caller) {
+            return Ok(principal
+                .vault
+                .is_none_or(|v| &v == vault)
+                .then_some(principal.role));
+        }
+        match caller.user_id() {
+            Some(user) => Ok(self.members.vault_role(vault, &user).await?),
+            None => Ok(None),
+        }
+    }
+
+    /// Whether people belong to vaults here (the full control plane), so
+    /// a vault's creator becomes its admin.
+    pub fn has_people(&self) -> bool {
+        self.people
+    }
+
+    /// People prove who they are again before sensitive actions (their
+    /// authenticator code, or their password without one); API keys may
+    /// not take them at all. A service is exempt: the
     /// program that embeds the services authenticates its own users.
     pub fn require_step_up(&self, caller: &Caller, action: Action) -> Result<(), ControlError> {
         match caller.principal.kind {
@@ -161,15 +344,14 @@ impl Guard {
             PrincipalKind::ApiKey => {
                 return Err(ControlError::Forbidden {
                     reason: format!(
-                        "'{action}' needs a person with a second factor; {} is an API key",
+                        "'{action}' needs a person who proves who they are again; {} is an API key",
                         caller.actor()
                     ),
                 });
             }
         }
-        if !caller.second_factor {
-            return Ok(());
-        }
+        // Without an authenticator the password is asked again: whoever
+        // holds a copied sign-in token does not know it.
         let window =
             chrono::Duration::seconds(i64::try_from(self.step_up_window_secs).unwrap_or(300));
         let fresh = caller
@@ -250,12 +432,17 @@ impl ControlServices {
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
+        // Without people, nobody is a member of a vault: every caller is a
+        // service (or key) that carries its own role.
+        let members: Arc<dyn MembershipStore> = Arc::new(NoMembers);
         let guard = Guard::new(authorizer, config.step_up_window_secs);
-        Self::wire(stores, guard, cipher, prober, config, keys).await
+        Self::wire(stores, members, guard, cipher, prober, config, keys).await
     }
 
+    #[allow(clippy::too_many_arguments, reason = "the wiring of every service")]
     async fn wire(
         stores: ServiceStores,
+        members: Arc<dyn MembershipStore>,
         guard: Guard,
         cipher: Arc<dyn SecretCipher>,
         prober: Arc<dyn CredentialProber>,
@@ -266,6 +453,7 @@ impl ControlServices {
         let recorder = AuditRecorder::new(stores.audit.clone());
         let policy = policy::PolicyService::new(
             stores.policy.clone(),
+            members,
             stores.credentials.clone(),
             cipher.clone(),
             guard.clone(),
@@ -343,6 +531,7 @@ pub struct ControlPlane {
     pub bundles: bundles::BundleService,
     pub nodes: nodes::NodeService,
     pub users: users::UserService,
+    pub members: members::MemberService,
     pub variables: variables::VariableService,
     pub audit: audit::AuditService,
     pub alerts: Arc<alerts::AlertService>,
@@ -362,15 +551,24 @@ impl ControlPlane {
         config: ControlConfig,
     ) -> Result<Self, ControlError> {
         let keys = Arc::new(KeyRing::load_or_create(stores.nodes.as_ref(), cipher.as_ref()).await?);
-        let guard = Guard::new(authorizer, config.step_up_window_secs);
+        let guard =
+            Guard::new(authorizer, config.step_up_window_secs).with_members(stores.members.clone());
+        let vault_members = members::MemberService::new(
+            stores.members.clone(),
+            stores.identity.clone(),
+            stores.policy.clone(),
+            guard.clone(),
+        );
         let users = users::UserService::new(
             stores.identity.clone(),
+            stores.policy.clone(),
             stores.sso.clone(),
             cipher.clone(),
             guard.clone(),
         );
         let sso = sso::SsoService::new(
             stores.identity.clone(),
+            stores.members.clone(),
             stores.sso.clone(),
             cipher.clone(),
             keys.clone(),
@@ -411,6 +609,7 @@ impl ControlPlane {
                 alerts: stores.alerts,
                 tripwires: stores.tripwires,
             },
+            stores.members,
             guard,
             cipher,
             prober,
@@ -435,6 +634,7 @@ impl ControlPlane {
             bundles: services.bundles,
             nodes: services.nodes,
             users,
+            members: vault_members,
             variables: services.variables,
             audit: services.audit,
             alerts: services.alerts,
@@ -478,6 +678,12 @@ mod tests {
         plane_with(Arc::new(crate::probe::DisabledProber)).await
     }
 
+    /// A plane with no accounts yet, as on first boot.
+    async fn fresh_plane() -> ControlPlane {
+        let (plane, _) = plane_on(Arc::new(crate::probe::DisabledProber)).await;
+        plane
+    }
+
     fn stores(store: &Arc<MemoryStore>) -> Stores {
         Stores {
             credentials: store.clone(),
@@ -489,17 +695,24 @@ mod tests {
             nodes: store.clone(),
             alerts: store.clone(),
             tripwires: store.clone(),
+            members: store.clone(),
         }
     }
 
     async fn plane_with(prober: Arc<dyn CredentialProber>) -> ControlPlane {
+        let (plane, store) = plane_on(prober).await;
+        testing::enrol(store.as_ref(), &admin(0)).await;
+        plane
+    }
+
+    async fn plane_on(prober: Arc<dyn CredentialProber>) -> (ControlPlane, Arc<MemoryStore>) {
         let store = Arc::new(MemoryStore::new());
         let cipher = Arc::new(
             Envelope::open(&AesGcmCipher::generate_key(), store.clone())
                 .await
                 .unwrap(),
         );
-        ControlPlane::new(
+        let plane = ControlPlane::new(
             stores(&store),
             Arc::new(RbacAuthorizer),
             cipher,
@@ -509,20 +722,59 @@ mod tests {
             ControlConfig::default(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        (plane, store)
     }
 
-    fn admin(step_up_age_secs: i64) -> Caller {
+    /// A person invited by the test admin as a member, with `role` in
+    /// `vault`, signed in with a fresh step-up.
+    async fn person_in(cp: &ControlPlane, name: &str, vault: &VaultId, role: Role) -> Caller {
+        let issued = cp
+            .users
+            .create_invite(
+                &admin(0),
+                users::CreateInvite {
+                    role: Role::Member,
+                    expires_in_hours: None,
+                    vaults: vec![crate::model::VaultGrant {
+                        vault_id: *vault,
+                        role,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let user = cp
+            .users
+            .accept_invite(users::AcceptInviteRequest {
+                invite_token: issued.token,
+                username: name.into(),
+                password: "a long enough password".into(),
+                totp_secret: None,
+                totp_code: None,
+            })
+            .await
+            .unwrap();
         Caller {
             principal: Principal {
                 kind: PrincipalKind::User,
-                actor: "user:test-admin".into(),
-                role: Role::Admin,
+                actor: format!("user:{}", user.id),
+                role: Role::Member,
                 vault: None,
             },
-            step_up_at: Some(Utc::now() - chrono::Duration::seconds(step_up_age_secs)),
-            second_factor: true,
+            step_up_at: Some(Utc::now()),
+            second_factor: false,
             launch: None,
+            sign_in: SignInScope::Full,
+        }
+    }
+
+    /// The instance admin every test plane has; it administers the vaults
+    /// it creates.
+    fn admin(step_up_age_secs: i64) -> Caller {
+        Caller {
+            step_up_at: Some(Utc::now() - chrono::Duration::seconds(step_up_age_secs)),
+            ..testing::person_caller("test-admin", Role::Admin)
         }
     }
 
@@ -554,6 +806,8 @@ mod tests {
         let outcome = cp
             .auth
             .login(LoginRequest {
+                scope: Default::default(),
+                ttl_secs: None,
                 username: creds.username.clone(),
                 password: password.clone(),
                 totp_code: None,
@@ -586,6 +840,8 @@ mod tests {
 
     fn login(username: &str, password: &str, code: Option<String>) -> LoginRequest {
         LoginRequest {
+            scope: Default::default(),
+            ttl_secs: None,
             username: username.into(),
             password: password.into(),
             totp_code: code,
@@ -609,6 +865,7 @@ mod tests {
         .await
         .unwrap();
         let (auth, password, _) = first_admin(&old).await;
+        testing::enrol(store.as_ref(), &admin(0)).await;
         let secret = add_authenticator(&old, &auth, &password).await;
         let vault = old.policy.create_vault(&admin(0), "main").await.unwrap();
         let credential = old
@@ -699,7 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_start_creates_the_admin_with_a_generated_password() {
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let creds = cp.auth.create_initial_admin().await.unwrap().unwrap();
         assert_eq!(creds.username, "admin");
         assert!(!format!("{creds:?}").contains(creds.password.as_str()));
@@ -727,7 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_authenticator_can_be_turned_on_and_off() {
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let (auth, password, _) = first_admin(&cp).await;
         let enrol = cp.auth.new_totp_enrollment("admin").unwrap();
         let enable = |code: String, password: &str| EnableAuthenticator {
@@ -802,7 +1059,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_new_password_keeps_this_session_and_ends_the_others() {
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let (auth, password, token) = first_admin(&cp).await;
         let other = cp
             .auth
@@ -855,7 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_reset_password_replaces_the_old_one_and_ends_every_session() {
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let (_, password, token) = first_admin(&cp).await;
         assert!(matches!(
             cp.auth.reset_password("nobody").await,
@@ -891,9 +1148,15 @@ mod tests {
     async fn invited_people_get_the_offered_role_and_can_be_disabled() {
         use super::users::{AcceptInviteRequest, CreateInvite, UpdateUser};
 
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let admin = setup_admin(&cp).await;
+        let vault = cp.policy.create_vault(&admin, "team").await.unwrap();
+        let grant = crate::model::VaultGrant {
+            vault_id: vault.id,
+            role: Role::Editor,
+        };
         let invite = |role| CreateInvite {
+            vaults: Vec::new(),
             role,
             expires_in_hours: None,
         };
@@ -902,7 +1165,7 @@ mod tests {
             ..admin.clone()
         };
         assert!(matches!(
-            cp.users.create_invite(&stale, invite(Role::Editor)).await,
+            cp.users.create_invite(&stale, invite(Role::Member)).await,
             Err(ControlError::StepUpRequired { .. })
         ));
         assert!(matches!(
@@ -910,7 +1173,8 @@ mod tests {
                 .create_invite(
                     &admin,
                     CreateInvite {
-                        role: Role::Viewer,
+                        vaults: Vec::new(),
+                        role: Role::Member,
                         expires_in_hours: Some(24 * 30),
                     }
                 )
@@ -918,14 +1182,49 @@ mod tests {
             Err(ControlError::Validation { .. })
         ));
 
+        // A vault role is not an instance role, and a vault must exist.
+        let err = cp.users.create_invite(&admin, invite(Role::Editor)).await;
+        assert!(
+            matches!(err, Err(ControlError::Validation { .. })),
+            "{err:?}"
+        );
+        let err = cp
+            .users
+            .create_invite(
+                &admin,
+                CreateInvite {
+                    vaults: vec![crate::model::VaultGrant {
+                        vault_id: VaultId::new(),
+                        role: Role::Editor,
+                    }],
+                    ..invite(Role::Member)
+                },
+            )
+            .await;
+        assert!(matches!(err, Err(ControlError::NotFound { .. })), "{err:?}");
+
         let issued = cp
             .users
-            .create_invite(&admin, invite(Role::Editor))
+            .create_invite(
+                &admin,
+                CreateInvite {
+                    vaults: vec![grant],
+                    ..invite(Role::Member)
+                },
+            )
             .await
             .unwrap();
         assert!(issued.token.starts_with("cbinv_"));
         let info = cp.users.inspect_invite(&issued.token).await.unwrap();
-        assert_eq!(info.role, Role::Editor);
+        assert_eq!(info.role, Role::Member);
+        assert_eq!(
+            info.vaults,
+            [super::users::InvitedVault {
+                vault_id: vault.id,
+                name: "team".into(),
+                role: Role::Editor,
+            }]
+        );
         assert!(cp.users.inspect_invite("cbinv_unknown").await.is_err());
 
         let enrol = cp.users.invite_totp(&issued.token, "bob").await.unwrap();
@@ -949,7 +1248,9 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(bob.role, Role::Editor);
+        assert_eq!(bob.role, Role::Member);
+        // The invitation's vault roles came with the account.
+        assert_eq!(cp.members.vaults_of(&bob.id).await.unwrap(), [grant]);
         assert!(matches!(
             cp.users
                 .accept_invite(accept(totp::code_at(&enrol.secret, now_secs()).unwrap()))
@@ -958,6 +1259,8 @@ mod tests {
         ));
 
         let login = |offset: u64| LoginRequest {
+            scope: Default::default(),
+            ttl_secs: None,
             username: "bob".into(),
             password: "a different long password".into(),
             totp_code: Some(totp::code_at(&enrol.secret, now_secs() + offset).unwrap()),
@@ -969,7 +1272,7 @@ mod tests {
             .await
             .unwrap()
             .caller;
-        assert_eq!(bob_caller.principal.role, Role::Editor);
+        assert_eq!(bob_caller.principal.role, Role::Member);
         assert!(matches!(
             cp.users
                 .list_users(&bob_caller, PageRequest::default())
@@ -1001,7 +1304,7 @@ mod tests {
                     &admin,
                     &admin_id,
                     UpdateUser {
-                        role: Some(Role::Viewer),
+                        role: Some(Role::Member),
                         disabled: None,
                     }
                 )
@@ -1023,7 +1326,7 @@ mod tests {
                 &admin,
                 &bob.id,
                 UpdateUser {
-                    role: Some(Role::Viewer),
+                    role: Some(Role::Admin),
                     disabled: Some(false),
                 },
             )
@@ -1031,7 +1334,7 @@ mod tests {
             .unwrap();
         let session = cp.auth.login(login(30)).await.unwrap();
         let auth = cp.auth.authenticate_session(&session.token).await.unwrap();
-        assert_eq!(auth.user.role, Role::Viewer);
+        assert_eq!(auth.user.role, Role::Admin);
 
         let users = cp
             .users
@@ -1067,14 +1370,15 @@ mod tests {
     async fn revoked_invites_cannot_be_accepted() {
         use super::users::CreateInvite;
 
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let admin = setup_admin(&cp).await;
         let issued = cp
             .users
             .create_invite(
                 &admin,
                 CreateInvite {
-                    role: Role::Viewer,
+                    vaults: Vec::new(),
+                    role: Role::Member,
                     expires_in_hours: Some(1),
                 },
             )
@@ -1095,9 +1399,11 @@ mod tests {
     async fn password_only_accounts_sign_in_and_step_up_with_the_password() {
         use super::auth::StepUpProof;
 
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let (_, password, _) = first_admin(&cp).await;
         let login = |password: &str| LoginRequest {
+            scope: Default::default(),
+            ttl_secs: None,
             username: "admin".into(),
             password: password.into(),
             totp_code: None,
@@ -1126,21 +1432,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Sensitive actions are not gated on a step-up the account cannot
-        // give with anything but the password it signed in with.
+        // Sensitive actions still need a recent step-up: whoever holds a
+        // copied sign-in token does not know the password to give one.
         assert!(!auth.caller.second_factor);
+        let invite = || super::users::CreateInvite {
+            vaults: Vec::new(),
+            role: Role::Member,
+            expires_in_hours: None,
+        };
         let long_ago = Caller {
             step_up_at: Some(Utc::now() - chrono::Duration::seconds(3600)),
             ..auth.caller.clone()
         };
+        let err = cp.users.create_invite(&long_ago, invite()).await;
+        assert!(
+            matches!(err, Err(ControlError::StepUpRequired { .. })),
+            "{err:?}"
+        );
+        let stepped_up = cp.auth.authenticate_session(&outcome.token).await.unwrap();
         cp.users
-            .create_invite(
-                &long_ago,
-                super::users::CreateInvite {
-                    role: Role::Editor,
-                    expires_in_hours: None,
-                },
-            )
+            .create_invite(&stepped_up.caller, invite())
             .await
             .unwrap();
     }
@@ -1149,10 +1460,12 @@ mod tests {
     async fn enrolled_accounts_cannot_skip_the_code() {
         use super::auth::StepUpProof;
 
-        let cp = plane().await;
+        let cp = fresh_plane().await;
         let (first, password, _) = first_admin(&cp).await;
         let secret = add_authenticator(&cp, &first, &password).await;
         let without_code = LoginRequest {
+            scope: Default::default(),
+            ttl_secs: None,
             username: "admin".into(),
             password: password.clone(),
             totp_code: None,
@@ -1169,6 +1482,8 @@ mod tests {
         assert!(matches!(
             cp.auth
                 .login(LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     password: "wrong horse battery".into(),
                     ..without_code.clone()
                 })
@@ -1178,6 +1493,8 @@ mod tests {
         assert!(matches!(
             cp.auth
                 .login(LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     totp_code: Some("000000".into()),
                     ..without_code.clone()
                 })
@@ -1187,6 +1504,8 @@ mod tests {
         let outcome = cp
             .auth
             .login(LoginRequest {
+                scope: Default::default(),
+                ttl_secs: None,
                 totp_code: Some(totp::code_at(&secret, now_secs() + 30).unwrap()),
                 ..without_code
             })
@@ -1203,6 +1522,7 @@ mod tests {
                 .create_invite(
                     &long_ago,
                     super::users::CreateInvite {
+                        vaults: Vec::new(),
                         role: Role::Editor,
                         expires_in_hours: None,
                     },
@@ -1231,6 +1551,8 @@ mod tests {
             let _ = cp
                 .auth
                 .login(LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     username: "nobody".into(),
                     password: "whatever-password".into(),
                     totp_code: Some("123456".into()),
@@ -1240,6 +1562,8 @@ mod tests {
         let res = cp
             .auth
             .login(LoginRequest {
+                scope: Default::default(),
+                ttl_secs: None,
                 username: "nobody".into(),
                 password: "whatever-password".into(),
                 totp_code: Some("123456".into()),
@@ -2324,6 +2648,7 @@ mod tests {
             .unwrap();
 
         let editor = Caller {
+            sign_in: Default::default(),
             principal: Principal {
                 kind: PrincipalKind::User,
                 actor: "user:test-editor".into(),
@@ -2650,17 +2975,7 @@ mod tests {
 
         // Choosing where credentials go is node management: an editor who
         // may mint in the vault can't send its sessions to a node.
-        let editor = Caller {
-            principal: Principal {
-                kind: PrincipalKind::User,
-                actor: "user:test-editor".into(),
-                role: Role::Editor,
-                vault: None,
-            },
-            step_up_at: Some(Utc::now()),
-            second_factor: true,
-            launch: None,
-        };
+        let editor = person_in(&cp, "editor", &vault.id, Role::Editor).await;
         let mut unbound = mint("sbx-8");
         unbound.binding = None;
         let denied = cp

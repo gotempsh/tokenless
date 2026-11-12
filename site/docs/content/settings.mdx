@@ -155,9 +155,11 @@ provider**:
    encrypted at rest and never shown again; leave the field empty when
    editing to keep it. Saving reads the discovery document, so the
    issuer must be reachable from the server when you save.
-3. Map the provider's **groups** to roles. Someone in several mapped
-   groups gets the highest role; someone in none is refused, and the
-   message names the groups the provider sent so you can fix the mapping.
+3. Map the provider's **groups** to roles. Each group makes its people
+   **members** or **instance admins**, and can give them a role in
+   vaults (**Give a role in a vault**). Someone in several mapped groups
+   gets the highest of each; someone in none is refused, and the message
+   names the groups the provider sent so you can fix the mapping.
    Groups are read from the `groups` claim of the ID token, or of the
    user info when the token leaves it out; set another claim, or a dotted
    path such as `realm_access.roles`, for providers that put them
@@ -168,8 +170,11 @@ provider**:
 The sign-in page then shows **Continue with *name***. The first sign-in
 creates the account, named by the `preferred_username` claim unless you
 choose another; a local account that already has the name is never taken
-over, and the sign-in is refused instead. The role follows the person's
-groups at every sign-in and cannot be changed by hand. Disabling the
+over, and the sign-in is refused instead. The instance role follows the
+person's groups at every sign-in and cannot be changed by hand. So do the
+vault roles their groups give: a role a group gave is taken back at the
+first sign-in after the group stops giving it. In a vault their groups say
+nothing about, a vault's admin can still add them by hand. Disabling the
 account under **People** still locks them out.
 
 People who sign in with a provider have no password or authenticator

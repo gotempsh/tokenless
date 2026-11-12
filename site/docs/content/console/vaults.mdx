@@ -48,8 +48,9 @@ Pick one, then fill in three things on one page:
    the bundles you checked, in one step.
 
 When it is saved, **Run an agent with it** takes you to the bundle's
-commands. Only admins add services. From a terminal, the same is
-`tokenless service add` ([Set up from the terminal](../terminal.mdx)).
+commands. Only the vault's admins add services. From a terminal, the
+same is `tokenless service add` after `tokenless login --manage`
+([Set up from the terminal](../terminal.mdx)).
 
 ## A service's page
 
@@ -59,7 +60,8 @@ Click a service to see where it is used and what it did.
 
 - **Test** sends the template's test request (for GitHub,
   `GET /user`) with the secret, and says whether the credential works.
-  Templates without a test request say so. Only admins can test.
+  Templates without a test request say so. Only the vault's admins can
+  test.
 - **Replace secret** stores a new value, optionally with the date it
   stops working upstream; the proxy stops sending it then. Proxies use
   the new value at their next policy refresh, within seconds. The old
@@ -95,13 +97,12 @@ narrows that, never widens it.
   per line. Leave it empty to allow every tool; otherwise a
   `tools/call` for any other tool is answered with an MCP error naming
   it, and never reaches the server. Allowing more tools is a sensitive
-  action: with an authenticator or single sign-on, it asks for a
-  [recent code](./account.mdx#authenticator-app).
+  action: it asks you to [confirm it is you](./account.mdx#confirming-it-is-you).
 
 The switch in the **On** column turns a rule off without deleting it:
 sessions that include it stop getting its credential until it is
 turned back on. **⋯ › Delete rule** deletes it: sessions that included
-it can no longer use it. Editors and admins manage rules.
+it can no longer use it. The vault's editors and admins manage rules.
 
 ## Tripwires
 
@@ -118,9 +119,9 @@ alert says which one was entered) and what it looks like, then shows the
 key **once**, ready to paste into `~/.aws/credentials`, a shell profile
 or a `.env` file. The list shows each tripwire's first characters and
 when it was last tripped. **⋯ › Delete tripwire** stops the proxies
-looking for it; with an authenticator or single sign-on it asks for a
-[recent code](./account.mdx#authenticator-app). Editors and admins
-manage tripwires; a vault holds up to 20, and the instance up to 500,
+looking for it, and asks you to
+[confirm it is you](./account.mdx#confirming-it-is-you). The vault's
+editors and admins manage tripwires; a vault holds up to 20, and the instance up to 500,
 the most every proxy looks for.
 
 Every proxy looks for every vault's tripwires, in the URL and headers of
@@ -136,6 +137,34 @@ through unread, so a key sent to a host no rule covers is not seen.
 On the vault's **Settings** tab, **Delete vault** deletes its services
 (and their secrets), rules, access bundles and tripwires, and revokes the API keys
 bound to it. The audit trail is kept. It is refused while an agent is
-using the vault unless you tick **End live sessions**. Only admins can
-delete a vault; with an authenticator or single sign-on, it asks for a
-[recent code](./account.mdx#authenticator-app) first.
+using the vault unless you tick **End live sessions**. Only instance
+admins can delete a vault, and it asks them to
+[confirm it is them](./account.mdx#confirming-it-is-you) first.
+
+## Members
+
+The **Members** tab lists who works in the vault, with their role and who
+gave it: a person, their groups at an identity provider, or the upgrade
+that introduced vault roles. Everyone in the vault sees it.
+
+- **Add someone** takes a username and a role: runner, viewer, editor or
+  admin ([Roles](./people.mdx#roles)). The person needs an account first;
+  an instance admin invites them from [People](./people.mdx).
+- **⋯ › Change role** and **⋯ › Remove from vault** change or end their
+  membership. Their sessions already running keep going until they expire
+  or someone stops them.
+- **⋯ › Leave vault** on your own row takes you out.
+
+Only the vault's admins add people, change roles and remove anyone, and
+each of those asks them to [confirm it is them](./account.mdx#confirming-it-is-you).
+A vault always keeps one admin: make someone else admin before the last
+one leaves. From a terminal: `tokenless vault member list|set|remove`.
+
+### An instance admin who is not a member
+
+An instance admin sees every vault, but one they are not a member of
+shows **You oversee this vault**: its sessions, launcher keys, audit log
+and alerts, and revoking and acknowledging them, without its services,
+rules or bundles. **Join as admin** makes them one of its admins after they
+confirm it is them, and records `vault.join` in the audit log
+([Access and least privilege](../access.mdx#instance-admins-oversee-then-join)).

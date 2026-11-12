@@ -6,7 +6,8 @@
 
 import { useMemo, useState } from "react";
 import { Braces, KeyRound, Lock, Plus } from "lucide-react";
-import { get, type CredentialMeta, type Page, type StoredTemplate, type UserSummary } from "../api";
+import { get, type CredentialMeta, type Page, type StoredTemplate } from "../api";
+import { can, type Me } from "../access";
 import { KIND_LABEL, targetHosts } from "../catalog";
 import { useLoad } from "../hooks";
 import { fromWidth, Empty, ErrorBanner, Loading, Pager, Panel, rowLink, Section, Tags, When } from "../components/common";
@@ -20,8 +21,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 export { templateOf };
 
 /** A vault's services. A row opens the service, where it is tested and changed. */
-export function Services({ vaultId, user }: { vaultId: string; user: UserSummary }) {
-  const isAdmin = user.role === "admin";
+export function Services({ vaultId, user }: { vaultId: string; user: Me }) {
+  const isAdmin = can(user, vaultId, "manage");
   const [page, setPage] = useState(1);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page=${page}`), [vaultId, page]);
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
@@ -34,7 +35,7 @@ export function Services({ vaultId, user }: { vaultId: string; user: UserSummary
         window.location.hash = addServiceHref({ vault: vaultId, back: `vaults/${vaultId}` });
       }}
       disabled={!isAdmin}
-      title={isAdmin ? undefined : "Only admins can add services"}
+      title={isAdmin ? undefined : "Only a vault's admins can add services"}
     >
       <Plus />
       Add service

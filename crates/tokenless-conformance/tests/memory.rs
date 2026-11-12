@@ -172,3 +172,8 @@ async fn an_embedded_data_plane_on_the_memory_store_passes_the_dataplane_suite()
         "a vault left behind"
     );
 }
+
+#[tokio::test]
+async fn memory_store_passes_membership_suite() {
+    membership_store_suite(&MemoryStore::new()).await.unwrap();
+}

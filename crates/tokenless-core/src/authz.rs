@@ -3,6 +3,15 @@
 
 //! Role-based authorisation decisions. Pure: the control plane's
 //! `Authorizer` wraps this so an embedding system can substitute its own.
+//!
+//! Access has two independent levels. A person's *instance role*
+//! ([`Role::Admin`] or [`Role::Member`]) decides who runs the instance:
+//! people, settings, sign-in, proxies. Their *vault role*
+//! ([`Role::Admin`], [`Role::Editor`], [`Role::Viewer`] or [`Role::Runner`],
+//! one per vault they are a member of) decides what they may do inside
+//! that vault. Being an instance admin gives no vault's contents: an admin
+//! joins a vault first (see [`Action::VaultJoin`]). The control plane's
+//! guard resolves the vault role before asking [`rbac_decide`].
 
 use std::fmt;
 
@@ -13,12 +22,20 @@ use crate::ids::VaultId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Full control of the instance. Only people (never API keys) can be admins.
+    /// As an instance role, runs the instance; as a vault role, has full
+    /// control of the vault, its members included. Only people (never API
+    /// keys) can be admins.
     Admin,
-    /// Manage rules and sessions in one vault.
+    /// Manage services, rules, bundles and sessions in one vault.
     Editor,
     /// Read-only access to one vault.
     Viewer,
+    /// Starts sessions from one vault's access bundles and sees what they
+    /// reach, nothing more: for the people (and keys) who only run agents.
+    Runner,
+    /// An instance role: signs in, and reaches only the vaults they are a
+    /// member of, by their role in each.
+    Member,
 }
 
 impl Role {
@@ -27,6 +44,8 @@ impl Role {
             Role::Admin => "admin",
             Role::Editor => "editor",
             Role::Viewer => "viewer",
+            Role::Runner => "runner",
+            Role::Member => "member",
         }
     }
 
@@ -35,7 +54,41 @@ impl Role {
             "admin" => Some(Role::Admin),
             "editor" => Some(Role::Editor),
             "viewer" => Some(Role::Viewer),
+            "runner" => Some(Role::Runner),
+            "member" => Some(Role::Member),
             _ => None,
+        }
+    }
+
+    /// A role a person holds on the instance.
+    pub fn is_instance_role(&self) -> bool {
+        matches!(self, Role::Admin | Role::Member)
+    }
+
+    /// A role a person holds in a vault.
+    pub fn is_vault_role(&self) -> bool {
+        matches!(
+            self,
+            Role::Admin | Role::Editor | Role::Viewer | Role::Runner
+        )
+    }
+
+    /// A role an API key may hold: a vault role short of admin.
+    pub fn is_api_key_role(&self) -> bool {
+        matches!(self, Role::Editor | Role::Viewer | Role::Runner)
+    }
+
+    /// Orders vault roles by how much they allow, for "at least" checks
+    /// and for keeping the higher of two grants. A runner starts sessions
+    /// a viewer may not, but sees less; neither contains the other, and a
+    /// runner ranks lowest so a grant never turns a viewer into one.
+    pub fn vault_rank(&self) -> u8 {
+        match self {
+            Role::Admin => 4,
+            Role::Editor => 3,
+            Role::Viewer => 2,
+            Role::Runner => 1,
+            Role::Member => 0,
         }
     }
 }
@@ -53,6 +106,11 @@ pub enum Action {
     VaultRead,
     /// Delete a vault with everything in it. Admin only, with step-up.
     VaultDelete,
+    /// An instance admin makes themselves an admin of a vault they are not
+    /// a member of, to reach its contents. With step-up, and recorded.
+    VaultJoin,
+    /// Add people to a vault, change their role in it, remove them.
+    VaultMemberManage,
     TemplateRead,
     TemplateImport,
     TemplateApprove,
@@ -116,14 +174,19 @@ impl Action {
                 | Action::VariableManage
                 | Action::IdentityProviderManage
                 | Action::AuditExportManage
+                | Action::VaultJoin
+                | Action::VaultMemberManage
         )
     }
 
-    fn instance_level(&self) -> bool {
+    /// Actions on the instance rather than inside one vault: they take the
+    /// instance role, never a vault role.
+    pub fn instance_level(&self) -> bool {
         matches!(
             self,
             Action::VaultCreate
                 | Action::VaultDelete
+                | Action::VaultJoin
                 | Action::TemplateImport
                 | Action::TemplateApprove
                 | Action::CredentialWiden
@@ -138,6 +201,39 @@ impl Action {
                 | Action::VariableManage
                 | Action::IdentityProviderManage
                 | Action::AuditExportManage
+        )
+    }
+}
+
+impl Action {
+    /// What an instance admin may do in a vault without joining it: see
+    /// that it exists, its sessions, launcher keys, audit log and alerts,
+    /// and cut off its sessions and launcher keys. Watching and stopping,
+    /// never reaching what the vault holds.
+    pub fn admin_oversight(&self) -> bool {
+        matches!(
+            self,
+            Action::VaultRead
+                | Action::SessionRead
+                | Action::LauncherKeyRead
+                | Action::AuditRead
+                | Action::AlertAcknowledge
+                | Action::SessionRevoke
+                | Action::LauncherKeyRevoke
+        )
+    }
+
+    /// What a sign-in made for running agents (`tokenless login`, the
+    /// default) may do: find the bundles it can start, start sessions from
+    /// them and see what they reach.
+    pub fn launch_only(&self) -> bool {
+        matches!(
+            self,
+            Action::VaultRead
+                | Action::TemplateRead
+                | Action::CredentialRead
+                | Action::RuleRead
+                | Action::SessionMint
         )
     }
 }
@@ -267,6 +363,18 @@ pub fn rbac_decide(principal: &Principal, action: Action, vault: Option<&VaultId
                 | Action::LauncherKeyRead
                 | Action::AuditRead
         ),
+        // Starting sessions is the point; what they reach is shown so the
+        // right bundle can be picked. No audit log, no other sessions.
+        Role::Runner => matches!(
+            action,
+            Action::VaultRead
+                | Action::TemplateRead
+                | Action::CredentialRead
+                | Action::RuleRead
+                | Action::SessionMint
+        ),
+        // Everything a member does in a vault comes from their role there.
+        Role::Member => action == Action::TemplateRead,
     };
     if allowed {
         Decision::Allow
@@ -289,6 +397,114 @@ mod tests {
             role,
             vault: Some(vault),
         }
+    }
+
+    #[test]
+    fn roles_belong_to_the_instance_a_vault_or_a_key() {
+        for role in [Role::Admin, Role::Member] {
+            assert!(role.is_instance_role(), "{role}");
+        }
+        for role in [Role::Editor, Role::Viewer, Role::Runner] {
+            assert!(!role.is_instance_role() && role.is_vault_role(), "{role}");
+            assert!(role.is_api_key_role(), "{role}");
+        }
+        assert!(Role::Admin.is_vault_role() && !Role::Admin.is_api_key_role());
+        assert!(!Role::Member.is_vault_role() && !Role::Member.is_api_key_role());
+        for role in [Role::Runner, Role::Member] {
+            assert_eq!(Role::parse(role.as_str()), Some(role));
+        }
+        assert!(Role::Admin.vault_rank() > Role::Editor.vault_rank());
+        assert!(Role::Viewer.vault_rank() > Role::Runner.vault_rank());
+        assert!(Role::Runner.vault_rank() > Role::Member.vault_rank());
+    }
+
+    #[test]
+    fn a_runner_starts_sessions_and_reads_only_what_picking_a_bundle_needs() {
+        let vault = VaultId::new();
+        let runner = key(Role::Runner, vault);
+        for action in [
+            Action::VaultRead,
+            Action::TemplateRead,
+            Action::CredentialRead,
+            Action::RuleRead,
+            Action::SessionMint,
+        ] {
+            assert_eq!(
+                rbac_decide(&runner, action, Some(&vault)),
+                Decision::Allow,
+                "{action}"
+            );
+            assert!(action.launch_only(), "{action}");
+        }
+        for action in [
+            Action::SessionRead,
+            Action::SessionRevoke,
+            Action::AuditRead,
+            Action::RuleWrite,
+            Action::LauncherKeyCreate,
+            Action::VaultMemberManage,
+        ] {
+            assert!(
+                matches!(
+                    rbac_decide(&runner, action, Some(&vault)),
+                    Decision::Deny { .. }
+                ),
+                "{action}"
+            );
+            assert!(!action.launch_only(), "{action}");
+        }
+    }
+
+    #[test]
+    fn a_member_of_the_instance_does_nothing_in_a_vault_by_that_alone() {
+        let member = Principal {
+            kind: PrincipalKind::User,
+            actor: "user:1".into(),
+            role: Role::Member,
+            vault: None,
+        };
+        assert_eq!(
+            rbac_decide(&member, Action::TemplateRead, None),
+            Decision::Allow
+        );
+        let vault = VaultId::new();
+        for action in [Action::VaultRead, Action::SessionMint, Action::VaultJoin] {
+            assert!(
+                matches!(
+                    rbac_decide(&member, action, Some(&vault)),
+                    Decision::Deny { .. }
+                ),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversight_reads_and_stops_but_never_writes_or_reads_contents() {
+        for action in [
+            Action::VaultRead,
+            Action::SessionRead,
+            Action::LauncherKeyRead,
+            Action::AuditRead,
+            Action::AlertAcknowledge,
+            Action::SessionRevoke,
+            Action::LauncherKeyRevoke,
+        ] {
+            assert!(action.admin_oversight(), "{action}");
+        }
+        for action in [
+            Action::CredentialRead,
+            Action::CredentialWrite,
+            Action::RuleRead,
+            Action::SessionMint,
+            Action::LauncherKeyCreate,
+            Action::VaultMemberManage,
+        ] {
+            assert!(!action.admin_oversight(), "{action}");
+        }
+        assert!(Action::VaultJoin.instance_level() && Action::VaultJoin.requires_step_up());
+        assert!(!Action::VaultMemberManage.instance_level());
+        assert!(Action::VaultMemberManage.requires_step_up());
     }
 
     #[test]

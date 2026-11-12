@@ -104,10 +104,11 @@ From the terminal:
 
 ```sh
 tokenless status                                  # what is set up, and what to run next
-tokenless login                                   # session kept in the OS keychain
+tokenless login --manage                          # to set up, for an hour
 tokenless service add github --vault work --bundle code-review   # asks for the token
 tokenless proxy add --name laptop                 # writes ./node.json
 tokenless node run                                # listens on 127.0.0.1:3128
+tokenless login                                   # for agents: only starts sessions
 ```
 
 `service add` creates the vault and the bundle when they don't exist,

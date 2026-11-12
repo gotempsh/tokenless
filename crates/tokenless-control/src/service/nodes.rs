@@ -1140,6 +1140,7 @@ mod tests {
 
         let (store, cs) = services().await;
         let admin = |step_up_age: i64| Caller {
+            sign_in: Default::default(),
             principal: Principal {
                 kind: tokenless_core::authz::PrincipalKind::User,
                 actor: "user:admin".into(),
@@ -1602,6 +1603,7 @@ mod tests {
 
         let (_, cs) = services().await;
         let admin = |step_up_age: i64| Caller {
+            sign_in: Default::default(),
             principal: Principal {
                 kind: tokenless_core::authz::PrincipalKind::User,
                 actor: "user:admin".into(),

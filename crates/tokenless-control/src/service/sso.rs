@@ -38,17 +38,21 @@ use url::Url;
 
 pub use self::brand::ProviderBrand;
 use self::oidc::{Discovery, Expected, OidcTransport, CALLBACK_PATH};
-use super::auth::{open_ui_session, LoginOutcome, SessionAuth};
+use super::auth::{open_ui_session, LoginOutcome, SessionAuth, SignInGrant};
+use super::members::check_vault_role;
 use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::{ControlError, StoreError};
 use crate::keys::KeyRing;
 use crate::model::{
     OidcProvider, OidcPurpose, OidcRequest, PasswordSignIn, RoleMapping, SignInSettings,
-    SsoIdentity, User, MAX_IDLE_TIMEOUT_SECS, MAX_OIDC_PROVIDERS, MAX_ROLE_MAPPINGS,
-    MIN_IDLE_TIMEOUT_SECS,
+    SsoIdentity, User, VaultGrant, VaultMember, MAX_IDLE_TIMEOUT_SECS, MAX_OIDC_PROVIDERS,
+    MAX_ROLE_MAPPINGS, MIN_IDLE_TIMEOUT_SECS,
 };
-use crate::store::{IdentityStore, SsoStore};
+use crate::store::{IdentityStore, MembershipStore, SsoStore};
+
+/// The most vaults one group mapping gives roles in.
+pub const MAX_MAPPED_VAULTS: usize = 100;
 
 /// How long a sign-in at the provider may take.
 pub const REQUEST_TTL_SECS: u64 = 600;
@@ -227,6 +231,7 @@ struct Metadata {
 
 pub struct SsoService {
     identity: Arc<dyn IdentityStore>,
+    members: Arc<dyn MembershipStore>,
     sso: Arc<dyn SsoStore>,
     cipher: Arc<dyn SecretCipher>,
     keys: Arc<KeyRing>,
@@ -289,6 +294,7 @@ impl SsoService {
     #[allow(clippy::too_many_arguments, reason = "each is a separate dependency")]
     pub fn new(
         identity: Arc<dyn IdentityStore>,
+        members: Arc<dyn MembershipStore>,
         sso: Arc<dyn SsoStore>,
         cipher: Arc<dyn SecretCipher>,
         keys: Arc<KeyRing>,
@@ -300,6 +306,7 @@ impl SsoService {
         let flow_key = SealKey::derive(&keys.csrf_key, "oidc-flow-cookie")?;
         Ok(Self {
             identity,
+            members,
             sso,
             cipher,
             keys,
@@ -409,9 +416,33 @@ impl SsoService {
                     "group '{group}' is mapped twice; give each group one role"
                 )));
             }
+            if !m.role.is_instance_role() {
+                return Err(validation(format!(
+                    "group '{group}' maps to '{}', which is not an instance role: map it to admin or member, and give vault roles under its vaults",
+                    m.role
+                )));
+            }
+            if m.vaults.len() > MAX_MAPPED_VAULTS {
+                return Err(validation(format!(
+                    "group '{group}' gives roles in {} vaults; at most {MAX_MAPPED_VAULTS}",
+                    m.vaults.len()
+                )));
+            }
+            let mut vaults: Vec<VaultGrant> = Vec::new();
+            for grant in &m.vaults {
+                check_vault_role(grant.role)?;
+                if vaults.iter().any(|g| g.vault_id == grant.vault_id) {
+                    return Err(validation(format!(
+                        "group '{group}' gives vault {} twice; give it one role there",
+                        grant.vault_id
+                    )));
+                }
+                vaults.push(*grant);
+            }
             role_mappings.push(RoleMapping {
                 group,
                 role: m.role,
+                vaults,
             });
         }
         if req.enabled && role_mappings.is_empty() {
@@ -1247,6 +1278,8 @@ impl SsoService {
             Some(user) => self.sync_role(provider, user, role).await?,
             None => self.create_user(provider, subject, claims, role).await?,
         };
+        let grants = oidc::mapped_vaults(&provider.role_mappings, &groups);
+        self.sync_vaults(provider, &user, &grants).await?;
         let event = AuditEvent::new(
             format!("user:{}", user.id),
             "auth.login",
@@ -1262,8 +1295,11 @@ impl SsoService {
             &self.keys,
             &self.config,
             &user,
-            signed_in_at,
             user_agent,
+            SignInGrant {
+                step_up_at: signed_in_at,
+                ..SignInGrant::default()
+            },
             event,
         )
         .await?;
@@ -1319,6 +1355,81 @@ impl SsoService {
         }
         user.role = role;
         Ok(user)
+    }
+
+    /// Gives the person the vault roles their groups map to, and takes
+    /// back the ones an earlier sign-in with this provider gave that their
+    /// groups no longer do. A role a vault admin set by hand is theirs to
+    /// change; a vault deleted since the mapping was saved is skipped.
+    async fn sync_vaults(
+        &self,
+        provider: &OidcProvider,
+        user: &User,
+        grants: &[VaultGrant],
+    ) -> Result<(), ControlError> {
+        let actor = format!("sso:{}", provider.slug);
+        let held = self.members.user_vaults(&user.id).await?;
+        for grant in grants {
+            if held.contains(grant) {
+                continue;
+            }
+            let member = VaultMember {
+                vault_id: grant.vault_id,
+                user_id: user.id,
+                username: user.username.clone(),
+                role: grant.role,
+                added_by: actor.clone(),
+                added_at: Utc::now(),
+            };
+            let event = AuditEvent::new("system", "vault.member.put", AuditOutcome::Success)
+                .vault(grant.vault_id)
+                .target(format!("vault:{}", grant.vault_id))
+                .detail("user", format!("user:{}", user.id))
+                .detail("username", user.username.clone())
+                .detail("role", grant.role.as_str())
+                .detail("reason", format!("groups at {}", provider.slug));
+            match self.members.put_vault_member(member, &[event]).await {
+                Ok(()) => {}
+                Err(StoreError::NotFound { .. }) => {
+                    warn!(provider = %provider.slug, vault_id = %grant.vault_id, "a group mapping names a vault that no longer exists");
+                }
+                // The last admin of the vault keeps the role.
+                Err(StoreError::Conflict { .. }) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let mapped: Vec<_> = grants.iter().map(|g| g.vault_id).collect();
+        for gone in held.iter().filter(|g| !mapped.contains(&g.vault_id)) {
+            let given_here = self
+                .members
+                .vault_member(&gone.vault_id, &user.id)
+                .await?
+                .is_some_and(|m| m.added_by == actor);
+            if !given_here {
+                continue;
+            }
+            let event = AuditEvent::new("system", "vault.member.remove", AuditOutcome::Success)
+                .vault(gone.vault_id)
+                .target(format!("vault:{}", gone.vault_id))
+                .detail("user", format!("user:{}", user.id))
+                .detail("username", user.username.clone())
+                .detail(
+                    "reason",
+                    format!("groups at {} no longer give it", provider.slug),
+                );
+            match self
+                .members
+                .remove_vault_member(&gone.vault_id, &user.id, &[event])
+                .await
+            {
+                Ok(_) => {}
+                Err(StoreError::Conflict { .. }) => {
+                    warn!(provider = %provider.slug, vault_id = %gone.vault_id, user_id = %user.id, "kept a vault's last admin whose groups no longer give the role");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
 
     async fn create_user(

@@ -218,11 +218,14 @@ The steps it leads through:
    keeps it running: it prints the admin password once, which you must
    not see. Its data directory holds the root key, so keep it out of any
    repository. Then they sign in, also in their own terminal, since it
-   asks for the password.
+   asks for the password. Setting up takes the sign-in that can change
+   things, which lasts an hour; the plain one, which only starts sessions,
+   is what you use afterwards.
 
    ```sh
    tokenless serve --data-dir ~/.tokenless
-   tokenless login
+   tokenless login --manage --username admin
+   tokenless login --username admin
    ```
 
 2. **The key.** Find the template for the service or the variable the
@@ -297,8 +300,9 @@ its own.
   answering there, tell them the address it tried and stop; that server
   isn't yours to start.
 - **Sign in as themselves**, in their own terminal:
-  `tokenless login --username <their username>`. Without `--username` it
-  signs in as `admin`. An account that only uses single sign-on has no
+  `tokenless login --username <their username>`, which only starts
+  sessions, and `tokenless login --manage --username <their username>`
+  when they set something up (it lasts an hour). An account that only uses single sign-on has no
   password for `login`: they add services in the console, and start you
   with a session token from the bundle's page
   (`TOKENLESS_SESSION_TOKEN`, section 3).
@@ -329,7 +333,10 @@ its own.
 
 A command that has no terminal to ask in says so and what to do instead,
 and every other refusal names what is missing (`run tokenless login`, no
-proxy answering, an unknown template), so follow what it says.
+proxy answering, an unknown template), so follow what it says. A refusal
+saying the sign-in "only starts sessions" means the change needs the
+person to run `tokenless login --manage` in their own terminal; ask them,
+and don't ask for it to be kept around once the change is done.
 
 Never try to bypass the broker: no direct connections, no unsetting the
 proxy, no hunting for keys in files. If you need access you don't have, say

@@ -22,7 +22,9 @@ use super::{AuditRecorder, Caller, ControlConfig, Guard};
 use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::ControlError;
 use crate::keys::KeyRing;
-use crate::model::{ApiKey, Page, PageRequest, PasswordSignIn, UiSession, User, MAX_USER_AGENT};
+use crate::model::{
+    ApiKey, Page, PageRequest, PasswordSignIn, SignInScope, UiSession, User, MAX_USER_AGENT,
+};
 use crate::store::{IdentityStore, SsoStore};
 
 const MAX_FAILED_LOGINS: u32 = 5;
@@ -127,9 +129,47 @@ pub struct LoginRequest {
     /// Required only for accounts with an authenticator enrolled.
     #[serde(default)]
     pub totp_code: Option<String>,
+    /// What the sign-in may do: everything the person's roles allow
+    /// (the default), or only start sessions (`tokenless login`).
+    #[serde(default)]
+    pub scope: SignInScope,
+    /// A shorter lifetime than the instance's, in seconds (at least
+    /// [`MIN_SIGN_IN_TTL_SECS`]); never a longer one.
+    #[serde(default)]
+    pub ttl_secs: Option<u64>,
 }
 
-tokenless_core::redacted_debug!(LoginRequest { username; password, totp_code });
+tokenless_core::redacted_debug!(LoginRequest { username, scope, ttl_secs; password, totp_code });
+
+/// The shortest sign-in a client may ask for.
+pub const MIN_SIGN_IN_TTL_SECS: u64 = 60;
+
+/// What a new sign-in may do and for how long.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SignInGrant {
+    pub scope: SignInScope,
+    /// `None`: the instance's sign-in lifetime.
+    pub ttl_secs: Option<u64>,
+    /// When the person last proved who they are; signing in counts.
+    pub step_up_at: Option<DateTime<Utc>>,
+}
+
+impl SignInGrant {
+    fn from_request(req: &LoginRequest) -> Result<Self, ControlError> {
+        if let Some(ttl) = req.ttl_secs {
+            if ttl < MIN_SIGN_IN_TTL_SECS {
+                return Err(ControlError::validation(format!(
+                    "ttl_secs must be at least {MIN_SIGN_IN_TTL_SECS}, got {ttl}"
+                )));
+            }
+        }
+        Ok(Self {
+            scope: req.scope,
+            ttl_secs: req.ttl_secs,
+            step_up_at: Some(Utc::now()),
+        })
+    }
+}
 
 /// Proof for a step-up: the authenticator code, or the password for an
 /// account without an authenticator.
@@ -149,9 +189,10 @@ pub struct LoginOutcome {
     pub user: UserSummary,
     pub expires_at: DateTime<Utc>,
     pub max_age_secs: u64,
+    pub scope: SignInScope,
 }
 
-tokenless_core::redacted_debug!(LoginOutcome { user, expires_at, max_age_secs; token, csrf_token });
+tokenless_core::redacted_debug!(LoginOutcome { user, expires_at, max_age_secs, scope; token, csrf_token });
 
 /// A verified UI session.
 #[derive(Clone)]
@@ -279,12 +320,14 @@ pub(super) async fn open_ui_session(
     keys: &KeyRing,
     config: &ControlConfig,
     user: &User,
-    step_up_at: Option<DateTime<Utc>>,
     user_agent: Option<&str>,
+    grant: SignInGrant,
     event: AuditEvent,
 ) -> Result<LoginOutcome, ControlError> {
     let now = Utc::now();
-    let max_age = config.ui_session_ttl_secs;
+    let max_age = grant.ttl_secs.map_or(config.ui_session_ttl_secs, |ttl| {
+        ttl.min(config.ui_session_ttl_secs)
+    });
     let expires_at = now + Duration::seconds(i64::try_from(max_age).unwrap_or(43_200));
     let plaintext = token::new_token(token::SESSION_PREFIX);
     let token_hash = token::hash_token(&plaintext);
@@ -296,11 +339,12 @@ pub(super) async fn open_ui_session(
                 user_id: user.id,
                 created_at: now,
                 expires_at,
-                step_up_at,
+                step_up_at: grant.step_up_at,
                 last_used_at: now,
                 user_agent: user_agent.map(clip_user_agent),
+                scope: grant.scope,
             },
-            &[event],
+            &[event.detail("scope", grant.scope.as_str())],
         )
         .await?;
     Ok(LoginOutcome {
@@ -309,6 +353,7 @@ pub(super) async fn open_ui_session(
         user: UserSummary::from(user),
         expires_at,
         max_age_secs: max_age,
+        scope: grant.scope,
     })
 }
 
@@ -696,6 +741,7 @@ impl AuthService {
         req: LoginRequest,
         user_agent: Option<&str>,
     ) -> Result<LoginOutcome, ControlError> {
+        let grant = SignInGrant::from_request(&req)?;
         let username = req.username.trim().to_ascii_lowercase();
         self.limiter.check(&username)?;
         let user = self.identity.get_user_by_username(&username).await?;
@@ -769,8 +815,8 @@ impl AuthService {
             &self.keys,
             &self.config,
             &user,
-            Some(Utc::now()),
             user_agent,
+            grant,
             event,
         )
         .await
@@ -876,6 +922,7 @@ impl AuthService {
                 // A single sign-on account steps up at its provider.
                 second_factor: user.totp_secret_enc.is_some() || user.sso.is_some(),
                 launch: None,
+                sign_in: session.scope,
             },
             token_hash,
             sign_in_id: session.id,
@@ -1004,6 +1051,7 @@ impl AuthService {
             step_up_at: None,
             second_factor: false,
             launch: key.launch,
+            sign_in: SignInScope::Full,
         })
     }
 
@@ -1015,10 +1063,11 @@ impl AuthService {
         self.guard
             .check(caller, Action::ApiKeyManage, Some(&req.vault_id))
             .await?;
-        if req.role == Role::Admin {
-            return Err(ControlError::validation(
-                "API keys cannot be given the admin role",
-            ));
+        if !req.role.is_api_key_role() {
+            return Err(ControlError::validation(format!(
+                "an API key cannot be given the '{}' role; use editor, viewer or runner",
+                req.role
+            )));
         }
         let name = req.name.trim();
         if name.is_empty() || name.len() > 100 {

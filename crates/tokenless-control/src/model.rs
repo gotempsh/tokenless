@@ -23,10 +23,12 @@ use tokenless_core::variables::CustomHeader;
 
 mod alerts;
 mod audit_export;
+mod members;
 mod sso;
 mod tripwires;
 pub use alerts::*;
 pub use audit_export::*;
+pub use members::*;
 pub use sso::*;
 pub use tripwires::*;
 
@@ -375,7 +377,11 @@ pub struct Invite {
     pub id: InviteId,
     #[serde(skip)]
     pub token_hash: String,
+    /// The instance role the invited person gets.
     pub role: Role,
+    /// The vaults they join on accepting, with their role in each.
+    #[serde(default)]
+    pub vaults: Vec<VaultGrant>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -385,7 +391,7 @@ pub struct Invite {
 }
 
 tokenless_core::redacted_debug!(Invite {
-    id, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at;
+    id, role, vaults, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at;
     token_hash
 });
 
@@ -411,12 +417,15 @@ pub struct UiSession {
     /// The client's `User-Agent` when it signed in, cut to
     /// [`MAX_USER_AGENT`] bytes.
     pub user_agent: Option<String>,
+    /// What the sign-in may do: everything the person's roles allow, or
+    /// only start sessions.
+    pub scope: SignInScope,
 }
 
 /// The longest `User-Agent` kept with a sign-in.
 pub const MAX_USER_AGENT: usize = 256;
 
-tokenless_core::redacted_debug!(UiSession { id, user_id, created_at, expires_at, step_up_at, last_used_at, user_agent; token_hash });
+tokenless_core::redacted_debug!(UiSession { id, user_id, created_at, expires_at, step_up_at, last_used_at, user_agent, scope; token_hash });
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -503,6 +512,9 @@ pub struct AuditQuery {
     pub session_id: Option<SessionId>,
     /// One service's history and traffic: `AuditEvent::credential_ref`.
     pub credential_id: Option<CredentialId>,
+    /// The vaults the caller may read. Instance-wide events (sign-ins,
+    /// settings) are only in [`VaultScope::All`].
+    pub within: VaultScope,
     pub page: PageRequest,
 }
 
@@ -550,6 +562,7 @@ mod tests {
             sso_provider_id: None,
         };
         let invite = Invite {
+            vaults: Vec::new(),
             id: InviteId::new(),
             token_hash: s(),
             role: Role::Editor,
@@ -596,6 +609,7 @@ mod tests {
             format!(
                 "{:?}",
                 UiSession {
+                    scope: Default::default(),
                     id: SignInId::new(),
                     token_hash: s(),
                     user_id: UserId::new(),
@@ -666,6 +680,8 @@ mod tests {
             format!(
                 "{:?}",
                 LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     username: "ada".into(),
                     password: s(),
                     totp_code: Some(s()),
@@ -681,6 +697,7 @@ mod tests {
             format!(
                 "{:?}",
                 LoginOutcome {
+                    scope: Default::default(),
                     token: s(),
                     csrf_token: s(),
                     user: summary.clone(),

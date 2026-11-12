@@ -37,6 +37,7 @@ suite!(sso_store_suite);
 suite!(audit_export_store_suite);
 suite!(alert_store_suite);
 suite!(tripwire_store_suite);
+suite!(membership_store_suite);
 suite!(node_store_suite);
 suite!(audited_writes_suite);
 suite!(vault_deletion_suite);
@@ -135,7 +136,10 @@ async fn a_failed_audit_insert_rolls_back_the_change() {
         "the vault must not survive a failed audit insert"
     );
     let vaults = store
-        .list_vaults(PageRequest::new(None, None))
+        .list_vaults(
+            &tokenless_control::model::VaultScope::All,
+            PageRequest::new(None, None),
+        )
         .await
         .expect("list vaults");
     assert_eq!(vaults.total, 0);

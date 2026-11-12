@@ -135,9 +135,11 @@ password, and change it under **Account**.
 
 ## 2. Invite people
 
-Under **People → Invite someone**, pick a role and send the invite link
+Under **People → Invite someone**, make each person a **member** with a
+role in the vaults they work in, and send the invite link
 ([People](./console/people.mdx)). Each person signs in with their own
-account; nobody shares the admin. With
+account; nobody shares the admin, and nobody gets more vaults than they
+work in ([Access and least privilege](./access.mdx)). With
 [single sign-on](./settings.mdx#single-sign-on) people need no invite.
 
 ## 3. Add services
@@ -147,7 +149,7 @@ the key without the agent ever seeing it:
 
 ```sh
 export TOKENLESS_URL=https://tokenless.example.com
-tokenless login --username <you>   # without --username, it signs in as admin
+tokenless login --manage --username <you>   # for an hour
 tokenless service add github --vault work --bundle code-review
 ```
 
@@ -173,9 +175,11 @@ agents with a session token from the bundle's page, as for
 
 ### Enrol the host's proxy
 
-An admin enrols it in one step:
+An instance admin enrols it in one step, with a manage sign-in that
+lasts an hour:
 
 ```sh
+tokenless login --manage --username <you>
 tokenless proxy add --name laptop --state ~/.tokenless/node.json
 ```
 

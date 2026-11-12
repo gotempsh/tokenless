@@ -303,6 +303,7 @@ fn templates_say_why_the_control_plane_s_list_is_missing() {
             token: "test-session-token".into(),
             csrf_token: "test-csrf-token".into(),
             expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            manage: false,
         })
         .unwrap();
     for json in [false, true] {

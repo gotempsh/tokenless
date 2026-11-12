@@ -77,6 +77,9 @@ pub struct AlertFilter {
     pub vault_id: Option<VaultId>,
     pub session_id: Option<SessionId>,
     pub kind: Option<AlertKind>,
+    /// The vaults the caller may read. Alerts with no vault are only in
+    /// [`VaultScope::All`](super::VaultScope::All).
+    pub within: super::VaultScope,
 }
 
 /// A count of refusals within a window.
