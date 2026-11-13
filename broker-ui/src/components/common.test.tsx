@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { describe, expect, test } from "bun:test";
-import { opensRow } from "./common";
+import { renderToStaticMarkup } from "react-dom/server";
+import { opensRow, Relative, Status } from "./common";
 
 // A minimal element tree: `closest` matches by tag or role, like the DOM.
 interface Node {
@@ -56,5 +57,16 @@ describe("opensRow", () => {
     const outer: Node = { tag: "a" };
     const nested: Node = { tag: "tr", parent: outer };
     expect(opensRow(el(nested), el({ tag: "td", parent: nested }))).toBe(true);
+  });
+});
+
+describe("Status", () => {
+  test("keeps text and a time in one inline run, so the space between them shows", () => {
+    const html = renderToStaticMarkup(
+      <Status tone="destructive">
+        tripped <Relative at="2026-01-01T00:00:00Z" />
+      </Status>,
+    );
+    expect(html).toMatch(/<span>tripped <time /);
   });
 });

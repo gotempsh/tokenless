@@ -168,7 +168,7 @@ and run `login` in a terminal of your own if you have no control plane
 yet, it finds the template with `tokenless service templates`, and it runs
 `tokenless service add --secret-file` (you save the key in a file it then
 deletes) or `--web` (you enter it in the console), so the key never
-passes through the agent. Then `proxy add`, and it runs commands behind
+passes through the agent. Then it runs commands behind
 the bundle with `tokenless run`, or asks you to restart it behind it. It
 suggests revoking a key you already pasted.
 
@@ -190,17 +190,35 @@ npx skills add https://git.example.com/you/tokenless.git
 ```
 
 Or from the binary, which installs the copy built into it, so it always
-matches the CLI you have:
+matches the CLI you have. It lays it out as `npx skills add -g` does: the
+copy in `~/.agents/skills`, which Codex and most other agents read, and a
+link to it in `~/.claude/skills`, left out only when Codex is set up and
+Claude Code is not:
 
 ```sh
-tokenless skill --install                        # ~/.claude/skills/tokenless/SKILL.md
-tokenless skill --install --dir .claude/skills   # for one project
+tokenless skill --install                        # ~/.agents/skills/tokenless, linked from ~/.claude/skills
+tokenless skill --install --project              # this project's .agents/skills (and .claude/skills)
+tokenless skill --install --copy                 # a copy in .claude/skills instead of a link
+tokenless skill --install --dir <skills dir>     # only <skills dir>/tokenless, for another agent
 tokenless skill                                  # print it
 ```
 
-`tokenless login` offers to install it when Claude Code is set up and
-has no copy, and `tokenless run -- claude` says so in one line when the
-skill is missing, then starts Claude Code anyway. Neither installs
+An older `skill --install` left a copy in `~/.claude/skills`; when that
+copy is this version and so is the shared one, it becomes the link. Any
+other copy, from an earlier release, from `npx skills`, or with local edits,
+works, so `--install` keeps it and says so: another version in
+`~/.agents/skills` stays and Claude Code is linked to it, unless Claude Code
+already has a copy of this version, which stays as it is. `--force` brings
+both to this version; in a folder holding files of your own besides
+`SKILL.md`, it rewrites only `SKILL.md`. With `--dir`, a different
+`SKILL.md` is an error instead, and `--force` replaces it. `--copy` puts the
+copy in `.claude/skills` even before Claude Code has created its folder,
+and Claude Code gets one there too when `~/.agents/skills` cannot be
+written.
+`tokenless login` offers to install it when Claude Code (`~/.claude`) or
+Codex (`~/.codex`) is set up and has no copy, and `tokenless run -- claude` (or
+`-- codex`) says so in one line when the skill is missing, then starts the
+agent anyway. Neither installs
 anything unless you say yes. Turn the line off with `--no-skill-hint` or
 `TOKENLESS_NO_SKILL_HINT=1`.
 

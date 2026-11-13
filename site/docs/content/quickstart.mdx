@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 title: "Quickstart"
-description: "This runs everything on one machine: the control plane, a proxy and an agent. It takes about five minutes. You need a token for a service you use, for example a GitHub personal access token."
+description: "This runs everything on one machine: the control plane, its proxy and an agent. It takes about five minutes. You need a token for a service you use, for example a GitHub personal access token."
 ---
 
 ## 1. Start the control plane
@@ -28,6 +28,12 @@ machine. Sign in at [http://127.0.0.1:8080/](http://127.0.0.1:8080/). Under **Ac
 change the password and turn on an authenticator app, which is
 recommended for admins.
 
+`serve` also runs the proxy agents on this machine go through, on
+`127.0.0.1:3128`. It shows under **Proxies** as *built-in (this server)*.
+Version 0.3 and earlier don't: there, open **Proxies → Add a proxy** and
+run the two commands it shows in another terminal, or update with
+`tokenless update`.
+
 Every step below can also be done from the terminal; see
 [Set up from the terminal](./terminal.mdx).
 
@@ -46,20 +52,7 @@ on: nobody can read it back.
 
 Use **Test** on the service's page to check the token works.
 
-## 3. Start a proxy
-
-1. Open **Proxies** and click **Add a proxy**.
-2. Run the two commands it shows, in another terminal:
-
-   ```sh
-   tokenless node join --control-url https://127.0.0.1:8443 --token 'cbj1....'
-   tokenless node run
-   ```
-
-The proxy shows as **Connected** within a few seconds. It listens on
-`127.0.0.1:3128`.
-
-## 4. Sign in from the terminal
+## 3. Sign in from the terminal
 
 ```sh
 tokenless login
@@ -75,7 +68,7 @@ machine, or a CI job, create a session instead: on the bundle's page,
 `tokenless run -- <command>`. The token reaches the bundle's services
 until it expires or you revoke it, and nothing else.
 
-## 5. Run something behind it
+## 4. Run something behind it
 
 ```sh
 tokenless run --vault work --bundle code-review -- curl -s https://api.github.com/user

@@ -27,5 +27,9 @@ EXPOSE 8080 8443
 # release workflow passes the name it publishes under.
 ARG IMAGE=ghcr.io/gotempsh/tokenless
 ENV TOKENLESS_CONTAINER_IMAGE=${IMAGE}
+# No built-in proxy: agents outside the container could not reach one on
+# its loopback. An environment variable rather than a flag in CMD, so a
+# command given to `docker run` keeps it; set it to 0 to turn it back on.
+ENV TOKENLESS_NO_BUILTIN_PROXY=1
 ENTRYPOINT ["/usr/local/bin/tokenless"]
 CMD ["serve", "--data-dir", "/data", "--api-listen", "0.0.0.0:8080", "--node-listen", "0.0.0.0:8443"]

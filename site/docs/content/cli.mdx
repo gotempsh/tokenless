@@ -7,7 +7,7 @@ description: "Every command takes --help for its full list of options."
 
 | Command | What it does |
 |---|---|
-| `tokenless serve` | Run the control plane: console, management API and node API. See [Deploy](./deploy.mdx). |
+| `tokenless serve` | Run the control plane (console, management API and node API) and a proxy for this machine. See [Deploy](./deploy.mdx). |
 | `tokenless status` | What is set up here and the command to run next. Start here. |
 | `tokenless vault list`, `service list`, `bundle list` | What you can see in the console's Vaults, Services and Access bundles pages, as a table or `--json`. |
 | `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
@@ -47,6 +47,15 @@ description: "Every command takes --help for its full list of options."
 | `--validation-ca` | | Extra CAs for credential tests (repeatable) |
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
+| `--no-proxy` | `TOKENLESS_NO_BUILTIN_PROXY` | Don't run the built-in proxy, for a server whose proxies run on other machines. The container image sets the variable |
+| `--proxy-listen` | `127.0.0.1:3128` | The built-in proxy's listener |
+| `--proxy-mcp-listen` | `127.0.0.1:3129` | The built-in proxy's MCP gateway |
+
+The built-in proxy enrols with the server on its first start, keeps its
+identity in `<data-dir>/builtin-proxy.json` and shows under **Proxies** as
+*built-in (this server)*. If its port is taken, `serve` says so and runs
+without it. Revoked in the console, it stays off until you delete
+`builtin-proxy.json`.
 
 `serve` sends its logs to OpenTelemetry when `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
@@ -260,7 +269,7 @@ tokenless tripwire add --kind github --name laptop --vault work >> .env.local
 | `--session-token-file` (`run`, `exec`, `session start`, `session revoke`) | `TOKENLESS_SESSION_TOKEN` (the token itself) | used when no bundle is given |
 | `--name` (when minting) | | the session's name on the Sessions page |
 | `--proxy` | `TOKENLESS_PROXY_ADDRESS` | `127.0.0.1:3128` |
-| `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` says when the skill isn't installed |
+| `--no-skill-hint` (`run`) | `TOKENLESS_NO_SKILL_HINT` | off: `run -- claude` or `run -- codex` says when the skill isn't installed |
 | `--no-port-password` (`run`, `exec`, `session start`) | | off: the session port refuses clients without the password it puts in `HTTPS_PROXY`. Only for a client that can't send proxy credentials: any program on the machine can then use the session |
 
 Inside `run` or behind `session start`, `TOKENLESS_PROXY` is set to the

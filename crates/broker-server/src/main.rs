@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +25,7 @@ use broker_server::launcher::trust::{
     TrustFiles,
 };
 use broker_server::launcher::{parse_duration_secs, parse_label, LauncherError};
+use broker_server::local_proxy::{self, LocalProxyConfig};
 use broker_server::telemetry::{self, Component, Settings as TelemetrySettings, Telemetry};
 use broker_server::update::{self, Outcome as UpdateOutcome, UpdateError};
 use broker_server::{RootKeyInput, Server, ServerConfig};
@@ -205,15 +206,24 @@ enum Command {
     ///   tokenless mcp --bundle code-review --format json
     #[command(verbatim_doc_comment)]
     Mcp(McpArgs),
-    /// Print the agent skill, or install it where Claude Code finds skills.
-    /// It tells an agent behind the broker how to see what it can reach,
-    /// use placeholders and read the proxy's errors.
+    /// Print the agent skill, or install it where agents find skills. It
+    /// tells an agent behind the broker how to see what it can reach, use
+    /// placeholders and read the proxy's errors.
     Skill {
-        /// Write it to <dir>/tokenless/SKILL.md.
+        /// Install it as `npx skills add -g` does: in ~/.agents/skills,
+        /// which Codex and most other agents read, linked from
+        /// ~/.claude/skills when Claude Code is set up.
         #[arg(long)]
         install: bool,
-        /// Skills directory (default: ~/.claude/skills; use .claude/skills
-        /// for one project).
+        /// Install it in this project's .agents/skills (and .claude/skills)
+        /// instead, for everyone working on it.
+        #[arg(long, requires = "install", conflicts_with = "dir")]
+        project: bool,
+        /// Copy it into .claude/skills instead of linking it.
+        #[arg(long, requires = "install", conflicts_with = "dir")]
+        copy: bool,
+        /// Write only <dir>/tokenless/SKILL.md, for an agent that reads
+        /// skills somewhere else.
         #[arg(long, requires = "install")]
         dir: Option<PathBuf>,
         /// Replace an installed copy that differs from this version.
@@ -377,8 +387,8 @@ struct RunArgs {
     /// Variables to set, as `NAME=cb://<service>/<field>` or `NAME=value`.
     #[arg(value_name = "NAME=VALUE")]
     assignments: Vec<String>,
-    /// Don't say so when the command is Claude Code and the tokenless
-    /// skill isn't installed. From the environment, `0`, `false`, `no`,
+    /// Don't say so when the command is Claude Code or Codex and the
+    /// tokenless skill isn't installed. From the environment, `0`, `false`, `no`,
     /// `off` and empty mean no; anything else means yes.
     #[arg(
         long,
@@ -824,6 +834,23 @@ struct ServeArgs {
     /// Snapshot lease in seconds; nodes fail closed when it lapses.
     #[arg(long, default_value_t = 60)]
     lease_secs: u32,
+    /// Do not run the built-in proxy, for a server whose proxies run on the
+    /// agents' machines (tokenless node join, then node run, there). In
+    /// TOKENLESS_NO_BUILTIN_PROXY, `0`, `false`, `no`, `off` and empty
+    /// mean no; anything else means yes.
+    #[arg(
+        long,
+        env = "TOKENLESS_NO_BUILTIN_PROXY",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    no_proxy: bool,
+    /// Where the built-in proxy listens for agents on this machine. Keep it
+    /// on loopback or a private address.
+    #[arg(long, default_value = "127.0.0.1:3128")]
+    proxy_listen: SocketAddr,
+    /// The built-in proxy's MCP gateway (see `tokenless mcp`).
+    #[arg(long, default_value = "127.0.0.1:3129")]
+    proxy_mcp_listen: SocketAddr,
 }
 
 #[derive(Subcommand)]
@@ -1195,6 +1222,9 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     config.api_listen = args.api_listen;
     config.node_listen = args.node_listen;
     config.node_api_names = args.node_api_names;
+    if !args.no_proxy {
+        local_proxy::add_dial_name(&mut config.node_api_names, args.node_listen);
+    }
     config.ui_dir = args.ui_dir;
     if let (Some(cert), Some(key)) = (args.api_tls_cert, args.api_tls_key) {
         config.api_tls = Some(broker_server::api_tls::ApiTlsFiles { cert, key });
@@ -1234,11 +1264,72 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
-    let signal = stop_signal().await?;
+    // After the one-time password is out. Listening for the stop signal
+    // from here on: starting the built-in proxy takes a moment, and a
+    // SIGTERM then must still shut down cleanly.
+    let stop = stop_signal();
+    tokio::pin!(stop);
+    let proxy = if args.no_proxy {
+        None
+    } else {
+        let config = LocalProxyConfig {
+            listen: args.proxy_listen,
+            mcp_listen: Some(args.proxy_mcp_listen),
+            ..LocalProxyConfig::new(&data_dir)
+        };
+        let started = tokio::select! {
+            started = local_proxy::start(&running.control, running.node_addr, config) => started,
+            signal = &mut stop => {
+                let signal = signal?;
+                info!(signal, "shutting down");
+                running.shutdown();
+                return Ok(());
+            }
+        };
+        match started {
+            Ok(proxy) => Some(proxy),
+            Err(e) => {
+                // The server is still useful without it: say why, and go on.
+                warn!(error = %e, "built-in proxy not started");
+                eprintln!("  No built-in proxy: {e}");
+                eprintln!();
+                None
+            }
+        }
+    };
+    if let Some(proxy) = &proxy {
+        eprintln!(
+            "  Proxy for agents on this machine: {}. Run one through it with: {}",
+            proxy.listen,
+            run_hint(proxy.listen)
+        );
+        if !proxy.ready {
+            eprintln!("  It has no policy from this server yet and refuses traffic until it does.");
+        }
+        eprintln!("  (Proxies on other machines instead? Start with --no-proxy, or set TOKENLESS_NO_BUILTIN_PROXY=1.)");
+        eprintln!();
+    }
+    let signal = stop.await?;
     info!(signal, "shutting down");
+    if let Some(proxy) = proxy {
+        proxy.shutdown(LOCAL_PROXY_DRAIN).await;
+    }
     running.shutdown();
     Ok(())
 }
+
+/// The command that runs an agent through the built-in proxy: `--proxy`
+/// only when it is not where `tokenless run` looks by default.
+fn run_hint(listen: SocketAddr) -> String {
+    if listen == SocketAddr::from(([127, 0, 0, 1], 3128)) {
+        "tokenless run -- <agent>".into()
+    } else {
+        format!("tokenless run --proxy {listen} -- <agent>")
+    }
+}
+
+/// How long agents' open tunnels get to finish when `serve` stops.
+const LOCAL_PROXY_DRAIN: Duration = Duration::from_secs(10);
 
 /// An address to sign in at: a wildcard listener (`0.0.0.0`, `::`, as in
 /// the container image) is reachable on loopback from this host.
@@ -1349,7 +1440,7 @@ async fn login(
 }
 
 /// [`skill::missing_hint`] from where `run` was started.
-fn skill_hint(program: &str) -> Option<&'static str> {
+fn skill_hint(program: &str) -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let home = home_dir();
     skill::missing_hint(program, &cwd, home.as_deref())
@@ -1361,9 +1452,9 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// After signing in at a terminal, offers to install the skill for Claude
-/// Code when it is set up here and has no copy. Declining changes nothing,
-/// and a failed install doesn't undo the sign-in.
+/// After signing in at a terminal, offers to install the skill when an agent
+/// is set up here (Claude Code, Codex) and finds no copy. Declining changes
+/// nothing, and a failed install doesn't undo the sign-in.
 fn offer_skill() {
     use std::io::IsTerminal;
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
@@ -1372,22 +1463,32 @@ fn offer_skill() {
     let Ok(cwd) = std::env::current_dir() else {
         return;
     };
-    let Some(dir) = skill::install_offer(&cwd, home_dir().as_deref()) else {
+    let Some(home) = home_dir() else {
         return;
     };
+    let agents = skill::install_offer(&cwd, Some(&home));
+    if agents.is_empty() {
+        return;
+    }
+    let names: Vec<&str> = agents.iter().map(|a| a.name()).collect();
     let question = format!(
-        "tokenless: install the agent skill for Claude Code in {}?",
-        dir.display()
+        "tokenless: install the agent skill for {} (in ~/.agents/skills, as npx skills does)?",
+        names.join(" and ")
     );
     match skill::ask_yes(
         &question,
         &mut std::io::stdin().lock(),
         &mut std::io::stderr(),
     ) {
-        Ok(true) => match skill::install(&dir, false) {
-            Ok((path, _)) => say(format_args!("installed {}", path.display())),
-            Err(e) => say(format_args!("the skill was not installed: {e}")),
-        },
+        Ok(true) => {
+            let (placed, failed) = skill::install_offered(&home, &agents);
+            for p in &placed {
+                say(skill_installed(p, "tokenless skill --install --force"));
+            }
+            for e in failed {
+                say(format_args!("the skill was not installed everywhere: {e}"));
+            }
+        }
         Ok(false) => say("skipped; install it later with: tokenless skill --install"),
         Err(e) => say(format_args!("the skill was not installed: {e}")),
     }
@@ -2432,23 +2533,98 @@ async fn run(args: RunArgs, verbose: bool) -> Result<ExitCode, CliError> {
     Ok(exit_code(status))
 }
 
-fn skill_command(install: bool, dir: Option<PathBuf>, force: bool) -> Result<ExitCode, CliError> {
+fn skill_command(
+    install: bool,
+    project: bool,
+    copy: bool,
+    dir: Option<PathBuf>,
+    force: bool,
+) -> Result<ExitCode, CliError> {
     if !install {
         print!("{}", skill::SKILL_MD);
         return Ok(ExitCode::SUCCESS);
     }
-    let dir = match dir {
-        Some(dir) => dir,
-        None => skill::default_dir()?,
+    let placed = match dir {
+        Some(dir) => {
+            let (path, outcome) = skill::install(&dir, force)?;
+            vec![skill::Placed {
+                agents: "the agent reading it",
+                path,
+                outcome,
+            }]
+        }
+        None => {
+            let base = if project {
+                std::env::current_dir().map_err(|e| CliError::Io {
+                    context: "finding this project's folder".into(),
+                    source: e,
+                })?
+            } else {
+                skill::home()?
+            };
+            let claude_code = for_claude_code(home_dir().as_deref(), &base, project, copy);
+            let (placed, failed) = skill::install_for_agents(&base, claude_code, copy, force);
+            let again = force_command(project, copy);
+            // What was placed before a failure is still reported.
+            for p in &placed {
+                say(skill_installed(p, &again));
+            }
+            for e in &failed {
+                say(e);
+            }
+            return Ok(if failed.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
     };
-    let (path, outcome) = skill::install(&dir, force)?;
-    let what = match outcome {
+    // `install` refuses another version rather than keeping it.
+    for p in placed {
+        say(skill_installed(
+            &p,
+            "tokenless skill --install --dir <skills dir> --force",
+        ));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Whether `skill --install` places the skill for Claude Code too: when it
+/// is set up for this user or this project, or asked for with `--copy`,
+/// which only Claude Code's folder takes. Also when no agent is set up yet,
+/// as on a fresh machine where Claude Code has not run: only someone who
+/// has set up Codex alone goes without the link.
+fn for_claude_code(home: Option<&Path>, base: &Path, project: bool, copy: bool) -> bool {
+    copy || home
+        .is_none_or(|h| skill::Agent::ClaudeCode.set_up(h) || !skill::Agent::Codex.set_up(h))
+        || (project && base.join(".claude").is_dir())
+}
+
+/// The `skill --install` that replaces a kept copy with this version in
+/// the same place and the same way, a copy staying a copy.
+fn force_command(project: bool, copy: bool) -> String {
+    let project = if project { " --project" } else { "" };
+    let copy = if copy { " --copy" } else { "" };
+    format!("tokenless skill --install{project}{copy} --force")
+}
+
+/// What `skill --install` did for one agent; `force` is the command that
+/// would replace a kept copy, for the same place.
+fn skill_installed(p: &skill::Placed, force: &str) -> String {
+    let what = match p.outcome {
         skill::Installed::Created => "installed",
+        skill::Installed::Linked => "linked",
         skill::Installed::Unchanged => "already up to date",
         skill::Installed::Replaced => "replaced",
+        skill::Installed::Kept => {
+            return format!(
+                "skill left as it is at {} ({}): it is another version, which works; {force} replaces it with this one",
+                p.path.display(),
+                p.agents
+            )
+        }
     };
-    say(format_args!("skill {what} at {}", path.display()));
-    Ok(ExitCode::SUCCESS)
+    format!("skill {what} at {} ({})", p.path.display(), p.agents)
 }
 
 /// `--check` exits with this when a newer release exists.
@@ -2674,9 +2850,11 @@ async fn main() -> ExitCode {
         Command::Mcp(args) => mcp_command(args).await,
         Command::Skill {
             install,
+            project,
+            copy,
             dir,
             force,
-        } => skill_command(install, dir, force),
+        } => skill_command(install, project, copy, dir, force),
         Command::Update(args) => update_command(args).await,
     };
     let code = match result {
@@ -2708,7 +2886,75 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fresh_machine_gets_the_skill_for_claude_code_too() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (h, p) = (Some(home.path()), project.path());
+        // No agent set up yet: Claude Code may simply not have run.
+        assert!(super::for_claude_code(h, p, false, false));
+        assert!(super::for_claude_code(h, p, true, false));
+        assert!(super::for_claude_code(None, p, true, false));
+    }
+
+    #[test]
+    fn copy_places_the_skill_for_claude_code_before_it_is_set_up() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let (h, p) = (Some(home.path()), project.path());
+        // Only Codex is set up, so Claude Code needs `--copy` or its folder.
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        assert!(!super::for_claude_code(h, p, false, false));
+        assert!(!super::for_claude_code(h, p, true, false));
+        assert!(super::for_claude_code(h, p, false, true));
+        assert!(super::for_claude_code(h, p, true, true));
+        std::fs::create_dir_all(p.join(".claude")).unwrap();
+        assert!(super::for_claude_code(h, p, true, false));
+        assert!(!super::for_claude_code(h, p, false, false));
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        assert!(super::for_claude_code(h, p, false, false));
+    }
+
+    #[test]
+    fn a_kept_skill_names_the_force_command_for_the_same_place() {
+        let kept = super::skill::Placed {
+            agents: "Claude Code",
+            path: std::path::PathBuf::from("repo/.claude/skills/tokenless/SKILL.md"),
+            outcome: super::skill::Installed::Kept,
+        };
+        let line = super::skill_installed(&kept, &super::force_command(true, false));
+        assert!(
+            line.contains("; tokenless skill --install --project --force replaces it"),
+            "{line}"
+        );
+        // A copy is replaced by a copy, never swapped for a link.
+        assert_eq!(
+            super::force_command(false, true),
+            "tokenless skill --install --copy --force"
+        );
+        assert_eq!(
+            super::force_command(true, true),
+            "tokenless skill --install --project --copy --force"
+        );
+        assert_eq!(
+            super::force_command(false, false),
+            "tokenless skill --install --force"
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn the_run_hint_names_the_proxy_only_off_its_default() {
+        assert_eq!(
+            run_hint("127.0.0.1:3128".parse().unwrap()),
+            "tokenless run -- <agent>"
+        );
+        assert_eq!(
+            run_hint("127.0.0.1:4128".parse().unwrap()),
+            "tokenless run --proxy 127.0.0.1:4128 -- <agent>"
+        );
+    }
 
     #[test]
     fn a_check_in_the_container_says_to_pull_the_image() {

@@ -58,6 +58,10 @@ fn serve_shuts_down_on_sigterm() {
             "127.0.0.1:0",
             "--node-listen",
             "127.0.0.1:0",
+            "--proxy-listen",
+            "127.0.0.1:0",
+            "--proxy-mcp-listen",
+            "127.0.0.1:0",
         ])
         .env_clear()
         .env("HOME", data.path())
@@ -92,6 +96,109 @@ fn serve_shuts_down_on_sigterm() {
             .any(|l| l.contains("shutting down") && l.contains("SIGTERM")),
         "{rest:?}"
     );
+}
+
+/// `serve` on a fresh data directory with its built-in proxy on free
+/// ports, its standard error read line by line, and `TOKENLESS_*` set as
+/// given.
+#[cfg(unix)]
+fn serve_first_start(
+    data: &std::path::Path,
+    env: &[(&str, &str)],
+) -> (
+    std::process::Child,
+    std::io::Lines<std::io::BufReader<std::process::ChildStderr>>,
+) {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .arg("serve")
+        .arg("--data-dir")
+        .arg(data)
+        .args([
+            "--api-listen",
+            "127.0.0.1:0",
+            "--node-listen",
+            "127.0.0.1:0",
+            "--proxy-listen",
+            "127.0.0.1:0",
+            "--proxy-mcp-listen",
+            "127.0.0.1:0",
+        ])
+        .env_clear()
+        .env("HOME", data)
+        .envs(env.iter().copied())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id().to_string();
+    // A serve that never stops fails the test rather than hanging it.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = Command::new("kill").args(["-KILL", &pid]).status();
+    });
+    let lines = BufReader::new(child.stderr.take().unwrap()).lines();
+    (child, lines)
+}
+
+/// The one-time admin password is printed before the built-in proxy
+/// starts, so stopping `serve` while it starts cannot lose it.
+#[cfg(unix)]
+#[test]
+fn serve_prints_the_admin_password_before_starting_its_proxy() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut child, lines) = serve_first_start(data.path(), &[]);
+    let mut seen = Vec::new();
+    for line in lines.map_while(Result::ok) {
+        let done = line.contains("Proxies on other machines instead?");
+        seen.push(line);
+        if done {
+            break;
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let at = |needle: &str| {
+        seen.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} in {seen:#?}"))
+    };
+    assert!(
+        at("Password") < at("Proxy for agents on this machine"),
+        "{seen:#?}"
+    );
+    assert!(data.path().join("builtin-proxy.json").is_file());
+}
+
+/// `TOKENLESS_NO_BUILTIN_PROXY` turns the built-in proxy off like
+/// `--no-proxy`, for setups that cannot change the command line (an
+/// image's default command, a unit shared with older releases).
+#[cfg(unix)]
+#[test]
+fn the_environment_turns_the_built_in_proxy_off() {
+    let data = tempfile::tempdir().unwrap();
+    let (mut child, mut lines) =
+        serve_first_start(data.path(), &[("TOKENLESS_NO_BUILTIN_PROXY", "1")]);
+    assert!(
+        lines
+            .by_ref()
+            .map_while(Result::ok)
+            .any(|l| l.contains("Sign in at")),
+        "serve did not start"
+    );
+    // Whatever it prints about a proxy comes right after; give it time.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let rest: Vec<String> = lines.map_while(Result::ok).collect();
+    let _ = child.wait();
+    assert!(!rest.iter().any(|l| l.contains("proxy")), "{rest:#?}");
+    assert!(!data.path().join("builtin-proxy.json").exists());
 }
 
 /// `tokenless update` stopped mid-download by SIGTERM (systemd stopping the
@@ -214,6 +321,7 @@ fn status_with_a_control_plane_says_to_sign_in() {
             "127.0.0.1:0",
             "--node-listen",
             "127.0.0.1:0",
+            "--no-proxy",
         ])
         .env_clear()
         .env("HOME", data.path())
