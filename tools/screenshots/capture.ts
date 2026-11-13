@@ -204,6 +204,8 @@ const found = await ids(page);
 mkdirSync(SHOTS, { recursive: true });
 mkdirSync(README_IMAGES, { recursive: true });
 
+const failed: string[] = [];
+
 async function take(shot: Shot) {
   if (only.size > 0 && !only.has(shot.name)) return;
   await page.goto(`${BASE}/#${shot.hash(found)}`);
@@ -215,6 +217,7 @@ async function take(shot: Shot) {
     await shot.then?.(page);
   } catch (e) {
     console.error(`${shot.name}: ${(e as Error).message}`);
+    failed.push(shot.name);
     return;
   }
   await page.waitForTimeout(500);
@@ -233,3 +236,7 @@ for (const shot of SHOTS_LIST) await take(shot);
 await browser.close();
 fakes.audit.stop();
 fakes.idp.stop();
+if (failed.length > 0) {
+  console.error(`not taken: ${failed.join(", ")}`);
+  process.exit(1);
+}

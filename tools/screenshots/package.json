@@ -4,7 +4,8 @@
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "scripts": {
-    "capture": "bun capture.ts"
+    "capture": "bun capture.ts",
+    "test": "bun test"
   },
   "devDependencies": {
     "playwright": "1.65.0"

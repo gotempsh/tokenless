@@ -23,7 +23,6 @@ const API = `${BASE}/api/v1`;
 const BIN = process.env.TOKENLESS_BIN ?? "tokenless";
 const USERNAME = process.env.TOKENLESS_USERNAME ?? "admin";
 const PASSWORD = process.env.TOKENLESS_PASSWORD;
-if (!PASSWORD) throw new Error("set TOKENLESS_PASSWORD to the password `tokenless serve` printed");
 
 type Json = Record<string, unknown>;
 
@@ -82,18 +81,34 @@ export function startFakes(auditPort: number, idpPort: number) {
   return { audit, idp, issuer, auditUrl: `http://localhost:${auditPort}/tokenless-audit` };
 }
 
+/**
+ * Runs `bin` and returns what it printed. Throws when it could not be
+ * started or exited non-zero: curl exits 0 on a 401 or a refusal, so a
+ * failure means no traffic was recorded and the pictures would be empty.
+ */
+export function runChecked(bin: string, args: string[], env: Record<string, string | undefined> = process.env): string {
+  const r = spawnSync(bin, args, { env, encoding: "utf8" });
+  if (r.error) throw new Error(`could not run ${bin} (set TOKENLESS_BIN to the tokenless binary): ${r.error.message}`);
+  if (r.status !== 0) {
+    const why = r.status === null ? `was killed by ${r.signal}` : `exited ${r.status}`;
+    throw new Error(`${bin} ${args.join(" ")} ${why}: ${(r.stderr || r.stdout).trim()}`);
+  }
+  return r.stdout.trim();
+}
+
 /** Runs `curl` behind a session through `tokenless run`, as an agent would. */
 function agent(token: string, ...requests: string[][]) {
+  const env = { ...process.env, TOKENLESS_URL: BASE, TOKENLESS_SESSION_TOKEN: token, TOKENLESS_NO_SKILL_HINT: "1" };
   for (const args of requests) {
-    const r = spawnSync(BIN, ["run", "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}\\n", "--max-time", "20", ...args], {
-      env: { ...process.env, TOKENLESS_URL: BASE, TOKENLESS_SESSION_TOKEN: token, TOKENLESS_NO_SKILL_HINT: "1" },
-      encoding: "utf8",
-    });
-    console.log(`  ${args.at(-1)} -> ${(r.stdout || r.stderr).trim()}`);
+    const status = runChecked(BIN, ["run", "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}\\n", "--max-time", "20", ...args], env);
+    console.log(`  ${args.at(-1)} -> ${status}`);
   }
 }
 
 export async function seed(fakes: ReturnType<typeof startFakes>) {
+  if (!PASSWORD) throw new Error("set TOKENLESS_PASSWORD to the password `tokenless serve` printed");
+  // Before anything is created: a server seeded halfway cannot be seeded again.
+  runChecked(BIN, ["--version"]);
   const login = await post<{ csrf_token: string }>("/auth/login", { username: USERNAME, password: PASSWORD });
   csrf = login.csrf_token;
 
