@@ -113,6 +113,8 @@ machine and is collecting keys will. When a session sends it, the proxy
 refuses the request, cuts the session off, and the control plane revokes
 it everywhere and raises a [tripwire alert](./alerts.mdx).
 
+![A vault's tripwires: build-server, a GitHub token shown by its first characters, tripped 8 minutes ago](../screenshots/console-vault-tripwires.png)
+
 **Plant a tripwire** asks where it goes (the machine's name, so the
 alert says which one was entered) and what it looks like, then shows the
 key **once**, ready to paste into `~/.aws/credentials`, a shell profile

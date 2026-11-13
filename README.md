@@ -11,6 +11,8 @@ have a rule, the proxy terminates TLS and injects the real credential.
 The agent never sees it. Every other host is tunnelled untouched (or
 denied, depending on policy).
 
+![In a terminal: curl alone gets a 401 from httpbin.org; through tokenless run the request is authenticated and the echoed key comes back redacted; a DELETE outside the bundle's rules is refused](docs/images/demo.gif)
+
 - **Write-only secrets.** Credentials are encrypted at rest with
   AES-256-GCM. Nobody, admins included, can read one back.
 - **Scoped, short-lived sessions.** Each session is a PASETO v4.public
