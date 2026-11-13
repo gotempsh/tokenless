@@ -11,8 +11,11 @@
 // Writes site/docs/content/screenshots/<name>.png, and the README's
 // copies in docs/images, relative to the repository root (OUT_ROOT,
 // default ../..). Names limit it to those screenshots; SEED=0 skips the
-// seeding, for a server seeded before. The audit export's receiver and
-// the identity provider are served from here while it runs.
+// seeding, to retake some on a server seeded before. The first run
+// acknowledges the tripwire's alert, so the alert pictures need a fresh
+// server, and a rerun's pages show the session the last one started. The
+// audit export's receiver and the identity provider are served from here
+// while it runs.
 
 import { mkdirSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
@@ -227,10 +230,24 @@ async function take(shot: Shot) {
   console.log(out);
 }
 
-for (const shot of WITH_ALERT) await take(shot);
-const alerts = await page.request.get(`${API}/alerts`);
-for (const alert of ((await alerts.json()) as Page_<Item>).items) {
-  await page.request.post(`${API}/alerts/${alert.id}/acknowledge`, { headers: { "x-csrf-token": csrf_token }, data: {} });
+const open = await page.request.get(`${API}/alerts?open=true`);
+if (!open.ok()) throw new Error(`GET /alerts: ${open.status()} ${await open.text()}`);
+const openAlerts = ((await open.json()) as Page_<Item>).items;
+for (const shot of WITH_ALERT) {
+  if (openAlerts.length > 0) await take(shot);
+  else if (only.size === 0 || only.has(shot.name)) {
+    // An earlier run acknowledged it: the page would show "No open alerts".
+    console.error(`${shot.name}: no open alert to show; take it on a freshly seeded server`);
+    failed.push(shot.name);
+  }
+}
+// Acknowledged, so its banner stays off the other pages.
+for (const alert of openAlerts) {
+  const res = await page.request.post(`${API}/alerts/${alert.id}/acknowledge`, {
+    headers: { "x-csrf-token": csrf_token },
+    data: {},
+  });
+  if (!res.ok()) throw new Error(`acknowledging alert ${alert.id}: ${res.status()} ${await res.text()}`);
 }
 for (const shot of SHOTS_LIST) await take(shot);
 await browser.close();
