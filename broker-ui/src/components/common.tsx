@@ -328,9 +328,11 @@ export type Tone = "success" | "warning" | "destructive" | "neutral";
 
 /** Status as a text-labelled badge; colour is never the only signal. */
 export function Status({ tone, children }: { tone: Tone; children: ReactNode }) {
+  // One inline span: as separate flex items, "tripped " and a <Relative>
+  // would lose the space between them.
   return (
     <Badge variant={`${tone}-subtle`} className="whitespace-nowrap font-medium">
-      {children}
+      <span>{children}</span>
     </Badge>
   );
 }
