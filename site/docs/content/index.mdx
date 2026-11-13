@@ -132,9 +132,9 @@ refuses, is in the audit log, which can also be sent to a webhook.
 
 - **`tokenless serve`** runs the control plane: the web console, the
   management API, and the node API that proxies connect to. It stores
-  everything in SQLite.
-- **`tokenless node run`** runs a proxy, normally on the machine your
-  agents run on.
+  everything in SQLite, and runs a proxy for agents on its own machine.
+- **`tokenless node run`** runs a proxy on another machine your agents
+  run on.
 - **`tokenless run`**, **`tokenless mcp`** and the other client commands
   start agents and MCP clients behind a proxy.
 

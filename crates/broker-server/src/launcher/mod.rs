@@ -55,7 +55,7 @@ pub enum LauncherError {
         actual: String,
     },
 
-    #[error("no proxy is answering at {address} ({reason}); start one with tokenless node run, or point --proxy at a running one")]
+    #[error("no proxy is answering at {address} ({reason}); tokenless serve runs one here unless started with --no-proxy, tokenless node run runs one on its own, or point --proxy at a running one")]
     ProxyUnreachable { address: String, reason: String },
 
     #[error("the proxy at {address} refuses all traffic: {reason}")]

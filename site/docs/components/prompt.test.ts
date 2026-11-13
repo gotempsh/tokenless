@@ -5,7 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { agentPrompt } from './prompt';
 
 // The prompt's set-up runs in the person's project, where the root key or
-// the proxy's private keys would sit one `git add .` away from a commit.
+// a proxy's private keys would sit one `git add .` away from a commit.
 describe('the copy prompt', () => {
   const commands = [...agentPrompt.matchAll(/`(tokenless [^`]+)`/g)].map((m) => m[1]);
 
@@ -15,10 +15,10 @@ describe('the copy prompt', () => {
     for (const c of serve) expect(c).toMatch(/--data-dir (~\/|\/)/);
   });
 
-  test('puts the proxy identity outside the project', () => {
+  test('leaves the proxy to serve, so no proxy identity lands in the project', () => {
     const proxy = commands.filter((c) => /^tokenless (proxy add|node (join|run))\b/.test(c));
-    expect(proxy.length).toBe(2);
-    for (const c of proxy) expect(c).toMatch(/--state (~\/|\/)/);
+    expect(proxy).toEqual([]);
+    expect(agentPrompt).toContain('runs the proxy your commands go through');
   });
 
   test('has the key handed over in a file or the console, never through the agent', () => {
