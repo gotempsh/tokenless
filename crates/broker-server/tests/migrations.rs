@@ -536,6 +536,7 @@ async fn upgrading_keeps_everyone_s_access_as_vault_memberships() {
         ("dev", "editor", None),
         ("auditor", "viewer", None),
         ("sso-dev", "editor", Some(provider)),
+        ("sso-ops", "admin", Some(provider)),
     ];
     let mut ids = Vec::new();
     for (name, role, sso) in people {
@@ -629,6 +630,21 @@ async fn upgrading_keeps_everyone_s_access_as_vault_memberships() {
     assert_eq!(
         sso_member.added_by, "sso:corp",
         "its groups can take it back"
+    );
+    // The `ops` mapping stays admin with no vaults, so marking these as the
+    // provider's would have its next sign-in take every vault back.
+    let sso_admin = store
+        .list_vault_members(&work, PageRequest::new(None, None))
+        .await
+        .expect("members")
+        .items
+        .into_iter()
+        .find(|m| m.username == "sso-ops")
+        .expect("listed");
+    assert_eq!(
+        (sso_admin.role, sso_admin.added_by.as_str()),
+        (Role::Admin, "system"),
+        "an SSO admin's vault roles are not the provider's to take back"
     );
 
     let editor_invite = store

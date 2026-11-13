@@ -246,6 +246,11 @@ impl UserService {
         let role = req.role;
         check_instance_role(role)?;
         let vaults = self.check_invite_vaults(&req.vaults).await?;
+        for grant in &req.vaults {
+            self.guard
+                .check_grant(caller, &grant.vault_id, grant.role)
+                .await?;
+        }
         let hours = req.expires_in_hours.unwrap_or(DEFAULT_INVITE_HOURS);
         if hours == 0 || hours > MAX_INVITE_HOURS {
             return Err(ControlError::validation(format!(

@@ -87,10 +87,14 @@ pub struct VaultRow {
     pub name: String,
     pub services: usize,
     pub bundles: usize,
+    /// Listed to an instance admin who is not a member: what it holds is
+    /// not theirs to see, and `services` and `bundles` are 0.
+    pub overseen: bool,
     pub created_at: DateTime<Utc>,
 }
 
-/// A vault with how many services and bundles it holds.
+/// A vault with how many services and bundles it holds; one in neither
+/// map is one the person only oversees.
 pub fn vault_rows(
     vaults: &[Vault],
     services: &HashMap<VaultId, usize>,
@@ -103,6 +107,7 @@ pub fn vault_rows(
             name: v.name.clone(),
             services: services.get(&v.id).copied().unwrap_or(0),
             bundles: bundles.get(&v.id).copied().unwrap_or(0),
+            overseen: !services.contains_key(&v.id),
             created_at: v.created_at,
         })
         .collect()
@@ -112,10 +117,17 @@ pub fn vault_table(rows: &[VaultRow], now: DateTime<Utc>) -> String {
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|r| {
+            let count = |n: usize| {
+                if r.overseen {
+                    "-".to_string()
+                } else {
+                    n.to_string()
+                }
+            };
             vec![
                 r.name.clone(),
-                r.services.to_string(),
-                r.bundles.to_string(),
+                count(r.services),
+                count(r.bundles),
                 relative(r.created_at, now),
             ]
         })

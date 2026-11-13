@@ -514,6 +514,8 @@ impl SsoService {
             None => None,
         };
         let provider = self.checked(id, &req, Utc::now(), secret).await?;
+        self.check_mapped_grants(caller, &provider.role_mappings, &[])
+            .await?;
         let event = AuditEvent::new(
             caller.actor(),
             "identity_provider.create",
@@ -540,6 +542,34 @@ impl SsoService {
         Ok(OidcProviderView::from(&provider))
     }
 
+    /// A group mapping gives no more in a vault than the person saving it
+    /// holds there ([`Guard::check_grant`]); what the provider already gave
+    /// that group is kept as it is.
+    async fn check_mapped_grants(
+        &self,
+        caller: &Caller,
+        mappings: &[RoleMapping],
+        kept: &[RoleMapping],
+    ) -> Result<(), ControlError> {
+        for mapping in mappings {
+            for grant in &mapping.vaults {
+                let already = kept.iter().any(|k| {
+                    k.group == mapping.group
+                        && k.vaults.iter().any(|g| {
+                            g.vault_id == grant.vault_id
+                                && g.role.vault_rank() >= grant.role.vault_rank()
+                        })
+                });
+                if !already {
+                    self.guard
+                        .check_grant(caller, &grant.vault_id, grant.role)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn update_provider(
         &self,
         caller: &Caller,
@@ -561,6 +591,8 @@ impl SsoService {
             (None, false) => current.client_secret_enc.clone(),
         };
         let provider = self.checked(*id, &req, current.created_at, secret).await?;
+        self.check_mapped_grants(caller, &provider.role_mappings, &current.role_mappings)
+            .await?;
         if current.enabled && !provider.enabled {
             self.keep_a_way_in(id).await?;
         }
@@ -1357,10 +1389,12 @@ impl SsoService {
         Ok(user)
     }
 
-    /// Gives the person the vault roles their groups map to, and takes
-    /// back the ones an earlier sign-in with this provider gave that their
-    /// groups no longer do. A role a vault admin set by hand is theirs to
-    /// change; a vault deleted since the mapping was saved is skipped.
+    /// Gives the person the vault roles their groups map to, and changes
+    /// or takes back the ones an earlier sign-in with this provider gave as
+    /// their groups change. Only those: a role set any other way (by a
+    /// vault admin, by creating or joining the vault) is left as it is,
+    /// higher or lower. A vault deleted since the mapping was saved is
+    /// skipped.
     async fn sync_vaults(
         &self,
         provider: &OidcProvider,
@@ -1372,6 +1406,16 @@ impl SsoService {
         for grant in grants {
             if held.contains(grant) {
                 continue;
+            }
+            if held.iter().any(|h| h.vault_id == grant.vault_id) {
+                let given_here = self
+                    .members
+                    .vault_member(&grant.vault_id, &user.id)
+                    .await?
+                    .is_some_and(|m| m.added_by == actor);
+                if !given_here {
+                    continue;
+                }
             }
             let member = VaultMember {
                 vault_id: grant.vault_id,

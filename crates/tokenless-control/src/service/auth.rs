@@ -1069,6 +1069,9 @@ impl AuthService {
                 req.role
             )));
         }
+        self.guard
+            .check_grant(caller, &req.vault_id, req.role)
+            .await?;
         let name = req.name.trim();
         if name.is_empty() || name.len() > 100 {
             return Err(ControlError::validation(

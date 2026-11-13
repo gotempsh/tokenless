@@ -44,8 +44,14 @@ export function addedByLabel(addedBy: string, names: ActorNames): string {
   return actorName(addedBy, names);
 }
 
-/** Whether removing this member, or demoting them, would leave the vault with no admin. */
-export function isLastAdmin(members: VaultMember[], userId: string): boolean {
+/**
+ * Whether removing this member, or demoting them, would leave the vault with
+ * no admin. Only said when `members` is the whole vault (`total` of them):
+ * another admin may be on a page not loaded, and the server refuses taking
+ * the last one away anyway.
+ */
+export function isLastAdmin(members: VaultMember[], userId: string, total = members.length): boolean {
+  if (total > members.length) return false;
   const admins = members.filter((m) => m.role === "admin");
   return admins.length === 1 && admins[0]?.user_id === userId;
 }

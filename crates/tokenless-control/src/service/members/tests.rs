@@ -577,3 +577,104 @@ async fn a_sign_in_can_ask_for_less_never_more() {
         .iter()
         .any(|e| e.detail.get("scope").map(String::as_str) == Some("launch")));
 }
+
+#[tokio::test]
+async fn an_overseeing_admin_gives_no_role_in_the_vault() {
+    let t = setup().await;
+    t.bundle(&t.team).await;
+    join(t.store.as_ref(), &bob(), &t.team, Role::Admin).await;
+    let admin_id = admin().user_id().unwrap();
+    t.cp.members
+        .remove(&admin(), &t.team, &admin_id)
+        .await
+        .unwrap();
+
+    // Not an API key that reads the vault for them...
+    let reason = forbidden(
+        t.cp.auth
+            .create_api_key(
+                &admin(),
+                CreateApiKey {
+                    name: "ci".into(),
+                    vault_id: t.team,
+                    role: Role::Editor,
+                    expires_in_days: 30,
+                },
+            )
+            .await,
+    );
+    assert!(reason.contains("join the vault first"), "{reason}");
+    // ...nor an invitation into it.
+    let invite = |vault_id, role| CreateInvite {
+        role: Role::Member,
+        expires_in_hours: None,
+        vaults: vec![crate::model::VaultGrant { vault_id, role }],
+    };
+    let reason = forbidden(
+        t.cp.users
+            .create_invite(&admin(), invite(t.team, Role::Admin))
+            .await,
+    );
+    assert!(reason.contains("join the vault first"), "{reason}");
+
+    // A member gives at most the role they hold there.
+    join(t.store.as_ref(), &bob(), &t.private, Role::Admin).await;
+    join(t.store.as_ref(), &admin(), &t.private, Role::Viewer).await;
+    let reason = forbidden(
+        t.cp.users
+            .create_invite(&admin(), invite(t.private, Role::Editor))
+            .await,
+    );
+    assert!(reason.contains("cannot give the editor role"), "{reason}");
+    t.cp.users
+        .create_invite(&admin(), invite(t.private, Role::Viewer))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_vault_admin_sets_a_services_host_and_an_editor_does_not() {
+    let t = setup().await;
+    join(t.store.as_ref(), &bob(), &t.team, Role::Admin).await;
+    let service = || CreateCredential {
+        name: "self-hosted".into(),
+        template_id: "generic-bearer".into(),
+        template_version: None,
+        host_override: vec!["git.example.com".into()],
+        fields: [("token".to_string(), "t".to_string())].into(),
+        custom_headers: vec![],
+        substitutions: vec![],
+        not_after: None,
+    };
+    // Bob is an instance member: his vault admin role is what lets him.
+    t.cp.policy
+        .create_credential(&bob(), &t.team, service())
+        .await
+        .unwrap();
+    join(t.store.as_ref(), &bob(), &t.private, Role::Editor).await;
+    forbidden(
+        t.cp.policy
+            .create_credential(&bob(), &t.private, service())
+            .await,
+    );
+}
+
+#[tokio::test]
+async fn who_works_in_a_vault_is_not_for_runners_or_a_launch_sign_in() {
+    let t = setup().await;
+    join(t.store.as_ref(), &bob(), &t.team, Role::Runner).await;
+    forbidden(t.cp.members.list(&bob(), &t.team, page()).await);
+    join(t.store.as_ref(), &bob(), &t.team, Role::Viewer).await;
+    t.cp.members.list(&bob(), &t.team, page()).await.unwrap();
+    let launch = Caller {
+        sign_in: SignInScope::Launch,
+        ..bob()
+    };
+    forbidden(t.cp.members.list(&launch, &t.team, page()).await);
+
+    // Nor can it take the person out of their vaults.
+    let bob_id = bob().user_id().unwrap();
+    let reason = forbidden(t.cp.members.remove(&launch, &t.team, &bob_id).await);
+    assert!(reason.contains("tokenless login --manage"), "{reason}");
+    t.cp.members.remove(&bob(), &t.team, &bob_id).await.unwrap();
+}

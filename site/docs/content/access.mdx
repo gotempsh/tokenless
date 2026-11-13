@@ -52,7 +52,7 @@ vaults can be an admin in one and a runner in another.
 |---|:-:|:-:|:-:|:-:|
 | See its services (never their secrets), rules and bundles | ✓ | ✓ | ✓ | ✓ |
 | Start sessions from its bundles | ✓ | | ✓ | ✓ |
-| See its sessions, launcher keys and audit log | | ✓ | ✓ | ✓ |
+| See its sessions, launcher keys, members and audit log | | ✓ | ✓ | ✓ |
 | Change rules, bundles, tripwires and launcher keys; stop sessions; acknowledge alerts | | | ✓ | ✓ |
 | Add and change services and their secrets | | | | ✓ |
 | Add people to it, change their role, remove them | | | | ✓ |
@@ -67,6 +67,11 @@ admin. Anyone may leave a vault, except its last admin.
 
 API keys hold a vault role too (runner, viewer or editor, never admin), in
 the one vault they belong to.
+
+Nobody gives more in a vault than they hold there. An invitation, an API
+key or a single sign-on group mapping that gives a role in a vault needs
+its author to hold that role or a higher one in it; an instance admin who
+only oversees the vault joins it first.
 
 ## Instance admins oversee, then join
 
@@ -194,9 +199,11 @@ user's keychain holds.
 Map each group to an instance role and to vault roles under
 **Settings → Single sign-on** ([Settings](./settings.mdx#single-sign-on)).
 At every sign-in, tokenless gives the vault roles the person's groups give,
-and takes back the ones their groups gave before and no longer do. In a
-vault their groups say nothing about, a role a vault admin gave them by
-hand stays until a vault admin changes it.
+and takes back the ones their groups gave before and no longer do. A role
+given any other way (by hand, or by an invitation) is never changed by a
+sign-in: it stays until a vault admin changes it, even in a vault a group
+is mapped to. A mapping gives no more in a vault than whoever saved it
+holds there.
 
 ### When a sign-in or a machine is lost
 

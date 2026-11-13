@@ -22,9 +22,13 @@ CREATE TABLE vault_members (
 );
 CREATE INDEX vault_members_user ON vault_members (user_id);
 
+-- A role marked `sso:<slug>` is the provider's to change or take back
+-- at the next sign-in. Only editors and viewers get that mark, as their
+-- group mappings get vaults below; an admin's mapping gets none, so their
+-- vault roles are left as they are.
 INSERT INTO vault_members (vault_id, user_id, role, added_by, added_at)
     SELECT v.id, u.id, u.role,
-        CASE WHEN u.sso_provider_id IS NULL THEN 'system'
+        CASE WHEN u.sso_provider_id IS NULL OR u.role = 'admin' THEN 'system'
             ELSE coalesce(
                 (SELECT 'sso:' || p.slug FROM oidc_providers p WHERE p.id = u.sso_provider_id),
                 'system')

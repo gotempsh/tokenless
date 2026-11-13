@@ -1173,3 +1173,112 @@ async fn groups_give_vault_roles_and_take_back_only_their_own() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn a_vault_role_set_another_way_is_left_to_whoever_set_it() {
+    use crate::model::VaultGrant;
+    use crate::service::members::PutMember;
+    use crate::store::MembershipStore;
+
+    let t = setup().await;
+    crate::service::testing::enrol(t.store.as_ref(), &admin()).await;
+    let team = t.cp.policy.create_vault(&admin(), "team").await.unwrap();
+    let side = t.cp.policy.create_vault(&admin(), "side").await.unwrap();
+    let mut mapped = input();
+    mapped.role_mappings[0].vaults = vec![
+        VaultGrant {
+            vault_id: team.id,
+            role: Role::Viewer,
+        },
+        VaultGrant {
+            vault_id: side.id,
+            role: Role::Viewer,
+        },
+    ];
+    let provider =
+        t.cp.sso
+            .create_provider(&admin(), mapped.clone())
+            .await
+            .unwrap();
+    let ada = t.session().await.user;
+    let role_in = |vault| {
+        let store = t.store.clone();
+        let id = ada.id;
+        async move { store.vault_role(&vault, &id).await.unwrap() }
+    };
+
+    // A vault admin raises her in one vault by hand.
+    t.cp.members
+        .put(
+            &admin(),
+            &team.id,
+            PutMember {
+                username: "ada".into(),
+                role: Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    // Her groups still say viewer, and the role set by hand stays.
+    t.session().await;
+    assert_eq!(role_in(team.id).await, Some(Role::Editor));
+    // What her groups gave follows the mapping, down as well as up.
+    mapped.role_mappings[0].vaults[1].role = Role::Runner;
+    t.cp.sso
+        .update_provider(&admin(), &provider.id, mapped)
+        .await
+        .unwrap();
+    t.session().await;
+    assert_eq!(role_in(side.id).await, Some(Role::Runner));
+    // Out of the group: what it gave goes, the role set by hand stays.
+    t.idp.set_person(|p| p.groups = vec!["auditors".into()]);
+    t.session().await;
+    assert_eq!(role_in(team.id).await, Some(Role::Editor));
+    assert_eq!(role_in(side.id).await, None);
+}
+
+#[tokio::test]
+async fn a_group_mapping_gives_no_more_in_a_vault_than_its_author_holds() {
+    use crate::model::VaultGrant;
+    use crate::service::testing::{enrol, join, person_caller};
+
+    let t = setup().await;
+    enrol(t.store.as_ref(), &admin()).await;
+    let bob = person_caller("bob", Role::Member);
+    enrol(t.store.as_ref(), &bob).await;
+    let team = t.cp.policy.create_vault(&admin(), "team").await.unwrap();
+    let mut mapped = disabled();
+    mapped.role_mappings[0].vaults = vec![VaultGrant {
+        vault_id: team.id,
+        role: Role::Viewer,
+    }];
+    let provider =
+        t.cp.sso
+            .create_provider(&admin(), mapped.clone())
+            .await
+            .unwrap();
+    // The admin hands the vault to bob and leaves it: they now only oversee it.
+    join(t.store.as_ref(), &bob, &team.id, Role::Admin).await;
+    t.cp.members
+        .remove(&admin(), &team.id, &admin().user_id().unwrap())
+        .await
+        .unwrap();
+
+    // What the provider already gave there can still be saved.
+    t.cp.sso
+        .update_provider(&admin(), &provider.id, mapped.clone())
+        .await
+        .unwrap();
+    // More is not theirs to give.
+    mapped.role_mappings[0].vaults[0].role = Role::Admin;
+    let err =
+        t.cp.sso
+            .update_provider(&admin(), &provider.id, mapped.clone())
+            .await
+            .unwrap_err();
+    assert!(err.to_string().contains("join the vault first"), "{err}");
+    let mut other = mapped;
+    other.slug = "other".into();
+    let err = t.cp.sso.create_provider(&admin(), other).await.unwrap_err();
+    assert!(err.to_string().contains("join the vault first"), "{err}");
+}

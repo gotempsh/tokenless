@@ -418,9 +418,10 @@ enum VaultCommand {
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
     },
-    /// Who works in a vault, and with which role: admin (manages the vault
-    /// and its members), editor (adds services, rules and bundles), viewer
-    /// (reads them) or runner (only starts sessions from its bundles).
+    /// Who works in a vault, and with which role: admin (adds and changes
+    /// services, and decides who is a member), editor (changes rules,
+    /// bundles and launcher keys), viewer (reads them) or runner (only
+    /// starts sessions from its bundles).
     Member {
         #[command(subcommand)]
         command: MemberCommand,

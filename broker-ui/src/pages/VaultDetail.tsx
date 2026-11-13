@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
+import { ListChecks, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   del,
@@ -227,7 +227,16 @@ export function VaultDetail({
               }
             />
           ))}
-        {tab === "members" && <VaultMembers vaultId={vaultId} user={user} onAccessChanged={onAccessChanged} />}
+        {tab === "members" &&
+          (can(user, vaultId, "audit") ? (
+            <VaultMembers vaultId={vaultId} user={user} onAccessChanged={onAccessChanged} />
+          ) : (
+            <Empty
+              icon={Users}
+              title="Runners do not see who else uses the vault"
+              description="Seeing its members takes the viewer role or above, which a vault admin can give you."
+            />
+          ))}
       </TabSections>
       {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin && user.scope !== "launch"} onDelete={() => setDeleting(true)} />}
       <FormDialog

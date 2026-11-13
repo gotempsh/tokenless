@@ -18,7 +18,7 @@ use tracing::info;
 
 use super::{Caller, Guard};
 use crate::error::{ControlError, StoreError};
-use crate::model::{Page, PageRequest, Vault, VaultGrant, VaultMember};
+use crate::model::{Page, PageRequest, SignInScope, Vault, VaultGrant, VaultMember};
 use crate::store::{IdentityStore, MembershipStore, PolicyStore};
 
 /// Adds a person to a vault, or changes their role in it.
@@ -78,8 +78,10 @@ impl MemberService {
         vault: &VaultId,
         page: PageRequest,
     ) -> Result<Page<VaultMember>, ControlError> {
+        // Who works in a vault is shown to those who see what happens in
+        // it: not runners, nor a sign-in that only starts sessions.
         self.guard
-            .check(caller, Action::VaultRead, Some(vault))
+            .check(caller, Action::AuditRead, Some(vault))
             .await?;
         self.vault(vault).await?;
         Ok(self.members.list_vault_members(vault, page).await?)
@@ -133,8 +135,9 @@ impl MemberService {
         Ok(member)
     }
 
-    /// Removes a person from the vault. Anyone may leave a vault; removing
-    /// someone else takes the vault's admin role.
+    /// Removes a person from the vault. Anyone may leave a vault, though
+    /// not with a sign-in that only starts sessions; removing someone else
+    /// takes the vault's admin role.
     pub async fn remove(
         &self,
         caller: &Caller,
@@ -142,6 +145,14 @@ impl MemberService {
         user_id: &UserId,
     ) -> Result<(), ControlError> {
         let leaving = caller.user_id().as_ref() == Some(user_id);
+        if leaving && caller.sign_in == SignInScope::Launch {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} signed in with `tokenless login`, which only starts sessions; leaving vault {vault_id} needs the console or `tokenless login --manage`",
+                    caller.actor()
+                ),
+            });
+        }
         let action = if leaving {
             Action::VaultRead
         } else {

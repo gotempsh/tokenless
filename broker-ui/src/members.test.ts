@@ -34,6 +34,11 @@ describe("members", () => {
     expect(isLastAdmin([member("a", "admin"), member("b", "editor")], "b")).toBe(false);
   });
 
+  test("one page of a longer list does not say who is the last admin", () => {
+    // Another admin may be on the next page; the server refuses the real last one.
+    expect(isLastAdmin([member("a", "admin"), member("b", "editor")], "a", 21)).toBe(false);
+  });
+
   test("an invitation says which vaults it gives, and with which role", () => {
     const at = "2026-01-01T00:00:00Z";
     expect(joinsVaults({ role: "member", vaults: [], expires_at: at })).toContain("no vault yet");

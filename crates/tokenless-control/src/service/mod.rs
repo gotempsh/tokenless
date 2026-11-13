@@ -266,6 +266,42 @@ impl Guard {
         }
     }
 
+    /// Whether the caller may give `role` in `vault`, to an API key, an
+    /// invitation or a group mapping: a person gives at most the role they
+    /// hold there, so an instance admin who only oversees the vault gives
+    /// nothing in it until they join. Without people (an embedder) the
+    /// caller's own check decides.
+    pub async fn check_grant(
+        &self,
+        caller: &Caller,
+        vault: &VaultId,
+        role: Role,
+    ) -> Result<(), ControlError> {
+        if !self.is_person(caller) {
+            return Ok(());
+        }
+        let Some(user) = caller.user_id() else {
+            return Err(ControlError::Forbidden {
+                reason: format!("{} is not a person's sign-in", caller.actor()),
+            });
+        };
+        match self.members.vault_role(vault, &user).await? {
+            Some(held) if held.vault_rank() >= role.vault_rank() => Ok(()),
+            Some(held) => Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is {held} in vault {vault}, so it cannot give the {role} role there; one of the vault's admins can",
+                    caller.actor()
+                ),
+            }),
+            None => Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is not a member of vault {vault}, so it cannot give a role there; join the vault first (recorded in the audit log)",
+                    caller.actor()
+                ),
+            }),
+        }
+    }
+
     /// The vaults a list for `action` covers for this caller: a bound key's
     /// one vault, every vault for an unbound service and for an instance
     /// admin overseeing ([`Action::admin_oversight`]), and otherwise the

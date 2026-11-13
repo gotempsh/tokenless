@@ -42,6 +42,7 @@ export function VaultMembers({ vaultId, user, onAccessChanged }: { vaultId: stri
   const action = useAction();
   const canManage = can(user, vaultId, "manage");
   const items = members.data?.items ?? [];
+  const total = members.data?.total ?? items.length;
   const names = useMemo(
     () => ({
       meId: user.id,
@@ -98,7 +99,7 @@ export function VaultMembers({ vaultId, user, onAccessChanged }: { vaultId: stri
             <TableBody>
               {items.map((m) => {
                 const me = m.user_id === user.id;
-                const last = isLastAdmin(items, m.user_id);
+                const last = isLastAdmin(items, m.user_id, total);
                 return (
                   <TableRow key={m.user_id}>
                     <TableCell>
@@ -157,7 +158,7 @@ export function VaultMembers({ vaultId, user, onAccessChanged }: { vaultId: stri
           <MemberForm
             vaultId={vaultId}
             member={editing === "new" ? null : editing}
-            demotingLastAdmin={editing !== "new" && isLastAdmin(items, editing.user_id)}
+            demotingLastAdmin={editing !== "new" && isLastAdmin(items, editing.user_id, total)}
             onCancel={() => setEditing(null)}
             onSaved={(m) => {
               setEditing(null);

@@ -121,7 +121,13 @@ fn skill_state(cwd: &Path, home: Option<&Path>) -> Skill {
 async fn vault_summaries(client: &ConsoleClient<'_>) -> Result<Vec<VaultSummary>, LauncherError> {
     let mut out = Vec::new();
     for vault in client.vaults().await? {
-        let services = client.credentials(&vault.id).await?.len() as u64;
+        let services = match client.credentials(&vault.id).await {
+            Ok(services) => services.len() as u64,
+            // A vault an instance admin oversees without being a member:
+            // nothing in it is theirs to start agents with.
+            Err(LauncherError::Api { status: 403, .. }) => continue,
+            Err(e) => return Err(e),
+        };
         // Only a bundle with an enabled rule can start a session.
         let bundles = if services > 0 {
             let enabled: Vec<RuleId> = client

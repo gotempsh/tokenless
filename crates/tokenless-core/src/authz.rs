@@ -117,7 +117,8 @@ pub enum Action {
     CredentialRead,
     CredentialWrite,
     CredentialDelete,
-    /// Override a template's hosts (e.g. a self-hosted base URL).
+    /// Override a template's hosts (e.g. a self-hosted base URL): send the
+    /// secret somewhere the template does not. A vault's admins only.
     CredentialWiden,
     RuleRead,
     RuleWrite,
@@ -189,7 +190,6 @@ impl Action {
                 | Action::VaultJoin
                 | Action::TemplateImport
                 | Action::TemplateApprove
-                | Action::CredentialWiden
                 | Action::ApiKeyRead
                 | Action::ApiKeyManage
                 | Action::NodeRead
