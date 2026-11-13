@@ -11,11 +11,11 @@
 // Writes site/docs/content/screenshots/<name>.png, and the README's
 // copies in docs/images, relative to the repository root (OUT_ROOT,
 // default ../..). Names limit it to those screenshots; SEED=0 skips the
-// seeding, to retake some on a server seeded before. The first run
+// seeding, to retake some on a server seeded before; the first run
 // acknowledges the tripwire's alert, so the alert pictures need a fresh
-// server, and a rerun's pages show the session the last one started. The
-// audit export's receiver and the identity provider are served from here
-// while it runs.
+// server. The session the run-agent picture starts is revoked at the end.
+// The audit export's receiver and the identity provider are served from
+// here while it runs.
 
 import { mkdirSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
@@ -209,6 +209,13 @@ mkdirSync(README_IMAGES, { recursive: true });
 
 const failed: string[] = [];
 
+async function liveSessions(): Promise<Set<string>> {
+  const res = await page.request.get(`${API}/sessions?active=true&page_size=100`);
+  if (!res.ok()) throw new Error(`GET /sessions: ${res.status()} ${await res.text()}`);
+  return new Set(((await res.json()) as Page_<Item>).items.map((s) => s.id));
+}
+const liveBefore = await liveSessions();
+
 async function take(shot: Shot) {
   if (only.size > 0 && !only.has(shot.name)) return;
   await page.goto(`${BASE}/#${shot.hash(found)}`);
@@ -250,6 +257,13 @@ for (const alert of openAlerts) {
   if (!res.ok()) throw new Error(`acknowledging alert ${alert.id}: ${res.status()} ${await res.text()}`);
 }
 for (const shot of SHOTS_LIST) await take(shot);
+// Revoked, so a rerun's pages don't show it as live.
+for (const id of await liveSessions()) {
+  if (liveBefore.has(id)) continue;
+  const res = await page.request.post(`${API}/sessions/${id}/revoke`, { headers: { "x-csrf-token": csrf_token }, data: {} });
+  if (!res.ok()) throw new Error(`revoking session ${id}: ${res.status()} ${await res.text()}`);
+  console.log(`revoked session ${id}, started for console-run-agent`);
+}
 await browser.close();
 fakes.audit.stop();
 fakes.idp.stop();
