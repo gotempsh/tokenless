@@ -55,7 +55,8 @@ when the agent exits. Revoke a session to cut an agent off.
 
 ## Proxy
 
-A proxy (a *node*) is the data plane: `tokenless node run`. Agents send
+A proxy (a *node*) is the data plane: the one `tokenless serve` runs for
+its own machine, or `tokenless node run` on another. Agents send
 their HTTPS traffic through it. For hosts a session's rules cover, it
 decrypts the request, adds the credential and forwards it; anything else
 is passed through untouched or refused, depending on

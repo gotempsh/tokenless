@@ -8,6 +8,7 @@ pub mod api;
 pub mod api_tls;
 pub mod error;
 pub mod launcher;
+pub mod local_proxy;
 pub mod node_api;
 pub mod oidc_transport;
 pub mod probe;

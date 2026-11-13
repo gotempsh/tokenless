@@ -260,11 +260,14 @@ The steps it leads through:
    in the profile); a tool that insists on the variable gets a dummy value
    (`OPENAI_API_KEY=tokenless`), as in section 2.
 
-3. **A proxy**, once per machine. Its identity file holds the proxy's
-   private keys, and both commands default to `./node.json`, the project
-   you are in, so always pass a `--state` outside it. `node run` keeps
-   running: in a terminal of theirs, or in the background if you can keep
-   it there.
+3. **A proxy.** `serve` runs one for its own machine, so with the
+   control plane on this machine there is nothing to start. Only when
+   `status` reports no proxy (a server started with `--no-proxy`, or one
+   on another machine) does this machine enrol its own. Its identity file
+   holds the proxy's private keys, and both commands default to
+   `./node.json`, the project you are in, so always pass a `--state`
+   outside it. `node run` keeps running: in a terminal of theirs, or in
+   the background if you can keep it there.
 
    ```sh
    tokenless proxy add --name laptop --state ~/.tokenless/node.json

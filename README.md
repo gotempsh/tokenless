@@ -92,9 +92,14 @@ Build the console first: it is embedded in the binary.
 (cd broker-ui && bun install && bun run build)
 cargo build --release
 
-# 1. Start the control plane. On first start it prints the admin's password, once.
+# Start it. On first start it prints the admin's password, once.
 ./target/release/tokenless serve --data-dir ./data
 ```
+
+`serve` runs the control plane and a proxy for agents on the same machine
+(`127.0.0.1:3128`), listed under **Proxies** as *built-in (this server)*.
+A server whose agents run on other machines starts with `--no-proxy`
+(or `TOKENLESS_NO_BUILTIN_PROXY=1`) instead; see [One server, many hosts](site/docs/content/server.mdx).
 
 Save the username and password it prints; only a hash is stored. If you
 lose it, `tokenless admin reset-password --data-dir ./data` on the same
@@ -106,8 +111,6 @@ From the terminal:
 tokenless status                                  # what is set up, and what to run next
 tokenless login                                   # session kept in the OS keychain
 tokenless service add github --vault work --bundle code-review   # asks for the token
-tokenless proxy add --name laptop                 # writes ./node.json
-tokenless node run                                # listens on 127.0.0.1:3128
 ```
 
 `service add` creates the vault and the bundle when they don't exist,
@@ -131,10 +134,11 @@ Or in the console at <http://127.0.0.1:8080/>:
    use the template's maximum, or narrow it.
 5. **Access bundles → Create bundle**, for example `code-review`, and
    tick the rules an agent doing that job needs.
-6. **Proxies → Create join token**, then on the proxy's machine:
+6. For agents on another machine, **Proxies → Add a proxy**, then on
+   that machine:
 
    ```sh
-   tokenless node join --control-url https://127.0.0.1:8443 --token 'cbj1....' --state ./node.json
+   tokenless node join --control-url https://<server>:8443 --token 'cbj1....' --state ./node.json
    tokenless node run --state ./node.json
    ```
 
@@ -366,8 +370,8 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/vaults/<vault-id>/sessions \
   address, also allow that range under **Settings → Egress to private addresses**.
 - Use `--node-listen` and `--node-api-name` to expose the node API on a
   private address.
-- Keep the proxy listener (`node run --listen`) on loopback or a private
-  network.
+- Keep the proxy listener (`node run --listen`, or `serve --proxy-listen`
+  for the built-in one) on loopback or a private network.
 - Secrets are encrypted under data keys, which are encrypted under a
   root key the database never holds. Keep the root key outside the data
   directory: `--root-key-file /etc/tokenless/root.key` (create one with
