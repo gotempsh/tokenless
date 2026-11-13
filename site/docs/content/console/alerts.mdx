@@ -10,6 +10,8 @@ machine and is trying what else the session reaches usually does. Each
 alert is raised once per session, as soon as the proxy's report reaches
 the control plane.
 
+![Alerts: a tripwire alert says which session sent which tripwire, to which host through which proxy, and that the session was cut off and revoked](../screenshots/console-alerts.png)
+
 | Alert | Raised when | Tune it |
 |---|---|---|
 | **Tripwire** | A session sent one of your [tripwires](./vaults.mdx#tripwires): someone took it from the agent's machine. The session is cut off and revoked | Always raised |

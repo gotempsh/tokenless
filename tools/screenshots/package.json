@@ -1,0 +1,12 @@
+{
+  "name": "tokenless-screenshots",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "capture": "bun capture.ts"
+  },
+  "devDependencies": {
+    "playwright": "1.65.0"
+  }
+}
