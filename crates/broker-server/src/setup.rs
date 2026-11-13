@@ -47,6 +47,7 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
         server: base.clone(),
         control_plane: control_plane.clone(),
         signed_in: None,
+        manage: false,
         vaults: None,
         proxies: None,
         other_hosts: None,
@@ -67,6 +68,7 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
                 Err(e) => observed.signed_in = Some(Err(e.to_string())),
                 Ok(user) => {
                     observed.signed_in = Some(Ok(Some(user.username)));
+                    observed.manage = client.session().manage;
                     observed.vaults =
                         Some(vault_summaries(&client).await.map_err(|e| e.to_string()));
                     observed.proxies = Some(match client.nodes().await {
