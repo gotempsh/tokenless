@@ -49,10 +49,15 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let admin = server.initial_admin.as_ref().unwrap();
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let home = tempfile::tempdir().unwrap();

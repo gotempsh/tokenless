@@ -115,10 +115,15 @@ async fn lists_what_the_console_shows_as_tables_and_json() {
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let admin = server.initial_admin.as_ref().unwrap();
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let home = tempfile::tempdir().unwrap();
@@ -355,10 +360,15 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
     let server = Server::start(config).await.unwrap();
     let url = format!("http://{}", server.api_addr);
     let admin = server.initial_admin.as_ref().unwrap();
-    let SignIn::Done(session) = account::sign_in(&url, &admin.username, &admin.password, None)
-        .await
-        .unwrap()
-    else {
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
         panic!("the generated admin has no authenticator");
     };
     let vault = MemoryVault::default();
@@ -471,4 +481,90 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
         "{problem}"
     );
     server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vault_an_admin_only_oversees_is_listed_without_its_contents() {
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let url = format!("http://{}", server.api_addr);
+    let admin = server.initial_admin.as_ref().unwrap();
+    let SignIn::Done(session) = account::sign_in(
+        &url,
+        &admin.username,
+        &admin.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
+        panic!("the generated admin has no authenticator");
+    };
+    let home = tempfile::tempdir().unwrap();
+    account::SessionFiles::new(home.path().join(".config/tokenless/sessions"))
+        .save(&session)
+        .unwrap();
+
+    // The admin makes a vault, hands it to bob and leaves it.
+    let team = post(&url, &session, "/vaults", json!({ "name": "team" })).await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let invite = post(
+        &url,
+        &session,
+        "/invites",
+        json!({ "role": "member", "vaults": [{ "vault_id": team_id, "role": "admin" }] }),
+    )
+    .await;
+    let accepted = reqwest::Client::new()
+        .post(format!("{url}/api/v1/invites/accept"))
+        .json(&json!({
+            "invite_token": invite["token"],
+            "username": "bob",
+            "password": "bob-example-password-123",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(accepted.status().is_success(), "{}", accepted.status());
+    let (_, me) = get(&url, &session, "/auth/me").await;
+    let admin_id = me["user"]["id"].as_str().unwrap();
+    let left = reqwest::Client::new()
+        .delete(format!("{url}/api/v1/vaults/{team_id}/members/{admin_id}"))
+        .header(
+            "cookie",
+            format!(
+                "{}={}",
+                tokenless_auth::cookie::SESSION_COOKIE,
+                session.token
+            ),
+        )
+        .header(tokenless_auth::csrf::CSRF_HEADER, &session.csrf_token)
+        .send()
+        .await
+        .unwrap();
+    assert!(left.status().is_success(), "{}", left.status());
+
+    // Listed, with what it holds not theirs to see and how to join.
+    let (ok, out, err) = tokenless(home.path(), &url, &["vault", "list"]);
+    assert!(ok, "{err}");
+    assert!(out.contains("team") && out.contains(" -"), "{out}");
+    assert!(err.contains("tokenless vault join"), "{err}");
+    let rows = json_of(home.path(), &url, &["vault", "list", "--json"]);
+    assert_eq!(rows[0]["overseen"], json!(true), "{rows:?}");
+    let (ok, _, err) = tokenless(home.path(), &url, &["service", "list", "--vault", "team"]);
+    assert!(!ok && err.contains("tokenless vault join team"), "{err}");
+    // Status reads the vaults it can, and does not fail on this one.
+    let (_, out, err) = tokenless(home.path(), &url, &["status", "--json"]);
+    let report: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}{err}"));
+    let services = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "services")
+        .unwrap()
+        .clone();
+    assert_eq!(services["state"], json!("missing"), "{services}");
 }

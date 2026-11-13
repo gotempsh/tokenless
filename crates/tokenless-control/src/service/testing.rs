@@ -90,3 +90,76 @@ pub async fn vault_with_rule(cs: &ControlServices, host: &Caller) -> (VaultId, R
         .unwrap();
     (vault.id, rule.id)
 }
+
+/// The id of the test person called `name`: the same for every call, so a
+/// caller built without the store matches the account made with it.
+pub fn person_id(name: &str) -> tokenless_core::ids::UserId {
+    let n = name
+        .bytes()
+        .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)))
+        & 0xffff_ffff_ffff;
+    format!("00000000-0000-4000-8000-{n:012x}").parse().unwrap()
+}
+
+/// A person's caller, signed in with a fresh step-up. `role` is their
+/// instance role; their vault roles come from [`enrol`] and [`join`].
+pub fn person_caller(name: &str, role: tokenless_core::authz::Role) -> Caller {
+    use tokenless_core::authz::{Principal, PrincipalKind};
+    Caller {
+        principal: Principal {
+            kind: PrincipalKind::User,
+            actor: format!("user:{}", person_id(name)),
+            role,
+            vault: None,
+        },
+        step_up_at: Some(chrono::Utc::now()),
+        second_factor: true,
+        launch: None,
+        sign_in: Default::default(),
+    }
+}
+
+/// Makes the account behind `caller`, named after its id.
+pub async fn enrol(identity: &dyn crate::store::IdentityStore, caller: &Caller) {
+    let id = caller.user_id().unwrap();
+    identity
+        .insert_user(
+            crate::model::User {
+                id,
+                username: format!("person-{}", &id.to_string()[24..]),
+                password_hash: String::new(),
+                totp_secret_enc: None,
+                totp_last_step: None,
+                role: caller.principal.role,
+                created_at: chrono::Utc::now(),
+                disabled_at: None,
+                sso: None,
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}
+
+/// Gives the person behind `caller` `role` in the vault.
+pub async fn join(
+    members: &dyn crate::store::MembershipStore,
+    caller: &Caller,
+    vault: &VaultId,
+    role: tokenless_core::authz::Role,
+) {
+    members
+        .put_vault_member(
+            crate::model::VaultMember {
+                vault_id: *vault,
+                user_id: caller.user_id().unwrap(),
+                username: String::new(),
+                role,
+                added_by: "user:test".into(),
+                added_at: chrono::Utc::now(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+}

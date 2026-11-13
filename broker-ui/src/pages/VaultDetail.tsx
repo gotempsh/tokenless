@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { ListChecks, Plus, Timer, Trash2, Wrench } from "lucide-react";
+import { ListChecks, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   del,
@@ -14,10 +14,10 @@ import {
   type Page,
   type ProxySession,
   type Rule,
-  type UserSummary,
   type Vault,
   type VaultOverview,
 } from "../api";
+import { can, onlyFor, oversees, type Me } from "../access";
 import { SettingsSection } from "../components/layout";
 import { useAction, useLoad } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
@@ -28,6 +28,7 @@ import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
 import { VaultTripwires } from "./Tripwires";
+import { OverseeNotice, VaultMembers } from "./VaultMembers";
 import {
   fromWidth,
   CheckField,
@@ -68,13 +69,14 @@ import { Tabs, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Textarea } from "../components/ui/textarea";
 import { useBreadcrumbs } from "../breadcrumbs";
 
-export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "tripwires" | "settings";
+export type Tab = "credentials" | "rules" | "bundles" | "sessions" | "tripwires" | "members" | "settings";
 const TABS: { value: Tab; label: string }[] = [
   { value: "credentials", label: "Services" },
   { value: "rules", label: "Rules" },
   { value: "bundles", label: "Access bundles" },
   { value: "sessions", label: "Sessions" },
   { value: "tripwires", label: "Tripwires" },
+  { value: "members", label: "Members" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -136,11 +138,25 @@ function DeleteVaultForm({ vault, onCancel }: { vault: Vault; onCancel: () => vo
   );
 }
 
-export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab; user: UserSummary }) {
+export function VaultDetail({
+  vaultId,
+  tab,
+  user,
+  onAccessChanged,
+}: {
+  vaultId: string;
+  tab: Tab;
+  user: Me;
+  onAccessChanged: () => void;
+}) {
   const vault = useLoad(() => get<VaultOverview>(`/vaults/${vaultId}/overview`), [vaultId]);
   const v = vault.data && vault.data.id === vaultId ? vault.data : undefined;
   const [deleting, setDeleting] = useState(false);
   const isAdmin = user.role === "admin";
+  // An instance admin who is not a member sees sessions, keys and the
+  // audit log, not what the vault holds.
+  const outside = oversees(user, vaultId);
+  const contents = tab === "credentials" || tab === "rules" || tab === "bundles" || tab === "tripwires";
   useBreadcrumbs([
     { label: "Vaults", href: "#/vaults" },
     { label: v?.name ?? (vault.error ? "Vault" : null), href: `#/vaults/${vaultId}/credentials` },
@@ -172,6 +188,7 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         }
       />
       <ErrorBanner error={vault.error} />
+      {outside && <OverseeNotice vaultId={vaultId} onJoined={onAccessChanged} />}
       <Tabs
         value={tab}
         onValueChange={(t) => {
@@ -187,13 +204,41 @@ export function VaultDetail({ vaultId, tab, user }: { vaultId: string; tab: Tab;
         </TabsList>
       </Tabs>
       <TabSections>
-        {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-        {tab === "rules" && <Rules vaultId={vaultId} />}
-        {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
-        {tab === "sessions" && <Sessions vaultId={vaultId} user={user} />}
-        {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
+        {!(outside && contents) && (
+          <>
+            {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
+            {tab === "rules" && <Rules vaultId={vaultId} canEdit={can(user, vaultId, "edit")} />}
+            {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
+            {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
+          </>
+        )}
+        {tab === "sessions" &&
+          (can(user, vaultId, "audit") ? (
+            <Sessions vaultId={vaultId} user={user} />
+          ) : (
+            <Empty
+              icon={Timer}
+              title="Runners do not see the vault's sessions"
+              description="Start one from an access bundle; seeing everyone's takes the viewer role or above, which a vault admin can give you."
+              action={
+                <Button type="button" variant="outline" onClick={() => (window.location.hash = `#/vaults/${vaultId}/bundles`)}>
+                  Access bundles
+                </Button>
+              }
+            />
+          ))}
+        {tab === "members" &&
+          (can(user, vaultId, "audit") ? (
+            <VaultMembers vaultId={vaultId} user={user} onAccessChanged={onAccessChanged} />
+          ) : (
+            <Empty
+              icon={Users}
+              title="Runners do not see who else uses the vault"
+              description="Seeing its members takes the viewer role or above, which a vault admin can give you."
+            />
+          ))}
       </TabSections>
-      {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin} onDelete={() => setDeleting(true)} />}
+      {tab === "settings" && v && <VaultSettings vault={v} isAdmin={isAdmin && user.scope !== "launch"} onDelete={() => setDeleting(true)} />}
       <FormDialog
         open={deleting}
         onOpenChange={setDeleting}
@@ -227,7 +272,7 @@ function VaultSettings({ vault, isAdmin, onDelete }: { vault: VaultOverview; isA
             <Trash2 />
             Delete vault
           </Button>
-          {!isAdmin && <p className="text-xs text-muted-foreground">Only admins can delete a vault.</p>}
+          {!isAdmin && <p className="text-xs text-muted-foreground">Only instance admins can delete a vault.</p>}
         </div>
       </SettingsSection>
     </div>
@@ -298,7 +343,7 @@ function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => voi
   );
 }
 
-function Rules({ vaultId }: { vaultId: string }) {
+function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const [page, setPage] = useState(1);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
@@ -342,7 +387,7 @@ function Rules({ vaultId }: { vaultId: string }) {
   };
 
   const addButton = (
-    <Button type="button" onClick={() => setAdding(true)}>
+    <Button type="button" onClick={() => setAdding(true)} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
       <Plus />
       Add rule
     </Button>
@@ -395,7 +440,7 @@ function Rules({ vaultId }: { vaultId: string }) {
                   <TableCell>
                     <Switch
                       checked={r.enabled}
-                      disabled={action.busy}
+                      disabled={action.busy || !canEdit}
                       onCheckedChange={() => void toggle(r)}
                       aria-label={`${r.enabled ? "Turn off" : "Turn on"} ${r.name}`}
                     />
@@ -405,8 +450,21 @@ function Rules({ vaultId }: { vaultId: string }) {
                       <RowMenu
                         label={r.name}
                         items={[
-                          { label: "MCP tools", icon: Wrench, onSelect: () => setEditingTools(r) },
-                          { label: "Delete rule", icon: Trash2, onSelect: () => confirm.ask(r), destructive: true },
+                          {
+                            label: "MCP tools",
+                            icon: Wrench,
+                            onSelect: () => setEditingTools(r),
+                            disabled: !canEdit,
+                            reason: onlyFor("edit"),
+                          },
+                          {
+                            label: "Delete rule",
+                            icon: Trash2,
+                            onSelect: () => confirm.ask(r),
+                            destructive: true,
+                            disabled: !canEdit,
+                            reason: onlyFor("edit"),
+                          },
                         ]}
                       />
                     </RowActions>
@@ -541,9 +599,10 @@ interface Minted {
   session: ProxySession;
 }
 
-function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
+function Sessions({ vaultId, user }: { vaultId: string; user: Me }) {
   const actors = useActorNames(user);
-  const canChange = user.role === "admin" || user.role === "editor";
+  const canRevoke = can(user, vaultId, "stop");
+  const canStart = can(user, vaultId, "start");
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/vaults/${vaultId}/sessions?page=${page}`), [vaultId, page]);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
@@ -612,7 +671,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
   };
 
   const mintButton = (
-    <Button type="button" onClick={() => setOpen(true)}>
+    <Button type="button" onClick={() => setOpen(true)} disabled={!canStart} title={canStart ? undefined : onlyFor("start")}>
       <Plus />
       New session
     </Button>
@@ -638,7 +697,7 @@ function Sessions({ vaultId, user }: { vaultId: string; user: UserSummary }) {
           <SessionTable
             sessions={sessions.data?.items ?? []}
             actors={actors}
-            canRevoke={canChange}
+            canRevoke={() => canRevoke}
             onRevoke={confirm.ask}
           />
         )}

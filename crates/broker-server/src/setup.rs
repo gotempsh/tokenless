@@ -47,6 +47,7 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
         server: base.clone(),
         control_plane: control_plane.clone(),
         signed_in: None,
+        manage: false,
         vaults: None,
         proxies: None,
         other_hosts: None,
@@ -67,6 +68,7 @@ pub async fn status_command(server: String, json: bool) -> Result<ExitCode, CliE
                 Err(e) => observed.signed_in = Some(Err(e.to_string())),
                 Ok(user) => {
                     observed.signed_in = Some(Ok(Some(user.username)));
+                    observed.manage = client.session().manage;
                     observed.vaults =
                         Some(vault_summaries(&client).await.map_err(|e| e.to_string()));
                     observed.proxies = Some(match client.nodes().await {
@@ -119,7 +121,13 @@ fn skill_state(cwd: &Path, home: Option<&Path>) -> Skill {
 async fn vault_summaries(client: &ConsoleClient<'_>) -> Result<Vec<VaultSummary>, LauncherError> {
     let mut out = Vec::new();
     for vault in client.vaults().await? {
-        let services = client.credentials(&vault.id).await?.len() as u64;
+        let services = match client.credentials(&vault.id).await {
+            Ok(services) => services.len() as u64,
+            // A vault an instance admin oversees without being a member:
+            // nothing in it is theirs to start agents with.
+            Err(LauncherError::Api { status: 403, .. }) => continue,
+            Err(e) => return Err(e),
+        };
         // Only a bundle with an enabled rule can start a session.
         let bundles = if services > 0 {
             let enabled: Vec<RuleId> = client

@@ -1544,6 +1544,24 @@ async fn login_as(server: &RunningServer, username: &str, password: &str, code: 
     api
 }
 
+/// Signs in with a password only, asking for `scope`; returns the session
+/// and the response body.
+async fn login_scoped(server: &RunningServer, username: &str, scope: &str) -> (Api, Value) {
+    let mut api = Api::new(server);
+    let (status, headers, body) = api
+        .call(
+            reqwest::Method::POST,
+            "/auth/login",
+            Some(json!({ "username": username, "password": PASSWORD, "scope": scope })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "login {username}: {body}");
+    let set_cookie = headers.get(SET_COOKIE).unwrap().to_str().unwrap();
+    api.cookie = Some(set_cookie.split(';').next().unwrap().to_string());
+    api.csrf = Some(body["csrf_token"].as_str().unwrap().to_string());
+    (api, body)
+}
+
 #[tokio::test]
 async fn people_are_invited_with_a_role_and_can_be_disabled() {
     let data = tempfile::tempdir().unwrap();
@@ -1552,11 +1570,29 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
     let (admin, _) = bootstrap_admin(&server).await;
+    let team = admin.post("/vaults", json!({ "name": "team" })).await;
+    let team = team["id"].as_str().unwrap().to_string();
+    let private = admin.post("/vaults", json!({ "name": "private" })).await;
+    let private = private["id"].as_str().unwrap().to_string();
 
+    // People are admins or members of the instance; their roles inside
+    // vaults come with the invitation.
+    let (status, _, body) = admin
+        .call(
+            reqwest::Method::POST,
+            "/invites",
+            Some(json!({ "role": "editor" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let issued = admin
         .post(
             "/invites",
-            json!({ "role": "editor", "expires_in_hours": 24 }),
+            json!({
+                "role": "member",
+                "expires_in_hours": 24,
+                "vaults": [{ "vault_id": team, "role": "editor" }],
+            }),
         )
         .await;
     let invite_token = issued["token"].as_str().unwrap().to_string();
@@ -1574,7 +1610,9 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
     let info = guest
         .post("/invites/inspect", json!({ "invite_token": invite_token }))
         .await;
-    assert_eq!(info["role"], "editor");
+    assert_eq!(info["role"], "member");
+    assert_eq!(info["vaults"][0]["name"], "team");
+    assert_eq!(info["vaults"][0]["role"], "editor");
     let (status, _, _) = guest
         .call(
             reqwest::Method::POST,
@@ -1602,7 +1640,7 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
             }),
         )
         .await;
-    assert_eq!(accepted["role"], "editor");
+    assert_eq!(accepted["role"], "member");
     let user_id = accepted["id"].as_str().unwrap().to_string();
     let (status, _, _) = guest
         .call(
@@ -1621,7 +1659,26 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
 
     let editor = login_as(&server, "editor-one", PASSWORD, &totp(&secret, 30)).await;
     let me = editor.get("/auth/me").await;
-    assert_eq!(me["user"]["role"], "editor");
+    assert_eq!(me["user"]["role"], "member");
+    assert_eq!(me["scope"], "full");
+    assert_eq!(
+        me["vaults"],
+        json!([{ "vault_id": team, "role": "editor" }])
+    );
+    // An editor of one vault sees that vault and nothing of the other.
+    let vaults = editor.get("/vaults/overview").await;
+    assert_eq!(vaults["total"], 1);
+    assert_eq!(vaults["items"][0]["name"], "team");
+    assert_eq!(vaults["items"][0]["my_role"], "editor");
+    let (status, _, body) = editor
+        .call(
+            reqwest::Method::GET,
+            &format!("/vaults/{private}/credentials"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("not a member"), "{body}");
     let (status, _, _) = editor.call(reqwest::Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _, _) = editor
@@ -1632,8 +1689,17 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // Only the vault's admins manage its members.
+    let (status, _, _) = editor
+        .call(
+            reqwest::Method::PUT,
+            &format!("/vaults/{team}/members"),
+            Some(json!({ "username": "editor-one", "role": "admin" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // The only admin cannot demote themselves.
+    // An instance admin who leaves a vault oversees it until they join.
     let users = admin.get("/users").await;
     assert_eq!(users["total"], 2);
     let admin_id = users["items"]
@@ -1647,9 +1713,108 @@ async fn people_are_invited_with_a_role_and_can_be_disabled() {
         .to_string();
     let (status, _, body) = admin
         .call(
+            reqwest::Method::DELETE,
+            &format!("/vaults/{team}/members/{admin_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "the last admin stays: {body}");
+    admin
+        .call(
+            reqwest::Method::PUT,
+            &format!("/vaults/{team}/members"),
+            Some(json!({ "username": "editor-one", "role": "admin" })),
+        )
+        .await;
+    let (status, _, body) = admin
+        .call(
+            reqwest::Method::DELETE,
+            &format!("/vaults/{team}/members/{admin_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let members = editor.get(&format!("/vaults/{team}/members")).await;
+    assert_eq!(members["total"], 1);
+    assert_eq!(members["items"][0]["username"], "editor-one");
+    let overview = admin.get(&format!("/vaults/{team}/overview")).await;
+    assert_eq!(overview["my_role"], Value::Null);
+    let (status, _, body) = admin
+        .call(
+            reqwest::Method::GET,
+            &format!("/vaults/{team}/credentials"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("join the vault first"), "{body}");
+    let audit = admin.get(&format!("/audit?vault_id={team}")).await;
+    assert!(
+        audit["total"].as_u64().unwrap() > 0,
+        "oversight reads the vault's audit log"
+    );
+    let joined = admin.post(&format!("/vaults/{team}/join"), json!({})).await;
+    assert_eq!(joined["role"], "admin");
+    admin.get(&format!("/vaults/{team}/credentials")).await;
+    let audit = admin.get("/audit?action_prefix=vault.join").await;
+    assert_eq!(audit["total"], 1);
+
+    // A runner signed in with `tokenless login` only starts sessions from
+    // bundles.
+    let issued = admin
+        .post(
+            "/invites",
+            json!({ "role": "member", "vaults": [{ "vault_id": team, "role": "runner" }] }),
+        )
+        .await;
+    guest
+        .post(
+            "/invites/accept",
+            json!({
+                "invite_token": issued["token"],
+                "username": "runner-one",
+                "password": PASSWORD,
+            }),
+        )
+        .await;
+    let (runner, body) = login_scoped(&server, "runner-one", "launch").await;
+    assert_eq!(body["scope"], "launch");
+    runner.get(&format!("/vaults/{team}/bundles")).await;
+    let (status, _, body) = runner
+        .call(
+            reqwest::Method::POST,
+            &format!("/vaults/{team}/sessions"),
+            Some(json!({ "rule_ids": [] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("access bundles only"), "{body}");
+    let (status, _, body) = runner
+        .call(
+            reqwest::Method::GET,
+            &format!("/vaults/{team}/sessions"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("only starts sessions"), "{body}");
+    let sign_ins = runner.get("/auth/sign-ins").await;
+    assert_eq!(sign_ins["items"][0]["scope"], "launch");
+    let (status, _, body) = Api::new(&server)
+        .call(
+            reqwest::Method::POST,
+            "/auth/login",
+            Some(json!({ "username": "runner-one", "password": PASSWORD, "ttl_secs": 5 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // The only admin cannot demote themselves.
+    let (status, _, body) = admin
+        .call(
             reqwest::Method::PATCH,
             &format!("/users/{admin_id}"),
-            Some(json!({ "role": "viewer" })),
+            Some(json!({ "role": "member" })),
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");

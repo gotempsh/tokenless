@@ -3,7 +3,8 @@
 
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Info, Plus, ShieldAlert, Upload } from "lucide-react";
-import { get, post, type ServiceTemplate, type StoredTemplate, type UserSummary } from "../api";
+import { get, post, type ServiceTemplate, type StoredTemplate } from "../api";
+import { canSomewhere, isInstanceAdmin, type Me } from "../access";
 import { CATEGORY_LABEL, injectionSummary, KIND_LABEL } from "../catalog";
 import { useAction, useLoad } from "../hooks";
 import { DialogActions, ErrorBanner, Field, FormDialog, Mono, Tags } from "../components/common";
@@ -69,8 +70,11 @@ function TemplateFacts({ t }: { t: ServiceTemplate }) {
   );
 }
 
-export function Templates({ user }: { user: UserSummary }) {
-  const isAdmin = user.role === "admin";
+export function Templates({ user }: { user: Me }) {
+  // Importing and approving templates is the instance's; adding a
+  // service from one, any vault admin's.
+  const isAdmin = isInstanceAdmin(user);
+  const canAdd = isAdmin || canSomewhere(user, "manage");
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [importing, setImporting] = useState(false);
   const [yaml, setYaml] = useState("");
@@ -107,12 +111,20 @@ export function Templates({ user }: { user: UserSummary }) {
   // A card's main action: admins add an approved service and review a
   // pending one; everyone else reads its details.
   const open = (t: StoredTemplate) => {
-    if (!isAdmin) setViewing(t);
-    else if (t.status !== "approved") setReviewing(t);
-    else addTo(t);
+    if (t.status !== "approved") {
+      if (isAdmin) setReviewing(t);
+      else setViewing(t);
+    } else if (canAdd) addTo(t);
+    else setViewing(t);
   };
   const openLabel = (t: StoredTemplate) =>
-    !isAdmin ? `Details for ${t.template.name}` : t.status !== "approved" ? `Review ${t.template.name}` : `Add ${t.template.name}`;
+    t.status !== "approved"
+      ? isAdmin
+        ? `Review ${t.template.name}`
+        : `Details for ${t.template.name}`
+      : canAdd
+        ? `Add ${t.template.name}`
+        : `Details for ${t.template.name}`;
 
   const cardAction = (t: StoredTemplate) => (
     <Button
@@ -138,7 +150,7 @@ export function Templates({ user }: { user: UserSummary }) {
             variant="outline"
             onClick={() => setImporting(true)}
             disabled={!isAdmin}
-            title={isAdmin ? undefined : "Only admins can import templates"}
+            title={isAdmin ? undefined : "Only instance admins can import templates"}
           >
             <Upload />
             Import template
@@ -188,8 +200,8 @@ export function Templates({ user }: { user: UserSummary }) {
               {viewing.status === "approved" && (
                 <Button
                   type="button"
-                  disabled={!isAdmin}
-                  title={isAdmin ? undefined : "Only admins can add services"}
+                  disabled={!canAdd}
+                  title={canAdd ? undefined : "Only a vault's admins can add services"}
                   onClick={() => addTo(viewing)}
                 >
                   <Plus />

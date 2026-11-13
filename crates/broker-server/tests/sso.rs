@@ -226,7 +226,7 @@ async fn a_person_signs_in_with_their_identity_provider() {
             "client_id": "tokenless",
             "client_secret": "idp-client-secret",
             "redirect_uri": format!("{api}/auth/oidc/callback"),
-            "role_mappings": [{ "group": "broker-editors", "role": "editor" }],
+            "role_mappings": [{ "group": "broker-editors", "role": "member" }],
         }))
         .send()
         .await
@@ -281,7 +281,7 @@ async fn a_person_signs_in_with_their_identity_provider() {
         .await
         .unwrap();
     assert_eq!(me["user"]["username"], "grace");
-    assert_eq!(me["user"]["role"], "editor");
+    assert_eq!(me["user"]["role"], "member");
     assert_eq!(me["sso"]["slug"], "corp");
 
     // The same answer again, or in a browser that did not ask, is refused.

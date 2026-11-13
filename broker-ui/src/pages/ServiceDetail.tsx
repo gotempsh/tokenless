@@ -21,9 +21,9 @@ import {
   type ServiceTemplate,
   type StoredTemplate,
   type Substitution,
-  type UserSummary,
   type Vault,
 } from "../api";
+import { can, isInstanceAdmin, type Me } from "../access";
 import { serviceHistoryPhrase } from "../audit";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { KIND_LABEL, targetHosts } from "../catalog";
@@ -69,10 +69,11 @@ import { expiryToSend, secretExpired } from "../secretExpiry";
 
 type Editing = "secret" | "headers" | "placeholders" | null;
 
-const ADMIN_ONLY = "Only admins can change services";
+const ADMIN_ONLY = "Only the vault's admins can change services";
 
-export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string; credentialId: string; user: UserSummary }) {
-  const isAdmin = user.role === "admin";
+export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string; credentialId: string; user: Me }) {
+  // Changing a service is for the vault's admins; variables are the instance's.
+  const isAdmin = can(user, vaultId, "manage");
   // A service that does not exist (or no longer does) loads as null, not as an error.
   const cred = useLoad(
     () =>
@@ -86,7 +87,7 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page_size=100`), [vaultId]);
   const bundles = useLoad(() => get<Page<AccessBundle>>(`/vaults/${vaultId}/bundles?page_size=100`), [vaultId]);
-  const variables = useVariableKeys(isAdmin);
+  const variables = useVariableKeys(isInstanceAdmin(user));
   const [editing, setEditing] = useState<Editing>(null);
   const [result, setResult] = useState<CredentialValidation | null>(null);
   const confirm = useConfirm<CredentialMeta>();

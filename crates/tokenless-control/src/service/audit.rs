@@ -23,7 +23,8 @@ impl AuditService {
         Self { sink, guard }
     }
 
-    /// Vault-bound principals only ever see their own vault's events.
+    /// Vault-bound principals only ever see their own vault's events, and
+    /// people the events of their vaults (an instance admin: all of them).
     pub async fn query(
         &self,
         caller: &Caller,
@@ -66,9 +67,17 @@ impl AuditService {
         if let Some(bound) = caller.principal.vault {
             query.vault_id = Some(bound);
         }
-        self.guard
-            .check(caller, Action::AuditRead, query.vault_id.as_ref())
-            .await?;
+        match &query.vault_id {
+            Some(vault) => {
+                self.guard
+                    .check(caller, Action::AuditRead, Some(vault))
+                    .await?
+            }
+            None => {
+                self.guard.check_list(caller, Action::AuditRead).await?;
+                query.within = self.guard.vault_scope(caller, Action::AuditRead).await?;
+            }
+        }
         if let Some(prefix) = &query.action_prefix {
             if prefix.len() > 64 {
                 return Err(ControlError::validation(

@@ -93,7 +93,7 @@ export function newProviderForm(origin: string): ProviderForm {
     scopes: "profile email",
     groups_claim: "groups",
     username_claim: "preferred_username",
-    role_mappings: [{ group: "", role: "viewer" }],
+    role_mappings: [emptyMapping()],
     enabled: true,
   };
 }
@@ -110,7 +110,9 @@ export function providerForm(p: OidcProvider): ProviderForm {
     scopes: p.scopes.join(" "),
     groups_claim: p.groups_claim,
     username_claim: p.username_claim,
-    role_mappings: p.role_mappings.length ? p.role_mappings.map((m) => ({ ...m })) : [{ group: "", role: "viewer" }],
+    role_mappings: p.role_mappings.length
+      ? p.role_mappings.map((m) => ({ ...m, vaults: (m.vaults ?? []).map((g) => ({ ...g })) }))
+      : [emptyMapping()],
     enabled: p.enabled,
   };
 }
@@ -130,9 +132,14 @@ export function slugFromName(name: string): string {
     .replace(/-+$/, "");
 }
 
+/** A group row as a new one starts: its members join the instance, and no vault yet. */
+export function emptyMapping(): RoleMapping {
+  return { group: "", role: "member", vaults: [] };
+}
+
 function mappings(form: ProviderForm): RoleMapping[] {
   return form.role_mappings
-    .map((m) => ({ group: m.group.trim(), role: m.role }))
+    .map((m) => ({ group: m.group.trim(), role: m.role, vaults: m.vaults.filter((g) => g.vault_id !== "") }))
     .filter((m) => m.group !== "");
 }
 
@@ -147,9 +154,11 @@ export function providerFormProblem(form: ProviderForm): string | null {
   const rows = mappings(form);
   if (rows.length === 0) return "Map at least one group to a role: nobody can sign in without one.";
   const seen = new Set<string>();
-  for (const { group } of rows) {
+  for (const { group, vaults } of rows) {
     if (seen.has(group)) return `The group '${group}' is mapped twice.`;
     seen.add(group);
+    const ids = vaults.map((g) => g.vault_id);
+    if (new Set(ids).size !== ids.length) return `The group '${group}' gives a role in the same vault twice.`;
   }
   return null;
 }

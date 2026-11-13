@@ -23,13 +23,14 @@ use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
     AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, Settings, StoredTemplate,
-    Tripwire, Vault,
+    Tripwire, Vault, VaultMember,
 };
 use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
     CreatedLauncherKey, LauncherKey, RevokedLauncherKey,
 };
 use tokenless_control::service::tripwires::CreatedTripwire;
+use tokenless_core::authz::Role;
 use tokenless_core::ids::{
     AlertId, ApiKeyId, BundleId, CredentialId, RuleId, SignInId, TripwireId, UserId, VaultId,
 };
@@ -52,6 +53,41 @@ pub struct SavedSession {
     pub token: String,
     pub csrf_token: String,
     pub expires_at: DateTime<Utc>,
+    /// A `tokenless login --manage` sign-in, kept apart from the one `run`
+    /// uses. Sessions saved before there were two are the `run` one.
+    #[serde(default)]
+    pub manage: bool,
+}
+
+/// What a sign-in from the command line is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInFor {
+    /// `tokenless login`: only finds bundles and starts sessions, whatever
+    /// the person's roles. Kept on the machines that run agents.
+    Launch,
+    /// `tokenless login --manage`: everything the person may do, for
+    /// [`MANAGE_SIGN_IN_SECS`].
+    Manage,
+}
+
+/// How long a `tokenless login --manage` sign-in lasts.
+pub const MANAGE_SIGN_IN_SECS: u64 = 3600;
+
+/// Where the `--manage` sign-in for `server` is kept.
+pub fn manage_key(server: &str) -> String {
+    format!("{server}#manage")
+}
+
+impl SavedSession {
+    /// Where the session is kept: one entry for `run`'s sign-in and one
+    /// for the `--manage` sign-in of each server.
+    pub fn key(&self) -> String {
+        if self.manage {
+            manage_key(&self.server)
+        } else {
+            self.server.clone()
+        }
+    }
 }
 
 impl std::fmt::Debug for SavedSession {
@@ -63,6 +99,7 @@ impl std::fmt::Debug for SavedSession {
             .field("token", &"***")
             .field("csrf_token", &"***")
             .field("expires_at", &self.expires_at)
+            .field("manage", &self.manage)
             .finish()
     }
 }
@@ -146,7 +183,7 @@ impl SessionVault for Keychain {
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
-        Self::set(&session.server, &encode(session)?)
+        Self::set(&session.key(), &encode(session)?)
             .map_err(|e| keychain("saving", &session.server, e))
     }
 
@@ -210,7 +247,7 @@ impl SessionVault for SessionFiles {
         let session = decode(server, &json)?;
         // Two servers whose names differ only in punctuation share a file
         // name; never hand one server's session to the other.
-        Ok((session.server == server).then_some(session))
+        Ok((session.key() == server).then_some(session))
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
@@ -225,7 +262,7 @@ impl SessionVault for SessionFiles {
         }
         dir.create(&self.dir)
             .map_err(Self::io(format!("creating {}", self.dir.display())))?;
-        let path = self.path(&session.server);
+        let path = self.path(&session.key());
         let tmp = path.with_extension("tmp");
         // A leftover temporary file may have wider permissions; the mode
         // below only applies to a file this call creates.
@@ -301,11 +338,11 @@ impl SessionStore {
     /// Saves the session and says where it went.
     pub fn store(&self, session: &SavedSession) -> Result<Stored, LauncherError> {
         let json = encode(session)?;
-        match Keychain::set(&session.server, &json) {
+        match Keychain::set(&session.key(), &json) {
             Ok(()) => {
                 // A file from a time without a keychain is now stale.
                 if let Some(files) = &self.files {
-                    files.delete(&session.server)?;
+                    files.delete(&session.key())?;
                 }
                 Ok(Stored::Keychain)
             }
@@ -314,7 +351,7 @@ impl SessionStore {
                 let files = self.files(&session.server, e)?;
                 files.save(session)?;
                 Ok(Stored::File {
-                    path: files.path(&session.server),
+                    path: files.path(&session.key()),
                     reason,
                 })
             }
@@ -375,7 +412,7 @@ impl SessionVault for MemoryVault {
         self.sessions
             .lock()
             .map_err(|_| LauncherError::config("session store lock poisoned"))?
-            .insert(session.server.clone(), session.clone());
+            .insert(session.key(), session.clone());
         Ok(())
     }
 
@@ -465,17 +502,28 @@ struct LoginReply {
 }
 
 /// Signs in with a username and password (and the authenticator code, when
-/// the account has one).
+/// the account has one), for `purpose`.
 pub async fn sign_in(
     server: &str,
     username: &str,
     password: &str,
     code: Option<&str>,
+    purpose: SignInFor,
 ) -> Result<SignIn, LauncherError> {
     const OP: &str = "signing in";
     let base = normalise(server)?;
     let url = format!("{base}/api/v1/auth/login");
-    let mut body = json!({ "username": username, "password": password });
+    let mut body = match purpose {
+        SignInFor::Launch => {
+            json!({ "username": username, "password": password, "scope": "launch" })
+        }
+        SignInFor::Manage => json!({
+            "username": username,
+            "password": password,
+            "scope": "full",
+            "ttl_secs": MANAGE_SIGN_IN_SECS,
+        }),
+    };
     if let Some(code) = code.map(str::trim).filter(|c| !c.is_empty()) {
         body["totp_code"] = json!(code);
     }
@@ -526,6 +574,7 @@ pub async fn sign_in(
         token,
         csrf_token: reply.csrf_token,
         expires_at: reply.expires_at,
+        manage: purpose == SignInFor::Manage,
     }))
 }
 
@@ -557,19 +606,24 @@ pub struct ConsoleClient<'p> {
 }
 
 impl<'p> ConsoleClient<'p> {
-    /// The saved session for `server`, or an error saying to sign in.
+    /// The saved session for `server`, or an error saying to sign in. A
+    /// live `--manage` sign-in comes first: the other only starts sessions.
     pub fn open(
         vault: &dyn SessionVault,
         server: &str,
         prompter: &'p dyn Prompter,
     ) -> Result<Self, LauncherError> {
         let base = normalise(server)?;
-        let session = vault
-            .load(&base)?
-            .filter(|s| s.expires_at > Utc::now())
-            .ok_or_else(|| LauncherError::NotSignedIn {
-                server: base.clone(),
-            })?;
+        let live = |s: &SavedSession| s.expires_at > Utc::now();
+        let session = match vault.load(&manage_key(&base))?.filter(live) {
+            Some(session) => session,
+            None => vault
+                .load(&base)?
+                .filter(live)
+                .ok_or_else(|| LauncherError::NotSignedIn {
+                    server: base.clone(),
+                })?,
+        };
         Ok(Self {
             http: http_client(&base)?,
             session,
@@ -726,6 +780,56 @@ impl<'p> ConsoleClient<'p> {
             "/vaults",
             Some(json!({ "name": name })),
             "creating the vault",
+        )
+        .await
+    }
+
+    pub async fn vault_members(&self, vault: &VaultId) -> Result<Vec<VaultMember>, LauncherError> {
+        self.pages(
+            &format!("/vaults/{vault}/members"),
+            "listing the vault's members",
+        )
+        .await
+    }
+
+    /// Adds a person to the vault, or changes their role there.
+    pub async fn put_vault_member(
+        &self,
+        vault: &VaultId,
+        username: &str,
+        role: Role,
+    ) -> Result<VaultMember, LauncherError> {
+        self.call(
+            Method::PUT,
+            &format!("/vaults/{vault}/members"),
+            Some(json!({ "username": username, "role": role })),
+            "setting the person's role in the vault",
+        )
+        .await
+    }
+
+    pub async fn remove_vault_member(
+        &self,
+        vault: &VaultId,
+        user: &UserId,
+    ) -> Result<(), LauncherError> {
+        self.call::<serde_json::Value>(
+            Method::DELETE,
+            &format!("/vaults/{vault}/members/{user}"),
+            None,
+            "removing the person from the vault",
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// An instance admin joins the vault as one of its admins.
+    pub async fn join_vault(&self, vault: &VaultId) -> Result<VaultMember, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/vaults/{vault}/join"),
+            None,
+            "joining the vault",
         )
         .await
     }
@@ -1262,6 +1366,7 @@ mod tests {
             token: "cbs_secret-token".into(),
             csrf_token: "csrf-secret".into(),
             expires_at: Utc::now(),
+            manage: false,
         };
         let shown = format!("{s:?}");
         assert!(!shown.contains("secret"), "{shown}");
@@ -1277,6 +1382,7 @@ mod tests {
             token: "t".into(),
             csrf_token: "c".into(),
             expires_at: Utc::now(),
+            manage: false,
         };
         vault.save(&s).unwrap();
         assert!(vault.load("http://a").unwrap().is_some());
@@ -1293,6 +1399,7 @@ mod tests {
             token: "cbs_file-token".into(),
             csrf_token: "c".into(),
             expires_at: Utc::now(),
+            manage: false,
         }
     }
 

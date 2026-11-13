@@ -3,7 +3,7 @@
 
 import { useState, type FormEvent } from "react";
 import { KeySquare, Plus } from "lucide-react";
-import { del, get, post, type ApiKey, type Page, type Role, type Vault } from "../api";
+import { del, get, post, type ApiKey, type ApiKeyRole, type Page, type Vault } from "../api";
 import { useAction, useLoad } from "../hooks";
 import {
   fromWidth,
@@ -32,10 +32,11 @@ import { Input } from "../components/ui/input";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 
-type KeyRole = Extract<Role, "viewer" | "editor">;
+type KeyRole = ApiKeyRole;
 
 const KEY_ROLES: Choice<KeyRole>[] = [
-  { value: "viewer", title: "Viewer", description: "Read the vault" },
+  { value: "runner", title: "Runner", description: "Start sessions from the vault's bundles" },
+  { value: "viewer", title: "Viewer", description: "Read the vault, its sessions and audit log" },
   { value: "editor", title: "Editor", description: "Manage rules, bundles and sessions" },
 ];
 
