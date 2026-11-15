@@ -364,7 +364,7 @@ fn run_command(vault: &str, bundle: &str) -> String {
 /// Ctrl-C and, on Unix, SIGTERM, listened for from the moment this is made,
 /// so a signal that comes while the command is busy (an HTTP call between
 /// two waits) is kept for the next wait rather than lost.
-struct Stop {
+pub(crate) struct Stop {
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
@@ -372,7 +372,7 @@ struct Stop {
 }
 
 impl Stop {
-    fn listen() -> Result<Self, CliError> {
+    pub(crate) fn listen() -> Result<Self, CliError> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -394,7 +394,7 @@ impl Stop {
     }
 
     /// Which signal came.
-    async fn signalled(&mut self) -> &'static str {
+    pub(crate) async fn signalled(&mut self) -> &'static str {
         #[cfg(unix)]
         {
             tokio::select! {

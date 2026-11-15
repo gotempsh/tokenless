@@ -1221,6 +1221,9 @@ async fn wait_for_shutdown() -> Result<(), CliError> {
 }
 
 async fn serve(args: ServeArgs) -> Result<(), CliError> {
+    // Register before the server announces readiness; signals during startup
+    // remain pending until startup can shut down its resources cleanly.
+    let mut shutdown = setup::Stop::listen()?;
     let data_dir = args.data_dir.clone();
     let mut config = ServerConfig::new(args.data_dir);
     config.root_key = args.key.input();
@@ -1271,10 +1274,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
-    // After the one-time password is out. Listening for the stop signal
-    // from here on: starting the built-in proxy takes a moment, and a
-    // SIGTERM then must still shut down cleanly.
-    let stop = stop_signal();
+    let stop = async { Ok::<_, CliError>(shutdown.signalled().await) };
     tokio::pin!(stop);
     let proxy = if args.no_proxy {
         None
