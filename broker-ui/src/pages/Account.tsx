@@ -25,8 +25,9 @@ export function Account({ user, sso, onChanged }: { user: UserSummary; sso?: Sso
         <PageHeader title="Account" verdict={<span className="text-sm text-muted-foreground">{user.username}</span>} />
         <SettingsSection title="Sign-in">
           <p className="text-sm">
-            You sign in with <strong>{sso.name}</strong>. Your password, second factor and groups are managed there; your{" "}
-            <strong>{user.role}</strong> role follows your groups at each sign-in.
+            You sign in with <strong>{sso.name}</strong>. Your password, second factor and groups are managed there; your role
+            on the instance (<strong>{user.role === "admin" ? "instance admin" : "member"}</strong>) and the vault roles your
+            groups give follow them at each sign-in.
           </p>
         </SettingsSection>
         <SettingsSection title="Where you're signed in" hint="A browser or CLI login you don't recognise: sign it out.">

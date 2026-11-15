@@ -6,7 +6,8 @@
 
 import { useState } from "react";
 import { BellRing, Check, Webhook } from "lucide-react";
-import { get, post, type Alert as AlertRecord, type AlertSummary, type AuditDestination, type Page, type UserSummary } from "../api";
+import { get, post, type Alert as AlertRecord, type AlertSummary, type AuditDestination, type Page } from "../api";
+import { can, isInstanceAdmin, onlyFor, type Me } from "../access";
 import { alertDestinations, bannerTitle, KIND_LABEL } from "../alerts";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -43,7 +44,7 @@ function Delivery({ destinations }: { destinations: AuditDestination[] }) {
   );
 }
 
-export function Alerts({ me }: { me: UserSummary }) {
+export function Alerts({ me }: { me: Me }) {
   const [page, setPage] = useState(1);
   const [showAll, setShowAll] = useState(false);
   const action = useAction();
@@ -51,8 +52,10 @@ export function Alerts({ me }: { me: UserSummary }) {
     () => get<Page<AlertRecord>>(`/alerts?open=${!showAll}&page=${page}&page_size=50`),
     [page, showAll],
   );
-  const isAdmin = me.role === "admin";
-  const canAck = me.role !== "viewer";
+  const isAdmin = isInstanceAdmin(me);
+  // An alert in a vault is its editors' and admins' (and an overseeing
+  // instance admin's) to acknowledge; one about the instance, its admins'.
+  const canAck = (a: AlertRecord) => (a.vault_id ? can(me, a.vault_id, "stop") : isAdmin && me.scope !== "launch");
   const destinations = useLoad(
     () => (isAdmin ? get<AuditDestination[]>("/audit-export/destinations") : Promise.resolve(undefined)),
     [isAdmin],
@@ -140,8 +143,8 @@ export function Alerts({ me }: { me: UserSummary }) {
                               label: "Acknowledge",
                               icon: Check,
                               onSelect: () => void acknowledge(a),
-                              disabled: !canAck || action.busy,
-                              reason: "Only editors and admins can acknowledge alerts",
+                              disabled: !canAck(a) || action.busy,
+                              reason: a.vault_id ? onlyFor("stop") : "Only instance admins can acknowledge alerts about the instance",
                             },
                           ]}
                         />

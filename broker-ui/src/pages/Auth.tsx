@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ChevronLeft, ExternalLink, Smartphone } from "lucide-react";
+import { joinsVaults } from "../members";
 import { ApiError, get, post, type InviteInfo, type SessionInfo, type SignInOptions, type SsoSignIn, type UserSummary } from "../api";
 import {
   returnToHere,
@@ -175,7 +176,7 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
       <AuthLayout title="Account created">
         <div className="space-y-5">
           <p className="text-sm">
-            You can now sign in as <strong>{created.username}</strong> with the <strong>{created.role}</strong> role
+            You can now sign in as <strong>{created.username}</strong>
             {created.totp_enrolled ? ", using the next code from your authenticator." : "."}
           </p>
           <Button type="button" className="w-full" onClick={onDone}>
@@ -201,10 +202,10 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
 
   return (
     <AuthLayout
-      title={`Join as ${info.data.role}`}
+      title={info.data.role === "admin" ? "Join as an instance admin" : "Join tokenless"}
       description={
         <>
-          This invite expires <When at={info.data.expires_at} />. Choose a username and password.
+          {joinsVaults(info.data)} This invite expires <When at={info.data.expires_at} />. Choose a username and password.
         </>
       }
     >

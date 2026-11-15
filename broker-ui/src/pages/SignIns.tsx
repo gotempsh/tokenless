@@ -70,6 +70,11 @@ export function SignIns() {
                         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                         {s.device}
                         {s.current && <Status tone="success">this one</Status>}
+                        {s.scope === "launch" && (
+                          <Status tone="neutral">
+                            <span title="Signed in with `tokenless login`: it only starts sessions">starts sessions only</span>
+                          </Status>
+                        )}
                       </div>
                       <div className="text-xs text-muted-foreground @md:hidden">
                         last used <When at={s.last_used_at} />

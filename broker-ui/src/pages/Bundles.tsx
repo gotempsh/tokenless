@@ -14,9 +14,9 @@ import {
   type AccessBundle,
   type Page,
   type Rule,
-  type UserSummary,
   type Vault,
 } from "../api";
+import { can, canSomewhere, isInstanceAdmin, onlyFor, type Me } from "../access";
 import { fallbackPage, hasPager } from "../paging";
 import { useAction, useLoad } from "../hooks";
 import { addServiceHref } from "../addService";
@@ -55,7 +55,7 @@ export function CommandSnippet({ command, display }: { command: string; display?
 }
 
 /** One vault's bundles when `vaultId` is given, every vault's otherwise. */
-export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary }) {
+export function Bundles({ vaultId, user }: { vaultId?: string; user: Me }) {
   const scoped = vaultId !== undefined;
   const [page, setPage] = useState(1);
   const bundles = useLoad(
@@ -91,14 +91,16 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
     bundles.reload();
   };
 
-  const canAdd = user.role === "admin";
+  // Adding a service from the list goes to a vault the person administers,
+  // or (for an instance admin) a new one.
+  const canAdd = vaultId ? can(user, vaultId, "manage") : canSomewhere(user, "manage") || isInstanceAdmin(user);
   const addServiceButton = (variant: "default" | "outline") => (
     <Button
       type="button"
       variant={variant}
       onClick={() => goAdd(vaultId)}
       disabled={!canAdd}
-      title={canAdd ? undefined : "Only admins can add services"}
+      title={canAdd ? undefined : "Only a vault's admins can add services"}
     >
       <Plus />
       Add a service
@@ -173,11 +175,24 @@ export function Bundles({ vaultId, user }: { vaultId?: string; user: UserSummary
                         label: "Add a service",
                         icon: Plus,
                         onSelect: () => goAdd(b.vault_id, b.id),
-                        disabled: !canAdd,
-                        reason: "Only admins can add services",
+                        disabled: !can(user, b.vault_id, "manage"),
+                        reason: onlyFor("manage"),
                       },
-                      { label: "Edit bundle", icon: Pencil, onSelect: () => (window.location.hash = bundleFormHref({ bundle: b.id, back: here })) },
-                      { label: "Delete bundle", icon: Trash2, onSelect: () => confirm.ask(b), destructive: true },
+                      {
+                        label: "Edit bundle",
+                        icon: Pencil,
+                        onSelect: () => (window.location.hash = bundleFormHref({ bundle: b.id, back: here })),
+                        disabled: !can(user, b.vault_id, "edit"),
+                        reason: onlyFor("edit"),
+                      },
+                      {
+                        label: "Delete bundle",
+                        icon: Trash2,
+                        onSelect: () => confirm.ask(b),
+                        destructive: true,
+                        disabled: !can(user, b.vault_id, "edit"),
+                        reason: onlyFor("edit"),
+                      },
                     ]}
                   />
                 }

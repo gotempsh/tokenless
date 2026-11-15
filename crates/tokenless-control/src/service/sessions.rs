@@ -9,7 +9,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
-use tokenless_core::authz::Action;
+use tokenless_core::authz::{Action, Role};
 use tokenless_core::ids::{BundleId, NodeId, RuleId, SessionId, VaultId};
 use tokenless_core::scope::Scope;
 use tokenless_core::session::{
@@ -23,6 +23,7 @@ use crate::error::ControlError;
 use crate::keys::KeyRing;
 use crate::model::{
     AccessBundle, LaunchScope, Page, PageRequest, ProxySession, SessionBundle, SessionListing,
+    VaultScope,
 };
 use crate::notify::PolicyNotifier;
 use crate::store::{CredentialStore, IdentityStore, NodeStore, PolicyStore};
@@ -198,6 +199,11 @@ impl SessionService {
         self.check_node_live(node_id).await
     }
 
+    /// Whether the caller only runs agents in the vault.
+    async fn is_runner(&self, caller: &Caller, vault_id: &VaultId) -> Result<bool, ControlError> {
+        Ok(self.guard.role_in(caller, vault_id).await? == Some(Role::Runner))
+    }
+
     async fn check_node_live(&self, node_id: &NodeId) -> Result<(), ControlError> {
         let node = self
             .nodes
@@ -222,6 +228,14 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(vault_id))
             .await?;
+        if req.bundle.is_none() && self.is_runner(caller, vault_id).await? {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is a runner in vault {vault_id}: it starts sessions from the vault's access bundles only; name a bundle",
+                    caller.actor()
+                ),
+            });
+        }
         let req = match &caller.launch {
             Some(scope) => launch_request(caller.actor(), scope, req)?,
             None => req,
@@ -512,6 +526,16 @@ impl SessionService {
         self.guard
             .check(caller, Action::SessionMint, Some(&session.vault_id))
             .await?;
+        if session.created_by != caller.actor() && self.is_runner(caller, &session.vault_id).await?
+        {
+            return Err(ControlError::Forbidden {
+                reason: format!(
+                    "{} is a runner in vault {}: it may relabel only the sessions it started",
+                    caller.actor(),
+                    session.vault_id
+                ),
+            });
+        }
         // A launcher key only starts sessions: relabelling one, its own
         // included, would let it drop the labels it stamps on them.
         if let Some(scope) = &caller.launch {
@@ -739,7 +763,7 @@ impl SessionService {
         Ok(self
             .policy
             .list_sessions(
-                Some(vault_id),
+                &VaultScope::one(*vault_id),
                 None,
                 listing.active.then(Utc::now),
                 listing.after.as_ref(),
@@ -749,21 +773,20 @@ impl SessionService {
     }
 
     /// Sessions in every vault the caller can see: all of them for an
-    /// unbound principal, the bound vault's otherwise.
+    /// unbound service and an instance admin, a person's vaults, the bound
+    /// vault's for a key.
     pub async fn list_all(
         &self,
         caller: &Caller,
         listing: SessionListing,
         page: PageRequest,
     ) -> Result<Page<ProxySession>, ControlError> {
-        let vault = caller.principal.vault;
-        self.guard
-            .check(caller, Action::SessionRead, vault.as_ref())
-            .await?;
+        self.guard.check_list(caller, Action::SessionRead).await?;
+        let within = self.guard.vault_scope(caller, Action::SessionRead).await?;
         Ok(self
             .policy
             .list_sessions(
-                vault.as_ref(),
+                &within,
                 None,
                 listing.active.then(Utc::now),
                 listing.after.as_ref(),
@@ -792,7 +815,7 @@ impl SessionService {
         Ok(self
             .policy
             .list_sessions(
-                Some(&bundle.vault_id),
+                &VaultScope::one(bundle.vault_id),
                 Some(bundle_id),
                 listing.active.then(Utc::now),
                 listing.after.as_ref(),

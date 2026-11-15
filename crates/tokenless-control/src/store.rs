@@ -27,7 +27,7 @@ use crate::model::{
     AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
     JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
     Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User, Variable, Vault,
-    VaultDeletion,
+    VaultDeletion, VaultGrant, VaultMember, VaultScope,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -185,7 +185,12 @@ pub trait PolicyStore: Send + Sync {
     /// `Conflict` if a vault with the same name exists.
     async fn insert_vault(&self, vault: Vault, audit: &[AuditEvent]) -> Result<(), StoreError>;
     async fn get_vault(&self, id: &VaultId) -> Result<Option<Vault>, StoreError>;
-    async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError>;
+    /// Newest first, within `vaults`.
+    async fn list_vaults(
+        &self,
+        vaults: &VaultScope,
+        page: PageRequest,
+    ) -> Result<Page<Vault>, StoreError>;
     /// Deletes the vault, its credentials, rules, bundles and tripwires, and revokes
     /// at `at` the API keys bound to it and its unrevoked sessions that may
     /// still carry traffic (expiring after
@@ -252,10 +257,10 @@ pub trait PolicyStore: Send + Sync {
         vault_id: &VaultId,
         name: &str,
     ) -> Result<Option<AccessBundle>, StoreError>;
-    /// Ordered by name, then vault. `None` lists every vault's bundles.
+    /// Ordered by name, then vault, within `vaults`.
     async fn list_bundles(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError>;
     /// Replaces name, description and rules. `NotFound` if it does not
@@ -288,7 +293,7 @@ pub trait PolicyStore: Send + Sync {
     /// counts those too).
     async fn list_sessions(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         bundle_id: Option<&BundleId>,
         active_at: Option<DateTime<Utc>>,
         after: Option<&SessionCursor>,
@@ -405,6 +410,110 @@ impl Authorizer for RbacAuthorizer {
     }
 }
 
+/// Who is a member of which vault, and with what role (standalone mode,
+/// next to [`IdentityStore`]). A program that embeds the services with
+/// its own [`Principal::service`] callers needs none: see [`NoMembers`].
+#[async_trait]
+pub trait MembershipStore: Send + Sync {
+    /// The person's role in the vault, if they are a member.
+    async fn vault_role(&self, vault: &VaultId, user: &UserId) -> Result<Option<Role>, StoreError>;
+    /// The person's membership of the vault, with who gave it, if any.
+    async fn vault_member(
+        &self,
+        vault: &VaultId,
+        user: &UserId,
+    ) -> Result<Option<VaultMember>, StoreError>;
+    /// Every vault the person is a member of, with their role.
+    async fn user_vaults(&self, user: &UserId) -> Result<Vec<VaultGrant>, StoreError>;
+    /// The vault's members by username.
+    async fn list_vault_members(
+        &self,
+        vault: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<VaultMember>, StoreError>;
+    /// Adds the person to the vault, or changes their role in it (keeping
+    /// the rest of `member` as given). `NotFound` if the vault or the
+    /// person is missing; `Conflict`, changing nothing, if it would leave
+    /// the vault without an admin.
+    async fn put_vault_member(
+        &self,
+        member: VaultMember,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Removes the person from the vault. `Ok(false)`, changing nothing,
+    /// if they were not a member; `Conflict`, changing nothing, if they
+    /// are its last admin.
+    async fn remove_vault_member(
+        &self,
+        vault: &VaultId,
+        user: &UserId,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
+    /// Inserts the vault and makes `creator` its admin, in one step.
+    /// `Conflict` if a vault with the same name exists, `NotFound` if the
+    /// person is missing.
+    async fn insert_vault_with_admin(
+        &self,
+        vault: Vault,
+        creator: VaultMember,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+}
+
+/// The [`MembershipStore`] of a deployment without people: nobody is a
+/// member of anything, so a person's sign-in (were one ever made) would
+/// reach no vault.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoMembers;
+
+#[async_trait]
+impl MembershipStore for NoMembers {
+    async fn vault_role(&self, _: &VaultId, _: &UserId) -> Result<Option<Role>, StoreError> {
+        Ok(None)
+    }
+    async fn vault_member(
+        &self,
+        _: &VaultId,
+        _: &UserId,
+    ) -> Result<Option<VaultMember>, StoreError> {
+        Ok(None)
+    }
+    async fn user_vaults(&self, _: &UserId) -> Result<Vec<VaultGrant>, StoreError> {
+        Ok(Vec::new())
+    }
+    async fn list_vault_members(
+        &self,
+        _: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<VaultMember>, StoreError> {
+        Ok(Page {
+            items: Vec::new(),
+            total: 0,
+            page: page.page,
+            page_size: page.page_size,
+        })
+    }
+    async fn put_vault_member(&self, m: VaultMember, _: &[AuditEvent]) -> Result<(), StoreError> {
+        Err(StoreError::not_found("user", m.user_id))
+    }
+    async fn remove_vault_member(
+        &self,
+        _: &VaultId,
+        _: &UserId,
+        _: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        Ok(false)
+    }
+    async fn insert_vault_with_admin(
+        &self,
+        _: Vault,
+        creator: VaultMember,
+        _: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        Err(StoreError::not_found("user", creator.user_id))
+    }
+}
+
 /// People, UI sessions and API keys (standalone mode).
 #[async_trait]
 pub trait IdentityStore: Send + Sync {
@@ -465,9 +574,11 @@ pub trait IdentityStore: Send + Sync {
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError>;
     /// Atomically marks the pending invite with this token hash and role as
-    /// accepted by `user` (unexpired at `user.created_at`) and inserts the
-    /// user. Returns false, changing nothing, when there is no such invite.
-    /// `Conflict` (invite left pending) if the username is taken.
+    /// accepted by `user` (unexpired at `user.created_at`), inserts the
+    /// user and makes them a member of the invite's vaults that still
+    /// exist (recorded as added by the invite's creator). Returns false,
+    /// changing nothing, when there is no such invite. `Conflict` (invite
+    /// left pending) if the username is taken.
     async fn accept_invite(
         &self,
         token_hash: &str,

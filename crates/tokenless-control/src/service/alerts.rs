@@ -404,7 +404,8 @@ impl AlertService {
         Ok(())
     }
 
-    /// Newest first. A vault-bound caller only sees its vault's alerts.
+    /// Newest first. A vault-bound caller only sees its vault's alerts, a
+    /// person those of their vaults (an instance admin: all of them).
     pub async fn list(
         &self,
         caller: &Caller,
@@ -414,9 +415,17 @@ impl AlertService {
         if let Some(bound) = caller.principal.vault {
             filter.vault_id = Some(bound);
         }
-        self.guard
-            .check(caller, Action::AuditRead, filter.vault_id.as_ref())
-            .await?;
+        match &filter.vault_id {
+            Some(vault) => {
+                self.guard
+                    .check(caller, Action::AuditRead, Some(vault))
+                    .await?
+            }
+            None => {
+                self.guard.check_list(caller, Action::AuditRead).await?;
+                filter.within = self.guard.vault_scope(caller, Action::AuditRead).await?;
+            }
+        }
         Ok(self.alerts.list_alerts(&filter, page).await?)
     }
 

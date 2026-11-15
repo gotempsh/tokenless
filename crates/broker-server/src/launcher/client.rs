@@ -167,7 +167,7 @@ impl ApiClient {
                 )
                 .header(tokenless_auth::csrf::CSRF_HEADER, csrf_token)),
             None => Err(LauncherError::config(format!(
-                "{operation} needs an API key or a signed-in person: set TOKENLESS_API_KEY, pass --api-key-file, or run tokenless login"
+                "{operation} needs an API key or a `tokenless login` sign-in (a `tokenless login --manage` one never starts agents): set TOKENLESS_API_KEY, pass --api-key-file, or run tokenless login"
             ))),
         }
     }
@@ -329,6 +329,24 @@ mod tests {
     use reqwest::StatusCode;
 
     const URL: &str = "https://broker.example/api/v1/ca/interception.pem";
+
+    #[test]
+    fn without_credentials_it_says_run_never_uses_the_manage_sign_in() {
+        let client = ApiClient::new("https://broker.example", None).unwrap();
+        let builder = client.http.get(client.url("/vaults"));
+        let err = client
+            .authed(builder, "listing vaults")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("listing vaults needs an API key or a `tokenless login` sign-in"),
+            "{err}"
+        );
+        assert!(
+            err.contains("`tokenless login --manage` one never starts agents"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn a_gateway_error_without_an_explanation_says_the_broker_did_not_answer() {

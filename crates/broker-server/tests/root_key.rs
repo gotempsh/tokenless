@@ -15,14 +15,13 @@ use broker_server::launcher::account::{self, SignIn};
 use broker_server::root_key::{write_new, LEGACY_FILE};
 use broker_server::store::SqliteStore;
 use broker_server::{RootKeyInput, Server, ServerConfig};
-use chrono::Utc;
 use tokenless_control::cipher::AesGcmCipher;
 use tokenless_control::model::Page;
 use tokenless_control::probe::DisabledProber;
 use tokenless_control::service::policy::CreateCredential;
 use tokenless_control::store::{NodeStore, RbacAuthorizer};
 use tokenless_control::{Caller, ControlConfig, ControlPlane, Stores};
-use tokenless_core::authz::{Principal, PrincipalKind, Role};
+use tokenless_core::authz::{Principal, Role};
 
 const TOKEN: &str = "ghp_rootKeyTestToken0123456789abcdefABCD";
 
@@ -48,18 +47,10 @@ fn contains(dir: &Path, needle: &[u8]) -> bool {
     })
 }
 
+/// The tests act as the program itself would, not as a person: what they
+/// check is where secrets end up, not who may write them.
 fn admin() -> Caller {
-    Caller {
-        principal: Principal {
-            kind: PrincipalKind::User,
-            actor: "user:test-admin".into(),
-            role: Role::Admin,
-            vault: None,
-        },
-        step_up_at: Some(Utc::now()),
-        second_factor: false,
-        launch: None,
-    }
+    Caller::service(Principal::service("root-key-test", Role::Admin, None))
 }
 
 fn credential() -> CreateCredential {
@@ -157,7 +148,7 @@ async fn a_copy_of_the_data_directory_without_the_root_key_decrypts_nothing() {
     assert_eq!(credentials_in(&server.control).await, 1);
     let url = format!("http://{}", server.api_addr);
     assert!(matches!(
-        account::sign_in(&url, "admin", &password, None)
+        account::sign_in(&url, "admin", &password, None, account::SignInFor::Manage)
             .await
             .unwrap(),
         SignIn::Done(_)
@@ -196,6 +187,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
         nodes: store.clone(),
         alerts: store.clone(),
         tripwires: store.clone(),
+        members: store.clone(),
     };
     let old = ControlPlane::new(
         stores,
@@ -235,7 +227,7 @@ async fn data_from_before_the_root_key_moves_under_it() {
     assert_eq!(credentials_in(&server.control).await, 1);
     let api = format!("http://{}", server.api_addr);
     assert!(matches!(
-        account::sign_in(&api, "admin", &password, None)
+        account::sign_in(&api, "admin", &password, None, account::SignInFor::Manage)
             .await
             .unwrap(),
         SignIn::Done(_)

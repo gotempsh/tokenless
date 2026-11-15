@@ -9,6 +9,7 @@ mod console;
 mod extract;
 mod handlers;
 mod launcher_keys;
+mod members;
 mod sign_ins;
 mod sso;
 mod tripwires;
@@ -104,6 +105,15 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/vaults/overview", get(vault_overviews))
         .route("/vaults/{vault_id}/overview", get(vault_overview))
         .route("/vaults/{vault_id}", get(get_vault).delete(delete_vault))
+        .route(
+            "/vaults/{vault_id}/members",
+            get(members::list).put(members::put),
+        )
+        .route(
+            "/vaults/{vault_id}/members/{user_id}",
+            axum::routing::delete(members::remove),
+        )
+        .route("/vaults/{vault_id}/join", post(members::join))
         .route(
             "/vaults/{vault_id}/credentials",
             get(list_credentials).post(create_credential),

@@ -13,7 +13,9 @@ use tokenless_auth::jwt::Algorithm;
 use tokenless_core::authz::Role;
 use url::Url;
 
-use crate::model::RoleMapping;
+use std::collections::BTreeMap;
+
+use crate::model::{RoleMapping, VaultGrant};
 
 /// How far the provider's clock may be from ours.
 pub const CLOCK_SKEW_SECS: i64 = 60;
@@ -305,21 +307,31 @@ pub fn groups(value: Option<&Value>) -> Vec<String> {
     out
 }
 
-fn rank(role: Role) -> u8 {
-    match role {
-        Role::Viewer => 1,
-        Role::Editor => 2,
-        Role::Admin => 3,
-    }
-}
-
-/// The highest role any of `groups` maps to; `None` when none is mapped.
+/// The highest instance role any of `groups` maps to; `None` when none
+/// is mapped.
 pub fn mapped_role(mappings: &[RoleMapping], groups: &[String]) -> Option<Role> {
     mappings
         .iter()
         .filter(|m| groups.contains(&m.group))
         .map(|m| m.role)
-        .max_by_key(|r| rank(*r))
+        .max_by_key(Role::vault_rank)
+}
+
+/// The vault roles `groups` map to: the highest per vault, ordered by
+/// vault.
+pub fn mapped_vaults(mappings: &[RoleMapping], groups: &[String]) -> Vec<VaultGrant> {
+    let mut best: BTreeMap<String, VaultGrant> = BTreeMap::new();
+    for grant in mappings
+        .iter()
+        .filter(|m| groups.contains(&m.group))
+        .flat_map(|m| &m.vaults)
+    {
+        let entry = best.entry(grant.vault_id.to_string()).or_insert(*grant);
+        if grant.role.vault_rank() > entry.role.vault_rank() {
+            *entry = *grant;
+        }
+    }
+    best.into_values().collect()
 }
 
 /// A username for a new single sign-on account: the claim's value
@@ -350,6 +362,7 @@ pub fn provider_error(error: &str, description: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use tokenless_core::ids::VaultId;
 
     use super::*;
 
@@ -441,23 +454,33 @@ mod tests {
             ["auditors"]
         );
         assert!(groups(claim(&claims, "realm_access.missing")).is_empty());
+        let (shared, ops_only) = (VaultId::new(), VaultId::new());
+        let grant = |vault_id, role| VaultGrant { vault_id, role };
         let mappings = vec![
             RoleMapping {
                 group: "dev".into(),
-                role: Role::Viewer,
+                role: Role::Member,
+                vaults: vec![grant(shared, Role::Runner)],
             },
             RoleMapping {
                 group: "ops".into(),
-                role: Role::Editor,
+                role: Role::Admin,
+                vaults: vec![grant(shared, Role::Editor), grant(ops_only, Role::Viewer)],
             },
         ];
-        assert_eq!(
-            mapped_role(&mappings, &["dev".into(), "ops".into()]),
-            Some(Role::Editor)
-        );
-        assert_eq!(mapped_role(&mappings, &["dev".into()]), Some(Role::Viewer));
+        let both = ["dev".into(), "ops".into()];
+        assert_eq!(mapped_role(&mappings, &both), Some(Role::Admin));
+        assert_eq!(mapped_role(&mappings, &["dev".into()]), Some(Role::Member));
         assert_eq!(mapped_role(&mappings, &["Dev".into()]), None);
         assert_eq!(mapped_role(&mappings, &[]), None);
+        let mut expected = vec![grant(shared, Role::Editor), grant(ops_only, Role::Viewer)];
+        expected.sort_by_key(|g| g.vault_id.to_string());
+        assert_eq!(mapped_vaults(&mappings, &both), expected);
+        assert_eq!(
+            mapped_vaults(&mappings, &["dev".into()]),
+            [grant(shared, Role::Runner)]
+        );
+        assert!(mapped_vaults(&mappings, &[]).is_empty());
     }
 
     #[test]

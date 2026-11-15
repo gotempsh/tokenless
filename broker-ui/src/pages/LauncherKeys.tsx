@@ -87,7 +87,7 @@ export function BundleLauncherKeys({
       type="button"
       onClick={() => setOpen(true)}
       disabled={!canEdit}
-      title={canEdit ? undefined : "Only editors and admins can create launcher keys"}
+      title={canEdit ? undefined : "Only the vault's editors and admins can create launcher keys"}
     >
       <Plus />
       New launcher key

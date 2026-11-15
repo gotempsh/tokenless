@@ -108,8 +108,36 @@ pub(crate) fn pick_vault(all: &[Vault], reference: Option<&str>) -> Result<Vault
     }
 }
 
-/// Fetches something for each vault at once.
-async fn per_vault<T, F, Fut>(vaults: &[Vault], fetch: F) -> Result<HashMap<VaultId, T>, CliError>
+/// What [`per_vault`] fetched, and the vaults it could not look into: an
+/// instance admin lists every vault but sees what one holds only once a
+/// member of it.
+struct PerVault<T> {
+    found: HashMap<VaultId, T>,
+    overseen: Vec<VaultId>,
+}
+
+impl<T> PerVault<T> {
+    /// Refuses a vault named with `--vault` that the person only oversees,
+    /// instead of listing nothing in it.
+    fn named(&self, named: Option<&str>, vaults: &[Vault], what: &str) -> Result<(), CliError> {
+        match (named, vaults) {
+            (Some(_), [vault]) if self.overseen.contains(&vault.id) => {
+                Err(LauncherError::config(overseen_message(&vault.name, what)).into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn overseen_message(vault: &str, what: &str) -> String {
+    format!(
+        "you oversee vault '{vault}' as an instance admin but are not a member of it, so its {what} are not yours to see; tokenless vault join {vault} makes you one of its admins (recorded in the audit log)"
+    )
+}
+
+/// Fetches something for each vault at once. A vault that refuses it
+/// (403) is one the person only oversees.
+async fn per_vault<T, F, Fut>(vaults: &[Vault], fetch: F) -> Result<PerVault<T>, CliError>
 where
     F: Fn(VaultId) -> Fut,
     Fut: std::future::Future<Output = Result<T, LauncherError>>,
@@ -117,10 +145,28 @@ where
     let fetched = try_join_all(vaults.iter().map(|v| {
         let id = v.id;
         let fut = fetch(id);
-        async move { fut.await.map(|t| (id, t)) }
+        async move {
+            match fut.await {
+                Ok(t) => Ok((id, Some(t))),
+                Err(LauncherError::Api { status: 403, .. }) => Ok((id, None)),
+                Err(e) => Err(e),
+            }
+        }
     }))
     .await?;
-    Ok(fetched.into_iter().collect())
+    let mut out = PerVault {
+        found: HashMap::new(),
+        overseen: Vec::new(),
+    };
+    for (id, t) in fetched {
+        match t {
+            Some(t) => {
+                out.found.insert(id, t);
+            }
+            None => out.overseen.push(id),
+        }
+    }
+    Ok(out)
 }
 
 pub async fn vaults(json: bool, server: String) -> Result<ExitCode, CliError> {
@@ -137,7 +183,18 @@ pub async fn vaults(json: bool, server: String) -> Result<ExitCode, CliError> {
         async move { client.bundles(&id).await.map(|b| b.len()) }
     })
     .await?;
-    let rows = listing::vault_rows(&vaults, &services, &bundles);
+    let rows = listing::vault_rows(&vaults, &services.found, &bundles.found);
+    let overseen: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.overseen)
+        .map(|r| r.name.as_str())
+        .collect();
+    if !json && !overseen.is_empty() {
+        say(format!(
+            "you oversee {} as an instance admin without being a member, so what they hold shows as -; tokenless vault join <name> makes you one of a vault's admins (recorded in the audit log)",
+            overseen.join(", ")
+        ));
+    }
     output(
         &rows,
         json,
@@ -160,6 +217,7 @@ pub async fn services(
         async move { client.credentials(&id).await }
     })
     .await?;
+    credentials.named(vault.as_deref(), &vaults, "services")?;
     // Every approved version: a service keeps the version it was made on.
     let approved: Vec<ServiceTemplate> = client
         .templates()
@@ -170,7 +228,7 @@ pub async fn services(
         .collect();
     let credentials: Vec<_> = vaults
         .iter()
-        .flat_map(|v| credentials.get(&v.id).cloned().unwrap_or_default())
+        .flat_map(|v| credentials.found.get(&v.id).cloned().unwrap_or_default())
         .collect();
     let rows = listing::service_rows(&credentials, &all, &approved);
     output(
@@ -202,9 +260,10 @@ pub async fn bundles(
         }
     })
     .await?;
+    fetched.named(vault.as_deref(), &vaults, "access bundles")?;
     let mut rows = Vec::new();
     for vault in &vaults {
-        if let Some((bundles, rules, credentials)) = fetched.get(&vault.id) {
+        if let Some((bundles, rules, credentials)) = fetched.found.get(&vault.id) {
             rows.extend(listing::bundle_rows(bundles, &all, rules, credentials));
         }
     }
@@ -237,6 +296,7 @@ pub async fn sessions(
             })
             .await?;
             let matching: Vec<_> = found
+                .found
                 .values()
                 .flatten()
                 .filter(|b| &b.name == reference || &b.id.to_string() == reference)

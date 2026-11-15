@@ -26,7 +26,9 @@ use tokenless_core::session::{validate_labels, DEFAULT_SESSION_TTL_SECS};
 
 use super::{Caller, Guard};
 use crate::error::ControlError;
-use crate::model::{ApiKey, LaunchScope, Page, PageRequest, SessionCursor, MAX_PAGE_SIZE};
+use crate::model::{
+    ApiKey, LaunchScope, Page, PageRequest, SessionCursor, VaultScope, MAX_PAGE_SIZE,
+};
 use crate::notify::PolicyNotifier;
 use crate::store::{IdentityStore, NodeStore, PolicyStore};
 
@@ -352,7 +354,7 @@ impl LauncherKeyService {
             let page = self
                 .policy
                 .list_sessions(
-                    Some(&key.vault_id),
+                    &VaultScope::one(key.vault_id),
                     Some(bundle_id),
                     Some(now),
                     after.as_ref(),

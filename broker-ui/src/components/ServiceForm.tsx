@@ -220,7 +220,7 @@ export function ServiceForm({
           ? required
             ? "Where the service runs. Admin only, and audited."
             : "Replaces the template's hosts, for a self-hosted or regional endpoint. Admin only, and audited."
-          : "Only admins can set the host."
+          : "Only the vault's admins can set the host."
       }
     >
       <Input

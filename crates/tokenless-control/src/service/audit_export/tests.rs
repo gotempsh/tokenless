@@ -103,6 +103,7 @@ impl T {
 
 fn admin() -> Caller {
     Caller {
+        sign_in: Default::default(),
         principal: Principal {
             kind: PrincipalKind::User,
             actor: "user:test-admin".into(),
@@ -153,6 +154,7 @@ async fn setup() -> T {
             nodes: store.clone(),
             alerts: store.clone(),
             tripwires: store.clone(),
+            members: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,

@@ -26,6 +26,7 @@ struct T {
 
 fn person(role: Role) -> Caller {
     Caller {
+        sign_in: Default::default(),
         principal: Principal {
             kind: PrincipalKind::User,
             actor: format!("user:test-{role}"),
@@ -56,6 +57,7 @@ async fn setup() -> T {
             nodes: store.clone(),
             alerts: store.clone(),
             tripwires: store.clone(),
+            members: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,
@@ -92,6 +94,8 @@ impl T {
             .auth
             .login_from(
                 LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     username: username.into(),
                     password: PASSWORD.into(),
                     totp_code: None,
@@ -364,6 +368,8 @@ async fn changing_the_password_or_authenticator_ends_the_other_sign_ins() {
         t.cp.auth
             .login_from(
                 LoginRequest {
+                    scope: Default::default(),
+                    ttl_secs: None,
                     username: "ada".into(),
                     password: "another long enough password".into(),
                     totp_code: None,

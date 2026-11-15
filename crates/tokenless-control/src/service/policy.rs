@@ -29,11 +29,11 @@ use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::{ControlError, StoreError};
 use crate::model::{
     CredentialMeta, Page, PageRequest, Rule, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, Vault, VaultDeletion,
+    TemplateStatus, Vault, VaultDeletion, VaultGrant, VaultMember,
 };
 use crate::notify::PolicyNotifier;
 use crate::probe::{CredentialProber, ProbeRequest};
-use crate::store::{CredentialStore, NewSecret, PolicyStore, SecretReplaced};
+use crate::store::{CredentialStore, MembershipStore, NewSecret, PolicyStore, SecretReplaced};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCredential {
@@ -240,6 +240,7 @@ fn hosts_string(hosts: &[HostPattern]) -> String {
 
 pub struct PolicyService {
     policy: Arc<dyn PolicyStore>,
+    members: Arc<dyn MembershipStore>,
     credentials: Arc<dyn CredentialStore>,
     cipher: Arc<dyn SecretCipher>,
     guard: Guard,
@@ -263,8 +264,13 @@ pub struct CredentialValidation {
 }
 
 impl PolicyService {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the dependencies of the policy service"
+    )]
     pub fn new(
         policy: Arc<dyn PolicyStore>,
+        members: Arc<dyn MembershipStore>,
         credentials: Arc<dyn CredentialStore>,
         cipher: Arc<dyn SecretCipher>,
         guard: Guard,
@@ -274,6 +280,7 @@ impl PolicyService {
     ) -> Self {
         Self {
             policy,
+            members,
             credentials,
             cipher,
             guard,
@@ -454,8 +461,41 @@ impl PolicyService {
             .vault(id)
             .target(format!("vault:{id}"))
             .detail("name", vault.name.clone());
-        self.policy.insert_vault(vault.clone(), &[event]).await?;
+        match caller.user_id().filter(|_| self.guard.has_people()) {
+            // The person who creates a vault is its first admin.
+            Some(user_id) => {
+                let creator = VaultMember {
+                    vault_id: id,
+                    user_id,
+                    username: String::new(),
+                    role: Role::Admin,
+                    added_by: caller.actor().to_string(),
+                    added_at: vault.created_at,
+                };
+                self.members
+                    .insert_vault_with_admin(vault.clone(), creator, &[event])
+                    .await?;
+            }
+            None => self.policy.insert_vault(vault.clone(), &[event]).await?,
+        }
         Ok(vault)
+    }
+
+    /// The caller's role in each vault they belong to: a person's
+    /// memberships, or a bound key's own vault and role.
+    pub async fn my_vault_roles(&self, caller: &Caller) -> Result<Vec<VaultGrant>, ControlError> {
+        if let Some(user_id) = caller.user_id() {
+            return Ok(self.members.user_vaults(&user_id).await?);
+        }
+        Ok(caller
+            .principal
+            .vault
+            .map(|vault_id| VaultGrant {
+                vault_id,
+                role: caller.principal.role,
+            })
+            .into_iter()
+            .collect())
     }
 
     /// Deletes a vault with its services, rules and bundles, and ends its
@@ -520,8 +560,9 @@ impl PolicyService {
                 page_size: page.page_size,
             });
         }
-        self.guard.check(caller, Action::VaultRead, None).await?;
-        Ok(self.policy.list_vaults(page).await?)
+        self.guard.check_list(caller, Action::VaultRead).await?;
+        let within = self.guard.vault_scope(caller, Action::VaultRead).await?;
+        Ok(self.policy.list_vaults(&within, page).await?)
     }
 
     /// Sessions of the vault that are neither revoked nor expired.

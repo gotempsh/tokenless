@@ -105,11 +105,18 @@ apply to them, as they don't to identity providers.
 - Passwords are hashed with argon2id. An authenticator app (TOTP) is
   optional per account, turned on or off under **Account**, and
   recommended for admins. With one, sign-in needs a code as well.
-- With an authenticator, sensitive actions (adding or widening
-  credentials and rules, deleting a vault, managing people, API keys,
-  templates, variables, proxies, single sign-on and audit export) need a
-  code entered within the last five minutes. Signing in counts. API keys
-  can never take these actions.
+- Sensitive actions (adding or widening credentials and rules, creating
+  launcher keys, vault membership, joining or deleting a vault, managing
+  people, API keys, templates, variables, proxies, single sign-on and
+  audit export) need a proof within the last five minutes from every
+  person: an authenticator code, or the password without one. Signing in
+  counts. API keys can never take these actions.
+- People work only in the vaults they are members of, with a role in
+  each. Instance admins oversee vaults and join one, recorded in the audit
+  log, before changing it. `tokenless login` only starts sessions; a full
+  terminal sign-in takes `tokenless login --manage` and lasts an hour.
+  [Access and least privilege](./access.mdx) has the roles, setups and a
+  checklist.
 - Changing your password, or turning your authenticator on or off, ends
   your other sign-ins. **Account → Where you're signed in** (or
   `tokenless sign-ins list`) shows each browser and CLI login with when
@@ -120,7 +127,7 @@ apply to them, as they don't to identity providers.
   default).
 - With [single sign-on](./settings.mdx#single-sign-on), the identity
   provider handles passwords and second factors, and the person's groups
-  decide their role at every sign-in. A step-up sends them back to the
+  decide their instance role and vault roles at every sign-in. A step-up sends them back to the
   provider with `prompt=login`, and only a sign-in there after the
   request counts. The provider's client secret is encrypted at rest and
   never returned by the API. Turning a provider off ends its sessions.

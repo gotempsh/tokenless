@@ -65,6 +65,8 @@ pub async fn list(
                 })
             })
             .transpose()?,
+        // Narrowed to the caller's vaults by the service.
+        ..AlertFilter::default()
     };
     Ok(Json(
         s.control

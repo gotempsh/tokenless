@@ -17,6 +17,7 @@ use crate::store::AuditSink;
 
 fn person(role: Role, vault: Option<VaultId>, step_up_age: i64) -> Caller {
     Caller {
+        sign_in: Default::default(),
         principal: Principal {
             kind: PrincipalKind::User,
             actor: format!("user:{role}"),

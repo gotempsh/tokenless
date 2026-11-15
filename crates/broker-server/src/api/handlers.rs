@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_auth::cookie::clear_session_cookie;
 use tokenless_control::model::{
-    AuditQuery, Page, PageRequest, SessionCursor, SessionListing, Settings,
+    AuditQuery, Page, PageRequest, SessionCursor, SessionListing, Settings, SignInScope, VaultGrant,
 };
 use tokenless_control::service::auth::{
     AuthService, ChangePassword, CreateApiKey, DisableAuthenticator, EnableAuthenticator,
@@ -120,6 +120,10 @@ pub struct SessionInfo {
     /// single sign-on.
     #[serde(skip_serializing_if = "Option::is_none")]
     sso: Option<SsoSignIn>,
+    /// `launch` for a sign-in that only starts sessions.
+    scope: SignInScope,
+    /// The vaults the person is a member of, with their role in each.
+    vaults: Vec<VaultGrant>,
 }
 
 pub async fn login(
@@ -140,6 +144,8 @@ pub async fn login(
         expires_at: outcome.expires_at,
         step_up_at: Some(Utc::now()),
         sso: None,
+        scope: outcome.scope,
+        vaults: s.control.members.vaults_of(&outcome.user.id).await?,
     };
     let mut response = Json(body).into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
@@ -176,6 +182,8 @@ pub async fn me(State(s): St, authed: Authed) -> ApiResult<Json<SessionInfo>> {
             .sso
             .sign_in_of(session.user.sso_provider_id.as_ref())
             .await,
+        scope: session.caller.sign_in,
+        vaults: s.control.members.vaults_of(&session.user.id).await?,
     }))
 }
 
@@ -1049,6 +1057,8 @@ pub async fn query_audit(
                     session_id,
                     credential_id,
                     page: PageRequest::new(q.page, q.page_size),
+                    // Narrowed to the caller's vaults by the service.
+                    ..AuditQuery::default()
                 },
             )
             .await?,

@@ -36,7 +36,7 @@ fn alert_from_row(row: &SqliteRow) -> Result<Alert, StoreError> {
     })
 }
 
-const FILTER: &str = "FROM alerts WHERE (? = 0 OR acknowledged_at IS NULL) AND (? IS NULL OR vault_id = ?) AND (? IS NULL OR session_id = ?) AND (? IS NULL OR kind = ?)";
+const FILTER: &str = "FROM alerts WHERE (? = 0 OR acknowledged_at IS NULL) AND (? IS NULL OR vault_id = ?) AND (? IS NULL OR session_id = ?) AND (? IS NULL OR kind = ?) AND (? IS NULL OR vault_id IN (SELECT value FROM json_each(?)))";
 
 #[async_trait]
 impl AlertStore for SqliteStore {
@@ -86,6 +86,8 @@ impl AlertStore for SqliteStore {
         let vault = filter.vault_id.map(|v| v.to_string());
         let session = filter.session_id.map(|s| s.to_string());
         let kind = filter.kind.map(AlertKind::as_str);
+        // Alerts with no vault are only in an unscoped list.
+        let within = filter.within.json_ids();
         let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {FILTER}"))
             .bind(open)
             .bind(&vault)
@@ -94,6 +96,8 @@ impl AlertStore for SqliteStore {
             .bind(&session)
             .bind(kind)
             .bind(kind)
+            .bind(&within)
+            .bind(&within)
             .fetch_one(&self.pool)
             .await
             .map_err(db("count alerts", "alert"))?;
@@ -107,6 +111,8 @@ impl AlertStore for SqliteStore {
         .bind(&session)
         .bind(kind)
         .bind(kind)
+        .bind(&within)
+        .bind(&within)
         .bind(to_i64(page.page_size))
         .bind(to_i64(page.offset()))
         .fetch_all(&self.pool)

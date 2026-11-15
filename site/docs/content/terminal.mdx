@@ -25,17 +25,31 @@ that command (`null` when there is none).
 ## Sign in
 
 ```sh
-tokenless login                 # the admin printed by `tokenless serve`
+tokenless login --manage        # to add services and proxies, for an hour
+tokenless login                 # to start agents: only starts sessions
 ```
 
-It asks for the password, and an authenticator code if the account has
-one. People who sign in to the console with
+Each asks for the username (or takes `--username`), the password, and an
+authenticator code if the account has one. The first account is `admin`,
+printed by `tokenless serve`.
+
+- **`tokenless login`** only finds bundles and starts sessions from them,
+  within your roles: what `tokenless run` needs. Keep this one on machines
+  that run agents. An agent that finds it can start sessions from your
+  bundles and nothing else.
+- **`tokenless login --manage`** can do everything your roles allow, for
+  one hour: `service add`, `proxy add`, `vault member set` and the other
+  commands that change tokenless. It is kept apart, and the commands that
+  start sessions never use it.
+
+People who sign in to the console with
 [single sign-on](./settings.mdx#single-sign-on) have no password here; in a
 terminal they use a session token from an access bundle's page, or an API
-key from an admin. The session is kept in the operating system's keychain (macOS
-Keychain, Windows Credential Manager, the Linux kernel keyring) and lasts
-as long as a console session. `--server` signs in to another control
-plane; `tokenless logout` ends the session.
+key from an admin. Sign-ins are kept in the operating system's keychain
+(macOS Keychain, Windows Credential Manager, the Linux kernel keyring).
+`--server` signs in to another control plane; `tokenless logout` ends
+both sign-ins. [Access and least privilege](./access.mdx) explains why
+there are two.
 
 Where there is no usable keychain, for example in a Docker container
 (its default security profile blocks the kernel keyring), the session
@@ -135,9 +149,11 @@ for CI and other unattended runs; see
 
 ## Sensitive actions
 
-With an authenticator, adding credentials and rules needs a code from the
-last five minutes; signing in counts. When the server asks for a newer
-one, the commands prompt for it and carry on.
+Adding credentials, widening rules and the other
+[sensitive actions](./console/account.mdx#confirming-it-is-you) need a
+code from your authenticator, or your password without one, from the last
+five minutes; signing in counts. When the server asks for a newer one,
+the commands prompt for it and carry on.
 
 ## A lost admin password
 

@@ -13,9 +13,11 @@ import {
   post,
   put,
   type OidcProvider,
+  type InstanceRole,
+  type Page,
   type PasswordSignIn,
-  type Role,
   type SignInSettings,
+  type Vault,
 } from "../api";
 import { useBreadcrumbs } from "../breadcrumbs";
 import { useAction, useLoad } from "../hooks";
@@ -45,7 +47,9 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { PageContainer, PageHeader } from "../components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { VaultGrants } from "../components/VaultGrants";
 import {
+  emptyMapping,
   newProviderForm,
   providerForm,
   providerFormProblem,
@@ -58,10 +62,9 @@ import {
 const NEW_HREF = "#/settings/sso/new";
 const providerHref = (id: string) => `#/settings/sso/${id}`;
 
-const ROLES: { value: Role; label: string }[] = [
-  { value: "viewer", label: "Viewer" },
-  { value: "editor", label: "Editor" },
-  { value: "admin", label: "Admin" },
+const ROLES: { value: InstanceRole; label: string }[] = [
+  { value: "member", label: "Member" },
+  { value: "admin", label: "Instance admin" },
 ];
 
 function host(url: string): string {
@@ -281,6 +284,8 @@ function ProviderFormBody({ provider, onDone }: { provider: OidcProvider | null;
   const set = (patch: Partial<ProviderForm>) => setForm((f) => ({ ...f, ...patch }));
   const setMapping = (i: number, patch: Partial<ProviderForm["role_mappings"][number]>) =>
     set({ role_mappings: form.role_mappings.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
+  const vaults = useLoad(() => get<Page<Vault>>("/vaults?page_size=100"), []);
+  const vaultOptions = (vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name }));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -402,36 +407,40 @@ function ProviderFormBody({ provider, onDone }: { provider: OidcProvider | null;
         <div className="space-y-2">
           <p className="text-sm font-medium">Group → role</p>
           <p className="text-xs text-muted-foreground">
-            Someone in several groups gets the highest role. Someone in none is refused, and the refusal names their groups.
+            Each group makes its people members or instance admins, and gives them roles in vaults. Someone in several groups gets
+            the highest of each; someone in none is refused. Roles their groups stop giving are taken back at their next sign-in.
           </p>
-          <div className="space-y-2">
+          <div className="space-y-3">
             {form.role_mappings.map((m, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <Input
-                  aria-label={`Group ${i + 1}`}
-                  className="min-w-0 flex-1 font-mono"
-                  value={m.group}
-                  onChange={(e) => setMapping(i, { group: e.target.value })}
-                  placeholder="tokenless-admins"
-                />
-                <SelectField
-                  id={`sso-role-${i}`}
-                  className="w-32 shrink-0"
-                  value={m.role}
-                  onChange={(v) => setMapping(i, { role: v as Role })}
-                  options={ROLES}
-                />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0"
-                  aria-label={`Remove group ${i + 1}`}
-                  disabled={form.role_mappings.length === 1}
-                  onClick={() => set({ role_mappings: form.role_mappings.filter((_, j) => j !== i) })}
-                >
-                  <X />
-                </Button>
+              <div key={i} className="space-y-2 rounded-lg border p-3">
+                <div className="flex items-center gap-2">
+                  <Input
+                    aria-label={`Group ${i + 1}`}
+                    className="min-w-0 flex-1 font-mono"
+                    value={m.group}
+                    onChange={(e) => setMapping(i, { group: e.target.value })}
+                    placeholder="tokenless-admins"
+                  />
+                  <SelectField
+                    id={`sso-role-${i}`}
+                    className="w-36 shrink-0"
+                    value={m.role}
+                    onChange={(v) => setMapping(i, { role: v as InstanceRole })}
+                    options={ROLES}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0"
+                    aria-label={`Remove group ${i + 1}`}
+                    disabled={form.role_mappings.length === 1}
+                    onClick={() => set({ role_mappings: form.role_mappings.filter((_, j) => j !== i) })}
+                  >
+                    <X />
+                  </Button>
+                </div>
+                <VaultGrants group={i + 1} grants={m.vaults} vaults={vaultOptions} onChange={(vaults) => setMapping(i, { vaults })} />
               </div>
             ))}
           </div>
@@ -439,7 +448,7 @@ function ProviderFormBody({ provider, onDone }: { provider: OidcProvider | null;
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => set({ role_mappings: [...form.role_mappings, { group: "", role: "viewer" }] })}
+            onClick={() => set({ role_mappings: [...form.role_mappings, emptyMapping()] })}
           >
             <Plus />
             Add a group

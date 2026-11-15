@@ -14,7 +14,7 @@ use tracing::info;
 
 use super::{AuthService, SessionAuth};
 use crate::error::ControlError;
-use crate::model::{Page, PageRequest, UiSession};
+use crate::model::{Page, PageRequest, SignInScope, UiSession};
 use crate::service::Caller;
 
 /// What kind of client holds a sign-in, from its `User-Agent`.
@@ -95,6 +95,8 @@ pub struct SignIn {
     pub created_at: DateTime<Utc>,
     pub last_used_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// `launch` when it only starts sessions (`tokenless login`).
+    pub scope: SignInScope,
     /// The sign-in that asked.
     pub current: bool,
 }
@@ -110,6 +112,7 @@ impl SignIn {
             created_at: s.created_at,
             last_used_at: s.last_used_at,
             expires_at: s.expires_at,
+            scope: s.scope,
         }
     }
 }

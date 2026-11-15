@@ -2,54 +2,63 @@
 # SPDX-FileCopyrightText: 2026 tokenless contributors
 # SPDX-License-Identifier: MIT OR Apache-2.0
 title: "People, roles and API keys"
-description: "People sign in to the console with a role. API keys let scripts and CI use the API within one vault. Agents get neither: they get a session."
+description: "People sign in to the console as members or instance admins, with a role in each vault they work in. API keys let scripts and CI use the API within one vault. Agents get neither: they get a session."
 ---
 
 ## People
 
-**People** lists every account with its role, how it signs in, since
-when, and whether it is active, then the invites still open.
+**People** lists every account with its role on the instance, how it
+signs in, since when, and whether it is active, then the invites still
+open. Only instance admins manage people.
 
 ![People: the admin account, signed in with a password only, and a pending invite for an editor](../screenshots/console-people.png)
 
 ### Invite someone
 
-**Invite someone** asks for a role and how long the link works (at most
-168 hours, 7 days), then shows an **invite link**. Send it to the
+**Invite someone** asks for a role on the instance (**Member** or
+**Instance admin**), the vaults they join and their role in each, and how
+long the link works (at most 168 hours, 7 days), then shows an **invite
+link**. Someone invited with no vault signs in to an empty console until a
+vault's admin adds them. Send it to the
 person: they choose their own username and password, and can add an
 authenticator. The link works once. Anyone holding it can create the
 account until it is accepted, revoked or expires, so send it privately.
 **Revoke** on a pending invite stops the link at once.
 
 With [single sign-on](../settings.mdx#single-sign-on), people need no invite:
-their groups at the identity provider decide their role at every
-sign-in, and the role column says so.
+their groups at the identity provider decide their instance role and
+vault roles at every sign-in, and the role column says so.
 
 ### Change a role, or disable someone
 
-Change someone's role in the **Role** column; it applies at once.
-**Disable** signs them out immediately and stops them signing in until
-you **Enable** them again, with their existing password or single
-sign-on. Only admins manage people.
+Change someone's instance role in the **Role** column; it applies at
+once. Their roles in vaults are set on each vault's
+[Members](./vaults.mdx#members) tab. **Disable** signs them out
+immediately and stops them signing in until you **Enable** them again,
+with their existing password or single sign-on.
 
 ## Roles
 
-| Role | Can |
+A person has a role on the instance, and a role in each vault they are a
+member of.
+
+| On the instance | Can |
 |---|---|
-| **Admin** | Everything: vaults, services and their secrets, people, API keys, proxies, templates, variables and settings. Only people can be admins, never API keys. |
-| **Editor** | Read every vault, its services (never their secrets), rules, sessions and the audit log. Also add, change and delete rules and access bundles, and create, relabel and revoke sessions. |
-| **Viewer** | Read every vault, its services, rules, sessions and the audit log. Change nothing. |
+| **Member** | Work in the vaults they are a member of, with their role there. |
+| **Instance admin** | Run the instance: people, API keys, proxies, templates, variables, settings and audit export; create and delete vaults. See every vault's sessions and audit log and stop them, and [join a vault](./vaults.mdx#members) to change it. |
 
-A person's role applies to every vault. Adding a service or replacing a
-secret, deleting a vault, and everything under **Instance** and
-**Access** are for admins only.
+| In a vault | Can |
+|---|---|
+| **Runner** | See its services (never their secrets), rules and bundles, and start sessions from its bundles. |
+| **Viewer** | See its services, rules, bundles, sessions, launcher keys and audit log. Change nothing. |
+| **Editor** | Also change rules, bundles, tripwires and launcher keys, and start and stop sessions. |
+| **Admin** | Also add and change services and their secrets, and decide who is a member. |
 
-With an authenticator app (or single sign-on), sensitive actions ask
-for a code entered within the last five minutes, even for an admin:
-adding or changing a service's secret, widening a service's hosts or a
-rule's MCP tools, deleting a vault, and managing people, API keys,
-templates, variables, proxies, single sign-on and audit export
-([Accounts](../security.mdx#accounts)).
+Sensitive actions ask everyone, admins included, to prove it is them
+again within the last five minutes: an authenticator code, their
+password, or a sign-in at their identity provider. [Access and least
+privilege](../access.mdx) has the full list, setups for common teams and
+a checklist.
 
 ## API keys
 
@@ -64,8 +73,9 @@ Agents get a session instead, from an access bundle's page.
 - **Name**, such as `ci-orchestrator`.
 - **Vault**: a key is bound to exactly one vault and can do nothing
   outside it.
-- **Role**: viewer (read the vault, the default) or editor (also manage
-  rules, bundles and sessions). A key can never be an admin.
+- **Role**: runner (start sessions from the vault's bundles), viewer
+  (read the vault, the default) or editor (also manage rules, bundles and
+  sessions). A key can never be an admin.
 - **Expires in (days)**: between 1 and 365; 30 by default.
 
 The key is shown **once**, after it is created; copy it then. The list
@@ -77,4 +87,4 @@ running until they expire; revoke them on the
 [launcher key](../automation.mdx#launcher-keys) is listed too, as a launcher key; revoking
 it here also ends the sessions it started.
 
-Only admins see and manage API keys.
+Only instance admins see and manage API keys.

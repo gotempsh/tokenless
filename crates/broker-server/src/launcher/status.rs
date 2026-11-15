@@ -68,6 +68,9 @@ pub struct Observed {
     pub control_plane: Result<(), String>,
     /// `None` when it was not checked. `Ok(None)`: no saved session.
     pub signed_in: Option<Result<Option<String>, String>>,
+    /// Whether that sign-in is a `tokenless login --manage` one; the other
+    /// only starts sessions, so it can neither add services nor see proxies.
+    pub manage: bool,
     /// Vaults with their service count and bundle names.
     pub vaults: Option<Result<Vec<VaultSummary>, String>>,
     /// `Ok(None)`: this person may not see proxies.
@@ -230,6 +233,7 @@ pub fn assess(o: Observed) -> Report {
         _ => Vec::new(),
     };
     let (vault, bundle) = suggested(&vaults);
+    let manage_fix = format!("tokenless login --manage{server_flag}");
     checks.push(match &o.vaults {
         Some(Ok(v)) if v.iter().any(|v| v.services > 0) => {
             let services: u64 = v.iter().map(|v| v.services).sum();
@@ -244,6 +248,14 @@ pub fn assess(o: Observed) -> Report {
                 ),
             )
         }
+        Some(Ok(_)) if !o.manage => Check {
+            id: "services",
+            label: "Services",
+            state: State::Missing,
+            detail: "none yet; adding them takes tokenless login --manage, as `tokenless login` only starts sessions".into(),
+            fix: Some(manage_fix.clone()),
+            required: true,
+        },
         Some(Ok(_)) => Check {
             id: "services",
             label: "Services",
@@ -338,7 +350,11 @@ pub fn assess(o: Observed) -> Report {
             id: "proxy",
             label: "Proxy",
             state: State::Unknown,
-            detail: "only an admin can see proxies".into(),
+            detail: if o.manage {
+                "only an admin can see proxies".into()
+            } else {
+                "seen with tokenless login --manage; `tokenless login` only starts sessions".into()
+            },
             fix: None,
             required: true,
         },
@@ -372,7 +388,11 @@ pub fn assess(o: Observed) -> Report {
             State::Missing,
             "allowed: an agent reaches any host through the proxy, and a stolen session token does too; block them in the console under Settings > Other hosts",
         ),
-        Some(Ok(None)) => other_hosts(State::Unknown, "only an admin can see the settings"),
+        Some(Ok(None)) if o.manage => other_hosts(State::Unknown, "only an admin can see the settings"),
+        Some(Ok(None)) => other_hosts(
+            State::Unknown,
+            "seen with tokenless login --manage; `tokenless login` only starts sessions",
+        ),
         Some(Err(why)) => other_hosts(State::Unknown, &format!("could not read the settings: {why}")),
         None => unknown("other_hosts", "Other hosts", signed_in, false),
     });
@@ -550,6 +570,7 @@ mod tests {
             default_server: true,
             control_plane: Ok(()),
             signed_in: Some(Ok(Some("admin".into()))),
+            manage: true,
             vaults: Some(Ok(vec![VaultSummary {
                 name: "work".into(),
                 services: 2,
@@ -591,6 +612,42 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("Ready. Start an agent with:"), "{text}");
+    }
+
+    #[test]
+    fn a_sign_in_that_only_starts_sessions_says_what_login_manage_adds() {
+        let now = Utc::now();
+        let fresh = assess(Observed {
+            manage: false,
+            vaults: Some(Ok(vec![])),
+            proxies: Some(Ok(None)),
+            other_hosts: Some(Ok(None)),
+            ..observed(now)
+        });
+        assert_eq!(fresh.next.as_deref(), Some("tokenless login --manage"));
+        assert!(check(&fresh, "services")
+            .detail
+            .contains("tokenless login --manage"));
+        for id in ["proxy", "other_hosts"] {
+            let detail = &check(&fresh, id).detail;
+            assert!(
+                detail.starts_with("seen with tokenless login --manage"),
+                "{id}: {detail}"
+            );
+        }
+
+        // Set up: it can start agents, and the proxy it cannot see does not count.
+        let set_up = assess(Observed {
+            manage: false,
+            proxies: Some(Ok(None)),
+            other_hosts: Some(Ok(None)),
+            ..observed(now)
+        });
+        assert!(set_up.ready, "{set_up:#?}");
+        assert_eq!(
+            set_up.next.as_deref(),
+            Some("tokenless run --vault work --bundle code-review -- <command>")
+        );
     }
 
     #[test]

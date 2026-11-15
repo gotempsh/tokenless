@@ -1,0 +1,281 @@
+---
+# SPDX-FileCopyrightText: 2026 tokenless contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+title: "Access and least privilege"
+description: "Who can do what in tokenless: instance roles, a role per vault, terminal sign-ins that only start sessions, launcher keys, and a second proof for anything sensitive. With setups for common teams and a checklist."
+---
+
+Everything that acts on tokenless gets only what its job needs:
+
+- **People work in the vaults they are members of**, with a role in each.
+  Being able to sign in gives no access to any vault by itself.
+- **Instance admins run the instance, not the vaults.** They see every
+  vault's sessions and audit log and can stop them, but they join a vault,
+  which is recorded, before reading its services or changing anything in it.
+- **`tokenless login` only starts sessions.** Managing from a terminal
+  takes `tokenless login --manage`, which lasts an hour and is never what
+  `tokenless run` uses.
+- **Agents never get a person's sign-in.** They get a session, which
+  reaches one bundle's services until it expires. A machine that starts
+  agents on its own gets a launcher key, which starts sessions from one
+  bundle and does nothing else.
+- **Anything sensitive asks the person to prove it is them again**, every
+  time, with an authenticator code, their password or their identity
+  provider.
+
+## Who acts on tokenless
+
+| Who | Gets | Can never |
+|---|---|---|
+| A person in the console | Their roles, until the sign-in ends | Read a secret back |
+| A person in a terminal, `tokenless login` | Finding bundles and starting sessions from them, within their roles | Change anything |
+| A person in a terminal, `tokenless login --manage` | Their roles, for an hour | Read a secret back |
+| An [API key](./automation.mdx) | A role in one vault: runner, viewer or editor | Be an admin, prove it is a person |
+| A [launcher key](./automation.mdx#launcher-keys) | Starting sessions from one bundle, within its limits | Anything else |
+| An agent | A [session](./concepts.mdx): one bundle's services, through the proxy | Hold a credential, change tokenless |
+
+## Roles on the instance
+
+Each person has one role on the instance.
+
+| Role | Can |
+|---|---|
+| **Member** | Work in the vaults they are a member of, with their role there. Nothing else. |
+| **Instance admin** | Run the instance: people and invites, API keys, proxies, templates, variables, single sign-on, settings and audit export. Create and delete vaults. Oversee every vault (below). |
+
+## Roles in a vault
+
+A person's role in a vault decides what they do there. Someone in several
+vaults can be an admin in one and a runner in another.
+
+| In the vault | Runner | Viewer | Editor | Admin |
+|---|:-:|:-:|:-:|:-:|
+| See its services (never their secrets), rules and bundles | ✓ | ✓ | ✓ | ✓ |
+| Start sessions from its bundles | ✓ | | ✓ | ✓ |
+| See its sessions, launcher keys, members and audit log | | ✓ | ✓ | ✓ |
+| Change rules, bundles, tripwires and launcher keys; stop sessions; acknowledge alerts | | | ✓ | ✓ |
+| Add and change services and their secrets | | | | ✓ |
+| Add people to it, change their role, remove them | | | | ✓ |
+
+A **runner** is for someone who only runs agents. They start sessions
+from a bundle, never from hand-picked rules, and can relabel only the
+sessions they started themselves. They do not see who else uses the
+vault.
+
+A vault always keeps one admin. Whoever creates a vault becomes its first
+admin. Anyone may leave a vault, except its last admin.
+
+API keys hold a vault role too (runner, viewer or editor, never admin), in
+the one vault they belong to.
+
+Nobody gives more in a vault than they hold there. An invitation, an API
+key or a single sign-on group mapping that gives a role in a vault needs
+its author to hold that role or a higher one in it; an instance admin who
+only oversees the vault joins it first.
+
+## Instance admins oversee, then join
+
+An instance admin who is not a member of a vault **oversees** it: they see
+that it exists, its sessions, launcher keys, audit log and alerts, and
+can revoke its sessions and launcher keys and acknowledge its alerts.
+That is enough to respond to an incident in any vault. They do not see its
+services, rules or bundles, and cannot start sessions or change anything
+there.
+
+To do more, they **join** it: **Join as admin** on the vault's page, or
+`tokenless vault join <vault>`. Joining asks them to prove it is them
+again, makes them one of the vault's admins, and is recorded in the audit
+log as `vault.join`, so the vault's members can see that an instance admin
+came in. They leave again from the vault's **Members** tab.
+
+## Terminal sign-ins that only start sessions
+
+`tokenless login` keeps a sign-in in the operating system's keychain of the
+user who ran it. Everything that user runs can use it, including an agent.
+So by default it can only do what `tokenless run` needs: list the vaults
+and bundles the person can start sessions from, see which services they
+reach, and start sessions. Anything else is refused with:
+
+```text
+user:… signed in with `tokenless login`, which only starts sessions; 'credential_write' needs the console or `tokenless login --manage`
+```
+
+`tokenless login --manage` signs in with everything the person's roles
+allow, for one hour, for commands that change tokenless (`service add`,
+`proxy add`, `vault member set`). It is kept apart from the other sign-in,
+and the commands that start sessions (`run`, `mcp`, `session create`,
+`session start`) never use it.
+`tokenless logout` ends both.
+
+**Account → Where you're signed in** marks each terminal sign-in that only
+starts sessions, so a person can tell them apart from a full one.
+
+## Proving it is you again
+
+These ask for proof given within the last five minutes, for every person,
+admins included: an authenticator code if they have one, otherwise their
+password, or a fresh sign-in at their identity provider. Signing in counts.
+
+- adding or changing a service's secret, widening a service's hosts or a
+  rule's MCP tools;
+- creating a launcher key;
+- adding someone to a vault, changing their role, removing them;
+- joining a vault as an instance admin;
+- deleting a vault;
+- managing people, API keys, templates, variables, proxies, single sign-on
+  and audit export.
+
+An API key can never give this proof, so none of these can be done with
+one. Someone who copies a sign-in's token from a machine does not know the
+password or hold the authenticator, so they cannot do them either.
+
+## Setups
+
+### On your own
+
+You run tokenless on your laptop for your own agents.
+
+1. Start the server and sign in to the console as the admin it printed.
+   Under **Account**, turn on an authenticator app.
+2. Add services in the console, or from a terminal with
+   `tokenless login --manage` and `tokenless service add`.
+3. Sign in for agents with `tokenless login`. Start them with
+   `tokenless run --bundle <bundle> -- <command>`.
+
+Your agents can start sessions from your bundles, nothing else. When a
+manage sign-in is still on the machine, it lasts an hour at most.
+
+### A team with separate vaults
+
+One server for a team, with a vault per project or environment
+(`payments`, `web`, `staging`).
+
+1. The instance admin invites each person as a **member**, with a role in
+   the vaults they work in: **People → Invite someone → Vaults**.
+2. Each vault has its own admins, who add services and decide who else
+   joins it from the vault's **Members** tab.
+3. Developers are editors in their project's vault, and runners or nobody
+   in the others.
+
+Someone working on `web` never sees that `payments` exists in their
+lists, and its credentials are never added to their sessions.
+
+### A contractor, or someone who only runs agents
+
+Invite them as a member with the **runner** role in one vault. They
+sign in, pick a bundle and run their agent. They see which services the
+bundle reaches, never a secret, nor the vault's other sessions or audit
+log. Remove them from the vault's **Members** tab when the work ends,
+and sign them out under **People**.
+
+### CI
+
+Give each pipeline an API key with the **runner** role in its vault, and
+mint one short session per job from a bundle
+([Automation](./automation.mdx)). A leaked key starts sessions from that
+vault's bundles until it expires or you revoke it, and nothing more.
+
+### A machine that runs agents unattended
+
+A build server, a scheduled job, an agent host: give it a
+[launcher key](./automation.mdx#launcher-keys), never a person's sign-in.
+It starts sessions from one bundle, with the lifetime and request limits
+you set, and revoking it ends its sessions too.
+
+### An admin's laptop that also runs agents
+
+The agents on it run as the admin's user, so they can reach anything that
+user's keychain holds.
+
+- Sign in with `tokenless login` only. Use the console, or a short
+  `tokenless login --manage`, for changes.
+- Be a member only of the vaults you work in. Oversee the rest, and join
+  when you have to.
+- Turn on an authenticator: then even the manage sign-in cannot change a
+  secret or invite someone without a fresh code.
+
+### Single sign-on
+
+Map each group to an instance role and to vault roles under
+**Settings → Single sign-on** ([Settings](./settings.mdx#single-sign-on)).
+At every sign-in, tokenless gives the vault roles the person's groups give,
+and takes back the ones their groups gave before and no longer do. A role
+given any other way (by hand, or by an invitation) is never changed by a
+sign-in: it stays until a vault admin changes it, even in a vault a group
+is mapped to. A mapping gives no more in a vault than whoever saved it
+holds there.
+
+### When a sign-in or a machine is lost
+
+1. **People → Sign out everywhere** for the person, or
+   `tokenless sign-ins revoke --user <username>`. Their browser and
+   terminal sign-ins end at once.
+2. **Sessions**: revoke the live sessions started from that machine. An
+   instance admin sees every vault's sessions and can revoke them without
+   joining.
+3. Revoke the machine's **launcher key** and any API key it held.
+4. Read the **Audit log** for what was done in the meantime.
+
+What a copied terminal sign-in could have done: start sessions from the
+bundles that person can start from, for as long as it lasted. It could not
+change a rule, read or replace a secret, invite anyone or loosen a setting.
+
+## Checklist
+
+- [ ] Every person has their own account, and nobody uses the first admin
+      day to day.
+- [ ] Admins have an authenticator app, or sign in with single sign-on.
+- [ ] People are **members**, with roles only in the vaults they work in.
+      There are as few instance admins as possible.
+- [ ] Instance admins are members of only the vaults they work in, and
+      join the others when they need to.
+- [ ] Each vault has at least two admins, so nobody has to be made one in
+      a hurry.
+- [ ] People who only run agents are **runners**.
+- [ ] Machines that run agents on their own use launcher keys, and CI uses
+      runner API keys.
+- [ ] `tokenless login --manage` is used for a change and left to expire,
+      never kept on a machine that runs agents.
+- [ ] [Audit export](./settings.mdx#audit-export) sends the log somewhere
+      the instance's admins cannot rewrite.
+- [ ] [Tripwires](./console/vaults.mdx#tripwires) are planted where
+      agents' real keys would be.
+
+## After upgrading
+
+Upgrading keeps every existing account's access: each person becomes a
+member of every vault with the role they had, admins stay instance admins
+and become admins of every existing vault, and editors and viewers become
+members. A pending editor or viewer invitation still gives that role in
+every existing vault.
+
+What comes next gets less: a pending admin invitation, or a group mapped to
+admin, now makes an instance admin who oversees vaults and joins the ones
+they work in. A terminal sign-in from before the upgrade now only starts
+sessions; sign in with `tokenless login --manage` to manage from the
+terminal.
+
+Then remove people, yourself included, from the vaults they do not work
+in.
+
+## Compared with agent-vault
+
+[agent-vault](https://github.com/Infisical/agent-vault) solves the same
+problem, a proxy that adds credentials so agents never hold them, and its
+[permission model](https://github.com/Infisical/agent-vault/blob/main/docs/learn/permissions.mdx)
+shaped this one.
+
+| | agent-vault | tokenless |
+|---|---|---|
+| Instance roles | owner, member, no-access | instance admin, member |
+| Vault roles | admin, member, proxy | admin, editor, viewer, runner |
+| Instance owners or admins in vaults | Not members until they join | Oversee (sessions, audit log, stopping), join to do more, recorded in the audit log |
+| What an agent gets | Its own identity, no instance access and proxy-only access to vaults by default | A session: one bundle's services until it expires |
+| A person's CLI login on the agent's machine | The person's own access | Starting sessions only, unless `--manage`, for an hour |
+| Machines that start agents on their own | Agent identities | Launcher keys: one bundle, with limits |
+| An agent asking for more access | Proposals a person approves | Not built in: a person adds the service to the bundle |
+
+Neither sandboxes the agent. Whatever runs as the same user as a person's
+sign-in can use that sign-in. In tokenless that means starting sessions
+from the bundles that person can start from, so keep people on the fewest
+vaults and roles they need.

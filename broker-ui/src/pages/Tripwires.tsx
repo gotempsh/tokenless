@@ -7,7 +7,8 @@
 
 import { useState, type FormEvent } from "react";
 import { Plus, Siren, Trash2 } from "lucide-react";
-import { del, get, post, type CreatedTripwire, type Page, type Tripwire, type TripwireKind, type UserSummary } from "../api";
+import { del, get, post, type CreatedTripwire, type Page, type Tripwire, type TripwireKind } from "../api";
+import { can, type Me } from "../access";
 import { kindLabel, TRIPWIRE_KINDS, whereSeen } from "../tripwires";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -38,13 +39,13 @@ import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { ALERTS_HREF } from "./Alerts";
 
-export function VaultTripwires({ vaultId, user }: { vaultId: string; user: UserSummary }) {
+export function VaultTripwires({ vaultId, user }: { vaultId: string; user: Me }) {
   const [page, setPage] = useState(1);
   const tripwires = useLoad(() => get<Page<Tripwire>>(`/vaults/${vaultId}/tripwires?page=${page}`), [vaultId, page]);
   const [adding, setAdding] = useState(false);
   const confirm = useConfirm<Tripwire>();
   const action = useAction();
-  const canChange = user.role === "admin" || user.role === "editor";
+  const canChange = can(user, vaultId, "edit");
 
   const remove = async (t: Tripwire) => {
     await action.run(() => del(`/tripwires/${t.id}`));
@@ -119,7 +120,7 @@ export function VaultTripwires({ vaultId, user }: { vaultId: string; user: UserS
                             onSelect: () => confirm.ask(t),
                             destructive: true,
                             disabled: !canChange,
-                            reason: "Only editors and admins can delete tripwires",
+                            reason: "Only the vault's editors and admins can delete tripwires",
                           },
                         ]}
                       />

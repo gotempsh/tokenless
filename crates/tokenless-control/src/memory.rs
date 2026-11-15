@@ -22,6 +22,7 @@ use tokenless_core::variables::CustomHeader;
 
 mod alerts;
 mod audit_export;
+mod members;
 mod sso;
 mod tripwires;
 
@@ -29,7 +30,7 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
     Page, PageRequest, ProxySession, Rule, SessionCursor, Settings, SignInSettings, StoredTemplate,
-    UiSession, User, Variable, Vault, VaultDeletion,
+    UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -61,6 +62,8 @@ struct Inner {
         HashMap<tokenless_core::ids::AuditDestinationId, crate::model::AuditDestination>,
     alerts: HashMap<tokenless_core::ids::AlertId, crate::model::Alert>,
     tripwires: HashMap<tokenless_core::ids::TripwireId, crate::model::Tripwire>,
+    /// Each vault's members and their roles.
+    members: HashMap<(VaultId, UserId), crate::model::VaultMember>,
 }
 
 #[derive(Default)]
@@ -399,6 +402,7 @@ impl PolicyStore for MemoryStore {
         inner.bundles.retain(|_, bundle| &bundle.vault_id != id);
         done.bundles = count(before, inner.bundles.len());
         inner.tripwires.retain(|_, t| &t.vault_id != id);
+        inner.members.retain(|(vault, _), _| vault != id);
         for session in inner.sessions.values_mut() {
             if &session.vault_id == id
                 && session.revoked_at.is_none()
@@ -431,8 +435,18 @@ impl PolicyStore for MemoryStore {
             .count() as u64)
     }
 
-    async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError> {
-        let items: Vec<_> = self.lock()?.vaults.values().cloned().collect();
+    async fn list_vaults(
+        &self,
+        vaults: &VaultScope,
+        page: PageRequest,
+    ) -> Result<Page<Vault>, StoreError> {
+        let items: Vec<_> = self
+            .lock()?
+            .vaults
+            .values()
+            .filter(|v| vaults.contains(&v.id))
+            .cloned()
+            .collect();
         Ok(page.apply(&newest_first(items, |v| v.created_at)))
     }
 
@@ -610,14 +624,14 @@ impl PolicyStore for MemoryStore {
 
     async fn list_bundles(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError> {
         let mut items: Vec<_> = self
             .lock()?
             .bundles
             .values()
-            .filter(|b| vault_id.is_none_or(|v| &b.vault_id == v))
+            .filter(|b| vaults.contains(&b.vault_id))
             .cloned()
             .collect();
         items.sort_by(|a, b| {
@@ -694,7 +708,7 @@ impl PolicyStore for MemoryStore {
 
     async fn list_sessions(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         bundle_id: Option<&BundleId>,
         active_at: Option<DateTime<Utc>>,
         after: Option<&SessionCursor>,
@@ -707,7 +721,7 @@ impl PolicyStore for MemoryStore {
             .lock()?
             .sessions
             .values()
-            .filter(|s| vault_id.is_none_or(|v| &s.vault_id == v))
+            .filter(|s| vaults.contains(&s.vault_id))
             .filter(|s| bundle_id.is_none_or(|b| s.bundle.as_ref().is_some_and(|sb| &sb.id == b)))
             .filter(|s| active_at.is_none_or(|at| s.revoked_at.is_none() && s.expires_at > at))
             .filter(|s| after.as_ref().is_none_or(|c| &order(s) > c))
@@ -848,6 +862,7 @@ impl AuditSink for MemoryStore {
             .audit
             .iter()
             .filter(|e| query.vault_id.is_none() || e.vault_id == query.vault_id)
+            .filter(|e| query.within.covers(e.vault_id.as_ref()))
             .filter(|e| {
                 query
                     .action_prefix
@@ -1091,9 +1106,27 @@ impl IdentityStore for MemoryStore {
                 detail: format!("username '{}' exists", user.username),
             });
         }
+        let mut grants = Vec::new();
         if let Some(invite) = inner.invites.get_mut(&invite_id) {
             invite.accepted_at = Some(user.created_at);
             invite.accepted_by = Some(user.id);
+            grants = invite.vaults.clone();
+        }
+        for grant in grants {
+            // A vault deleted since the invite was made is skipped.
+            if inner.vaults.contains_key(&grant.vault_id) {
+                inner.members.insert(
+                    (grant.vault_id, user.id),
+                    crate::model::VaultMember {
+                        vault_id: grant.vault_id,
+                        user_id: user.id,
+                        username: user.username.clone(),
+                        role: grant.role,
+                        added_by: format!("invite:{invite_id}"),
+                        added_at: user.created_at,
+                    },
+                );
+            }
         }
         inner.users.insert(user.id, user);
         inner.audit.extend_from_slice(audit);

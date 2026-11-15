@@ -22,8 +22,9 @@ use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, LaunchScope, Node,
-    Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, StoredTemplate,
-    TemplateSource, TemplateStatus, UiSession, User, Variable, Vault, VaultDeletion,
+    Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SignInScope,
+    StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
+    VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
@@ -696,7 +697,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected {v1:?}, got {got:?}"
     );
     let page = store
-        .list_vaults(PageRequest::default())
+        .list_vaults(&VaultScope::All, PageRequest::default())
         .await
         .map_err(backend(S, "vault_list"))?;
     ensure!(
@@ -997,7 +998,13 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "expected NotFound, got {missing:?}"
     );
     let listed = store
-        .list_sessions(Some(&v1.id), None, None, None, PageRequest::default())
+        .list_sessions(
+            &VaultScope::one(v1.id),
+            None,
+            None,
+            None,
+            PageRequest::default(),
+        )
         .await
         .map_err(backend(S, "session_list"))?;
     ensure!(
@@ -1010,7 +1017,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     // Of those, one was revoked, one expired (and was revoked): one is live.
     let live = store
         .list_sessions(
-            Some(&v1.id),
+            &VaultScope::one(v1.id),
             None,
             Some(at(0)),
             None,
@@ -1029,7 +1036,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     // Vault beta's expired session was never revoked: expiry alone ends it.
     let live = store
         .list_sessions(
-            Some(&v2.id),
+            &VaultScope::one(v2.id),
             None,
             Some(at(0)),
             None,
@@ -1058,7 +1065,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     while walked.len() <= full.len() {
         let got = store
             .list_sessions(
-                Some(&v1.id),
+                &VaultScope::one(v1.id),
                 None,
                 None,
                 after.as_ref(),
@@ -1116,7 +1123,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .map_err(backend(S, "session_insert_bundle"))?;
     let by_bundle = store
         .list_sessions(
-            Some(&v1.id),
+            &VaultScope::one(v1.id),
             Some(&bundle_id),
             None,
             None,
@@ -1136,7 +1143,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         by_bundle.items.iter().map(|s| s.id).collect::<Vec<_>>()
     );
     let everywhere = store
-        .list_sessions(None, None, None, None, PageRequest::default())
+        .list_sessions(&VaultScope::All, None, None, None, PageRequest::default())
         .await
         .map_err(backend(S, "session_list_all"))?;
     ensure!(
@@ -1315,7 +1322,7 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     );
 
     let page = store
-        .list_bundles(Some(&v1.id), PageRequest::new(None, None))
+        .list_bundles(&VaultScope::one(v1.id), PageRequest::new(None, None))
         .await
         .map_err(backend(S, "list"))?;
     let names: Vec<_> = page.items.iter().map(|b| b.name.as_str()).collect();
@@ -1327,7 +1334,7 @@ pub async fn bundle_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         page.total
     );
     let every = store
-        .list_bundles(None, PageRequest::new(None, None))
+        .list_bundles(&VaultScope::All, PageRequest::new(None, None))
         .await
         .map_err(backend(S, "list_all"))?;
     let names: Vec<_> = every.items.iter().map(|b| b.name.as_str()).collect();
@@ -2067,6 +2074,7 @@ fn invite(token_hash: &str, role: Role, created_offset: i64, expires_offset: i64
         accepted_at: None,
         accepted_by: None,
         revoked_at: None,
+        vaults: Vec::new(),
     }
 }
 
@@ -2158,6 +2166,7 @@ pub async fn user_management_suite(store: &dyn IdentityStore) -> Result<(), Conf
                 step_up_at: None,
                 last_used_at: at(-1),
                 user_agent: None,
+                scope: SignInScope::Full,
             },
             &[],
         )
@@ -2416,6 +2425,8 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         step_up_at: None,
         last_used_at: at(-100),
         user_agent: Some("tokenless/0.4.0".into()),
+        // A `tokenless login` sign-in keeps its narrower scope.
+        scope: SignInScope::Launch,
     };
     let stale = UiSession {
         id: SignInId::new(),
@@ -2444,7 +2455,8 @@ pub async fn identity_store_suite(store: &dyn IdentityStore) -> Result<(), Confo
         "ui_round_trip",
         got.as_ref().is_some_and(|g| g.id == session.id
             && g.last_used_at == session.last_used_at
-            && g.user_agent == session.user_agent),
+            && g.user_agent == session.user_agent
+            && g.scope == session.scope),
         "got {got:?}"
     );
     ensure!(
@@ -2646,6 +2658,7 @@ async fn sign_ins(store: &dyn IdentityStore, user_id: UserId) -> Result<(), Conf
         step_up_at: None,
         last_used_at: at(used),
         user_agent: None,
+        scope: SignInScope::Full,
     };
     let recent = sign_in("si-recent", user_id, -50, -1, 100);
     let idle = sign_in("si-idle", user_id, -40, -30, 100);
@@ -3039,10 +3052,12 @@ pub async fn node_store_suite(store: &dyn NodeStore) -> Result<(), ConformanceFa
 // After `ensure!`, which they use.
 mod alerts;
 mod audit_export;
+mod members;
 mod sso;
 mod tripwires;
 
 pub use alerts::alert_store_suite;
 pub use audit_export::audit_export_store_suite;
+pub use members::membership_store_suite;
 pub use sso::sso_store_suite;
 pub use tripwires::tripwire_store_suite;

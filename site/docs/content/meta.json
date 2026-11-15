@@ -18,6 +18,7 @@
     "server",
     "deploy",
     "settings",
+    "access",
     "security",
     "---Reference---",
     "cli"

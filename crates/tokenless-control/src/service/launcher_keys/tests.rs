@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use tokenless_core::authz::{Principal, PrincipalKind};
 
 use super::*;
 use crate::cipher::AesGcmCipher;
@@ -28,17 +27,7 @@ struct T {
 }
 
 fn person(role: Role) -> Caller {
-    Caller {
-        principal: Principal {
-            kind: PrincipalKind::User,
-            actor: format!("user:test-{role}"),
-            role,
-            vault: None,
-        },
-        step_up_at: Some(Utc::now()),
-        second_factor: true,
-        launch: None,
-    }
+    crate::service::testing::person_caller(&format!("test-{role}"), role)
 }
 
 fn admin() -> Caller {
@@ -83,6 +72,7 @@ async fn setup() -> T {
             nodes: store.clone(),
             alerts: store.clone(),
             tripwires: store.clone(),
+            members: store.clone(),
         },
         Arc::new(RbacAuthorizer),
         cipher,
@@ -94,7 +84,18 @@ async fn setup() -> T {
     .await
     .unwrap();
     let a = admin();
+    for p in [&a, &editor(), &person(Role::Viewer)] {
+        crate::service::testing::enrol(store.as_ref(), p).await;
+    }
     let vault = cp.policy.create_vault(&a, "work").await.unwrap();
+    crate::service::testing::join(store.as_ref(), &editor(), &vault.id, Role::Editor).await;
+    crate::service::testing::join(
+        store.as_ref(),
+        &person(Role::Viewer),
+        &vault.id,
+        Role::Viewer,
+    )
+    .await;
     let credential = cp
         .policy
         .create_credential(
@@ -766,6 +767,8 @@ async fn revoking_finds_only_launcher_keys_of_the_vault() {
             .create_vault(&admin(), "elsewhere")
             .await
             .unwrap();
+    // An editor there too, so only the key's vault is wrong.
+    crate::service::testing::join(t.store.as_ref(), &editor(), &elsewhere.id, Role::Editor).await;
     let err =
         t.cp.launcher_keys
             .revoke(&editor(), &elsewhere.id, &created.launcher_key.id)

@@ -4,6 +4,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ScrollText, Webhook } from "lucide-react";
 import { get, type ApiKey, type AuditDestination, type AuditEvent, type NodeInfo, type Page, type UserSummary } from "../api";
+import type { Me } from "../access";
 import { ALL_EVENTS, AUDIT_CATEGORIES, actionPhrase, actorLabel, type ActorNames } from "../audit";
 import { failingDestinations } from "../auditExport";
 import { useLoad } from "../hooks";
@@ -70,7 +71,7 @@ function ExportFailing({ destinations }: { destinations: AuditDestination[] }) {
 }
 
 /** Names for the users, API keys and proxies events refer to; admins only. */
-export function useActorNames(me: UserSummary): ActorNames {
+export function useActorNames(me: Me): ActorNames {
   const isAdmin = me.role === "admin";
   const none = () => Promise.resolve(undefined);
   const users = useLoad(() => (isAdmin ? get<Page<UserSummary>>("/users?page_size=100") : none()), [isAdmin]);
@@ -88,7 +89,7 @@ export function useActorNames(me: UserSummary): ActorNames {
 }
 
 /** One sentence per event; open a row for everything it recorded. */
-export function Audit({ me }: { me: UserSummary }) {
+export function Audit({ me }: { me: Me }) {
   const [page, setPage] = useState(1);
   const [category, setCategory] = useState(ALL_EVENTS);
   const [viewing, setViewing] = useState<AuditEvent | null>(null);

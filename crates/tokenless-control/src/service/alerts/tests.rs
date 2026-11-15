@@ -37,6 +37,7 @@ fn node(name: &str) -> Node {
 
 fn user(role: Role, vault: Option<VaultId>) -> Caller {
     Caller {
+        sign_in: Default::default(),
         principal: Principal {
             kind: PrincipalKind::User,
             actor: format!("user:{role}"),

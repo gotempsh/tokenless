@@ -32,18 +32,21 @@ optional for everyone and recommended for admins.
 
 To stop using it, **Remove** asks for a code and your password again.
 
-With an authenticator on, sensitive actions ask for a code entered
-within the last five minutes, even for an admin; signing in counts.
-That covers adding or changing a service's secret, widening a service's
-hosts or a rule's MCP tools, deleting a vault, and managing people, API
+## Confirming it is you
+
+Sensitive actions ask everyone, admins included, to confirm it is them
+within the last five minutes; signing in counts. With an authenticator
+it asks for a code, without one for your password. That covers adding or
+changing a service's secret, widening a service's hosts or a rule's MCP
+tools, creating a launcher key, adding people to a vault or changing
+their role, joining a vault, deleting a vault, and managing people, API
 keys, templates, variables, proxies, single sign-on and audit export. A
-dialog asks for the code when one is due, and the action goes ahead
-once you enter it.
+dialog asks when it is due, and the action goes ahead once you answer.
 
 ## With single sign-on
 
 If you sign in with [single sign-on](../settings.mdx#single-sign-on), the page
 names the identity provider instead: your password, second factor and
-groups are managed there, and your role follows your groups at each
-sign-in. Sensitive actions send you back to the provider to sign in
+groups are managed there, and your instance role and the vault roles your
+groups give follow them at each sign-in. Sensitive actions send you back to the provider to sign in
 again.

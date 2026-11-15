@@ -6,7 +6,8 @@
 
 import { useMemo, useState } from "react";
 import { Ban, Plus, Timer } from "lucide-react";
-import { get, post, type AccessBundle, type Page, type ProxySession, type UserSummary, type Vault } from "../api";
+import { get, post, type AccessBundle, type Page, type ProxySession, type Vault } from "../api";
+import { can, canSomewhere, onlyFor, type Me } from "../access";
 import { actorName, type ActorNames } from "../audit";
 import { useAction, useLoad } from "../hooks";
 import {
@@ -76,7 +77,8 @@ export function SessionTable({
   actors: ActorNames;
   vaultNames?: Record<string, string>;
   showBundle?: boolean;
-  canRevoke: boolean;
+  /** Whether the person may revoke this one: it depends on their role in its vault. */
+  canRevoke: (s: ProxySession) => boolean;
   onRevoke: (s: ProxySession) => void;
 }) {
   return (
@@ -134,8 +136,8 @@ export function SessionTable({
                           icon: Ban,
                           onSelect: () => onRevoke(s),
                           destructive: true,
-                          disabled: !canRevoke,
-                          reason: "Only editors and admins can revoke sessions",
+                          disabled: !canRevoke(s),
+                          reason: onlyFor("stop"),
                         },
                       ]}
                     />
@@ -150,7 +152,7 @@ export function SessionTable({
   );
 }
 
-export function Sessions({ me }: { me: UserSummary }) {
+export function Sessions({ me }: { me: Me }) {
   const [page, setPage] = useState(1);
   const sessions = useLoad(() => get<Page<ProxySession>>(`/sessions?page=${page}`), [page]);
   const vaults = useLoad(() => get<Page<Vault>>("/vaults?page_size=100"), []);
@@ -159,7 +161,9 @@ export function Sessions({ me }: { me: UserSummary }) {
     [vaults.data],
   );
   const actors = useActorNames(me);
-  const canRevoke = me.role === "admin" || me.role === "editor";
+  const canRevoke = (s: ProxySession) => can(me, s.vault_id, "stop");
+  // Starting one needs a vault to start it in.
+  const canStart = canSomewhere(me, "start");
   const [creating, setCreating] = useState(false);
   const bundles = useLoad(
     () => (creating ? get<Page<AccessBundle>>("/bundles?page_size=100") : Promise.resolve(undefined)),
@@ -169,8 +173,8 @@ export function Sessions({ me }: { me: UserSummary }) {
     <Button
       type="button"
       onClick={() => setCreating(true)}
-      disabled={!canRevoke}
-      title={canRevoke ? undefined : "Only editors and admins can create sessions"}
+      disabled={!canStart}
+      title={canStart ? undefined : "Starting a session takes the runner, editor or admin role in a vault"}
     >
       <Plus />
       New session

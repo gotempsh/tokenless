@@ -21,9 +21,9 @@ use sqlx::sqlite::{
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SsoIdentity,
-    StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
-    VaultDeletion,
+    PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SignInScope,
+    SsoIdentity, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
+    VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -43,12 +43,19 @@ use tokenless_core::variables::CustomHeader;
 
 mod alerts;
 mod audit_export;
+mod members;
 mod sso;
 mod tripwires;
 
 pub struct SqliteStore {
     pool: SqlitePool,
 }
+
+/// A `vaults.id` within a [`VaultScope`]: bind its
+/// [`json_ids`](VaultScope::json_ids) twice.
+const WITHIN_ID: &str = "(? IS NULL OR id IN (SELECT value FROM json_each(?)))";
+/// A `vault_id` within a [`VaultScope`], bound the same way.
+const WITHIN_VAULT: &str = "(? IS NULL OR vault_id IN (SELECT value FROM json_each(?)))";
 
 fn ts(dt: &DateTime<Utc>) -> String {
     dt.to_rfc3339_opts(SecondsFormat::Micros, true)
@@ -160,10 +167,11 @@ impl SqliteStore {
         Ok(Self { pool })
     }
 
+    /// `bind` is bound to every `?` of `sql`.
     async fn count(&self, sql: &str, bind: Option<&str>) -> Result<u64, StoreError> {
         let mut q = sqlx::query(sql);
-        if let Some(b) = bind {
-            q = q.bind(b.to_string());
+        for _ in 0..sql.matches('?').count() {
+            q = q.bind(bind.map(str::to_string));
         }
         let row = q.fetch_one(&self.pool).await.map_err(db("count", "row"))?;
         Ok(to_u64(get::<i64>(&row, "n")?))
@@ -854,6 +862,11 @@ impl PolicyStore for SqliteStore {
             .execute(&mut *tx)
             .await
             .map_err(db("delete vault tripwires", "vault"))?;
+        sqlx::query("DELETE FROM vault_members WHERE vault_id = ?")
+            .bind(&vault)
+            .execute(&mut *tx)
+            .await
+            .map_err(db("delete vault members", "vault"))?;
         done.bundles = sqlx::query("DELETE FROM access_bundles WHERE vault_id = ?")
             .bind(&vault)
             .execute(&mut *tx)
@@ -920,9 +933,21 @@ impl PolicyStore for SqliteStore {
             .transpose()
     }
 
-    async fn list_vaults(&self, page: PageRequest) -> Result<Page<Vault>, StoreError> {
-        let total = self.count("SELECT COUNT(*) AS n FROM vaults", None).await?;
-        let rows = sqlx::query("SELECT id, name, scope, created_at FROM vaults ORDER BY created_at DESC, id LIMIT ? OFFSET ?")
+    async fn list_vaults(
+        &self,
+        vaults: &VaultScope,
+        page: PageRequest,
+    ) -> Result<Page<Vault>, StoreError> {
+        let within = vaults.json_ids();
+        let total = self
+            .count(
+                &format!("SELECT COUNT(*) AS n FROM vaults WHERE {WITHIN_ID}"),
+                within.as_deref(),
+            )
+            .await?;
+        let rows = sqlx::query(&format!("SELECT id, name, scope, created_at FROM vaults WHERE {WITHIN_ID} ORDER BY created_at DESC, id LIMIT ? OFFSET ?"))
+            .bind(within.clone())
+            .bind(within)
             .bind(to_i64(page.page_size))
             .bind(to_i64(page.offset()))
             .fetch_all(&self.pool)
@@ -1172,22 +1197,18 @@ impl PolicyStore for SqliteStore {
 
     async fn list_bundles(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, StoreError> {
-        // `? IS NULL` selects every vault when no vault is given.
-        let vault = vault_id.map(|v| v.to_string());
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS n FROM access_bundles WHERE (? IS NULL OR vault_id = ?)",
-        )
-        .bind(vault.clone())
-        .bind(vault.clone())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db("count access bundles", "access_bundle"))?;
-        let total = to_u64(get::<i64>(&row, "n")?);
+        let vault = vaults.json_ids();
+        let total = self
+            .count(
+                &format!("SELECT COUNT(*) AS n FROM access_bundles WHERE {WITHIN_VAULT}"),
+                vault.as_deref(),
+            )
+            .await?;
         let sql = format!(
-            "{BUNDLE_SELECT} WHERE (? IS NULL OR b.vault_id = ?) ORDER BY b.name, b.vault_id LIMIT ? OFFSET ?"
+            "{BUNDLE_SELECT} WHERE (? IS NULL OR b.vault_id IN (SELECT value FROM json_each(?))) ORDER BY b.name, b.vault_id LIMIT ? OFFSET ?"
         );
         let rows = sqlx::query(&sql)
             .bind(vault.clone())
@@ -1300,7 +1321,7 @@ impl PolicyStore for SqliteStore {
 
     async fn list_sessions(
         &self,
-        vault_id: Option<&VaultId>,
+        vaults: &VaultScope,
         bundle_id: Option<&BundleId>,
         active_at: Option<DateTime<Utc>>,
         after: Option<&SessionCursor>,
@@ -1308,10 +1329,10 @@ impl PolicyStore for SqliteStore {
     ) -> Result<Page<ProxySession>, StoreError> {
         // `? IS NULL` drops a filter that was not given. The cursor keeps
         // what comes after it in `ORDER BY created_at DESC, id`.
-        const FILTER: &str = "(? IS NULL OR vault_id = ?) AND (? IS NULL OR bundle_id = ?) \
+        const FILTER: &str = "(? IS NULL OR vault_id IN (SELECT value FROM json_each(?))) AND (? IS NULL OR bundle_id = ?) \
             AND (? IS NULL OR (revoked_at IS NULL AND expires_at > ?)) \
             AND (? IS NULL OR created_at < ? OR (created_at = ? AND id > ?))";
-        let vault = vault_id.map(|v| v.to_string());
+        let vault = vaults.json_ids();
         let bundle = bundle_id.map(|b| b.to_string());
         let active = active_at.map(|at| ts(&at));
         let after_at = after.map(|c| ts(&c.created_at));
@@ -1536,6 +1557,11 @@ impl AuditSink for SqliteStore {
                 filter.push_str(" AND vault_id = ?");
             }
         }
+        let within = query.within.json_ids();
+        if within.is_some() {
+            // Instance-wide events have no vault, so they are left out.
+            filter.push_str(" AND vault_id IN (SELECT value FROM json_each(?))");
+        }
         if query.action_prefix.is_some() {
             filter.push_str(" AND substr(action, 1, ?) = ?");
         }
@@ -1555,6 +1581,10 @@ impl AuditSink for SqliteStore {
         if let Some(v) = &query.vault_id {
             count = count.bind(v.to_string());
             list = list.bind(v.to_string());
+        }
+        if let Some(ids) = &within {
+            count = count.bind(ids.clone());
+            list = list.bind(ids.clone());
         }
         if let Some(prefix) = &query.action_prefix {
             let len = i64::try_from(prefix.chars().count()).unwrap_or(0);
@@ -1644,6 +1674,7 @@ fn invite_from_row(row: &SqliteRow) -> Result<Invite, StoreError> {
             })
             .transpose()?,
         revoked_at: get_opt_ts(row, "revoked_at")?,
+        vaults: from_json("vaults", &get::<String>(row, "vaults")?)?,
     })
 }
 
@@ -1676,6 +1707,12 @@ fn ui_session_from_row(r: &SqliteRow) -> Result<UiSession, StoreError> {
         step_up_at: get_opt_ts(r, "step_up_at")?,
         last_used_at: get_opt_ts(r, "last_used_at")?.unwrap_or(created_at),
         user_agent: get(r, "user_agent")?,
+        scope: {
+            let raw: String = get(r, "scope")?;
+            SignInScope::parse(&raw).ok_or_else(|| {
+                StoreError::backend("decode ui_sessions.scope", format!("unknown scope '{raw}'"))
+            })?
+        },
     })
 }
 
@@ -1852,7 +1889,7 @@ impl IdentityStore for SqliteStore {
 
     async fn insert_invite(&self, i: Invite, audit: &[AuditEvent]) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_invite").await?;
-        sqlx::query("INSERT INTO invites (id, token_hash, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO invites (id, token_hash, role, created_by, created_at, expires_at, accepted_at, accepted_by, revoked_at, vaults) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(i.id.to_string())
             .bind(&i.token_hash)
             .bind(i.role.as_str())
@@ -1862,6 +1899,7 @@ impl IdentityStore for SqliteStore {
             .bind(opt_ts(&i.accepted_at))
             .bind(i.accepted_by.map(|u| u.to_string()))
             .bind(opt_ts(&i.revoked_at))
+            .bind(to_json("vaults", &i.vaults)?)
             .execute(&mut *tx)
             .await
             .map_err(db("insert invite", "invite"))?;
@@ -1947,6 +1985,20 @@ impl IdentityStore for SqliteStore {
             return Ok(false);
         }
         insert_user_tx(&mut tx, &user).await?;
+        // The vaults the invitation gives roles in; one deleted since is
+        // skipped.
+        sqlx::query(
+            "INSERT INTO vault_members (vault_id, user_id, role, added_by, added_at) \
+             SELECT json_extract(g.value, '$.vault_id'), ?, json_extract(g.value, '$.role'), 'invite:' || i.id, ? \
+             FROM invites i, json_each(i.vaults) g \
+             WHERE i.token_hash = ? AND json_extract(g.value, '$.vault_id') IN (SELECT id FROM vaults)",
+        )
+        .bind(user.id.to_string())
+        .bind(ts(&user.created_at))
+        .bind(token_hash)
+        .execute(&mut *tx)
+        .await
+        .map_err(db("add invited vault members", "vault_member"))?;
         finish(tx, audit, "accept_invite").await.map(|()| true)
     }
 
@@ -1974,7 +2026,7 @@ impl IdentityStore for SqliteStore {
         audit: &[AuditEvent],
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_ui_session").await?;
-        sqlx::query("INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, step_up_at, id, last_used_at, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO ui_sessions (token_hash, user_id, created_at, expires_at, step_up_at, id, last_used_at, user_agent, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&s.token_hash)
             .bind(s.user_id.to_string())
             .bind(ts(&s.created_at))
@@ -1983,6 +2035,7 @@ impl IdentityStore for SqliteStore {
             .bind(s.id.to_string())
             .bind(ts(&s.last_used_at))
             .bind(&s.user_agent)
+            .bind(s.scope.as_str())
             .execute(&mut *tx)
             .await
             .map_err(db("insert ui session", "ui_session"))?;

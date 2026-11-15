@@ -19,7 +19,7 @@ use tokenless_core::ids::{BundleId, RuleId, VaultId};
 
 use super::{Caller, Guard};
 use crate::error::ControlError;
-use crate::model::{AccessBundle, Page, PageRequest};
+use crate::model::{AccessBundle, Page, PageRequest, VaultScope};
 use crate::notify::PolicyNotifier;
 use crate::store::PolicyStore;
 
@@ -273,21 +273,22 @@ impl BundleService {
         self.guard
             .check(caller, Action::RuleRead, Some(vault_id))
             .await?;
-        Ok(self.policy.list_bundles(Some(vault_id), page).await?)
+        Ok(self
+            .policy
+            .list_bundles(&VaultScope::one(*vault_id), page)
+            .await?)
     }
 
-    /// Bundles across every vault the caller can see: all of them for
-    /// people, the bound vault's for an API key.
+    /// Bundles across every vault the caller can see: a person's vaults,
+    /// the bound vault's for an API key.
     pub async fn list_all(
         &self,
         caller: &Caller,
         page: PageRequest,
     ) -> Result<Page<AccessBundle>, ControlError> {
-        let vault = caller.principal.vault;
-        self.guard
-            .check(caller, Action::RuleRead, vault.as_ref())
-            .await?;
-        Ok(self.policy.list_bundles(vault.as_ref(), page).await?)
+        self.guard.check_list(caller, Action::RuleRead).await?;
+        let within = self.guard.vault_scope(caller, Action::RuleRead).await?;
+        Ok(self.policy.list_bundles(&within, page).await?)
     }
 
     async fn find(&self, id: &BundleId) -> Result<AccessBundle, ControlError> {

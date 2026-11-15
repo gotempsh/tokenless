@@ -38,6 +38,7 @@ import {
   type SessionInfo,
   type UserSummary,
 } from "./api";
+import { meFrom } from "./access";
 import { failingDestinations } from "./auditExport";
 import { proxyAttention } from "./proxyHealth";
 import { useHashQuery, useHashRoute } from "./hooks";
@@ -221,7 +222,7 @@ export function App() {
       />
     );
 
-  const { user } = boot.session;
+  const user = meFrom(boot.session);
   const [rawSection = "vaults", id, tab, sub] = route;
   // "nodes" was the old name of the proxies page; keep old links working.
   const section = rawSection === "nodes" ? "proxies" : rawSection;
@@ -234,7 +235,7 @@ export function App() {
         <ServiceDetail vaultId={id} credentialId={sub} user={user} />
       )}
       {section === "vaults" && id && !(tab === "services" && sub) && (
-        <VaultDetail vaultId={id} tab={vaultTab(tab)} user={user} />
+        <VaultDetail vaultId={id} tab={vaultTab(tab)} user={user} onAccessChanged={() => void load()} />
       )}
       {section === "add-service" && <AddService ctx={parseAddServiceContext(id, query)} user={user} />}
       {section === "bundles" && !id && <Bundles user={user} />}
@@ -478,7 +479,7 @@ function SidebarContent({
   onLogout: () => void;
   onNavigate: () => void;
 }) {
-  const role = user.role.replace("_", " ");
+  const role = user.role === "admin" ? "instance admin" : "member";
   return (
     <>
       <div className={cn("flex h-16 shrink-0 items-center gap-2 border-b", collapsed ? "justify-center px-2" : "px-4")}>

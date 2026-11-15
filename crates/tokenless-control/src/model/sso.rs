@@ -57,12 +57,19 @@ impl Default for SignInSettings {
     }
 }
 
-/// People in `group` at the provider get `role`. A person in several
-/// mapped groups gets the highest of their roles.
+/// People in `group` at the provider get `role` on the instance (admin
+/// or member) and the vault roles in `vaults`. A person in several mapped
+/// groups gets the highest of their instance roles and of their roles in
+/// each vault. A sign-in changes only the vault roles a mapping gave,
+/// and takes them back once the person's groups no longer give them; a
+/// role set any other way (by a vault admin, by creating or joining the
+/// vault) is left as it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleMapping {
     pub group: String,
     pub role: Role,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vaults: Vec<super::VaultGrant>,
 }
 
 /// An OpenID Connect provider people sign in with.

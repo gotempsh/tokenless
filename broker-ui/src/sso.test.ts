@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import type { OidcProvider, ProviderBrand } from "./api";
 import {
   callbackUri,
+  emptyMapping,
   newProviderForm,
   providerForm,
   providerFormProblem,
@@ -52,8 +53,8 @@ describe("the provider form", () => {
     issuer: "https://idp.example",
     client_id: "tokenless",
     role_mappings: [
-      { group: " broker-admins ", role: "admin" as const },
-      { group: "", role: "viewer" as const },
+      { group: " broker-admins ", role: "admin" as const, vaults: [] },
+      { group: "", role: "member" as const, vaults: [] },
     ],
   });
 
@@ -67,7 +68,7 @@ describe("the provider form", () => {
   test("sends trimmed fields, drops empty mapping rows and openid", () => {
     const input = providerInput({ ...filled(), scopes: "openid profile, email  groups" });
     expect(input.scopes).toEqual(["profile", "email", "groups"]);
-    expect(input.role_mappings).toEqual([{ group: "broker-admins", role: "admin" }]);
+    expect(input.role_mappings).toEqual([{ group: "broker-admins", role: "admin", vaults: [] }]);
     expect("client_secret" in input).toBe(false);
     expect(input.clear_client_secret).toBe(false);
   });
@@ -83,18 +84,31 @@ describe("the provider form", () => {
   test("says what is missing", () => {
     expect(providerFormProblem(filled())).toBeNull();
     expect(providerFormProblem({ ...filled(), issuer: " " })).toContain("issuer");
-    expect(providerFormProblem({ ...filled(), role_mappings: [{ group: "", role: "viewer" }] })).toContain(
+    expect(providerFormProblem({ ...filled(), role_mappings: [emptyMapping()] })).toContain(
       "at least one group",
     );
     expect(
       providerFormProblem({
         ...filled(),
         role_mappings: [
-          { group: "ops", role: "viewer" },
-          { group: "ops ", role: "admin" },
+          { group: "ops", role: "member", vaults: [] },
+          { group: "ops ", role: "admin", vaults: [] },
         ],
       }),
     ).toContain("'ops' is mapped twice");
+  });
+
+  test("a group gives vault roles, each vault at most once, and unpicked vault rows are dropped", () => {
+    const work = { vault_id: "v-work", role: "runner" as const };
+    const form = {
+      ...filled(),
+      role_mappings: [{ group: "ci", role: "member" as const, vaults: [work, { vault_id: "", role: "viewer" as const }] }],
+    };
+    expect(providerFormProblem(form)).toBeNull();
+    expect(providerInput(form).role_mappings).toEqual([{ group: "ci", role: "member", vaults: [work] }]);
+    expect(
+      providerFormProblem({ ...filled(), role_mappings: [{ group: "ci", role: "member", vaults: [work, { ...work, role: "editor" }] }] }),
+    ).toContain("same vault twice");
   });
 
   test("editing shows the provider but never a secret", () => {
@@ -118,7 +132,7 @@ describe("the provider form", () => {
     const form = providerForm(p);
     expect(form.client_secret).toBe("");
     expect(form.scopes).toBe("profile email");
-    expect(form.role_mappings).toEqual([{ group: "", role: "viewer" }]);
+    expect(form.role_mappings).toEqual([{ group: "", role: "member", vaults: [] }]);
     expect(form.enabled).toBe(false);
   });
 

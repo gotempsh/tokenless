@@ -18,6 +18,7 @@ fn matches(alert: &Alert, filter: &AlertFilter) -> bool {
             .session_id
             .is_none_or(|s| alert.session_id == Some(s))
         && filter.kind.is_none_or(|k| alert.kind == k)
+        && filter.within.covers(alert.vault_id.as_ref())
 }
 
 #[async_trait]

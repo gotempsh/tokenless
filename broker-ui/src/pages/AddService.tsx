@@ -19,9 +19,9 @@ import {
   type Rule,
   type ServiceTemplate,
   type StoredTemplate,
-  type UserSummary,
   type Vault,
 } from "../api";
+import { can, isInstanceAdmin, type Me } from "../access";
 import {
   addService,
   AddServiceError,
@@ -170,7 +170,7 @@ function backHref(ctx: AddServiceContext): string {
   return `#/${ctx.back ?? "templates"}`;
 }
 
-export function AddService({ ctx, user }: { ctx: AddServiceContext; user: UserSummary }) {
+export function AddService({ ctx, user }: { ctx: AddServiceContext; user: Me }) {
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const template = useMemo(
     () =>
@@ -253,16 +253,20 @@ function ServicePage({
 }: {
   ctx: AddServiceContext;
   template: ServiceTemplate;
-  user: UserSummary;
+  user: Me;
   back: string;
 }) {
-  const isAdmin = user.role === "admin";
+  // Variables and new vaults are the instance's; services are the vault's.
+  const isAdmin = isInstanceAdmin(user);
   const [where, setWhere] = useState<Where>(() => initialWhere(ctx));
   const [result, setResult] = useState<AddServiceProgress | null>(null);
   const progress = useRef<AddServiceProgress>({});
   const variables = useVariableKeys(isAdmin);
   const vaults = useLoad(() => get<Page<Vault>>("/vaults?page_size=100"), []);
   const chosenVault = where.vaultId && where.vaultId !== NEW_VAULT ? where.vaultId : "";
+  // Only the vaults the person administers take a new service.
+  const ownVaults = (vaults.data?.items ?? []).filter((v) => can(user, v.id, "manage"));
+  const canAddHere = where.vaultId === NEW_VAULT ? isAdmin : chosenVault ? can(user, chosenVault, "manage") : true;
   const bundles = useLoad(
     () =>
       chosenVault ? get<Page<AccessBundle>>(`/vaults/${chosenVault}/bundles?page_size=100`) : Promise.resolve(undefined),
@@ -372,7 +376,7 @@ function ServicePage({
               <ServiceForm
                 template={template}
                 variables={variables.data ?? []}
-                isAdmin={isAdmin}
+                isAdmin={canAddHere}
                 showTemplate={false}
                 blocked={problem}
                 takenNames={takenNames}
@@ -417,15 +421,19 @@ function ServicePage({
                       <Field
                         label="Vault"
                         htmlFor="add-vault"
-                        hint={vaults.data?.items.length === 0 && !isAdmin ? "No vaults yet. Ask an admin to create one." : undefined}
+                        hint={
+                          ownVaults.length === 0 && !isAdmin
+                            ? "You are not an admin of any vault. Ask a vault's admin to make you one, or an instance admin to create a vault for you."
+                            : undefined
+                        }
                       >
                         <SelectField
                           id="add-vault"
                           value={where.vaultId}
                           onChange={(vaultId) => set({ vaultId, bundleIds: [] })}
-                          placeholder={vaults.data?.items.length === 0 ? "No vaults yet" : "Choose a vault…"}
+                          placeholder={ownVaults.length === 0 ? "No vaults to add to" : "Choose a vault…"}
                           options={[
-                            ...(vaults.data?.items ?? []).map((v) => ({ value: v.id, label: v.name })),
+                            ...ownVaults.map((v) => ({ value: v.id, label: v.name })),
                             ...(isAdmin ? [{ value: NEW_VAULT, label: "New vault…" }] : []),
                           ]}
                         />

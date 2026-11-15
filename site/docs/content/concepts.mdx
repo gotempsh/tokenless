@@ -8,8 +8,8 @@ title: "Concepts"
 
 A vault groups services, the rules that use them, and the sessions minted
 from those rules. Use one per team or environment, for example `work`
-and `staging`. An API key is bound to one vault; a person's role applies
-to every vault.
+and `staging`. People are members of the vaults they work in, with a role
+in each; an API key is bound to one vault.
 
 ## Service
 
@@ -65,14 +65,20 @@ pull a signed policy snapshot from the control plane.
 
 ## People and API keys
 
-| Role | Can |
-|---|---|
-| Admin | Everything, including services and their secrets, people, API keys, proxies and settings. Only people can be admins. |
-| Editor | Read every vault; manage rules, bundles and sessions. |
-| Viewer | Read every vault. |
+A person is a **member** of the instance or an **instance admin**, and
+has a role in each vault they work in:
 
-An API key is an editor or a viewer within its one vault. The full list
-is in [Roles](./console/people.mdx#roles).
+| In a vault | Can |
+|---|---|
+| Runner | See what its bundles reach, and start sessions from them. |
+| Viewer | Read the vault, its sessions and audit log. |
+| Editor | Also manage rules, bundles and sessions. |
+| Admin | Also add services and decide who is a member. |
+
+Instance admins run the instance (people, proxies, settings) and oversee
+every vault, but join a vault before changing it. An API key is a
+runner, viewer or editor within its one vault. The full list is in
+[Access and least privilege](./access.mdx).
 
 Invite people under **People**. Create API keys for automation under
 **API keys**. Agents get a session, not an API key: create one on an
