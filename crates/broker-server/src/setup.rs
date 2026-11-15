@@ -687,7 +687,7 @@ fn editor_command(path: &str) -> String {
 
 /// Opens a URL in the browser, or a file in the text editor. A failure is
 /// only a warning: the command already printed what to open.
-fn open_with_system(target: &str, text_file: bool) {
+pub(crate) fn open_with_system(target: &str, text_file: bool) {
     let mut command = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         if text_file {

@@ -1282,3 +1282,99 @@ async fn a_group_mapping_gives_no_more_in_a_vault_than_its_author_holds() {
     let err = t.cp.sso.create_provider(&admin(), other).await.unwrap_err();
     assert!(err.to_string().contains("join the vault first"), "{err}");
 }
+
+#[tokio::test]
+async fn cli_sso_approval_is_scoped_single_use_and_bound_to_browser_identity() {
+    use crate::model::SignInScope;
+    let (t, _) = with_provider().await;
+    assert!(t.cp.auth.begin_cli_login("missing", false).await.is_err());
+    let started = t.cp.auth.begin_cli_login("corp", false).await.unwrap();
+    assert!(t
+        .cp
+        .auth
+        .poll_cli_login(&started.device_code)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(t.cp.auth.poll_cli_login(&started.user_code).await.is_err());
+    let (_, mut browser) = t.signed_in().await;
+    browser.caller.sign_in = SignInScope::Launch;
+    assert!(t
+        .cp
+        .auth
+        .approve_cli_login(&browser, &started.user_code)
+        .await
+        .is_err());
+    browser.caller.sign_in = SignInScope::Full;
+    let fresh = browser.caller.step_up_at;
+    browser.caller.step_up_at = None;
+    assert!(matches!(
+        t.cp.auth
+            .approve_cli_login(&browser, &started.user_code)
+            .await,
+        Err(ControlError::StepUpRequired { .. })
+    ));
+    browser.caller.step_up_at = fresh;
+    t.cp.auth
+        .approve_cli_login(&browser, &started.user_code)
+        .await
+        .unwrap();
+    assert!(t
+        .cp
+        .auth
+        .approve_cli_login(&browser, &started.user_code)
+        .await
+        .is_err());
+    let login =
+        t.cp.auth
+            .poll_cli_login(&started.device_code)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(login.scope, SignInScope::Launch);
+    assert_eq!(login.user.id, browser.user.id);
+    assert!(t
+        .cp
+        .auth
+        .poll_cli_login(&started.device_code)
+        .await
+        .is_err());
+    let cli = t.cp.auth.authenticate_session(&login.token).await.unwrap();
+    assert_eq!(cli.caller.sign_in, SignInScope::Launch);
+    assert!(t
+        .audit("auth.login")
+        .await
+        .iter()
+        .any(|e| e.detail.get("method").is_some_and(|m| m == "cli_sso")));
+    let managed = t.cp.auth.begin_cli_login("corp", true).await.unwrap();
+    t.cp.auth
+        .approve_cli_login(&browser, &managed.user_code)
+        .await
+        .unwrap();
+    let login =
+        t.cp.auth
+            .poll_cli_login(&managed.device_code)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(login.scope, SignInScope::Full);
+    assert!(login.max_age_secs <= 3600);
+}
+
+#[tokio::test]
+async fn cli_sso_cannot_redeem_after_approving_session_is_revoked() {
+    let (t, _) = with_provider().await;
+    let started = t.cp.auth.begin_cli_login("corp", false).await.unwrap();
+    let (_, browser) = t.signed_in().await;
+    t.cp.auth
+        .approve_cli_login(&browser, &started.user_code)
+        .await
+        .unwrap();
+    t.cp.auth.logout(&browser).await.unwrap();
+    assert!(t
+        .cp
+        .auth
+        .poll_cli_login(&started.device_code)
+        .await
+        .is_err());
+}

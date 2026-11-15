@@ -279,3 +279,28 @@ Neither sandboxes the agent. Whatever runs as the same user as a person's
 sign-in can use that sign-in. In tokenless that means starting sessions
 from the bundles that person can start from, so keep people on the fewest
 vaults and roles they need.
+
+### Sign in from the CLI with Keycloak
+
+Use the slug of the identity provider configured in Settings → Single sign-on:
+
+```sh
+tokenless login --server https://tokenless.example.com --sso keycloak
+tokenless login --server https://tokenless.example.com --sso keycloak --manage
+```
+
+The browser signs in through the existing OIDC configuration, including MFA and
+group mappings. Check that the confirmation code matches your terminal, then
+approve. The CLI stores a separate Tokenless session in the same keychain used
+by password login. It never receives your Keycloak password or tokens.
+
+By default the sign-in only starts agents. `--manage` grants your normal
+management permissions for at most one hour. `--no-browser` prints a URL you
+can open on another machine. Requests expire after five minutes and cannot be
+reused; restarting the Tokenless server also clears pending requests.
+
+This requires both the updated Tokenless server and CLI. Other configured OIDC
+providers work the same way: replace `keycloak` with their provider slug.
+
+If a sensitive management command asks for fresh authentication later, run
+`tokenless login --sso keycloak --manage` again and retry the command.

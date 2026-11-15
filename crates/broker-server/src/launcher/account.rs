@@ -9,6 +9,9 @@
 //! and a fresh authenticator code when an action asks for one. API keys
 //! cannot do these things.
 
+mod sso;
+pub use sso::{begin_browser_sign_in, BrowserSignIn};
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -459,6 +462,7 @@ pub const USER_AGENT: &str = concat!("tokenless/", env!("CARGO_PKG_VERSION"));
 fn http_client(base: &str) -> Result<reqwest::Client, LauncherError> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(TIMEOUT)
         .connect_timeout(Duration::from_secs(10))
         .no_proxy()
@@ -709,6 +713,30 @@ impl<'p> ConsoleClient<'p> {
     /// Confirms it is still the person at the keyboard, as the console asks
     /// before sensitive actions.
     async fn step_up(&self) -> Result<(), LauncherError> {
+        #[derive(Deserialize)]
+        struct Identity {
+            sso: Option<tokenless_control::service::sso::SsoSignIn>,
+        }
+        let response = self
+            .send(
+                &Method::GET,
+                "/auth/me",
+                None,
+                "checking the sign-in method",
+            )
+            .await?;
+        let response = sso::checked(response).await?;
+        let identity: Identity = response.json().await.map_err(|e| LauncherError::Http {
+            operation: "checking the sign-in method",
+            url: format!("{}/api/v1/auth/me", self.session.server),
+            reason: e.to_string(),
+        })?;
+        if let Some(sso) = identity.sso {
+            return Err(LauncherError::config(format!(
+                "this action needs a fresh single sign-on: run tokenless login --server {} --sso {} --manage, then retry",
+                super::trust::shell_quote(&self.session.server), super::trust::shell_quote(&sso.slug)
+            )));
+        }
         let proof = if self.session.totp_enrolled {
             json!({ "code": self.prompter.secret("Authenticator code")?.trim() })
         } else {

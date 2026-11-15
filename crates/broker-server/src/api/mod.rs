@@ -5,6 +5,7 @@
 
 mod alerts;
 mod audit_export;
+mod cli_login;
 mod console;
 mod extract;
 mod handlers;
@@ -35,6 +36,10 @@ fn api_routes() -> Router<Arc<AppState>> {
     use handlers::*;
     Router::new()
         .route("/auth/login", post(login))
+        .route("/auth/cli/start", post(cli_login::start))
+        .route("/auth/cli/poll", post(cli_login::poll))
+        .route("/auth/cli/details", get(cli_login::details))
+        .route("/auth/cli/approve", post(cli_login::approve))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .route("/auth/step-up", post(step_up))

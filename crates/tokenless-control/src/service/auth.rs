@@ -35,6 +35,8 @@ const MAX_API_KEY_DAYS: u32 = 365;
 /// expiry, rarely enough not to write on every request.
 const TOUCH_EVERY_SECS: i64 = 60;
 
+mod cli_login;
+pub use cli_login::{CliLoginDetails, CliLoginStarted};
 mod sign_ins;
 pub use sign_ins::{describe_client, SignIn, SignInClient, SignInsRevoked};
 use sign_ins::{idle_cutoff, idle_words};
@@ -437,6 +439,7 @@ pub struct AuthService {
     audit: AuditRecorder,
     config: ControlConfig,
     limiter: LoginLimiter,
+    cli_logins: Mutex<HashMap<String, cli_login::PendingCliLogin>>,
     dummy_hash: String,
 }
 
@@ -463,6 +466,7 @@ impl AuthService {
             audit,
             config,
             limiter: LoginLimiter::new(),
+            cli_logins: Mutex::new(HashMap::new()),
             dummy_hash: password::dummy_hash()?,
         })
     }
@@ -855,6 +859,16 @@ impl AuthService {
             return Err(unauth("session cookie is malformed"));
         }
         let token_hash = token::hash_token(session_token);
+        self.authenticate_session_hash(token_hash).await
+    }
+
+    async fn authenticate_session_hash(
+        &self,
+        token_hash: String,
+    ) -> Result<SessionAuth, ControlError> {
+        let unauth = |reason: &str| ControlError::Unauthenticated {
+            reason: reason.to_string(),
+        };
         let session = self
             .identity
             .get_ui_session(&token_hash)
