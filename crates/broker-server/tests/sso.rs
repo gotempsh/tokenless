@@ -284,6 +284,67 @@ async fn a_person_signs_in_with_their_identity_provider() {
     assert_eq!(me["user"]["role"], "member");
     assert_eq!(me["sso"]["slug"], "corp");
 
+    // The CLI uses this same OIDC flow, then exchanges its private polling
+    // secret for a separate scoped session after explicit browser approval.
+    use broker_server::launcher::account::{begin_browser_sign_in, SignInFor};
+    for purpose in [SignInFor::Launch, SignInFor::Manage] {
+        let flow = begin_browser_sign_in(&format!("http://{}", server.api_addr), "corp", purpose)
+            .await
+            .unwrap();
+        let mut cli_browser = Browser::new();
+        let (_, to_idp) = cli_browser.visit(&flow.url).await;
+        let (_, callback) = cli_browser.visit(&to_idp).await;
+        let (_, landing) = cli_browser.visit(&callback).await;
+        assert_eq!(landing, format!("/#/cli-login?code={}", flow.confirmation));
+        let cli_cookie = format!(
+            "__Host-broker_session={}",
+            cli_browser.cookies["__Host-broker_session"]
+        );
+        let info: Value = http
+            .get(format!("{api}/auth/me"))
+            .header("cookie", &cli_cookie)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let approve = format!("{api}/auth/cli/approve");
+        let body = json!({"code":flow.confirmation});
+        assert_eq!(
+            http.post(&approve)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            http.post(&approve)
+                .header("cookie", &cli_cookie)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::FORBIDDEN
+        );
+        let accepted = http
+            .post(&approve)
+            .header("cookie", &cli_cookie)
+            .header("x-csrf-token", info["csrf_token"].as_str().unwrap())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(accepted.headers()["cache-control"], "no-store");
+        let saved = flow.wait().await.unwrap();
+        assert_eq!(saved.username, "grace");
+        assert_eq!(saved.manage, purpose == SignInFor::Manage);
+    }
+
     // The same answer again, or in a browser that did not ask, is refused.
     let (_, replay) = browser.visit(&callback).await;
     assert!(replay.starts_with("/?sso_error="), "{replay}");

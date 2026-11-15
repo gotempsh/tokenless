@@ -92,6 +92,12 @@ enum Command {
         /// Asked for when not given.
         #[arg(long)]
         username: Option<String>,
+        /// Sign in in the browser using this configured OIDC provider slug (for example keycloak).
+        #[arg(long, conflicts_with = "username")]
+        sso: Option<String>,
+        /// Print the sign-in URL without opening the browser.
+        #[arg(long, requires = "sso")]
+        no_browser: bool,
         /// Sign in for an hour with everything your roles allow.
         #[arg(long)]
         manage: bool,
@@ -1215,6 +1221,9 @@ async fn wait_for_shutdown() -> Result<(), CliError> {
 }
 
 async fn serve(args: ServeArgs) -> Result<(), CliError> {
+    // Register before the server announces readiness; signals during startup
+    // remain pending until startup can shut down its resources cleanly.
+    let mut shutdown = setup::Stop::listen()?;
     let data_dir = args.data_dir.clone();
     let mut config = ServerConfig::new(args.data_dir);
     config.root_key = args.key.input();
@@ -1265,10 +1274,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
         eprintln!("  Move it out and start with --root-key-file <path> or TOKENLESS_ROOT_KEY.");
         eprintln!();
     }
-    // After the one-time password is out. Listening for the stop signal
-    // from here on: starting the built-in proxy takes a moment, and a
-    // SIGTERM then must still shut down cleanly.
-    let stop = stop_signal();
+    let stop = async { Ok::<_, CliError>(shutdown.signalled().await) };
     tokio::pin!(stop);
     let proxy = if args.no_proxy {
         None
@@ -1397,31 +1403,47 @@ async fn login(
     server: String,
     username: Option<String>,
     manage: bool,
+    sso: Option<String>,
+    no_browser: bool,
 ) -> Result<ExitCode, CliError> {
     let prompter = TerminalPrompter;
-    let username = match username {
-        Some(username) => username,
-        None => ask_username()?,
-    };
     let purpose = if manage {
         account::SignInFor::Manage
     } else {
         account::SignInFor::Launch
     };
-    let password = prompter.secret(&format!("Password for {username}"))?;
-    let session = match account::sign_in(&server, &username, &password, None, purpose).await? {
-        SignIn::Done(session) => session,
-        SignIn::CodeNeeded => {
-            let code = prompter.secret("Authenticator code")?;
-            match account::sign_in(&server, &username, &password, Some(&code), purpose).await? {
-                SignIn::Done(session) => session,
-                SignIn::CodeNeeded => {
-                    return Err(
-                        LauncherError::config("the authenticator code was not accepted").into(),
-                    )
+    let session = if let Some(provider) = sso {
+        let flow = account::begin_browser_sign_in(&server, &provider, purpose).await?;
+        say(format_args!(
+            "Confirm code {} in your browser. Open: {}",
+            flow.confirmation, flow.url
+        ));
+        if !no_browser {
+            setup::open_with_system(&flow.url, false);
+        }
+        flow.wait().await?
+    } else {
+        let username = match username {
+            Some(username) => username,
+            None => ask_username()?,
+        };
+        let password = prompter.secret(&format!("Password for {username}"))?;
+        let session = match account::sign_in(&server, &username, &password, None, purpose).await? {
+            SignIn::Done(session) => session,
+            SignIn::CodeNeeded => {
+                let code = prompter.secret("Authenticator code")?;
+                match account::sign_in(&server, &username, &password, Some(&code), purpose).await? {
+                    SignIn::Done(session) => session,
+                    SignIn::CodeNeeded => {
+                        return Err(LauncherError::config(
+                            "the authenticator code was not accepted",
+                        )
+                        .into())
+                    }
                 }
             }
-        }
+        };
+        session
     };
     let stored = SessionStore::system().store(&session)?;
     let until = session.expires_at.format("%Y-%m-%d %H:%M UTC").to_string();
@@ -2760,7 +2782,9 @@ async fn main() -> ExitCode {
             server,
             username,
             manage,
-        } => login(server, username, manage).await,
+            sso,
+            no_browser,
+        } => login(server, username, manage, sso, no_browser).await,
         Command::Logout { server } => logout(server).await,
         Command::Tripwire { command } => match command {
             TripwireCommand::Add {
@@ -2887,6 +2911,30 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn login_accepts_sso_and_rejects_password_or_browser_flag_conflicts() {
+        use clap::Parser;
+        assert!(super::Cli::try_parse_from([
+            "tokenless",
+            "login",
+            "--sso",
+            "keycloak",
+            "--manage",
+            "--no-browser"
+        ])
+        .is_ok());
+        assert!(super::Cli::try_parse_from([
+            "tokenless",
+            "login",
+            "--sso",
+            "keycloak",
+            "--username",
+            "alice"
+        ])
+        .is_err());
+        assert!(super::Cli::try_parse_from(["tokenless", "login", "--no-browser"]).is_err());
+    }
+
     #[test]
     fn a_fresh_machine_gets_the_skill_for_claude_code_too() {
         let home = tempfile::tempdir().unwrap();

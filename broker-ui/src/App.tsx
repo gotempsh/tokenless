@@ -57,6 +57,7 @@ import { AcceptInvite, AuthLayout, Login, StepUpDialog, StepUpDone } from "./pag
 import { ProviderFormPage } from "./pages/SingleSignOn";
 import { DestinationFormPage } from "./pages/AuditExport";
 import { STEP_UP_DONE_ROUTE, takeSsoError } from "./sso";
+import { CliLogin } from "./pages/CliLogin";
 import { Account } from "./pages/Account";
 import { BundleDetail, bundleTab } from "./pages/BundleDetail";
 import { BundleFormPage } from "./pages/BundleFormPage";
@@ -221,6 +222,11 @@ export function App() {
         }}
       />
     );
+
+  if (route[0] === "cli-login") return <>
+    <CliLogin code={query.get("code") ?? ""} username={boot.session.user.username} />
+    <StepUpDialog open={stepUpOpen} totpEnrolled={boot.session.user.totp_enrolled} sso={boot.session.sso} ssoError={ssoError} onResult={finishStepUp} />
+  </>;
 
   const user = meFrom(boot.session);
   const [rawSection = "vaults", id, tab, sub] = route;

@@ -364,7 +364,7 @@ fn run_command(vault: &str, bundle: &str) -> String {
 /// Ctrl-C and, on Unix, SIGTERM, listened for from the moment this is made,
 /// so a signal that comes while the command is busy (an HTTP call between
 /// two waits) is kept for the next wait rather than lost.
-struct Stop {
+pub(crate) struct Stop {
     #[cfg(unix)]
     interrupt: tokio::signal::unix::Signal,
     #[cfg(unix)]
@@ -372,7 +372,7 @@ struct Stop {
 }
 
 impl Stop {
-    fn listen() -> Result<Self, CliError> {
+    pub(crate) fn listen() -> Result<Self, CliError> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -394,7 +394,7 @@ impl Stop {
     }
 
     /// Which signal came.
-    async fn signalled(&mut self) -> &'static str {
+    pub(crate) async fn signalled(&mut self) -> &'static str {
         #[cfg(unix)]
         {
             tokio::select! {
@@ -687,7 +687,7 @@ fn editor_command(path: &str) -> String {
 
 /// Opens a URL in the browser, or a file in the text editor. A failure is
 /// only a warning: the command already printed what to open.
-fn open_with_system(target: &str, text_file: bool) {
+pub(crate) fn open_with_system(target: &str, text_file: bool) {
     let mut command = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         if text_file {

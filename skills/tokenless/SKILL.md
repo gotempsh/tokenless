@@ -305,10 +305,14 @@ its own.
 - **Sign in as themselves**, in their own terminal:
   `tokenless login --username <their username>`, which only starts
   sessions, and `tokenless login --manage --username <their username>`
-  when they set something up (it lasts an hour). An account that only uses single sign-on has no
-  password for `login`: they add services in the console, and start you
-  with a session token from the bundle's page
-  (`TOKENLESS_SESSION_TOKEN`, section 3).
+  when they set something up (it lasts an hour). For single sign-on, use
+  `tokenless login --sso <provider-slug>` (for example, `keycloak`),
+  adding `--manage` when setting things up. This opens the configured
+  identity provider in the browser; they compare the confirmation code
+  with their terminal and approve the requested access. `--no-browser`
+  prints the URL to open manually. Both the CLI and server must support
+  browser sign-in. If a later sensitive management command asks for fresh
+  authentication, repeat the SSO login with `--manage` and retry it.
 - **Services** may already be there, added once for the team. When
   `status` reports services and an access bundle, skip step 2.
   `tokenless bundle list --json` shows each bundle and the services it
