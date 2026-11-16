@@ -467,13 +467,11 @@ pub fn verify_session(
 
 #[cfg(test)]
 mod tests {
-    use rand::rngs::OsRng;
-
     use super::*;
     use crate::ids::VaultId;
 
     fn setup() -> (SessionSigner, HashMap<String, VerifyingKey>, SessionClaims) {
-        let signer = SessionSigner::new(SigningKey::generate(&mut OsRng));
+        let signer = SessionSigner::new(SigningKey::from_bytes(&rand::random()));
         let keys = HashMap::from([(signer.kid().to_string(), signer.verifying_key())]);
         let claims = SessionClaims::new(
             Scope::for_vault(&VaultId::new()),
@@ -591,7 +589,7 @@ mod tests {
     #[test]
     fn unknown_key_and_other_signer_fail() {
         let (_, keys, claims) = setup();
-        let other = SessionSigner::new(SigningKey::generate(&mut OsRng));
+        let other = SessionSigner::new(SigningKey::from_bytes(&rand::random()));
         let token = other.sign(&claims).unwrap();
         assert!(matches!(
             verify_session(&token, &keys, Utc::now()),
