@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-auth"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-control"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "tokenless-dataplane"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aho-corasick",
  "arc-swap",
