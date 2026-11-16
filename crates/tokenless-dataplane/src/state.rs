@@ -454,7 +454,7 @@ pub(crate) mod tests {
             ];
             let ca = params.self_signed(&ca_key).unwrap();
             let seal_secret = SealSecretKey::random_from_rng(OsRng);
-            let signer = SigningKey::generate(&mut OsRng);
+            let signer = SigningKey::from_bytes(&rand::random());
             Self {
                 keys: NodeKeys {
                     node_id: NodeId::new(),
@@ -462,7 +462,7 @@ pub(crate) mod tests {
                     snapshot_key: signer.verifying_key(),
                 },
                 signer,
-                session_signer: SigningKey::generate(&mut OsRng),
+                session_signer: SigningKey::from_bytes(&rand::random()),
                 ca_cert_der: ca.der().to_vec(),
                 ca_key_der: ca_key.serialize_der(),
             }

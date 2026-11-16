@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn redaction_is_on_unless_a_format_6_snapshot_turns_it_off() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
         let mut b = body();
         // On is the default and is not written, so any format carries it.
@@ -505,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_rate_limit_needs_format_6_and_is_left_out_when_off() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
         let mut b = body();
         b.format = TRIPWIRE_FORMAT;
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn a_quarantine_policy_needs_format_4_and_is_left_out_when_off() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
         let mut b = body();
         b.format = 3;
@@ -566,7 +566,7 @@ mod tests {
 
     #[test]
     fn tripwires_need_format_5_and_are_left_out_when_none() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
         let mut b = body();
         b.format = QUARANTINE_FORMAT;
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let b = body();
         let signed = SignedSnapshot::sign(&b, &key).unwrap();
         assert_eq!(signed.verify(&key.verifying_key()).unwrap(), b);
@@ -604,9 +604,9 @@ mod tests {
 
     #[test]
     fn tampering_and_wrong_key_fail() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let mut signed = SignedSnapshot::sign(&body(), &key).unwrap();
-        let other = SigningKey::generate(&mut OsRng);
+        let other = SigningKey::from_bytes(&rand::random());
         assert!(signed.verify(&other.verifying_key()).is_err());
         signed.body = signed.body.replace("\"version\":7", "\"version\":8");
         assert!(signed.verify(&key.verifying_key()).is_err());
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn published_key_round_trips() {
-        let key = SigningKey::generate(&mut OsRng).verifying_key();
+        let key = SigningKey::from_bytes(&rand::random()).verifying_key();
         let published = PublishedKey::from_key(&key);
         assert_eq!(published.decode().unwrap(), key);
         assert_eq!(published.kid, key_id(&key));
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn a_credential_deadline_needs_format_2_and_older_formats_still_read() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::from_bytes(&rand::random());
         let signed = |b: &SnapshotBody| SignedSnapshot::sign(b, &key).unwrap();
         let mut b = body();
         let node_key = PublicKey::from(&StaticSecret::random_from_rng(OsRng));
