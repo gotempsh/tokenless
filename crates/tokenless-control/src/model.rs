@@ -239,8 +239,11 @@ pub struct TestFence {
     pub secret_generation: u64,
     /// The credential's `updated_at`: any change to it moves this.
     pub updated_at: DateTime<Utc>,
-    /// The latest `updated_at` of the variables it references, if any.
-    pub variables_updated_at: Option<DateTime<Utc>>,
+    /// The `updated_at` of each variable it references, by key (a missing
+    /// one is absent). Each is compared on its own: a change to one variable
+    /// moves its entry even when another variable is newer, which a single
+    /// latest timestamp would hide.
+    pub variables: BTreeMap<String, DateTime<Utc>>,
 }
 
 /// The result of one credential test. Only the status code, the host and

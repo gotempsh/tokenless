@@ -175,12 +175,12 @@ async fn fence_of(store: &dyn CredentialStore, id: &CredentialId) -> Result<Test
     Ok(TestFence {
         secret_generation: meta.secret_generation,
         updated_at: meta.updated_at,
-        variables_updated_at: store
+        variables: store
             .load_variable_ciphertexts(&meta.variable_refs)
             .await?
             .into_iter()
-            .map(|(v, _)| v.updated_at)
-            .max(),
+            .map(|(v, _)| (v.key, v.updated_at))
+            .collect(),
     })
 }
 
@@ -742,6 +742,42 @@ pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), Con
             && other.as_ref().is_some_and(|m| m.last_test.is_some()),
         "only the referencing credential's test is forgotten: {using:?} / {other:?}"
     );
+
+    // Each referenced variable is fenced on its own: a change to one that
+    // is older than another (ORG_ID is newer than GITHUB_TOKEN) still keeps
+    // a result for its old value from being saved.
+    let mut both = credential(VaultId::new(), "two-variables", -3);
+    both.custom_headers = vec![CustomHeader {
+        name: "X-Both".into(),
+        value: "{{ORG_ID}}:{{GITHUB_TOKEN}}".into(),
+    }];
+    both.variable_refs = vec!["GITHUB_TOKEN".into(), "ORG_ID".into()];
+    store
+        .insert_credential(both.clone(), b"ct".to_vec(), &[])
+        .await
+        .map_err(backend(S, "credential_insert"))?;
+    let fence = fence_of(store, &both.id)
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    store
+        .replace_variable_value(&token.id, b"v-1b".to_vec(), "user:other", at(-15), &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    let late = store
+        .record_credential_test(&both.id, &fence, &test, &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    ensure!(
+        S,
+        "variable_each",
+        !late,
+        "a result must not be kept when any one referenced variable changed"
+    );
+    // Drop its references, so the variables can be deleted below.
+    store
+        .update_custom_headers(&both.id, vec![], vec![], at(7), &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
 
     // Changing the headers changes what a test sends: the last result
     // is forgotten, and one from before the change is not kept.

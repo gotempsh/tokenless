@@ -355,7 +355,7 @@ impl PolicyService {
         req: CreateCredential,
     ) -> Result<AddedCredential, ControlError> {
         let mut credential = self.create_credential(caller, vault_id, req).await?;
-        let (test, saved) = match self.run_test(caller, &credential).await {
+        let (test, tested) = match self.run_test(caller, &credential).await {
             Ok(tested) => tested,
             // The credential is stored either way; a test that could not
             // be completed is said, not turned into a failed add. It is an
@@ -374,12 +374,18 @@ impl PolicyService {
                     tested_at: Utc::now(),
                     tested_by: caller.actor().to_string(),
                 };
-                (test, false)
+                (test, None)
             }
         };
-        // Only what was kept: a read of the credential says the same.
-        if saved {
-            credential.last_test = Some(test.clone());
+        // Only what was kept, with the metadata it was kept for: the
+        // credential may have changed between storing and testing it, and
+        // the result must not sit beside another secret's generation or
+        // expiry. A read of the credential then says the same.
+        if let Some(tested) = tested {
+            credential = CredentialMeta {
+                last_test: Some(test.clone()),
+                ..tested
+            };
         }
         Ok(AddedCredential { credential, test })
     }
@@ -443,13 +449,14 @@ impl PolicyService {
 
     /// Runs one test and keeps its outcome as the credential's `last_test`,
     /// unless it was rate-limited (it did not run) or what the credential
-    /// sends (its secret, headers or variables) changed while it ran. Says
-    /// whether it was kept. The caller has been authorised.
+    /// sends (its secret, headers or variables) changed while it ran.
+    /// Returns, beside the result, the metadata it was run against when the
+    /// result was kept. The caller has been authorised.
     async fn run_test(
         &self,
         caller: &Caller,
         meta: &CredentialMeta,
-    ) -> Result<(CredentialTest, bool), ControlError> {
+    ) -> Result<(CredentialTest, Option<CredentialMeta>), ControlError> {
         // Read afresh, with the variables it uses, before rendering: the
         // fence is what the request was built from, so any change after
         // this read keeps the result from being saved.
@@ -457,13 +464,13 @@ impl PolicyService {
         let fence = TestFence {
             secret_generation: meta.secret_generation,
             updated_at: meta.updated_at,
-            variables_updated_at: self
+            variables: self
                 .credentials
                 .load_variable_ciphertexts(&meta.variable_refs)
                 .await?
                 .into_iter()
-                .map(|(v, _)| v.updated_at)
-                .max(),
+                .map(|(v, _)| (v.key, v.updated_at))
+                .collect(),
         };
         let actor = caller.actor().to_string();
         let blank = |outcome: TestOutcome, detail: String| CredentialTest {
@@ -488,7 +495,7 @@ impl PolicyService {
                     .credentials
                     .record_credential_test(&meta.id, &fence, &test, &[])
                     .await?;
-                return Ok((test, saved));
+                return Ok((test, saved.then(|| meta.clone())));
             }
         };
         let host = plan.host.to_string();
@@ -508,7 +515,7 @@ impl PolicyService {
                         ),
                     )
                 },
-                false,
+                None,
             ));
         }
         let headers = render_credential(
@@ -623,7 +630,7 @@ impl PolicyService {
                 return Err(e.into());
             }
         };
-        Ok((test, saved))
+        Ok((test, saved.then(|| meta.clone())))
     }
 
     /// Inserts built-in templates that are not yet stored and returns how

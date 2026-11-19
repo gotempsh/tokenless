@@ -237,19 +237,19 @@ impl CredentialStore for MemoryStore {
             .get(id)
             .map(|(m, _)| m.variable_refs.clone())
             .ok_or_else(|| StoreError::not_found("credential", id))?;
-        let variables_updated_at = inner
+        let variables: BTreeMap<String, DateTime<Utc>> = inner
             .variables
             .values()
             .filter(|(v, _)| refs.contains(&v.key))
-            .map(|(v, _)| v.updated_at)
-            .max();
+            .map(|(v, _)| (v.key.clone(), v.updated_at))
+            .collect();
         let (meta, _) = inner
             .credentials
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
         let current = meta.secret_generation == fence.secret_generation
             && meta.updated_at == fence.updated_at
-            && variables_updated_at == fence.variables_updated_at;
+            && variables == fence.variables;
         if current {
             meta.last_test = Some(test.clone());
         }

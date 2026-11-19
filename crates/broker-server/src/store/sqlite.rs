@@ -544,21 +544,34 @@ impl CredentialStore for SqliteStore {
         let mut tx = self.begin("record_credential_test").await?;
         // What the credential sends now: its secret, its row (headers and
         // all), and the variables it references.
-        let row = sqlx::query(
-            "SELECT secret_generation, updated_at, \
-             (SELECT MAX(variables.updated_at) FROM json_each(credentials.variable_refs) \
-              JOIN variables ON variables.key = json_each.value) AS variables_updated_at \
-             FROM credentials WHERE id = ?",
+        let row = sqlx::query("SELECT secret_generation, updated_at FROM credentials WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db("record credential test", "credential"))?
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        // Each referenced variable's own timestamp, compared one by one.
+        let variables: BTreeMap<String, String> = sqlx::query(
+            "SELECT variables.key, variables.updated_at \
+             FROM credentials, json_each(credentials.variable_refs) \
+             JOIN variables ON variables.key = json_each.value \
+             WHERE credentials.id = ?",
         )
         .bind(id.to_string())
-        .fetch_optional(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
         .map_err(db("record credential test", "credential"))?
-        .ok_or_else(|| StoreError::not_found("credential", id))?;
+        .iter()
+        .map(|r| Ok((get::<String>(r, "key")?, get::<String>(r, "updated_at")?)))
+        .collect::<Result<_, StoreError>>()?;
+        let fenced: BTreeMap<String, String> = fence
+            .variables
+            .iter()
+            .map(|(key, at)| (key.clone(), ts(at)))
+            .collect();
         let current = to_u64(get::<i64>(&row, "secret_generation")?) == fence.secret_generation
             && get::<String>(&row, "updated_at")? == ts(&fence.updated_at)
-            && get::<Option<String>>(&row, "variables_updated_at")?
-                == opt_ts(&fence.variables_updated_at);
+            && variables == fenced;
         if current {
             sqlx::query("UPDATE credentials SET last_test = ? WHERE id = ?")
                 .bind(to_json("last_test", test)?)

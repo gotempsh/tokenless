@@ -692,10 +692,12 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
     }
 }
 
-/// The memory store, with `record_credential_test` made to fail.
+/// The memory store, with `record_credential_test` made to fail, or the
+/// credential's headers changed just before it is next read.
 struct Faulty {
     inner: Arc<MemoryStore>,
     fail_record: std::sync::atomic::AtomicBool,
+    change_on_read: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
@@ -713,6 +715,20 @@ impl crate::store::CredentialStore for Faulty {
         &self,
         id: &CredentialId,
     ) -> Result<Option<CredentialMeta>, StoreError> {
+        if self.change_on_read.swap(false, Ordering::SeqCst) {
+            self.inner
+                .update_custom_headers(
+                    id,
+                    vec![CustomHeader {
+                        name: "OpenAI-Organization".into(),
+                        value: "org-dummy-c".into(),
+                    }],
+                    vec![],
+                    Utc::now(),
+                    &[],
+                )
+                .await?;
+        }
         self.inner.get_credential(id).await
     }
 
@@ -856,6 +872,7 @@ async fn an_error_after_sending_is_an_error_and_stays_audited() {
     let faulty: Arc<dyn crate::store::CredentialStore> = Arc::new(Faulty {
         inner: store.clone(),
         fail_record: true.into(),
+        change_on_read: false.into(),
     });
     let upstream = Scripted::new(Ok(200));
     let t = setup_with(store, faulty, upstream.clone()).await;
@@ -949,4 +966,35 @@ async fn a_change_during_the_test_keeps_its_result_out() {
     );
     // Both tests went out, so both are on record.
     assert_eq!(validations(&t).await.len(), 2);
+}
+
+/// The add's answer pairs the result with the credential it was kept for:
+/// if the credential changed between being stored and being tested, the
+/// answer shows it as tested, not as it was first stored.
+#[tokio::test]
+async fn an_add_reports_the_credential_as_it_was_tested() {
+    let store = Arc::new(MemoryStore::new());
+    let changing: Arc<dyn crate::store::CredentialStore> = Arc::new(Faulty {
+        inner: store.clone(),
+        fail_record: false.into(),
+        change_on_read: true.into(),
+    });
+    let t = setup_with(store, changing, Scripted::new(Ok(200))).await;
+    let added =
+        t.cp.policy
+            .add_credential(&admin(), &t.vault, openai("models"))
+            .await
+            .unwrap();
+    assert_eq!(added.test.outcome, TestOutcome::Accepted);
+    let read = t
+        .store
+        .get_credential(&added.credential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.custom_headers.len(), 1, "{read:?}");
+    assert_eq!(
+        added.credential, read,
+        "the answer is what a read of the credential says"
+    );
 }
