@@ -117,8 +117,10 @@ tokenless login                                   # for agents: only starts sess
 ```
 
 `service add` creates the vault and the bundle when they don't exist,
-stores the token encrypted and write-only, and adds a rule for it to the
-bundle. An agent can run it for you without seeing the token:
+stores the token encrypted and write-only, adds a rule for it to the
+bundle, then tests the token against the service (a read-only request to
+its own host) and prints what is left before an agent can use it.
+`tokenless service test github` tests it again. An agent can run it for you without seeing the token:
 `--secret-file` waits for you to save it in a private file and deletes the
 file once it is stored, `--web` waits for you to enter it in the console. `tokenless service
 templates OPENAI_API_KEY` finds a template by the variable a tool reads.
@@ -131,8 +133,9 @@ Or in the console at <http://127.0.0.1:8080/>:
 2. **Vaults → Create vault**.
 3. **Credentials → Add a credential**. Pick a template (for example
    GitHub) and paste the token. The form is write-only.
-   Use **Test** next to it to send the template's validation request
-   (status code only, to the credential's own host).
+   It is tested as it is saved (a read-only request to the service's own
+   host; only the status is shown), and the page lists the next steps to
+   an agent using it. **Test** on the service's page tests it again.
 4. **Rules → Add a rule** for that credential. Leave the scope empty to
    use the template's maximum, or narrow it.
 5. **Access bundles → Create bundle**, for example `code-review`, and

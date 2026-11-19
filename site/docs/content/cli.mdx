@@ -16,7 +16,8 @@ description: "Every command takes --help for its full list of options."
 | `tokenless sign-ins list`, `revoke` | The browsers and CLI logins signed in as you, and ending one or all but this one. Admins sign someone out everywhere with `--user`. |
 | `tokenless vault member list`, `set`, `remove` | Who works in a vault, with which role; adding people and changing their role. |
 | `tokenless vault join` | An instance admin joins a vault they oversee, as one of its admins. |
-| `tokenless service add` | Store a credential from a template, with a rule and an access bundle. |
+| `tokenless service add` | Store a credential from a template, with a rule and an access bundle, and test it. |
+| `tokenless service test` | Send a service's test request again and say whether the credential works. |
 | `tokenless service templates` | Find a template by name, host or variable. |
 | `tokenless proxy add` | Create a join token and enrol this machine as a proxy. |
 | `tokenless admin reset-password` | On the server's host: replace a lost password. |
@@ -45,6 +46,7 @@ description: "Every command takes --help for its full list of options."
 | `--node-listen` | `127.0.0.1:8443` | Node API (mutual TLS) |
 | `--node-api-name` | `localhost`, `127.0.0.1` | Names in the node API certificate (repeatable) |
 | `--validation-ca` | | Extra CAs for credential tests (repeatable) |
+| `--no-credential-tests` | `TOKENLESS_NO_CREDENTIAL_TESTS` | Never send a credential's test request: services are not tested when added, and **Test** says so. For a server that must make no outbound calls of its own |
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
 | `--no-proxy` | `TOKENLESS_NO_BUILTIN_PROXY` | Don't run the built-in proxy, for a server whose proxies run on other machines. The container image sets the variable |
@@ -73,11 +75,25 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 | `--open` | | Open the page in the browser, or the file in the text editor |
 | `--wait` | `15m` | How long `--secret-file` and `--web` wait |
 | `--no-wait` | | With `--web`, only print the page |
-| `--json` | | Print the service, vault and the bundle it joined (`null` if none) as JSON |
+| `--json` | | Print the service, vault, the bundle it joined (`null` if none), its `test` and `next_steps` as JSON |
 
 The template is matched by ID or name. A single-field credential can be
 piped in on standard input. See
 [Without typing the key here](./terminal.mdx#without-typing-the-key-here).
+Once stored, the credential is tested and the next steps are printed; see
+[Is the key right?](./terminal.mdx#is-the-key-right). A key that fails the
+test is still stored.
+
+## `service test <service>`
+
+| Option | Default | |
+|---|---|---|
+| `--vault` | the only one | The service's vault, by name or ID |
+| `--json` | | The result (`outcome`, `host`, `method`, `path`, `status`, `detail`) and `next_steps` |
+
+Sends the template's test request again, after `tokenless login --manage`.
+Exits 0 when the credential was accepted or the service has no test
+request, 1 otherwise.
 
 ## `service templates [query]`
 

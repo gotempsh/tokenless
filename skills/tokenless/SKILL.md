@@ -257,8 +257,14 @@ The steps it leads through:
      tokenless service add openai --vault personal --bundle my-agent --web --open
      ```
 
-   Either ends with the service's vault and the bundle it joined, as JSON
-   with `--json`.
+   Either ends with the service's vault, the bundle it joined and a test
+   of the key, as JSON with `--json`: `test.outcome` is `accepted` when
+   the service took it; `rejected` (401 or 403) means the key is wrong,
+   expired or missing scopes, so ask them for another (the service is
+   kept; replace the key on its page); `no_probe` means the service has
+   no test request, which is not a pass. `next_steps` lists what is
+   left, each with its `fix`. `tokenless service test openai --vault
+   personal --json` tests it again.
    Then they delete any plaintext copy (the line in `.env`, the `export`
    in the profile); a tool that insists on the variable gets a dummy value
    (`OPENAI_API_KEY=tokenless`), as in section 2.

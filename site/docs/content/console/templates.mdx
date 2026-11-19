@@ -61,9 +61,9 @@ default_headers:
   - name: Accept
     value: "application/json"
 validation:                # what Test sends; optional
-  method: GET
-  path: /api/health
-  expect_status: [200]
+  method: GET              # GET or HEAD only
+  path: /api/me            # one exact path, a read that needs the key
+  expect_status: [200]     # 2xx only; empty means any 2xx
 ```
 
 `injection.method` is one of:
