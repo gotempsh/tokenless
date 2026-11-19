@@ -46,7 +46,7 @@ description: "Every command takes --help for its full list of options."
 | `--node-listen` | `127.0.0.1:8443` | Node API (mutual TLS) |
 | `--node-api-name` | `localhost`, `127.0.0.1` | Names in the node API certificate (repeatable) |
 | `--validation-ca` | | Extra CAs for credential tests (repeatable) |
-| `--no-credential-tests` | `TOKENLESS_NO_CREDENTIAL_TESTS` | Never send a credential's test request: services are not tested when added, and **Test** says so. For a server that must make no outbound calls of its own |
+| `--no-credential-tests` | `TOKENLESS_NO_CREDENTIAL_TESTS` | Never send a credential's test request: a service is reported as not tested, when added and on **Test**. For a server that must make no outbound calls of its own |
 | `--lease-secs` | `60` | How long a proxy may run without reaching the control plane |
 | `--ui-dir` | | Serve the console from a directory instead of the built-in one |
 | `--no-proxy` | `TOKENLESS_NO_BUILTIN_PROXY` | Don't run the built-in proxy, for a server whose proxies run on other machines. The container image sets the variable |

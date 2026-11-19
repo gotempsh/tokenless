@@ -113,12 +113,12 @@ it. `--json` gives the same as `test` and `next_steps`.
 
 | Result | Means |
 |---|---|
-| accepted | The service answered 2xx: the key works |
+| accepted | The service answered the status its template expects (a 2xx; any 2xx when the template names none): the key works |
 | rejected (401, 403) | The key is wrong, expired or lacks the scopes the request needs. Replace it on the service's page |
 | another status | Neither: test again later |
 | couldn't reach, timed out | DNS, TLS or the connection failed, or no answer in 10 seconds |
 | blocked | The host resolves to a private address; allow it under [Settings → Private addresses](./settings.mdx#private-addresses) |
-| not tested | The service has no test request, or the server runs with `--no-credential-tests`. Never a pass |
+| not tested | The service has no test request it may send (none defined, or only wildcard hosts), or the server runs with `--no-credential-tests`. The reason is given. Never a pass |
 
 A key that fails is still stored, so you can fix it and test again:
 
