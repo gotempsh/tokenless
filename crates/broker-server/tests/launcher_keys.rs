@@ -66,6 +66,8 @@ async fn with_key(
 async fn a_launcher_key_starts_its_bundle_s_sessions_and_nothing_else() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();

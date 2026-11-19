@@ -11,13 +11,17 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use broker_server::launcher::account::{self, AddService, ConsoleClient, SessionStore};
+use broker_server::launcher::next_steps::{self, Facts, NextSteps, ProxySeen};
 use broker_server::launcher::secret_file::{self, Fields, Prepared};
 use broker_server::launcher::status::{self, Observed, ProxyStateFile, Skill, VaultSummary};
 use broker_server::launcher::templates::{self, TemplateRow};
 use broker_server::launcher::trust::shell_word;
 use broker_server::launcher::{skill, LauncherError};
 use serde::Serialize;
-use tokenless_control::model::{AccessBundle, StoredTemplate};
+use tokenless_control::model::{
+    AccessBundle, CredentialMeta, CredentialTest, StoredTemplate, TestOutcome,
+};
+use tokenless_control::probe::PROBE_TIMEOUT;
 use tokenless_core::ids::{BundleId, CredentialId, RuleId, VaultId};
 use tokenless_core::template::{builtin_templates, ServiceTemplate};
 
@@ -121,13 +125,15 @@ fn skill_state(cwd: &Path, home: Option<&Path>) -> Skill {
 async fn vault_summaries(client: &ConsoleClient<'_>) -> Result<Vec<VaultSummary>, LauncherError> {
     let mut out = Vec::new();
     for vault in client.vaults().await? {
-        let services = match client.credentials(&vault.id).await {
-            Ok(services) => services.len() as u64,
+        let listed = match client.credentials(&vault.id).await {
+            Ok(services) => services,
             // A vault an instance admin oversees without being a member:
             // nothing in it is theirs to start agents with.
             Err(LauncherError::Api { status: 403, .. }) => continue,
             Err(e) => return Err(e),
         };
+        let services = listed.len() as u64;
+        let tests = listed.into_iter().map(|c| (c.name, c.last_test)).collect();
         // Only a bundle with an enabled rule can start a session.
         let bundles = if services > 0 {
             let enabled: Vec<RuleId> = client
@@ -151,6 +157,7 @@ async fn vault_summaries(client: &ConsoleClient<'_>) -> Result<Vec<VaultSummary>
             name: vault.name,
             services,
             bundles,
+            tests,
         });
     }
     Ok(out)
@@ -250,6 +257,14 @@ struct Added<'a> {
     bundle_created: bool,
     /// How to start a command with it, when the bundle is known.
     run: Option<String>,
+    /// The control plane's test of the credential: `outcome` is
+    /// `accepted`, `rejected` (401/403: the key is wrong, expired or lacks
+    /// scopes), `unexpected_status`, `unreachable`, `blocked` (egress
+    /// policy), `timed_out`, `no_probe` (nothing to test with),
+    /// `unavailable` or `rate_limited`.
+    test: Option<&'a CredentialTest>,
+    /// From added to in use: each step done or pending, with its fix.
+    next_steps: &'a NextSteps,
 }
 
 pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
@@ -331,6 +346,16 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         .bundle
         .as_ref()
         .map(|(b, created)| (b.name.as_str(), *created));
+    let steps = steps_for(
+        &client,
+        &args.server,
+        &added.credential,
+        &added.vault.name,
+        bundle.map(|(b, _)| b),
+        added.test.as_ref(),
+        &template,
+    )
+    .await;
     if args.json {
         print_json(&Added {
             service: &added.credential.name,
@@ -340,6 +365,8 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             bundle: bundle.map(|(b, _)| b),
             bundle_created: bundle.is_some_and(|(_, c)| c),
             run: bundle.map(|(b, _)| run_command(&added.vault.name, b)),
+            test: added.test.as_ref(),
+            next_steps: &steps,
         })?;
     } else {
         say(messages::added_service(&messages::AddedService {
@@ -349,8 +376,164 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             bundle,
             rule: &added.rule.name,
         }));
+        say(format_args!(
+            "test: {}",
+            next_steps::test_line(added.test.as_ref())
+        ));
+        eprint!("{}", next_steps::render(&steps));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The checklist after adding or testing `credential`: what is done, and
+/// the command or page for what is not. Proxies are an admin's to see, so
+/// for anyone else that step stays unknown rather than failing the command.
+async fn steps_for(
+    client: &ConsoleClient<'_>,
+    server: &str,
+    credential: &CredentialMeta,
+    vault: &str,
+    bundle: Option<&str>,
+    test: Option<&CredentialTest>,
+    template: &StoredTemplate,
+) -> NextSteps {
+    let now = chrono::Utc::now();
+    let proxy = match client.nodes().await {
+        Ok(nodes) => {
+            let active: Vec<_> = nodes.iter().filter(|n| n.revoked_at.is_none()).collect();
+            let live: Vec<String> = active
+                .iter()
+                .filter(|n| status::connected(n, now))
+                .map(|n| n.name.clone())
+                .collect();
+            if !live.is_empty() {
+                ProxySeen::Connected(live)
+            } else if active.is_empty() {
+                ProxySeen::None
+            } else {
+                ProxySeen::Idle(active.iter().map(|n| n.name.clone()).collect())
+            }
+        }
+        Err(LauncherError::Api { status: 403, .. }) => ProxySeen::Unknown(
+            "only an admin can see proxies; tokenless status says whether one answers".into(),
+        ),
+        Err(e) => ProxySeen::Unknown(format!("could not list proxies: {e}")),
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let state = ProxyStateFile::find(home_dir().as_deref(), &cwd)
+        .path
+        .display()
+        .to_string();
+    let base = server.trim().trim_end_matches('/');
+    next_steps::build(&Facts {
+        server: base,
+        service: &credential.name,
+        credential_id: &credential.id.to_string(),
+        vault,
+        vault_id: &credential.vault_id.to_string(),
+        bundle,
+        test,
+        proxy,
+        proxy_state: &state,
+        variable: template.template.suggested_variable.as_deref(),
+        substitutions: &credential.substitutions,
+    })
+}
+
+pub struct TestArgs {
+    /// The service, by name or id.
+    pub service: String,
+    pub vault: Option<String>,
+    pub server: String,
+    pub json: bool,
+}
+
+/// What `service test --json` prints.
+#[derive(Serialize)]
+struct Tested<'a> {
+    service: &'a str,
+    vault: &'a str,
+    #[serde(flatten)]
+    test: &'a CredentialTest,
+    next_steps: &'a NextSteps,
+}
+
+/// `tokenless service test`: runs the service's test request again and
+/// says how it went. Exits 0 when the service accepted the credential, or
+/// when it has no test request (there is nothing to fix), 1 otherwise.
+pub async fn test_service(args: TestArgs) -> Result<ExitCode, CliError> {
+    let prompter = TerminalPrompter;
+    let client = ConsoleClient::open(&SessionStore::system(), &args.server, &prompter)?;
+    let vault = super::list::pick_vault(&client.vaults().await?, args.vault.as_deref())?;
+    let services = client.credentials(&vault.id).await?;
+    let wanted = args.service.trim();
+    let credential = services
+        .iter()
+        .find(|c| c.name == wanted || c.id.to_string() == wanted)
+        .ok_or_else(|| {
+            let names: Vec<&str> = services.iter().map(|c| c.name.as_str()).collect();
+            LauncherError::config(format!(
+                "no service '{wanted}' in vault '{}'; its services: {}",
+                vault.name,
+                if names.is_empty() {
+                    "none".to_string()
+                } else {
+                    names.join(", ")
+                }
+            ))
+        })?;
+    let test = client.test_service(&credential.id).await?;
+    let template = client.templates().await?.into_iter().find(|t| {
+        t.template.id == credential.template_id && t.template.version == credential.template_version
+    });
+    let bundle = bundle_of(&client, &vault.id, &credential.id, None)
+        .await?
+        .map(|b| b.name);
+    let steps = match &template {
+        Some(t) => {
+            steps_for(
+                &client,
+                &args.server,
+                credential,
+                &vault.name,
+                bundle.as_deref(),
+                Some(&test),
+                t,
+            )
+            .await
+        }
+        None => {
+            return Err(LauncherError::config(format!(
+                "template {}@{} of service '{}' is gone",
+                credential.template_id, credential.template_version, credential.name
+            ))
+            .into())
+        }
+    };
+    if args.json {
+        print_json(&Tested {
+            service: &credential.name,
+            vault: &vault.name,
+            test: &test,
+            next_steps: &steps,
+        })?;
+    } else {
+        say(format_args!("{}: {}", credential.name, test.detail));
+        if test.outcome == TestOutcome::Rejected {
+            say(format_args!(
+                "replace the key on the service's page: {}",
+                next_steps::service_link(
+                    args.server.trim().trim_end_matches('/'),
+                    &vault.id.to_string(),
+                    &credential.id.to_string()
+                )
+            ));
+        }
+    }
+    Ok(match test.outcome {
+        TestOutcome::Accepted | TestOutcome::NoProbe => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    })
 }
 
 fn run_command(vault: &str, bundle: &str) -> String {
@@ -599,6 +782,18 @@ async fn add_from_web(
             signal = stop.signalled() => return Err(stopped(signal)),
         }
     };
+    // The page's save also tests the service; the result is kept on it.
+    let tested_by = Instant::now() + PROBE_TIMEOUT + WEB_SETTLE;
+    let saved = loop {
+        let saved = client.credential(&credential).await?;
+        if saved.last_test.is_some() || Instant::now() >= tested_by {
+            break saved;
+        }
+        tokio::select! {
+            () = tokio::time::sleep(SETTLE_POLL) => {}
+            signal = stop.signalled() => return Err(stopped(signal)),
+        }
+    };
     // The page may have created the vault and the bundle; they are new when
     // they were not there before it opened.
     let vault_created = !vaults.iter().any(|v| v.id == vault_id);
@@ -606,6 +801,17 @@ async fn add_from_web(
         .as_ref()
         .is_some_and(|b| !bundles_before.contains(&b.id));
     let joined = joined.map(|b| b.name);
+    let test = saved.last_test.clone();
+    let steps = steps_for(
+        client,
+        &args.server,
+        &saved,
+        &vault_name,
+        joined.as_deref(),
+        test.as_ref(),
+        template,
+    )
+    .await;
     if args.json {
         print_json(&Added {
             service: &service,
@@ -615,17 +821,23 @@ async fn add_from_web(
             bundle: joined.as_deref(),
             bundle_created,
             run: joined.as_deref().map(|b| run_command(&vault_name, b)),
+            test: test.as_ref(),
+            next_steps: &steps,
         })?;
     } else {
         match &joined {
             Some(b) => say(format_args!(
-                "added {service} to vault '{vault_name}' and bundle '{b}' in the console. Start a command behind it: {}",
-                run_command(&vault_name, b)
+                "added {service} to vault '{vault_name}' and bundle '{b}' in the console"
             )),
             None => say(format_args!(
-                "added {service} to vault '{vault_name}' in the console, in no access bundle yet; add it to one on the vault's page, then: tokenless run --vault {} --bundle <bundle> -- <command>", shell_word(&vault_name)
+                "added {service} to vault '{vault_name}' in the console, in no access bundle yet"
             )),
         }
+        say(format_args!(
+            "test: {}",
+            next_steps::test_line(test.as_ref())
+        ));
+        eprint!("{}", next_steps::render(&steps));
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -27,6 +27,8 @@ const TOKEN: &str = "ghp_rootKeyTestToken0123456789abcdefABCD";
 
 fn config(data: &Path, key: Option<&Path>) -> ServerConfig {
     let mut config = ServerConfig::new(data);
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     config.root_key = key.map(|k| RootKeyInput::File(k.to_path_buf()));

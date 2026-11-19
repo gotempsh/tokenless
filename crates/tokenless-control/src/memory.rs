@@ -28,9 +28,9 @@ mod tripwires;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    Page, PageRequest, ProxySession, Rule, SessionCursor, Settings, SignInSettings, StoredTemplate,
-    UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
+    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor, Settings,
+    SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -176,6 +176,7 @@ impl CredentialStore for MemoryStore {
         meta.not_after = secret.not_after;
         meta.secret_generation += 1;
         meta.rotation_id = secret.rotation_id;
+        meta.last_test = None;
         meta.updated_at = updated_at;
         let generation = meta.secret_generation;
         *stored = secret.ciphertext;
@@ -217,6 +218,22 @@ impl CredentialStore for MemoryStore {
             .ok_or_else(|| StoreError::not_found("credential", id))?;
         meta.substitutions = substitutions;
         meta.updated_at = updated_at;
+        inner.audit.extend_from_slice(audit);
+        Ok(())
+    }
+
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        test: &CredentialTest,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        let mut inner = self.lock()?;
+        let (meta, _) = inner
+            .credentials
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        meta.last_test = Some(test.clone());
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

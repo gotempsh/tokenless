@@ -24,10 +24,10 @@ use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
-    JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
-    Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User, Variable, Vault,
-    VaultDeletion, VaultGrant, VaultMember, VaultScope,
+    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta,
+    CredentialTest, Invite, JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession,
+    Rule, SessionCursor, Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User,
+    Variable, Vault, VaultDeletion, VaultGrant, VaultMember, VaultScope,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -104,7 +104,8 @@ pub trait CredentialStore: Send + Sync {
     /// 3. If `secret.expected_generation` is set and the current
     ///    generation differs, [`StoreError::StaleGeneration`].
     /// 4. Otherwise the secret, its deadline and `rotation_id` are stored,
-    ///    the generation goes up by one and `audit` is appended in the same
+    ///    the generation goes up by one, `last_test` is cleared (it was a
+    ///    test of the old secret) and `audit` is appended in the same
     ///    transaction. A concurrent replacement between the check and the
     ///    write must make this one fail as in 3, never both succeed.
     async fn replace_secret(
@@ -129,6 +130,14 @@ pub trait CredentialStore: Send + Sync {
         id: &CredentialId,
         substitutions: Vec<Substitution>,
         updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
+    /// Keeps `test` as the credential's `last_test`, with `audit` in the
+    /// same transaction; `NotFound` if the credential does not exist.
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        test: &CredentialTest,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
     /// Credentials in every vault that reference at least one variable.

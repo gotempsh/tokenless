@@ -123,6 +123,45 @@ pub struct ValidationRequest {
     pub expect_status: Vec<u16>,
 }
 
+/// The only methods a test request may use: it runs with a real credential
+/// whenever someone adds or tests a service, so it must not change anything.
+pub const SAFE_TEST_METHODS: [&str; 2] = ["GET", "HEAD"];
+
+impl ValidationRequest {
+    /// Whether this is a request the control plane may send on its own: a
+    /// safe method, one exact path, and success meaning a 2xx answer (so a
+    /// template cannot declare a refusal a pass).
+    pub fn check(&self) -> Result<(), String> {
+        if !SAFE_TEST_METHODS.contains(&self.method.as_str()) {
+            return Err(format!(
+                "validation method must be GET or HEAD, not '{}'",
+                self.method.as_str()
+            ));
+        }
+        if self.path.as_str().contains('*') {
+            return Err(format!(
+                "validation path '{}' must be one exact path, without '*'",
+                self.path
+            ));
+        }
+        if let Some(bad) = self.expect_status.iter().find(|s| !(200..300).contains(*s)) {
+            return Err(format!(
+                "validation expect_status may only list 2xx codes, not {bad}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether `status` means the service accepted the credential.
+    pub fn accepts(&self, status: u16) -> bool {
+        if self.expect_status.is_empty() {
+            (200..300).contains(&status)
+        } else {
+            self.expect_status.contains(&status)
+        }
+    }
+}
+
 /// Whether an instance may replace the template's hosts (e.g. a self-hosted
 /// base URL). Replacing hosts widens the template's scope, so the control
 /// plane only lets administrators set it, behind step-up MFA, and audits it.
@@ -248,6 +287,7 @@ impl ServiceTemplate {
         }
         self.injection.validate(&self.id)?;
         if let Some(validation) = &self.validation {
+            validation.check().map_err(invalid)?;
             if !self.allow.paths.iter().any(|p| p.covers(&validation.path)) {
                 return Err(invalid(format!(
                     "validation path '{}' is outside allow.paths",
@@ -534,6 +574,43 @@ mod tests {
             ServiceTemplate::from_yaml(&yaml),
             Err(CoreError::TemplateParse { .. })
         ));
+    }
+
+    /// A test request runs with the real credential on every add, so only
+    /// a read on one exact path, where only a 2xx answer counts as a pass.
+    #[test]
+    fn test_requests_are_safe_reads_of_one_path() {
+        let github = include_str!("../templates/github.yaml");
+        for (from, to, problem) in [
+            ("method: GET", "method: POST", "GET or HEAD"),
+            ("method: GET", "method: DELETE", "GET or HEAD"),
+            ("method: GET", "method: \"*\"", "GET or HEAD"),
+            ("path: /user", "path: /user/*", "exact path"),
+            ("expect_status: [200]", "expect_status: [401]", "2xx"),
+            ("expect_status: [200]", "expect_status: [200, 302]", "2xx"),
+        ] {
+            let err = ServiceTemplate::from_yaml(&github.replace(from, to)).unwrap_err();
+            assert!(err.to_string().contains(problem), "{to}: {err}");
+        }
+        let head = ServiceTemplate::from_yaml(&github.replace("method: GET", "method: HEAD"));
+        assert!(head.is_ok(), "{head:?}");
+
+        for (template, _) in builtin_templates().unwrap() {
+            if let Some(v) = &template.validation {
+                assert!(v.check().is_ok(), "{}", template.id);
+            }
+        }
+        let probe = ServiceTemplate::from_yaml(github)
+            .unwrap()
+            .validation
+            .unwrap();
+        assert!(probe.accepts(200));
+        assert!(!probe.accepts(204) && !probe.accepts(401));
+        let any_2xx = ValidationRequest {
+            expect_status: vec![],
+            ..probe
+        };
+        assert!(any_2xx.accepts(204) && !any_2xx.accepts(302));
     }
 
     #[test]

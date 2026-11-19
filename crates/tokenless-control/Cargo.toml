@@ -37,6 +37,7 @@ zeroize.workspace = true
 [dev-dependencies]
 tokenless-auth = { workspace = true, features = ["test-signing"] }
 tokio = { workspace = true }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

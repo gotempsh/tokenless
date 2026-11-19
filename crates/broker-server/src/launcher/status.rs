@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tokenless_control::model::Node;
+use tokenless_control::model::{CredentialTest, Node, TestOutcome};
 use tokenless_core::snapshot::UnmatchedHostPolicy;
 
 use super::trust::shell_word;
@@ -92,6 +92,8 @@ pub struct VaultSummary {
     /// The bundles a session can be minted from: those holding at least one
     /// enabled rule.
     pub bundles: Vec<String>,
+    /// Each service's last test, by service name.
+    pub tests: Vec<(String, Option<CredentialTest>)>,
 }
 
 /// The agent skill for the agents set up here (Claude Code, Codex), by name.
@@ -397,6 +399,8 @@ pub fn assess(o: Observed) -> Report {
         None => unknown("other_hosts", "Other hosts", signed_in, false),
     });
 
+    checks.push(tested_check(&o.vaults));
+
     checks.push(match &o.skill {
         Skill::Installed(agents) => Check {
             required: false,
@@ -450,6 +454,98 @@ pub fn assess(o: Observed) -> Report {
         checks,
         next,
     }
+}
+
+/// Whether the services' credentials passed their last test. Recommended,
+/// not required: a service with no test request, or one not yet tested,
+/// may well work.
+fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>) -> Check {
+    let check = |state, detail: String, fix: Option<String>| Check {
+        id: "tested",
+        label: "Keys tested",
+        state,
+        detail,
+        fix,
+        required: false,
+    };
+    let Some(Ok(vaults)) = vaults else {
+        return check(State::Unknown, "not checked".into(), None);
+    };
+    let fix = |vault: &str, service: &str| {
+        format!(
+            "tokenless service test {} --vault {}",
+            shell_word(service),
+            shell_word(vault)
+        )
+    };
+    let all: Vec<(&str, &str, Option<&CredentialTest>)> = vaults
+        .iter()
+        .flat_map(|v| {
+            v.tests
+                .iter()
+                .map(move |(s, t)| (v.name.as_str(), s.as_str(), t.as_ref()))
+        })
+        .collect();
+    if all.is_empty() {
+        return check(State::Unknown, "comes with the first service".into(), None);
+    }
+    let failing: Vec<_> = all
+        .iter()
+        .filter(|(_, _, t)| t.is_some_and(|t| t.outcome.was_sent() && !t.ok))
+        .collect();
+    if let Some((vault, service, test)) = failing.first() {
+        let detail = test.map(|t| t.detail.as_str()).unwrap_or_default();
+        let more = match failing.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        return check(
+            State::Failed,
+            format!("{service} in {vault}: {detail}{more}"),
+            Some(fix(vault, service)),
+        );
+    }
+    let untested: Vec<_> = all.iter().filter(|(_, _, t)| t.is_none()).collect();
+    if let Some((vault, service, _)) = untested.first() {
+        return check(
+            State::Missing,
+            format!(
+                "{} not tested yet",
+                untested
+                    .iter()
+                    .map(|(_, s, _)| *s)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Some(fix(vault, service)),
+        );
+    }
+    if all
+        .iter()
+        .any(|(_, _, t)| t.is_some_and(|t| t.outcome == TestOutcome::Unavailable))
+    {
+        return check(
+            State::Unknown,
+            "this server sends no test requests (serve --no-credential-tests)".into(),
+            None,
+        );
+    }
+    let accepted = all
+        .iter()
+        .filter(|(_, _, t)| t.is_some_and(|t| t.ok))
+        .count() as u64;
+    let no_probe = all.len() as u64 - accepted;
+    let mut detail = format!(
+        "{accepted} {} accepted",
+        plural(accepted, "credential", "credentials")
+    );
+    if no_probe > 0 {
+        detail.push_str(&format!(
+            "; {no_probe} {} no test request",
+            plural(no_probe, "service has", "services have")
+        ));
+    }
+    check(State::Ok, detail, None)
 }
 
 fn ok(id: &'static str, label: &'static str, detail: String) -> Check {
@@ -575,6 +671,16 @@ mod tests {
                 name: "work".into(),
                 services: 2,
                 bundles: vec!["code-review".into()],
+                tests: vec![
+                    (
+                        "github".into(),
+                        Some(tested(TestOutcome::Accepted, Some(200))),
+                    ),
+                    (
+                        "openai".into(),
+                        Some(tested(TestOutcome::Accepted, Some(200))),
+                    ),
+                ],
             }])),
             proxies: Some(Ok(Some(vec![node("laptop", Some(5), now)]))),
             other_hosts: Some(Ok(Some(UnmatchedHostPolicy::Deny))),
@@ -586,6 +692,83 @@ mod tests {
             },
             now,
         }
+    }
+
+    fn tested(outcome: TestOutcome, status: Option<u16>) -> CredentialTest {
+        CredentialTest {
+            outcome,
+            ok: outcome == TestOutcome::Accepted,
+            host: Some("api.example.com".into()),
+            method: Some("GET".into()),
+            path: Some("/user".into()),
+            status,
+            detail: format!("api.example.com: {}", outcome.as_str()),
+            retry_after_secs: None,
+            tested_at: Utc::now(),
+            tested_by: "user:admin".into(),
+        }
+    }
+
+    fn with_tests(tests: Vec<(&str, Option<CredentialTest>)>, now: DateTime<Utc>) -> Report {
+        assess(Observed {
+            vaults: Some(Ok(vec![VaultSummary {
+                name: "work".into(),
+                services: tests.len() as u64,
+                bundles: vec!["code-review".into()],
+                tests: tests.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
+            }])),
+            ..observed(now)
+        })
+    }
+
+    /// A key the service refused, or one never tested, is flagged with the
+    /// command that tests it; neither stops agents from starting.
+    #[test]
+    fn keys_that_fail_their_test_are_flagged_but_not_required() {
+        let now = Utc::now();
+        let report = with_tests(
+            vec![
+                ("github", Some(tested(TestOutcome::Accepted, Some(200)))),
+                ("openai", Some(tested(TestOutcome::Rejected, Some(401)))),
+                ("internal", Some(tested(TestOutcome::NoProbe, None))),
+            ],
+            now,
+        );
+        let c = check(&report, "tested");
+        assert_eq!((c.state, c.required), (State::Failed, false));
+        assert!(c.detail.starts_with("openai in work:"), "{}", c.detail);
+        assert_eq!(
+            c.fix.as_deref(),
+            Some("tokenless service test openai --vault work")
+        );
+        assert!(report.ready);
+
+        let untested = with_tests(vec![("github", None)], now);
+        let c = check(&untested, "tested");
+        assert_eq!(c.state, State::Missing);
+        assert_eq!(c.detail, "github not tested yet");
+
+        // A service with no test request is not a problem to fix.
+        let fine = with_tests(
+            vec![
+                ("github", Some(tested(TestOutcome::Accepted, Some(200)))),
+                ("internal", Some(tested(TestOutcome::NoProbe, None))),
+            ],
+            now,
+        );
+        let c = check(&fine, "tested");
+        assert_eq!(c.state, State::Ok);
+        assert_eq!(
+            c.detail,
+            "1 credential accepted; 1 service has no test request"
+        );
+        assert_eq!(c.fix, None);
+
+        let off = with_tests(
+            vec![("github", Some(tested(TestOutcome::Unavailable, None)))],
+            now,
+        );
+        assert_eq!(check(&off, "tested").state, State::Unknown);
     }
 
     fn check<'a>(report: &'a Report, id: &str) -> &'a Check {
@@ -781,6 +964,7 @@ mod tests {
                 name: "personal".into(),
                 services: 2,
                 bundles: vec![],
+                tests: vec![],
             }])),
             ..observed(now)
         });
@@ -800,6 +984,7 @@ mod tests {
                 name: "Work stuff".into(),
                 services: 1,
                 bundles: vec!["code-review".into()],
+                tests: vec![],
             }])),
             ..observed(now)
         });

@@ -53,6 +53,7 @@ use crate::audit::AuditPipeline;
 use crate::binding::BindingState;
 use crate::clock;
 use crate::cut::{session_end, session_expiry, CutSignal, SessionEnd, SessionWatch};
+use crate::egress::{resolve_permitted, Refusal};
 use crate::metrics::Metrics;
 use crate::scrub;
 use crate::shutdown::{closed, stopping, Lifecycle};
@@ -592,7 +593,7 @@ async fn handle_proxy_request(
     // here and checked against the egress policy before the tunnel opens.
     // The tunnel then connects to the checked addresses, never re-resolving.
     let passthrough_addrs = if tls_config.is_none() {
-        match resolve_passthrough(&host, port, &snapshot.egress, shared.connect_timeout).await {
+        match resolve_permitted(&host, port, &snapshot.egress, shared.connect_timeout).await {
             Ok(addrs) => addrs,
             Err(Refusal::Blocked { ip, reason }) => {
                 Metrics::inc(&shared.metrics.egress_blocked_total);
@@ -700,54 +701,6 @@ async fn handle_proxy_request(
         }
     });
     Response::new(body(Bytes::new()))
-}
-
-enum Refusal {
-    Blocked {
-        ip: std::net::IpAddr,
-        reason: &'static str,
-    },
-    Unresolvable {
-        reason: String,
-    },
-}
-
-async fn resolve_passthrough(
-    host: &str,
-    port: u16,
-    egress: &tokenless_core::egress::EgressPolicy,
-    limit: std::time::Duration,
-) -> Result<Vec<std::net::SocketAddr>, Refusal> {
-    let resolved: Vec<std::net::SocketAddr> = timeout(limit, tokio::net::lookup_host((host, port)))
-        .await
-        .map_err(|_| Refusal::Unresolvable {
-            reason: "DNS lookup timed out".into(),
-        })?
-        .map_err(|e| Refusal::Unresolvable {
-            reason: e.to_string(),
-        })?
-        .collect();
-    let mut first_block = None;
-    let allowed: Vec<_> = resolved
-        .iter()
-        .copied()
-        .filter(|addr| match egress.check(addr.ip()) {
-            Ok(()) => true,
-            Err(reason) => {
-                first_block.get_or_insert((addr.ip(), reason));
-                false
-            }
-        })
-        .collect();
-    if !allowed.is_empty() {
-        return Ok(allowed);
-    }
-    Err(match first_block {
-        Some((ip, reason)) => Refusal::Blocked { ip, reason },
-        None => Refusal::Unresolvable {
-            reason: "no addresses".into(),
-        },
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1999,7 +1952,7 @@ mod tests {
     async fn passthrough_resolution_applies_the_egress_policy() {
         use tokenless_core::egress::EgressPolicy;
         let limit = std::time::Duration::from_secs(5);
-        let blocked = resolve_passthrough("127.0.0.1", 443, &EgressPolicy::default(), limit).await;
+        let blocked = resolve_permitted("127.0.0.1", 443, &EgressPolicy::default(), limit).await;
         assert!(matches!(
             blocked,
             Err(Refusal::Blocked {
@@ -2011,13 +1964,13 @@ mod tests {
             block_private: true,
             allow: vec!["127.0.0.0/8".parse().unwrap()],
         };
-        let addrs = resolve_passthrough("127.0.0.1", 443, &allowing, limit)
+        let addrs = resolve_permitted("127.0.0.1", 443, &allowing, limit)
             .await
             .ok()
             .unwrap();
         assert_eq!(addrs, vec!["127.0.0.1:443".parse().unwrap()]);
         // Names are resolved and checked too, so `localhost` cannot bypass it.
-        let named = resolve_passthrough("localhost", 443, &EgressPolicy::default(), limit).await;
+        let named = resolve_permitted("localhost", 443, &EgressPolicy::default(), limit).await;
         assert!(matches!(named, Err(Refusal::Blocked { .. })));
     }
 

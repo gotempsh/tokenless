@@ -343,6 +343,14 @@ mod tests {
                 .update_substitutions(id, substitutions, updated_at, audit)
                 .await
         }
+        async fn record_credential_test(
+            &self,
+            id: &CredentialId,
+            test: &crate::model::CredentialTest,
+            audit: &[AuditEvent],
+        ) -> Result<(), StoreError> {
+            self.inner.record_credential_test(id, test, audit).await
+        }
         async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
             self.inner.list_credentials_with_variables().await
         }

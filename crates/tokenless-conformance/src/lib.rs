@@ -21,10 +21,10 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokenless_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, LaunchScope, Node,
-    Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SignInScope,
-    StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
-    VaultDeletion, VaultScope,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
+    LaunchScope, Node, Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor,
+    Settings, SignInScope, StoredTemplate, TemplateSource, TemplateStatus, TestOutcome, UiSession,
+    User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
@@ -109,6 +109,7 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         not_after: None,
         secret_generation: 1,
         rotation_id: None,
+        last_test: None,
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -372,6 +373,44 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         ct.as_deref() == Some(b"ct-rotated".as_slice()),
         "a stale rotation must leave the secret as it was"
     );
+    // A test result is kept on the credential, with its audit event,
+    // and forgotten when the secret it tested is replaced.
+    let test = CredentialTest {
+        outcome: TestOutcome::Rejected,
+        ok: false,
+        host: Some("api.example.com".into()),
+        method: Some("GET".into()),
+        path: Some("/user".into()),
+        status: Some(401),
+        detail: "api.example.com rejected the credential (401)".into(),
+        retry_after_secs: None,
+        tested_at: at(6),
+        tested_by: "user:tester".into(),
+    };
+    let tested = AuditEvent::new("user:tester", "credential.validate", AuditOutcome::Failure);
+    store
+        .record_credential_test(&first.id, &test, std::slice::from_ref(&tested))
+        .await
+        .map_err(backend(S, "record_test"))?;
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "record_test_get"))?;
+    ensure!(
+        S,
+        "record_test",
+        read.as_ref().and_then(|m| m.last_test.as_ref()) == Some(&test),
+        "last_test must read back as recorded, got {read:?}"
+    );
+    let missing_test = store
+        .record_credential_test(&CredentialId::new(), &test, &[])
+        .await;
+    ensure!(
+        S,
+        "record_test_missing",
+        matches!(missing_test, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing_test:?}"
+    );
     // Without an expected generation the rotation applies to any.
     let unfenced = store
         .replace_secret(&first.id, secret(b"ct-3", None, None), at(7), &[])
@@ -382,6 +421,16 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "replace_unfenced",
         unfenced == SecretReplaced::Written { generation: 3 },
         "an unfenced rotation must write generation 3, got {unfenced:?}"
+    );
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "replace_clears_test_get"))?;
+    ensure!(
+        S,
+        "replace_clears_test",
+        read.as_ref().is_some_and(|m| m.last_test.is_none()),
+        "a new secret must not keep the old secret's test, got {read:?}"
     );
     // Concurrent rotations of one generation: exactly one wins.
     let (a, b) = tokio::join!(

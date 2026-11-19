@@ -838,6 +838,11 @@ struct ServeArgs {
     /// e.g. a self-hosted service's private CA (repeatable).
     #[arg(long = "validation-ca")]
     validation_ca: Vec<PathBuf>,
+    /// Never send a credential's test request upstream: services are not
+    /// tested when added, and Test says tests are not available here. For
+    /// a server that must make no outbound calls of its own.
+    #[arg(long, env = "TOKENLESS_NO_CREDENTIAL_TESTS", value_parser = clap::builder::FalseyValueParser::new())]
+    no_credential_tests: bool,
     /// Snapshot lease in seconds; nodes fail closed when it lapses.
     #[arg(long, default_value_t = 60)]
     lease_secs: u32,
@@ -862,8 +867,10 @@ struct ServeArgs {
 
 #[derive(Subcommand)]
 enum ServiceCommand {
-    /// Add a service from a template: stores its credential encrypted and
-    /// lets the access bundle use it. The credential comes from a prompt
+    /// Add a service from a template: stores its credential encrypted,
+    /// tests it with the template's test request (status code and host
+    /// only, never the secret), lets the access bundle use it, and lists
+    /// the next steps to an agent using it. The credential comes from a prompt
     /// that does not echo it, standard input when piped (one field), a file
     /// the person fills in (--secret-file), or the console (--web). The last
     /// two let an agent run this for a person without seeing the secret.
@@ -912,6 +919,30 @@ enum ServiceCommand {
         #[arg(long, requires = "web")]
         no_wait: bool,
         /// Print the result as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Management API URL.
+        #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
+        server: String,
+    },
+    /// Test a service: send its template's test request (a GET or HEAD to
+    /// the service's own host) with the stored credential, and say whether
+    /// the service accepted it. Only the status code and host are shown,
+    /// never the secret or the response. `service add` runs it too.
+    /// Exits 0 when the credential was accepted or the service has no test
+    /// request, 1 otherwise.
+    ///
+    /// Examples:
+    ///   tokenless service test github --vault work
+    ///   tokenless service test openai --json
+    #[command(verbatim_doc_comment)]
+    Test {
+        /// The service, by name or id.
+        service: String,
+        /// Its vault, by name or id. Not needed when there is only one.
+        #[arg(long)]
+        vault: Option<String>,
+        /// Print the result as JSON, with the next steps.
         #[arg(long)]
         json: bool,
         /// Management API URL.
@@ -1241,6 +1272,7 @@ async fn serve(args: ServeArgs) -> Result<(), CliError> {
     }
     config.control.lease_secs = args.lease_secs.max(3);
     config.validation_extra_roots = read_cas(&args.validation_ca)?;
+    config.credential_tests = !args.no_credential_tests;
     let running = Server::start(config).await?;
     if let Some(admin) = &running.initial_admin {
         // Printed to the terminal, not the structured log, so it is not
@@ -1643,6 +1675,20 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             json,
             server,
         } => setup::templates_command(query, json, server).await,
+        ServiceCommand::Test {
+            service,
+            vault,
+            json,
+            server,
+        } => {
+            setup::test_service(setup::TestArgs {
+                service,
+                vault,
+                server,
+                json,
+            })
+            .await
+        }
         ServiceCommand::List {
             vault,
             json,

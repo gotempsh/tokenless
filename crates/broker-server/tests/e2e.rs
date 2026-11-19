@@ -1080,10 +1080,18 @@ async fn end_to_end() {
         .post(&format!("/vaults/{vault_id}/credentials"), echo_credential)
         .await;
     let echo_id = echo["id"].as_str().unwrap().to_string();
+    // Adding it tested it: the upstream is on loopback, which the egress
+    // policy blocks, so the service is stored and the test says why.
+    assert_eq!(echo["test"]["outcome"], "blocked", "{echo}");
+    assert_eq!(echo["test"]["ok"], false);
+    assert_eq!(echo["test"]["status"], Value::Null);
+    assert_eq!(echo["last_test"], echo["test"]);
+    assert!(!echo.to_string().contains(SECRET));
     let blocked = api
         .post(&format!("/credentials/{echo_id}/validate"), json!({}))
         .await;
     assert_eq!(blocked["ok"], false, "{blocked}");
+    assert_eq!(blocked["outcome"], "blocked", "{blocked}");
     assert!(
         blocked["detail"].as_str().unwrap().contains("loopback"),
         "{blocked}"
@@ -1129,8 +1137,13 @@ async fn end_to_end() {
         .post(&format!("/credentials/{echo_id}/validate"), json!({}))
         .await;
     assert_eq!(validated["ok"], true, "{validated}");
+    assert_eq!(validated["outcome"], "accepted", "{validated}");
     assert_eq!(validated["status"], 200);
     assert!(!validated.to_string().contains(SECRET));
+    // Kept on the service, for the console and `tokenless status`.
+    let kept = api.get(&format!("/credentials/{echo_id}")).await;
+    assert_eq!(kept["last_test"]["outcome"], "accepted", "{kept}");
+    assert!(!kept.to_string().contains(SECRET));
 
     // --- unmatched host: tunnelled untouched ----------------------------------
     // 127.0.0.1 has no rule, so the client must see the upstream's own

@@ -19,6 +19,7 @@ pub mod binding;
 pub mod capabilities;
 mod clock;
 pub mod cut;
+pub mod egress;
 pub mod embedded;
 pub mod error;
 pub mod gateway;

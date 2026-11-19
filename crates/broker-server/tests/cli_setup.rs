@@ -46,6 +46,8 @@ fn all_bytes(dir: &std::path::Path) -> Vec<u8> {
 async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -194,6 +196,8 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
 async fn a_lost_admin_password_is_reset_from_the_server_host() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -246,6 +250,8 @@ async fn a_lost_admin_password_is_reset_from_the_server_host() {
     // A restart does not create another admin.
     server.shutdown();
     let mut again = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    again.credential_tests = false;
     again.api_listen = "127.0.0.1:0".parse().unwrap();
     again.node_listen = "127.0.0.1:0".parse().unwrap();
     let restarted = Server::start(again).await.unwrap();
@@ -263,6 +269,8 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
 
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -443,6 +451,8 @@ async fn finish(child: std::process::Child) -> std::process::Output {
 async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_agent() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -504,6 +514,42 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         "tokenless run --vault personal --bundle my-agent -- <command>"
     );
     assert!(stderr.contains(&file.display().to_string()), "{stderr}");
+    // Tested on add (this server sends no test requests, so it says so),
+    // then the steps to an agent using it, each done or not.
+    assert_eq!(added["test"]["outcome"], "unavailable", "{added:#}");
+    assert_eq!(added["test"]["ok"], false);
+    let steps = added["next_steps"]["steps"].as_array().unwrap();
+    let step = |id: &str| steps.iter().find(|s| s["id"] == id).unwrap().clone();
+    assert_eq!(step("tested")["state"], "pending", "{added:#}");
+    assert_eq!(step("bundle")["state"], "done", "{added:#}");
+    assert_eq!(step("bundle")["detail"], "in my-agent");
+    assert_eq!(step("proxy")["state"], "pending", "{added:#}");
+    assert_eq!(
+        step("use")["fix"],
+        "tokenless run --vault personal --bundle my-agent -- claude"
+    );
+    assert!(
+        added["next_steps"]["key"]
+            .as_str()
+            .unwrap()
+            .contains("OPENAI_API_KEY=tokenless"),
+        "{added:#}"
+    );
+
+    // service test runs it again, by name, and says how it went.
+    let out =
+        finish(cli.spawn(&["service", "test", "openai", "--vault", "personal", "--json"])).await;
+    let tested: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!out.status.success(), "not accepted, so not a success");
+    assert_eq!(tested["service"], "openai");
+    assert_eq!(tested["outcome"], "unavailable", "{tested:#}");
+    assert!(!tested.to_string().contains(KEY));
+    let out = finish(cli.spawn(&["service", "test", "nope", "--vault", "personal"])).await;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no service 'nope' in vault 'personal'"),
+        "{stderr}"
+    );
 
     // The key is read but cannot be stored (a service of that name is
     // already in the vault): the file keeps it for another try.
@@ -747,6 +793,12 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         added["run"],
         "tokenless run --vault personal --bundle my-agent -- <command>"
     );
+    // The page's save tested it; the command reports that test.
+    assert_eq!(added["test"]["outcome"], "unavailable", "{added:#}");
+    assert_eq!(
+        added["next_steps"]["steps"][1]["state"], "done",
+        "{added:#}"
+    );
 
     // status sees it all, short of a proxy.
     let out = finish(cli.spawn(&["status", "--json"])).await;
@@ -764,6 +816,8 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert_eq!(state("services"), "ok", "{report:#}");
     assert_eq!(state("bundle"), "ok", "{report:#}");
     assert_eq!(state("proxy"), "missing", "{report:#}");
+    // Tests cannot run on this server, which is not a key to fix.
+    assert_eq!(state("tested"), "unknown", "{report:#}");
     assert_eq!(
         report["next"],
         format!("tokenless proxy add --name <this machine> --state ~/.tokenless/node.json --server {url}")
