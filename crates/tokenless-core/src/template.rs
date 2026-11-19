@@ -219,6 +219,30 @@ impl ServiceTemplate {
         Ok(template)
     }
 
+    /// Reads a template a store saved earlier. It is checked as
+    /// [`from_yaml`](Self::from_yaml) does, except that a test request
+    /// breaking a rule added since it was saved (a `POST`, a wildcard path)
+    /// is kept as it is rather than failing the read: one such template must
+    /// not block the others. That request is never sent; testing the
+    /// service says it is not allowed.
+    pub fn from_stored_yaml(yaml: &str) -> Result<Self, CoreError> {
+        let mut template = match Self::from_yaml(yaml) {
+            Ok(template) => return Ok(template),
+            Err(CoreError::TemplateParse { reason }) => {
+                return Err(CoreError::TemplateParse { reason })
+            }
+            Err(_) => serde_yaml::from_str::<ServiceTemplate>(yaml).map_err(|e| {
+                CoreError::TemplateParse {
+                    reason: e.to_string(),
+                }
+            })?,
+        };
+        let validation = template.validation.take();
+        template.validate()?;
+        template.validation = validation;
+        Ok(template)
+    }
+
     pub fn validate(&self) -> Result<(), CoreError> {
         let invalid = |reason: String| CoreError::InvalidTemplate {
             template_id: self.id.clone(),
@@ -594,6 +618,16 @@ mod tests {
         }
         let head = ServiceTemplate::from_yaml(&github.replace("method: GET", "method: HEAD"));
         assert!(head.is_ok(), "{head:?}");
+
+        // Saved before the rule: it still reads back, request and all, but
+        // nothing else about it is let off.
+        let legacy = github.replace("method: GET", "method: POST");
+        let stored = ServiceTemplate::from_stored_yaml(&legacy).unwrap();
+        assert_eq!(stored.validation.unwrap().method.as_str(), "POST");
+        assert!(
+            ServiceTemplate::from_stored_yaml(&legacy.replace("version: 2", "version: 0")).is_err()
+        );
+        assert!(ServiceTemplate::from_stored_yaml("id: [").is_err());
 
         for (template, _) in builtin_templates().unwrap() {
             if let Some(v) = &template.validation {

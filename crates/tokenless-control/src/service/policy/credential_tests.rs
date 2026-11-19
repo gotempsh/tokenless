@@ -417,6 +417,69 @@ async fn a_builtin_stored_before_its_test_request_uses_the_catalogues() {
     assert_eq!(upstream.sent()[0].path, "/v1/models");
 }
 
+/// A template imported before test requests had to be safe reads, with a
+/// `POST` one: it loads, its request is never sent, and the other
+/// services are added and tested as usual.
+#[tokio::test]
+async fn a_stored_template_with_an_unsafe_test_request_blocks_nothing() {
+    use crate::model::{StoredTemplate, TemplateSource, TemplateStatus};
+    use crate::store::PolicyStore;
+    let yaml = include_str!("../../../../tokenless-core/templates/github.yaml")
+        .replacen("id: github", "id: legacy-post", 1)
+        .replace("method: GET", "method: POST");
+    assert!(
+        ServiceTemplate::from_yaml(&yaml).is_err(),
+        "no longer importable"
+    );
+    let legacy = ServiceTemplate::from_stored_yaml(&yaml).unwrap();
+    assert_eq!(legacy.validation.as_ref().unwrap().method.as_str(), "POST");
+    let store = Arc::new(MemoryStore::new());
+    store
+        .insert_template(
+            StoredTemplate {
+                template: legacy,
+                yaml,
+                source: TemplateSource::Imported,
+                status: TemplateStatus::Approved,
+                imported_by: Some("user:admin".into()),
+                approved_by: Some("user:admin".into()),
+                created_at: Utc::now(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+    let upstream = Scripted::new(Ok(200));
+    let t = setup_on(store, upstream.clone()).await;
+
+    let other =
+        t.cp.policy
+            .add_credential(&admin(), &t.vault, openai("models"))
+            .await
+            .unwrap();
+    assert_eq!(other.test.outcome, TestOutcome::Accepted);
+
+    let mut req = openai("legacy");
+    req.template_id = "legacy-post".into();
+    req.fields = [("token".to_string(), SECRET.to_string())].into();
+    let added =
+        t.cp.policy
+            .add_credential(&admin(), &t.vault, req)
+            .await
+            .unwrap();
+    assert_eq!(added.test.outcome, TestOutcome::NoProbe);
+    assert!(
+        added.test.detail.contains("not allowed"),
+        "{}",
+        added.test.detail
+    );
+    assert_eq!(
+        upstream.sent().len(),
+        1,
+        "only the other service was tested"
+    );
+}
+
 #[tokio::test]
 async fn tests_are_rate_limited_per_service() {
     let upstream = Scripted::new(Ok(401));

@@ -739,8 +739,8 @@ fn vault_from_row(row: &SqliteRow) -> Result<Vault, StoreError> {
 
 fn template_from_row(row: &SqliteRow) -> Result<StoredTemplate, StoreError> {
     let yaml: String = get(row, "yaml")?;
-    let template =
-        ServiceTemplate::from_yaml(&yaml).map_err(|e| StoreError::backend("decode template", e))?;
+    let template = ServiceTemplate::from_stored_yaml(&yaml)
+        .map_err(|e| StoreError::backend("decode template", e))?;
     let source = match get::<String>(row, "source")?.as_str() {
         "builtin" => TemplateSource::Builtin,
         _ => TemplateSource::Imported,
