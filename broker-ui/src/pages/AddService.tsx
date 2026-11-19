@@ -781,7 +781,7 @@ function Done({
           credentialId: credential.id,
           test,
           bundles,
-          proxies: isAdmin ? (proxies.data?.items ?? (proxies.error ? [] : undefined)) : "hidden",
+          proxies: !isAdmin ? "hidden" : proxies.data ? proxies.data.items : proxies.error ? "error" : undefined,
           now: new Date(),
         })
       : [];

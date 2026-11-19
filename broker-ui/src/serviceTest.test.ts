@@ -3,7 +3,17 @@
 
 import { describe, expect, test } from "bun:test";
 import type { CredentialTest, NodeInfo, TestOutcome } from "./api";
-import { canRetest, keyHint, nextSteps, runCommand, testFix, testTitle, testTone, type StepFacts } from "./serviceTest";
+import {
+  canRetest,
+  keyHint,
+  nextSteps,
+  runCommand,
+  testAdvice,
+  testFix,
+  testTitle,
+  testTone,
+  type StepFacts,
+} from "./serviceTest";
 
 const now = new Date("2026-11-19T12:00:00Z");
 
@@ -121,6 +131,19 @@ describe("next steps", () => {
     expect(steps[0]?.state).toBe("pending");
     expect(steps[0]?.detail).toBe("Not tested");
     expect(steps[0]?.action).toBeUndefined();
+    // Untested is not unusable: with a bundle and a proxy, it is ready.
+    expect(steps[3]?.detail).toBe("Ready");
+  });
+
+  test("a test that could not run says why, not that none is defined", () => {
+    const none = { ...result("no_probe"), detail: "not tested: no test request defined for this service" };
+    expect(testAdvice(none)).toBe("No test request defined for this service.");
+    const wildcard = {
+      ...result("no_probe"),
+      detail: "not tested: the service only has wildcard hosts, so there is no host to send a test to",
+    };
+    expect(testAdvice(wildcard)).toContain("wildcard hosts");
+    expect(testAdvice({ ...result("no_probe"), detail: "" })).toContain("No test request is defined");
   });
 
   test("proxies that stopped, or that only an admin can see", () => {
@@ -129,6 +152,10 @@ describe("next steps", () => {
     expect(stale[2]?.detail).toBe("Enrolled, but none is connected");
     expect(nextSteps(facts({ proxies: "hidden" }))[2]?.state).toBe("unknown");
     expect(nextSteps(facts({ proxies: undefined }))[2]?.state).toBe("unknown");
+    // A list that failed to load is not an empty one.
+    const failed = nextSteps(facts({ proxies: "error" }))[2];
+    expect(failed?.state).toBe("unknown");
+    expect(failed?.detail).not.toContain("No proxy enrolled");
   });
 });
 

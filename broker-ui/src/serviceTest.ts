@@ -56,12 +56,23 @@ export function testAdvice(test: CredentialTest): string {
     case "blocked":
       return "Its address is private. Allow the range under Settings → Private addresses, then test again.";
     case "no_probe":
-      return "No test request is defined for this service, so its key can't be checked from here.";
+      // The server says why: none defined, or one it may not send.
+      return sentence(test.detail.replace(/^not tested:\s*/i, "")) ?? NO_PROBE;
     case "unavailable":
       return "This server makes no outbound test requests.";
     case "rate_limited":
       return test.detail;
   }
+}
+
+const NO_PROBE = "No test request is defined for this service, so its key can't be checked from here.";
+
+/** `text` as a sentence, or null when there is none. */
+function sentence(text: string): string | null {
+  const t = text.trim();
+  if (!t) return null;
+  const s = t.charAt(0).toUpperCase() + t.slice(1);
+  return /[.!?]$/.test(s) ? s : `${s}.`;
 }
 
 export function testTone(test: CredentialTest): TestTone {
@@ -111,9 +122,9 @@ export interface StepFacts {
   bundles: readonly { id: string; name: string }[];
   /**
    * The proxies: undefined while loading, "hidden" when this person may not
-   * see them (they are an admin's).
+   * see them (they are an admin's), "error" when the list did not load.
    */
-  proxies: readonly NodeInfo[] | "hidden" | undefined;
+  proxies: readonly NodeInfo[] | "hidden" | "error" | undefined;
   now: Date;
 }
 
@@ -156,6 +167,14 @@ export function nextSteps(f: StepFacts): Step[] {
   );
   if (f.proxies === undefined) {
     steps.push({ id: "proxy", label: "Proxy connected", state: "unknown", detail: "Checking…" });
+  } else if (f.proxies === "error") {
+    steps.push({
+      id: "proxy",
+      label: "Proxy connected",
+      state: "unknown",
+      detail: "Couldn't load the proxies",
+      action: { label: "Open Proxies", href: "#/proxies" },
+    });
   } else if (f.proxies === "hidden") {
     steps.push({
       id: "proxy",
@@ -186,7 +205,9 @@ export function nextSteps(f: StepFacts): Step[] {
             },
     );
   }
-  const ready = steps.every((s) => s.state === "done");
+  // A test only tells: an untested key can still be used. An agent needs
+  // the bundle and a proxy.
+  const ready = steps.filter((s) => s.id !== "tested").every((s) => s.state === "done");
   steps.push({
     id: "use",
     label: "Start an agent behind it",

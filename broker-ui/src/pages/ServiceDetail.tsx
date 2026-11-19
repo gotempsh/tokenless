@@ -92,6 +92,9 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const variables = useVariableKeys(isInstanceAdmin(user));
   const [editing, setEditing] = useState<Editing>(null);
   const [result, setResult] = useState<CredentialValidation | null>(null);
+  // When this page replaced the secret: a kept result from before then is
+  // about the old secret, even while the reload still shows it.
+  const [replacedAt, setReplacedAt] = useState<number | null>(null);
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
   const names = useActorNames(user);
@@ -140,9 +143,12 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   };
 
   const done = () => {
+    if (editing === "secret") {
+      // Replacing the secret clears its test; an earlier result no longer applies.
+      setResult(null);
+      setReplacedAt(Date.now());
+    }
     setEditing(null);
-    // Replacing the secret clears its test; an earlier result no longer applies.
-    setResult(null);
     cred.reload();
   };
 
@@ -150,8 +156,11 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   // so the button is there for every service an admin may change.
   const canTest = isAdmin;
   const testReason = isAdmin ? undefined : ADMIN_ONLY;
-  // A fresh result, else the last one kept with the service.
-  const shownTest = result ?? c?.last_test ?? null;
+  // A fresh result, else the last one kept with the service, unless it
+  // predates a secret replaced here.
+  const kept = c?.last_test;
+  const keptCurrent = kept && (replacedAt === null || Date.parse(kept.tested_at) > replacedAt) ? kept : null;
+  const shownTest = result ?? keptCurrent;
 
   return (
     <PageContainer>
