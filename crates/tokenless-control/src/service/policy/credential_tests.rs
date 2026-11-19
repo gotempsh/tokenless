@@ -9,15 +9,17 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use std::sync::atomic::Ordering;
 use tokenless_core::authz::Role;
 use tokenless_core::egress::EgressPolicy;
-use tokenless_core::ids::VaultId;
+
+use tokenless_core::ids::{VariableId, VaultId};
 
 use super::*;
 use crate::cipher::AesGcmCipher;
 use crate::envelope::Envelope;
 use crate::memory::MemoryStore;
-use crate::model::PageRequest;
+use crate::model::{PageRequest, Variable};
 use crate::probe::{ProbeError, ProbeRequest, PER_CREDENTIAL};
 use crate::service::testing::{enrol, person_caller};
 use crate::service::Caller;
@@ -96,6 +98,15 @@ async fn setup(prober: Arc<dyn CredentialProber>) -> T {
 }
 
 async fn setup_on(store: Arc<MemoryStore>, prober: Arc<dyn CredentialProber>) -> T {
+    setup_with(store.clone(), store, prober).await
+}
+
+/// [`setup_on`], with `credentials` standing in for the credential store.
+async fn setup_with(
+    store: Arc<MemoryStore>,
+    credentials: Arc<dyn crate::store::CredentialStore>,
+    prober: Arc<dyn CredentialProber>,
+) -> T {
     let cipher = Arc::new(
         Envelope::open(&AesGcmCipher::generate_key(), store.clone())
             .await
@@ -103,7 +114,7 @@ async fn setup_on(store: Arc<MemoryStore>, prober: Arc<dyn CredentialProber>) ->
     );
     let cp = ControlPlane::new(
         Stores {
-            credentials: store.clone(),
+            credentials,
             policy: store.clone(),
             audit: store.clone(),
             identity: store.clone(),
@@ -679,4 +690,263 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
     }
+}
+
+/// The memory store, with `record_credential_test` made to fail.
+struct Faulty {
+    inner: Arc<MemoryStore>,
+    fail_record: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl crate::store::CredentialStore for Faulty {
+    async fn insert_credential(
+        &self,
+        meta: CredentialMeta,
+        ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner.insert_credential(meta, ciphertext, audit).await
+    }
+
+    async fn get_credential(
+        &self,
+        id: &CredentialId,
+    ) -> Result<Option<CredentialMeta>, StoreError> {
+        self.inner.get_credential(id).await
+    }
+
+    async fn list_credentials(
+        &self,
+        vault_id: &VaultId,
+        page: PageRequest,
+    ) -> Result<Page<CredentialMeta>, StoreError> {
+        self.inner.list_credentials(vault_id, page).await
+    }
+
+    async fn replace_secret(
+        &self,
+        id: &CredentialId,
+        secret: NewSecret,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<SecretReplaced, StoreError> {
+        self.inner
+            .replace_secret(id, secret, updated_at, audit)
+            .await
+    }
+
+    async fn update_custom_headers(
+        &self,
+        id: &CredentialId,
+        custom_headers: Vec<CustomHeader>,
+        variable_refs: Vec<String>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .update_custom_headers(id, custom_headers, variable_refs, updated_at, audit)
+            .await
+    }
+
+    async fn update_substitutions(
+        &self,
+        id: &CredentialId,
+        substitutions: Vec<Substitution>,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .update_substitutions(id, substitutions, updated_at, audit)
+            .await
+    }
+
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        fence: &TestFence,
+        test: &CredentialTest,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        if self.fail_record.load(Ordering::SeqCst) {
+            return Err(StoreError::backend("record", "injected failure"));
+        }
+        self.inner
+            .record_credential_test(id, fence, test, audit)
+            .await
+    }
+
+    async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
+        self.inner.list_credentials_with_variables().await
+    }
+
+    async fn insert_variable(
+        &self,
+        variable: Variable,
+        ciphertext: Vec<u8>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .insert_variable(variable, ciphertext, audit)
+            .await
+    }
+
+    async fn get_variable(&self, id: &VariableId) -> Result<Option<Variable>, StoreError> {
+        self.inner.get_variable(id).await
+    }
+
+    async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError> {
+        self.inner.list_variables(page).await
+    }
+
+    async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError> {
+        self.inner.existing_variable_keys(keys).await
+    }
+
+    async fn replace_variable_value(
+        &self,
+        id: &VariableId,
+        ciphertext: Vec<u8>,
+        updated_by: &str,
+        updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner
+            .replace_variable_value(id, ciphertext, updated_by, updated_at, audit)
+            .await
+    }
+
+    async fn delete_variable(
+        &self,
+        id: &VariableId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner.delete_variable(id, audit).await
+    }
+
+    async fn load_variable_ciphertexts(
+        &self,
+        keys: &[String],
+    ) -> Result<Vec<(Variable, Vec<u8>)>, StoreError> {
+        self.inner.load_variable_ciphertexts(keys).await
+    }
+
+    async fn delete_credential(
+        &self,
+        id: &CredentialId,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
+        self.inner.delete_credential(id, audit).await
+    }
+
+    async fn load_secret_ciphertext(
+        &self,
+        id: &CredentialId,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.inner.load_secret_ciphertext(id).await
+    }
+}
+
+/// A store error once the request was sent is an error, not "tests are
+/// off": testing again is offered, and the use of the credential stays on
+/// record in the audit log.
+#[tokio::test]
+async fn an_error_after_sending_is_an_error_and_stays_audited() {
+    let store = Arc::new(MemoryStore::new());
+    let faulty: Arc<dyn crate::store::CredentialStore> = Arc::new(Faulty {
+        inner: store.clone(),
+        fail_record: true.into(),
+    });
+    let upstream = Scripted::new(Ok(200));
+    let t = setup_with(store, faulty, upstream.clone()).await;
+    let added =
+        t.cp.policy
+            .add_credential(&admin(), &t.vault, openai("models"))
+            .await
+            .unwrap();
+    assert_eq!(added.test.outcome, TestOutcome::Error, "{:?}", added.test);
+    assert!(
+        added.test.detail.contains("could not be completed"),
+        "{}",
+        added.test.detail
+    );
+    assert!(
+        added.credential.last_test.is_none(),
+        "an unsaved result is not reported as kept"
+    );
+    assert_eq!(upstream.sent().len(), 1);
+    let events = validations(&t).await;
+    assert_eq!(events.len(), 1, "the request that went out is audited");
+    assert!(!format!("{added:?}{events:?}").contains(SECRET));
+}
+
+/// Changes the credential's headers while its test request is out.
+struct Meddling {
+    store: Arc<MemoryStore>,
+    target: Mutex<Option<tokenless_core::ids::CredentialId>>,
+}
+
+#[async_trait]
+impl CredentialProber for Meddling {
+    async fn probe(&self, _: ProbeRequest, _: &EgressPolicy) -> Result<u16, ProbeError> {
+        let target = *self.target.lock().unwrap();
+        if let Some(id) = target {
+            self.store
+                .update_custom_headers(
+                    &id,
+                    vec![CustomHeader {
+                        name: "OpenAI-Organization".into(),
+                        value: "org-dummy-b".into(),
+                    }],
+                    vec![],
+                    Utc::now(),
+                    &[],
+                )
+                .await
+                .unwrap();
+        }
+        Ok(200)
+    }
+}
+
+/// A result describes what was sent: if the credential changes while its
+/// test is out, the answer is reported but not kept as its last test.
+#[tokio::test]
+async fn a_change_during_the_test_keeps_its_result_out() {
+    let store = Arc::new(MemoryStore::new());
+    let prober = Arc::new(Meddling {
+        store: store.clone(),
+        target: Mutex::new(None),
+    });
+    let t = setup_on(store, prober.clone()).await;
+    let added =
+        t.cp.policy
+            .add_credential(&admin(), &t.vault, openai("models"))
+            .await
+            .unwrap();
+    assert_eq!(added.test.outcome, TestOutcome::Accepted);
+    assert!(
+        added.credential.last_test.is_some(),
+        "nothing changed: kept"
+    );
+
+    *prober.target.lock().unwrap() = Some(added.credential.id);
+    let test =
+        t.cp.policy
+            .test_credential(&admin(), &added.credential.id)
+            .await
+            .unwrap();
+    assert_eq!(test.outcome, TestOutcome::Accepted);
+    let read = t
+        .store
+        .get_credential(&added.credential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read.last_test, None,
+        "the headers it tested are gone: {read:?}"
+    );
+    // Both tests went out, so both are on record.
+    assert_eq!(validations(&t).await.len(), 2);
 }

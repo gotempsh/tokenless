@@ -363,7 +363,8 @@ export type TestOutcome =
   | "timed_out"
   | "no_probe"
   | "unavailable"
-  | "rate_limited";
+  | "rate_limited"
+  | "error";
 
 /** One test: status code, host and request line only, never a body. */
 export interface CredentialTest {

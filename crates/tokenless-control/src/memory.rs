@@ -30,7 +30,8 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
     Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor, Settings,
-    SignInSettings, StoredTemplate, UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
+    SignInSettings, StoredTemplate, TestFence, UiSession, User, Variable, Vault, VaultDeletion,
+    VaultScope,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -200,6 +201,7 @@ impl CredentialStore for MemoryStore {
         meta.custom_headers = custom_headers;
         meta.variable_refs = variable_refs;
         meta.updated_at = updated_at;
+        meta.last_test = None;
         inner.audit.extend_from_slice(audit);
         Ok(())
     }
@@ -225,16 +227,29 @@ impl CredentialStore for MemoryStore {
     async fn record_credential_test(
         &self,
         id: &CredentialId,
-        generation: u64,
+        fence: &TestFence,
         test: &CredentialTest,
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
+        let refs = inner
+            .credentials
+            .get(id)
+            .map(|(m, _)| m.variable_refs.clone())
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let variables_updated_at = inner
+            .variables
+            .values()
+            .filter(|(v, _)| refs.contains(&v.key))
+            .map(|(v, _)| v.updated_at)
+            .max();
         let (meta, _) = inner
             .credentials
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
-        let current = meta.secret_generation == generation;
+        let current = meta.secret_generation == fence.secret_generation
+            && meta.updated_at == fence.updated_at
+            && variables_updated_at == fence.variables_updated_at;
         if current {
             meta.last_test = Some(test.clone());
         }

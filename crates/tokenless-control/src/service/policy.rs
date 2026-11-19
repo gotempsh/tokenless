@@ -29,7 +29,8 @@ use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::{ControlError, StoreError};
 use crate::model::{
     CredentialMeta, CredentialTest, Page, PageRequest, Rule, Settings, StoredTemplate,
-    TemplateSource, TemplateStatus, TestOutcome, Vault, VaultDeletion, VaultGrant, VaultMember,
+    TemplateSource, TemplateStatus, TestFence, TestOutcome, Vault, VaultDeletion, VaultGrant,
+    VaultMember,
 };
 use crate::notify::PolicyNotifier;
 use crate::probe::{
@@ -357,17 +358,18 @@ impl PolicyService {
         let (test, saved) = match self.run_test(caller, &credential).await {
             Ok(tested) => tested,
             // The credential is stored either way; a test that could not
-            // run is said, not turned into a failed add.
+            // be completed is said, not turned into a failed add. It is an
+            // error, not "tests are off": testing again may work.
             Err(e) => {
                 warn!(credential = %credential.id, error = %e, "could not test a new credential");
                 let test = CredentialTest {
-                    outcome: TestOutcome::Unavailable,
+                    outcome: TestOutcome::Error,
                     ok: false,
                     host: None,
                     method: None,
                     path: None,
                     status: None,
-                    detail: format!("not tested: {e}"),
+                    detail: format!("the test could not be completed: {e}"),
                     retry_after_secs: None,
                     tested_at: Utc::now(),
                     tested_by: caller.actor().to_string(),
@@ -440,14 +442,29 @@ impl PolicyService {
     }
 
     /// Runs one test and keeps its outcome as the credential's `last_test`,
-    /// unless it was rate-limited (it did not run) or the secret was
-    /// replaced while it ran. Says whether it was kept. The caller has been
-    /// authorised.
+    /// unless it was rate-limited (it did not run) or what the credential
+    /// sends (its secret, headers or variables) changed while it ran. Says
+    /// whether it was kept. The caller has been authorised.
     async fn run_test(
         &self,
         caller: &Caller,
         meta: &CredentialMeta,
     ) -> Result<(CredentialTest, bool), ControlError> {
+        // Read afresh, with the variables it uses, before rendering: the
+        // fence is what the request was built from, so any change after
+        // this read keeps the result from being saved.
+        let meta = &self.credential_meta(&meta.id).await?;
+        let fence = TestFence {
+            secret_generation: meta.secret_generation,
+            updated_at: meta.updated_at,
+            variables_updated_at: self
+                .credentials
+                .load_variable_ciphertexts(&meta.variable_refs)
+                .await?
+                .into_iter()
+                .map(|(v, _)| v.updated_at)
+                .max(),
+        };
         let actor = caller.actor().to_string();
         let blank = |outcome: TestOutcome, detail: String| CredentialTest {
             outcome,
@@ -469,7 +486,7 @@ impl PolicyService {
                 let test = blank(TestOutcome::NoProbe, why);
                 let saved = self
                     .credentials
-                    .record_credential_test(&meta.id, meta.secret_generation, &test, &[])
+                    .record_credential_test(&meta.id, &fence, &test, &[])
                     .await?;
                 return Ok((test, saved));
             }
@@ -590,12 +607,7 @@ impl PolicyService {
         .detail("detail", detail);
         let saved = match self
             .credentials
-            .record_credential_test(
-                &meta.id,
-                meta.secret_generation,
-                &test,
-                std::slice::from_ref(&event),
-            )
+            .record_credential_test(&meta.id, &fence, &test, std::slice::from_ref(&event))
             .await
         {
             Ok(saved) => saved,
@@ -604,7 +616,12 @@ impl PolicyService {
                 self.audit.record(event).await;
                 false
             }
-            Err(e) => return Err(e.into()),
+            // The credential was sent: that stays on record even when the
+            // result could not be kept.
+            Err(e) => {
+                self.audit.record(event).await;
+                return Err(e.into());
+            }
         };
         Ok((test, saved))
     }

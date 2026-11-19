@@ -38,6 +38,8 @@ export function testTitle(test: CredentialTest): string {
       return "Tests are off on this server";
     case "rate_limited":
       return "Not tested: too many tests";
+    case "error":
+      return "The test could not be completed";
   }
 }
 
@@ -62,6 +64,8 @@ export function testAdvice(test: CredentialTest): string {
       return "This server makes no outbound test requests.";
     case "rate_limited":
       return test.detail;
+    case "error":
+      return `${sentence(test.detail) ?? "An error stopped it."} Test again.`;
   }
 }
 

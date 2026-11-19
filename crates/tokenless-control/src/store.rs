@@ -26,8 +26,8 @@ use crate::error::StoreError;
 use crate::model::{
     AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta,
     CredentialTest, Invite, JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession,
-    Rule, SessionCursor, Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User,
-    Variable, Vault, VaultDeletion, VaultGrant, VaultMember, VaultScope,
+    Rule, SessionCursor, Settings, SignInSettings, StoredTemplate, TestFence, Tripwire, UiSession,
+    User, Variable, Vault, VaultDeletion, VaultGrant, VaultMember, VaultScope,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -115,7 +115,9 @@ pub trait CredentialStore: Send + Sync {
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<SecretReplaced, StoreError>;
-    /// Replaces the custom headers; `NotFound` if the credential does not exist.
+    /// Replaces the custom headers; `NotFound` if the credential does not
+    /// exist. Forgets its `last_test`: a test sends these headers, so what
+    /// it sends has changed.
     async fn update_custom_headers(
         &self,
         id: &CredentialId,
@@ -132,15 +134,16 @@ pub trait CredentialStore: Send + Sync {
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    /// Keeps `test` as the credential's `last_test` if it still holds the
-    /// secret of `generation` (the one tested), and records `audit` in the
-    /// same transaction either way. `Ok(false)` when the secret was
-    /// replaced meanwhile: the result is not kept, since it is not about
-    /// the current secret. `NotFound` if the credential does not exist.
+    /// Keeps `test` as the credential's `last_test` if everything in
+    /// `fence` still holds (nothing it is sent changed while it was being
+    /// tested), and records `audit` in the same transaction either way.
+    /// `Ok(false)` when something changed: the result is not kept, since it
+    /// is not about what is sent now. `NotFound` if the credential does
+    /// not exist.
     async fn record_credential_test(
         &self,
         id: &CredentialId,
-        generation: u64,
+        fence: &TestFence,
         test: &CredentialTest,
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError>;

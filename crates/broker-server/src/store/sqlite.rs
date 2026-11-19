@@ -22,8 +22,8 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokenless_control::model::{
     AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
     Node, Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings,
-    SignInScope, SsoIdentity, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User,
-    Variable, Vault, VaultDeletion, VaultScope,
+    SignInScope, SsoIdentity, StoredTemplate, TemplateSource, TemplateStatus, TestFence, UiSession,
+    User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -496,7 +496,8 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_custom_headers").await?;
         let result = sqlx::query(
-            "UPDATE credentials SET custom_headers = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
+            // A test sends these headers: its result no longer applies.
+            "UPDATE credentials SET custom_headers = ?, variable_refs = ?, updated_at = ?, last_test = NULL WHERE id = ?",
         )
         .bind(to_json("custom_headers", &custom_headers)?)
         .bind(to_json("variable_refs", &variable_refs)?)
@@ -536,18 +537,28 @@ impl CredentialStore for SqliteStore {
     async fn record_credential_test(
         &self,
         id: &CredentialId,
-        generation: u64,
+        fence: &TestFence,
         test: &CredentialTest,
         audit: &[AuditEvent],
     ) -> Result<bool, StoreError> {
         let mut tx = self.begin("record_credential_test").await?;
-        let row = sqlx::query("SELECT secret_generation FROM credentials WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db("record credential test", "credential"))?
-            .ok_or_else(|| StoreError::not_found("credential", id))?;
-        let current = to_u64(get::<i64>(&row, "secret_generation")?) == generation;
+        // What the credential sends now: its secret, its row (headers and
+        // all), and the variables it references.
+        let row = sqlx::query(
+            "SELECT secret_generation, updated_at, \
+             (SELECT MAX(variables.updated_at) FROM json_each(credentials.variable_refs) \
+              JOIN variables ON variables.key = json_each.value) AS variables_updated_at \
+             FROM credentials WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db("record credential test", "credential"))?
+        .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let current = to_u64(get::<i64>(&row, "secret_generation")?) == fence.secret_generation
+            && get::<String>(&row, "updated_at")? == ts(&fence.updated_at)
+            && get::<Option<String>>(&row, "variables_updated_at")?
+                == opt_ts(&fence.variables_updated_at);
         if current {
             sqlx::query("UPDATE credentials SET last_test = ? WHERE id = ?")
                 .bind(to_json("last_test", test)?)

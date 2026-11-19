@@ -66,8 +66,8 @@ Click a service to see where it is used and what it did.
   accepted (2xx), rejected (401 or 403: wrong, expired or missing
   scopes), unreachable, blocked by the egress policy, or timed out. Only
   the host and status are shown. Services without a test request say
-  "not tested". The last result stays on the page until the secret is
-  replaced. Only the vault's admins can test.
+  "not tested". The last result stays on the page until what the service
+  is sent changes: its secret, its custom headers or a variable they use. Only the vault's admins can test.
 - **Replace secret** stores a new value, optionally with the date it
   stops working upstream; the proxy stops sending it then. Proxies use
   the new value at their next policy refresh, within seconds. The old

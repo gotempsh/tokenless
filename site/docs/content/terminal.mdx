@@ -118,6 +118,7 @@ it. `--json` gives the same as `test` and `next_steps`.
 | another status | Neither: test again later |
 | couldn't reach, timed out | DNS, TLS or the connection failed, or no answer in 10 seconds |
 | blocked | The host resolves to a private address; allow it under [Settings → Private addresses](./settings.mdx#private-addresses) |
+| could not be completed | An error in the control plane stopped the test; test again |
 | not tested | The service has no test request it may send (none defined, or only wildcard hosts), or the server runs with `--no-credential-tests`. The reason is given. Never a pass |
 
 A key that fails is still stored, so you can fix it and test again:

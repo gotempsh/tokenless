@@ -71,10 +71,11 @@ describe("test results", () => {
           ["no_probe", null],
           ["unavailable", null],
           ["rate_limited", null],
+          ["error", null],
         ] as const
       ).map(([o, s]) => testTitle(result(o, s))),
     );
-    expect(titles.size).toBe(9);
+    expect(titles.size).toBe(10);
     expect(testTitle(result("rejected", 403))).toBe("api.openai.com rejected the credential (403)");
     expect(testTitle(result("unexpected_status", 503))).toBe("api.openai.com answered 503");
     expect(testTitle({ ...result("accepted", 200), host: "git.example.com:443" })).toBe(
@@ -133,6 +134,14 @@ describe("next steps", () => {
     expect(steps[0]?.action).toBeUndefined();
     // Untested is not unusable: with a bundle and a proxy, it is ready.
     expect(steps[3]?.detail).toBe("Ready");
+  });
+
+  test("an error is not 'tests are off': it says so and offers another test", () => {
+    const failed = { ...result("error"), detail: "the test could not be completed: store unavailable" };
+    expect(testTitle(failed)).toBe("The test could not be completed");
+    expect(testAdvice(failed)).toContain("store unavailable");
+    expect(testTone(failed)).toBe("warning");
+    expect(canRetest(failed)).toBe(true);
   });
 
   test("a test that could not run says why, not that none is defined", () => {

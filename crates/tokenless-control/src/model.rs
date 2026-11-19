@@ -194,6 +194,10 @@ pub enum TestOutcome {
     Unavailable,
     /// Nothing was sent: too many tests in a short time. Never stored.
     RateLimited,
+    /// The test could not be completed: an error in the control plane
+    /// (its store, or decrypting the credential), not the service's answer.
+    /// Never stored; testing again may work.
+    Error,
 }
 
 impl TestOutcome {
@@ -208,6 +212,7 @@ impl TestOutcome {
             TestOutcome::NoProbe => "no_probe",
             TestOutcome::Unavailable => "unavailable",
             TestOutcome::RateLimited => "rate_limited",
+            TestOutcome::Error => "error",
         }
     }
 
@@ -216,9 +221,26 @@ impl TestOutcome {
     pub fn was_sent(self) -> bool {
         !matches!(
             self,
-            TestOutcome::NoProbe | TestOutcome::Unavailable | TestOutcome::RateLimited
+            TestOutcome::NoProbe
+                | TestOutcome::Unavailable
+                | TestOutcome::RateLimited
+                | TestOutcome::Error
         )
     }
+}
+
+/// What a credential test was run against, as the store had it when the
+/// test read the credential. A result is kept only if all of it still
+/// holds when the test ends: otherwise what the service is sent (the
+/// secret, the custom headers, a variable they use) changed while it ran,
+/// and the result describes something no longer sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestFence {
+    pub secret_generation: u64,
+    /// The credential's `updated_at`: any change to it moves this.
+    pub updated_at: DateTime<Utc>,
+    /// The latest `updated_at` of the variables it references, if any.
+    pub variables_updated_at: Option<DateTime<Utc>>,
 }
 
 /// The result of one credential test. Only the status code, the host and
