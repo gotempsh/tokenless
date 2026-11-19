@@ -536,20 +536,28 @@ impl CredentialStore for SqliteStore {
     async fn record_credential_test(
         &self,
         id: &CredentialId,
+        generation: u64,
         test: &CredentialTest,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         let mut tx = self.begin("record_credential_test").await?;
-        let result = sqlx::query("UPDATE credentials SET last_test = ? WHERE id = ?")
-            .bind(to_json("last_test", test)?)
+        let row = sqlx::query("SELECT secret_generation FROM credentials WHERE id = ?")
             .bind(id.to_string())
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(db("record credential test", "credential"))?;
-        if result.rows_affected() == 0 {
-            return Err(StoreError::not_found("credential", id));
+            .map_err(db("record credential test", "credential"))?
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let current = to_u64(get::<i64>(&row, "secret_generation")?) == generation;
+        if current {
+            sqlx::query("UPDATE credentials SET last_test = ? WHERE id = ?")
+                .bind(to_json("last_test", test)?)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db("record credential test", "credential"))?;
         }
-        finish(tx, audit, "record_credential_test").await
+        finish(tx, audit, "record_credential_test").await?;
+        Ok(current)
     }
 
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
@@ -663,6 +671,17 @@ impl CredentialStore for SqliteStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("variable", id));
         }
+        // What the credentials using it send has changed: their last test
+        // no longer says anything about it.
+        sqlx::query(
+            "UPDATE credentials SET last_test = NULL WHERE EXISTS \
+             (SELECT 1 FROM json_each(credentials.variable_refs), variables \
+              WHERE variables.id = ? AND json_each.value = variables.key)",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("replace variable value", "credential"))?;
         finish(tx, audit, "replace_variable_value").await
     }
 

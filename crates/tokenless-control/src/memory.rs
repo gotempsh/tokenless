@@ -225,17 +225,21 @@ impl CredentialStore for MemoryStore {
     async fn record_credential_test(
         &self,
         id: &CredentialId,
+        generation: u64,
         test: &CredentialTest,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         let mut inner = self.lock()?;
         let (meta, _) = inner
             .credentials
             .get_mut(id)
             .ok_or_else(|| StoreError::not_found("credential", id))?;
-        meta.last_test = Some(test.clone());
+        let current = meta.secret_generation == generation;
+        if current {
+            meta.last_test = Some(test.clone());
+        }
         inner.audit.extend_from_slice(audit);
-        Ok(())
+        Ok(current)
     }
 
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
@@ -308,6 +312,12 @@ impl CredentialStore for MemoryStore {
         variable.updated_by = updated_by.to_string();
         variable.updated_at = updated_at;
         *stored = ct;
+        let key = variable.key.clone();
+        for (meta, _) in inner.credentials.values_mut() {
+            if meta.variable_refs.contains(&key) {
+                meta.last_test = None;
+            }
+        }
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

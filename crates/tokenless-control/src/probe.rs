@@ -93,23 +93,36 @@ impl ProbeLimiter {
 
     /// Takes one test for `credential` by `actor`, or says how long to wait.
     pub fn acquire(&self, credential: &str, actor: &str) -> Result<(), Duration> {
-        self.acquire_at(credential, actor, Instant::now())
+        let mut windows = self.lock();
+        // Read the clock holding the lock, so each window stays in order.
+        Self::admit(&mut windows, credential, actor, Instant::now())
     }
 
     /// [`Self::acquire`] at `now`. Every limit must have room; only then
     /// is the test counted against each, so a refused one costs nothing.
     pub fn acquire_at(&self, credential: &str, actor: &str, now: Instant) -> Result<(), Duration> {
+        Self::admit(&mut self.lock(), credential, actor, now)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<Instant>>> {
+        // A poisoned lock only means a panic elsewhere; the counts are
+        // still counts.
+        self.windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn admit(
+        windows: &mut HashMap<String, VecDeque<Instant>>,
+        credential: &str,
+        actor: &str,
+        now: Instant,
+    ) -> Result<(), Duration> {
         let keys = [
             (format!("credential:{credential}"), PER_CREDENTIAL),
             (format!("actor:{actor}"), PER_ACTOR),
             ("all".to_string(), OVERALL),
         ];
-        // A poisoned lock only means a panic elsewhere; the counts are
-        // still counts.
-        let mut windows = self
-            .windows
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         windows.retain(|_, w| {
             while w
                 .front()
@@ -152,10 +165,15 @@ pub fn redact(text: &str, headers: &InjectedHeaders) -> String {
             .map(|h| h.value.as_str()),
     );
     for value in values {
-        // Very short values would blank out ordinary words.
-        if value.len() >= 4 && out.contains(value) {
-            out = out.replace(value, "[redacted]");
+        if value.is_empty() || !out.contains(value) {
+            continue;
         }
+        if value.len() < 4 {
+            // Replacing so short a value would blank out ordinary words,
+            // and leaving it could leave the secret: say nothing instead.
+            return "the error text was withheld: it may contain the credential".into();
+        }
+        out = out.replace(value, "[redacted]");
     }
     out
 }
@@ -221,6 +239,19 @@ mod tests {
                 .acquire_at(&format!("x{i}"), "alice", start)
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn a_short_secret_withholds_the_whole_error() {
+        use tokenless_core::injection::SecretMaterial;
+        let headers = InjectedHeaders {
+            headers: vec![],
+            substitutions: vec![],
+            secrets: vec![SecretMaterial::new("x7q")],
+        };
+        let text = redact("connect failed: x7q refused", &headers);
+        assert!(!text.contains("x7q"), "{text}");
+        assert_eq!(redact("connect failed", &headers), "connect failed");
     }
 
     #[test]

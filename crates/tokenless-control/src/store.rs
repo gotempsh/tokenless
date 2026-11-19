@@ -132,14 +132,18 @@ pub trait CredentialStore: Send + Sync {
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
-    /// Keeps `test` as the credential's `last_test`, with `audit` in the
-    /// same transaction; `NotFound` if the credential does not exist.
+    /// Keeps `test` as the credential's `last_test` if it still holds the
+    /// secret of `generation` (the one tested), and records `audit` in the
+    /// same transaction either way. `Ok(false)` when the secret was
+    /// replaced meanwhile: the result is not kept, since it is not about
+    /// the current secret. `NotFound` if the credential does not exist.
     async fn record_credential_test(
         &self,
         id: &CredentialId,
+        generation: u64,
         test: &CredentialTest,
         audit: &[AuditEvent],
-    ) -> Result<(), StoreError>;
+    ) -> Result<bool, StoreError>;
     /// Credentials in every vault that reference at least one variable.
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError>;
 
@@ -155,7 +159,8 @@ pub trait CredentialStore: Send + Sync {
     async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError>;
     /// The given keys that exist; unknown keys are left out.
     async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError>;
-    /// `NotFound` if the variable does not exist.
+    /// `NotFound` if the variable does not exist. Forgets the `last_test` of
+    /// every credential that references it: what they send has changed.
     async fn replace_variable_value(
         &self,
         id: &VariableId,

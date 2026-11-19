@@ -334,7 +334,7 @@ impl PolicyService {
         self.guard
             .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
             .await?;
-        let test = self.run_test(caller, &meta).await?;
+        let (test, _) = self.run_test(caller, &meta).await?;
         if test.outcome == TestOutcome::RateLimited {
             return Err(ControlError::RateLimited {
                 subject: format!("tests of service '{}'", meta.name),
@@ -354,13 +354,13 @@ impl PolicyService {
         req: CreateCredential,
     ) -> Result<AddedCredential, ControlError> {
         let mut credential = self.create_credential(caller, vault_id, req).await?;
-        let test = match self.run_test(caller, &credential).await {
-            Ok(test) => test,
+        let (test, saved) = match self.run_test(caller, &credential).await {
+            Ok(tested) => tested,
             // The credential is stored either way; a test that could not
             // run is said, not turned into a failed add.
             Err(e) => {
                 warn!(credential = %credential.id, error = %e, "could not test a new credential");
-                CredentialTest {
+                let test = CredentialTest {
                     outcome: TestOutcome::Unavailable,
                     ok: false,
                     host: None,
@@ -371,10 +371,12 @@ impl PolicyService {
                     retry_after_secs: None,
                     tested_at: Utc::now(),
                     tested_by: caller.actor().to_string(),
-                }
+                };
+                (test, false)
             }
         };
-        if test.outcome != TestOutcome::RateLimited {
+        // Only what was kept: a read of the credential says the same.
+        if saved {
             credential.last_test = Some(test.clone());
         }
         Ok(AddedCredential { credential, test })
@@ -437,13 +439,15 @@ impl PolicyService {
         }))
     }
 
-    /// Runs one test and keeps its outcome (except a rate-limited one,
-    /// which did not run). The caller has been authorised.
+    /// Runs one test and keeps its outcome as the credential's `last_test`,
+    /// unless it was rate-limited (it did not run) or the secret was
+    /// replaced while it ran. Says whether it was kept. The caller has been
+    /// authorised.
     async fn run_test(
         &self,
         caller: &Caller,
         meta: &CredentialMeta,
-    ) -> Result<CredentialTest, ControlError> {
+    ) -> Result<(CredentialTest, bool), ControlError> {
         let actor = caller.actor().to_string();
         let blank = |outcome: TestOutcome, detail: String| CredentialTest {
             outcome,
@@ -463,25 +467,32 @@ impl PolicyService {
                 // Nothing left the control plane, so nothing to audit;
                 // kept so the service says it is untested and why.
                 let test = blank(TestOutcome::NoProbe, why);
-                self.credentials
-                    .record_credential_test(&meta.id, &test, &[])
+                let saved = self
+                    .credentials
+                    .record_credential_test(&meta.id, meta.secret_generation, &test, &[])
                     .await?;
-                return Ok(test);
+                return Ok((test, saved));
             }
         };
         let host = plan.host.to_string();
         if let Err(wait) = self.probe_limits.acquire(&meta.id.to_string(), &actor) {
-            let secs = wait.as_secs().max(1);
-            return Ok(CredentialTest {
-                host: Some(host),
-                method: Some(plan.method),
-                path: Some(plan.path),
-                retry_after_secs: Some(secs),
-                ..blank(
-                    TestOutcome::RateLimited,
-                    format!("not tested: too many tests in the last minute; try again in {secs}s"),
-                )
-            });
+            // Rounded up: waiting the time given is always enough.
+            let secs = (wait.as_secs() + u64::from(wait.subsec_nanos() > 0)).max(1);
+            return Ok((
+                CredentialTest {
+                    host: Some(host),
+                    method: Some(plan.method),
+                    path: Some(plan.path),
+                    retry_after_secs: Some(secs),
+                    ..blank(
+                        TestOutcome::RateLimited,
+                        format!(
+                            "not tested: too many tests in the last minute; try again in {secs}s"
+                        ),
+                    )
+                },
+                false,
+            ));
         }
         let headers = render_credential(
             self.credentials.as_ref(),
@@ -577,17 +588,25 @@ impl PolicyService {
                 .unwrap_or_else(|| "none".into()),
         )
         .detail("detail", detail);
-        match self
+        let saved = match self
             .credentials
-            .record_credential_test(&meta.id, &test, std::slice::from_ref(&event))
+            .record_credential_test(
+                &meta.id,
+                meta.secret_generation,
+                &test,
+                std::slice::from_ref(&event),
+            )
             .await
         {
-            Ok(()) => {}
+            Ok(saved) => saved,
             // Deleted while the test ran: still on record that it ran.
-            Err(StoreError::NotFound { .. }) => self.audit.record(event).await,
+            Err(StoreError::NotFound { .. }) => {
+                self.audit.record(event).await;
+                false
+            }
             Err(e) => return Err(e.into()),
-        }
-        Ok(test)
+        };
+        Ok((test, saved))
     }
 
     /// Inserts built-in templates that are not yet stored and returns how

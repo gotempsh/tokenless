@@ -388,10 +388,36 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         tested_by: "user:tester".into(),
     };
     let tested = AuditEvent::new("user:tester", "credential.validate", AuditOutcome::Failure);
-    store
-        .record_credential_test(&first.id, &test, std::slice::from_ref(&tested))
+    let generation = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "record_test_generation"))?
+        .map_or(0, |m| m.secret_generation);
+    // A result for a secret that has since been replaced is not kept.
+    let stale = store
+        .record_credential_test(&first.id, generation - 1, &test, &[])
+        .await
+        .map_err(backend(S, "record_test_stale"))?;
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "record_test_stale_get"))?;
+    ensure!(
+        S,
+        "record_test_stale",
+        !stale && read.as_ref().is_some_and(|m| m.last_test.is_none()),
+        "a result for an older secret must not be kept, got {stale} and {read:?}"
+    );
+    let kept = store
+        .record_credential_test(&first.id, generation, &test, std::slice::from_ref(&tested))
         .await
         .map_err(backend(S, "record_test"))?;
+    ensure!(
+        S,
+        "record_test",
+        kept,
+        "a result for the current secret must be kept"
+    );
     let read = store
         .get_credential(&first.id)
         .await
@@ -403,7 +429,7 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "last_test must read back as recorded, got {read:?}"
     );
     let missing_test = store
-        .record_credential_test(&CredentialId::new(), &test, &[])
+        .record_credential_test(&CredentialId::new(), 1, &test, &[])
         .await;
     ensure!(
         S,
@@ -630,6 +656,48 @@ pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), Con
         "delete_in_use",
         matches!(blocked, Err(StoreError::Conflict { .. })),
         "deleting a referenced variable must be a Conflict, got {blocked:?}"
+    );
+
+    // A new value changes what the credentials using it send, so their
+    // last test no longer applies; the others keep theirs.
+    let test = CredentialTest {
+        outcome: TestOutcome::Accepted,
+        ok: true,
+        host: Some("api.example.com".into()),
+        method: Some("GET".into()),
+        path: Some("/user".into()),
+        status: Some(200),
+        detail: "api.example.com accepted the credential (200)".into(),
+        retry_after_secs: None,
+        tested_at: at(5),
+        tested_by: "user:tester".into(),
+    };
+    for c in [&cred, &plain] {
+        store
+            .record_credential_test(&c.id, c.secret_generation, &test, &[])
+            .await
+            .map_err(backend(S, "variable_test"))?;
+    }
+    store
+        .replace_variable_value(&org.id, b"v-2c".to_vec(), "user:other", at(6), &[])
+        .await
+        .map_err(backend(S, "variable_clears_test"))?;
+    let (using, other) = (
+        store
+            .get_credential(&cred.id)
+            .await
+            .map_err(backend(S, "variable_clears_test_get"))?,
+        store
+            .get_credential(&plain.id)
+            .await
+            .map_err(backend(S, "variable_clears_test_get"))?,
+    );
+    ensure!(
+        S,
+        "variable_clears_test",
+        using.as_ref().is_some_and(|m| m.last_test.is_none())
+            && other.as_ref().is_some_and(|m| m.last_test.is_some()),
+        "only the referencing credential's test is forgotten: {using:?} / {other:?}"
     );
 
     // Dropping the reference frees the variable.
