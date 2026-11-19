@@ -399,7 +399,7 @@ pub fn assess(o: Observed) -> Report {
         None => unknown("other_hosts", "Other hosts", signed_in, false),
     });
 
-    checks.push(tested_check(&o.vaults));
+    checks.push(tested_check(&o.vaults, &server_flag));
 
     checks.push(match &o.skill {
         Skill::Installed(agents) => Check {
@@ -445,7 +445,14 @@ pub fn assess(o: Observed) -> Report {
         .find(|c| c.required && c.fix.is_some())
         .and_then(|c| c.fix.clone())
         .or(run)
-        .or_else(|| checks.iter().find_map(|c| c.fix.clone()));
+        // Until it is ready, testing a key again is not the next step: it
+        // would hide the missing requirement, and cannot make it ready.
+        .or_else(|| {
+            checks
+                .iter()
+                .filter(|c| ready || c.id != "tested")
+                .find_map(|c| c.fix.clone())
+        });
     Report {
         version: o.version,
         server: o.server,
@@ -459,7 +466,7 @@ pub fn assess(o: Observed) -> Report {
 /// Whether the services' credentials passed their last test. Recommended,
 /// not required: a service with no test request, or one not yet tested,
 /// may well work.
-fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>) -> Check {
+fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>, server_flag: &str) -> Check {
     let check = |state, detail: String, fix: Option<String>| Check {
         id: "tested",
         label: "Keys tested",
@@ -473,7 +480,7 @@ fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>) -> Check {
     };
     let fix = |vault: &str, service: &str| {
         format!(
-            "tokenless service test {} --vault {}",
+            "tokenless service test {} --vault {}{server_flag}",
             shell_word(service),
             shell_word(vault)
         )
@@ -526,7 +533,7 @@ fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>) -> Check {
     {
         return check(
             State::Unknown,
-            "this server sends no test requests (serve --no-credential-tests)".into(),
+            "the last test did not run: the server sent no test requests then (serve --no-credential-tests)".into(),
             None,
         );
     }
@@ -541,8 +548,8 @@ fn tested_check(vaults: &Option<Result<Vec<VaultSummary>, String>>) -> Check {
     );
     if no_probe > 0 {
         detail.push_str(&format!(
-            "; {no_probe} {} no test request",
-            plural(no_probe, "service has", "services have")
+            "; {no_probe} {} be tested from here",
+            plural(no_probe, "service can't", "services can't")
         ));
     }
     check(State::Ok, detail, None)
@@ -760,7 +767,7 @@ mod tests {
         assert_eq!(c.state, State::Ok);
         assert_eq!(
             c.detail,
-            "1 credential accepted; 1 service has no test request"
+            "1 credential accepted; 1 service can't be tested from here"
         );
         assert_eq!(c.fix, None);
 
@@ -769,6 +776,45 @@ mod tests {
             now,
         );
         assert_eq!(check(&off, "tested").state, State::Unknown);
+
+        // Another control plane: the command acts on it.
+        let mut o = observed(now);
+        o.server = "https://tokenless.example".into();
+        o.default_server = false;
+        o.vaults = Some(Ok(vec![VaultSummary {
+            name: "work".into(),
+            services: 1,
+            bundles: vec!["code-review".into()],
+            tests: vec![("github".into(), None)],
+        }]));
+        assert_eq!(
+            check(&assess(o), "tested").fix.as_deref(),
+            Some("tokenless service test github --vault work --server https://tokenless.example")
+        );
+    }
+
+    /// With no access bundle, testing a key again is not what comes next:
+    /// the missing bundle is.
+    #[test]
+    fn a_retest_never_hides_a_missing_bundle() {
+        let now = Utc::now();
+        let report = assess(Observed {
+            vaults: Some(Ok(vec![VaultSummary {
+                name: "work".into(),
+                services: 1,
+                bundles: vec![],
+                tests: vec![("service".into(), None)],
+            }])),
+            ..observed(now)
+        });
+        assert!(!report.ready);
+        assert_eq!(check(&report, "bundle").state, State::Missing);
+        assert_ne!(
+            report.next.as_deref(),
+            check(&report, "tested").fix.as_deref(),
+            "{:?}",
+            report.next
+        );
     }
 
     fn check<'a>(report: &'a Report, id: &str) -> &'a Check {

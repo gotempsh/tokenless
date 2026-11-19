@@ -838,9 +838,10 @@ struct ServeArgs {
     /// e.g. a self-hosted service's private CA (repeatable).
     #[arg(long = "validation-ca")]
     validation_ca: Vec<PathBuf>,
-    /// Never send a credential's test request upstream: services are not
-    /// tested when added, and Test says tests are not available here. For
-    /// a server that must make no outbound calls of its own.
+    /// Never send a credential's test request upstream: a service with one
+    /// is reported as not tested because tests are off (a service without
+    /// one still says it has none). For a server that must make no
+    /// outbound calls of its own.
     #[arg(long, env = "TOKENLESS_NO_CREDENTIAL_TESTS", value_parser = clap::builder::FalseyValueParser::new())]
     no_credential_tests: bool,
     /// Snapshot lease in seconds; nodes fail closed when it lapses.

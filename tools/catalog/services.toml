@@ -181,7 +181,6 @@ category = "llm_providers"
 hosts = ["api.fireworks.ai"]
 auth = "bearer"
 variable = "FIREWORKS_API_KEY"
-validate = "GET /inference/v1/models"
 icon = "lobe:fireworks"
 
 [[service]]

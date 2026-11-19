@@ -511,7 +511,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert_eq!(added["bundle"], "my-agent");
     assert_eq!(
         added["run"],
-        "tokenless run --vault personal --bundle my-agent -- <command>"
+        format!("tokenless run --vault personal --bundle my-agent --server {url} -- <command>")
     );
     assert!(stderr.contains(&file.display().to_string()), "{stderr}");
     // Tested on add (this server sends no test requests, so it says so),
@@ -526,7 +526,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert_eq!(step("proxy")["state"], "pending", "{added:#}");
     assert_eq!(
         step("use")["fix"],
-        "tokenless run --vault personal --bundle my-agent -- claude"
+        format!("tokenless run --vault personal --bundle my-agent --server {url} -- claude")
     );
     assert!(
         added["next_steps"]["key"]
@@ -791,7 +791,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert_eq!(added["vault_created"], false);
     assert_eq!(
         added["run"],
-        "tokenless run --vault personal --bundle my-agent -- <command>"
+        format!("tokenless run --vault personal --bundle my-agent --server {url} -- <command>")
     );
     // The page's save tested it; the command reports that test.
     assert_eq!(added["test"]["outcome"], "unavailable", "{added:#}");

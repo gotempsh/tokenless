@@ -183,6 +183,8 @@ mod tests {
         Answer(&'static str),
         /// Accepts the request and never answers.
         Hang,
+        /// Sends this response head, promising a body it never sends.
+        HeadOnly(&'static str),
     }
 
     /// A local HTTPS service for `localhost`. Returns its port, its
@@ -233,6 +235,11 @@ mod tests {
                         Upstream::Hang => {
                             tokio::time::sleep(Duration::from_secs(60)).await;
                         }
+                        Upstream::HeadOnly(head) => {
+                            let _ = tls.write_all(head.as_bytes()).await;
+                            let _ = tls.flush().await;
+                            tokio::time::sleep(Duration::from_secs(60)).await;
+                        }
                     }
                 });
             }
@@ -270,6 +277,25 @@ mod tests {
             .to_ascii_lowercase()
             .contains(&format!("authorization: {}", DUMMY.to_ascii_lowercase())));
         assert!(head.contains(&format!("host: localhost:{port}")), "{head}");
+    }
+
+    /// The status is all a test needs: it comes back as soon as the head
+    /// does, without waiting for a body that may never come.
+    #[tokio::test]
+    async fn the_status_comes_back_without_waiting_for_the_body() {
+        let (port, root, _) = upstream(Upstream::HeadOnly(
+            "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n",
+        ))
+        .await;
+        let prober = HttpProber::new(false, &[root]).unwrap();
+        let status = tokio::time::timeout(
+            Duration::from_secs(5),
+            prober.probe(request("localhost", port), &loopback_allowed()),
+        )
+        .await
+        .expect("answered before the body")
+        .unwrap();
+        assert_eq!(status, 200);
     }
 
     #[tokio::test]

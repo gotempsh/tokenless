@@ -58,6 +58,12 @@ pub struct Facts<'a> {
     pub proxy: ProxySeen,
     /// Where `node run` finds this machine's proxy.
     pub proxy_state: &'a str,
+    /// Whether that file is there: a proxy enrolled elsewhere is started
+    /// on its own machine.
+    pub proxy_state_exists: bool,
+    /// ` --server <url>` for a control plane other than the default, so
+    /// the commands act on the one that was used; empty otherwise.
+    pub server_flag: &'a str,
     /// The variable tools read the key from, such as `OPENAI_API_KEY`.
     pub variable: Option<&'a str>,
     pub substitutions: &'a [Substitution],
@@ -87,9 +93,10 @@ pub fn test_line(test: Option<&CredentialTest>) -> String {
 pub fn build(f: &Facts<'_>) -> NextSteps {
     let mut steps = Vec::new();
     let test_cmd = format!(
-        "tokenless service test {} --vault {}",
+        "tokenless service test {} --vault {}{}",
         shell_word(f.service),
-        shell_word(f.vault)
+        shell_word(f.vault),
+        f.server_flag
     );
     let service_page = service_link(f.server, f.vault_id, f.credential_id);
     steps.push(match f.test {
@@ -156,12 +163,23 @@ pub fn build(f: &Facts<'_>) -> NextSteps {
             fix: None,
             link: None,
         },
-        ProxySeen::Idle(names) => Step {
+        ProxySeen::Idle(names) if f.proxy_state_exists => Step {
             id: "proxy",
             label: "Proxy connected",
             state: StepState::Pending,
             detail: format!("{} enrolled, none connected", names.join(", ")),
             fix: Some(format!("tokenless node run --state {}", f.proxy_state)),
+            link: None,
+        },
+        ProxySeen::Idle(names) => Step {
+            id: "proxy",
+            label: "Proxy connected",
+            state: StepState::Pending,
+            detail: format!(
+                "{} enrolled, none connected; start it where it was enrolled: tokenless node run --state <its identity file>",
+                names.join(", ")
+            ),
+            fix: None,
             link: None,
         },
         ProxySeen::None => Step {
@@ -170,8 +188,9 @@ pub fn build(f: &Facts<'_>) -> NextSteps {
             state: StepState::Pending,
             detail: "no proxy enrolled".into(),
             fix: Some(format!(
-                "tokenless proxy add --name <this machine> --state {}",
-                f.proxy_state
+                "tokenless proxy add --name <this machine> --state {state}{} && tokenless node run --state {state}",
+                f.server_flag,
+                state = f.proxy_state
             )),
             link: None,
         },
@@ -180,16 +199,17 @@ pub fn build(f: &Facts<'_>) -> NextSteps {
             label: "Proxy connected",
             state: StepState::Unknown,
             detail: why.clone(),
-            fix: Some("tokenless status".into()),
+            fix: Some(format!("tokenless status{}", f.server_flag)),
             link: None,
         },
     });
     let (run, agent) = match f.bundle {
         Some(b) => {
             let base = format!(
-                "tokenless run --vault {} --bundle {}",
+                "tokenless run --vault {} --bundle {}{}",
                 shell_word(f.vault),
-                shell_word(b)
+                shell_word(b),
+                f.server_flag
             );
             (
                 Some(format!("{base} -- <command>")),
@@ -199,7 +219,12 @@ pub fn build(f: &Facts<'_>) -> NextSteps {
         None => (None, None),
     };
     let key = key_hint(f.variable, f.substitutions);
-    let ready = steps.iter().all(|s| s.state == StepState::Done);
+    // A test only tells; an untested key can still be used. What an agent
+    // needs is the bundle and a proxy.
+    let ready = steps
+        .iter()
+        .filter(|s| s.id != "tested")
+        .all(|s| s.state == StepState::Done);
     steps.push(Step {
         id: "use",
         label: "Start an agent behind it",
@@ -306,6 +331,8 @@ mod tests {
             test,
             proxy,
             proxy_state: "~/.tokenless/node.json",
+            proxy_state_exists: true,
+            server_flag: "",
             variable: Some("OPENAI_API_KEY"),
             substitutions: &[],
         }
@@ -413,6 +440,53 @@ mod tests {
             Some("http://127.0.0.1:8080/#/settings")
         );
         assert_eq!(steps.steps[2].state, StepState::Unknown);
+    }
+
+    /// An untested key can still be used: with a bundle and a proxy, the
+    /// agent is ready to start whatever the test said.
+    #[test]
+    fn a_test_is_never_what_stands_between_a_service_and_an_agent() {
+        let t = test(TestOutcome::NoProbe, None, "not tested: no test request");
+        let connected = ProxySeen::Connected(vec!["laptop".into()]);
+        let steps = build(&facts(Some(&t), Some("b"), connected.clone()));
+        assert_eq!(steps.steps[3].detail, "ready");
+        let steps = build(&facts(None, Some("b"), connected));
+        assert_eq!(steps.steps[3].detail, "ready");
+    }
+
+    #[test]
+    fn a_proxy_is_enrolled_and_started_where_its_identity_is() {
+        let steps = build(&facts(None, Some("b"), ProxySeen::None));
+        assert_eq!(
+            steps.steps[2].fix.as_deref(),
+            Some("tokenless proxy add --name <this machine> --state ~/.tokenless/node.json && tokenless node run --state ~/.tokenless/node.json")
+        );
+        // Enrolled on another machine: nothing to start here.
+        let mut f = facts(None, Some("b"), ProxySeen::Idle(vec!["server-2".into()]));
+        f.proxy_state_exists = false;
+        let steps = build(&f);
+        assert_eq!(steps.steps[2].fix, None);
+        assert!(steps.steps[2].detail.contains("where it was enrolled"));
+    }
+
+    #[test]
+    fn commands_name_a_control_plane_other_than_the_default() {
+        let mut f = facts(None, Some("b"), ProxySeen::None);
+        f.server_flag = " --server https://tokenless.example";
+        let steps = build(&f);
+        assert_eq!(
+            steps.steps[0].fix.as_deref(),
+            Some(
+                "tokenless service test openai --vault personal --server https://tokenless.example"
+            )
+        );
+        assert!(steps.steps[2].fix.as_deref().unwrap().contains(
+            "--state ~/.tokenless/node.json --server https://tokenless.example && tokenless node run"
+        ));
+        assert_eq!(
+            steps.agent.as_deref(),
+            Some("tokenless run --vault personal --bundle b --server https://tokenless.example -- claude")
+        );
     }
 
     #[test]

@@ -56,7 +56,8 @@ pub struct ServerConfig {
     pub api_tls: Option<api_tls::ApiTlsFiles>,
     /// Test credentials when they are added and on request, by sending
     /// their template's test request upstream. Off, no test request is
-    /// ever sent and every test says tests are not available here.
+    /// ever sent: a service that has one is answered `unavailable`; one
+    /// without is still answered `no_probe`, as nothing would be sent.
     pub credential_tests: bool,
     /// Trust the public web PKI for credential validation requests.
     pub validation_public_roots: bool,
