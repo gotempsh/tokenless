@@ -17,3 +17,7 @@ credential_fields:
 injection:
   method: bearer
   field: token
+validation:
+  method: GET
+  path: /inference/v1/models
+  expect_status: [200]

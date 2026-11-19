@@ -18,7 +18,8 @@
 #   username_label, password_label (+ _description)   for basic auth
 #   headers             default custom headers, e.g. { "Notion-Version" = "2022-06-28" }
 #   variable            suggested variable key, e.g. "GITHUB_TOKEN"
-#   validate, expect    test request, e.g. "GET /v1/models" (expect defaults to [200])
+#   validate, expect    test request, e.g. "GET /v1/models" (expect defaults to [200]); only
+#                       GET or HEAD on one exact path: it runs with the real key on every add
 #   override            { required = bool, label = "..." }: admins may set the host
 #   popular, aliases    catalogue placement and extra search words
 #   logo                logo key when shared with another service (e.g. "github")
@@ -180,6 +181,7 @@ category = "llm_providers"
 hosts = ["api.fireworks.ai"]
 auth = "bearer"
 variable = "FIREWORKS_API_KEY"
+validate = "GET /inference/v1/models"
 icon = "lobe:fireworks"
 
 [[service]]
@@ -386,6 +388,7 @@ auth = "basic"
 username_label = "Email"
 password_label = "API key"
 variable = "UPSTASH_API_KEY"
+validate = "GET /v2/redis/databases"
 icon = "svgl:Upstash"
 
 
@@ -492,6 +495,7 @@ header = "Authorization"
 prefix = "Bot "
 label = "Bot token"
 variable = "DISCORD_BOT_TOKEN"
+validate = "GET /api/v10/users/@me"
 icon = "svgl:Discord"
 
 [[service]]
@@ -505,6 +509,7 @@ auth = "basic"
 username_label = "Account SID"
 password_label = "Auth token"
 variable = "TWILIO_AUTH_TOKEN"
+validate = "GET /2010-04-01/Accounts.json"
 icon = "svgl:Twilio"
 
 [[service]]
@@ -765,6 +770,7 @@ hosts = ["api.hubapi.com"]
 auth = "bearer"
 label = "Private app token"
 variable = "HUBSPOT_TOKEN"
+validate = "GET /account-info/v3/details"
 aliases = ["crm"]
 icon = "simple:hubspot"
 
@@ -806,6 +812,7 @@ category = "payments"
 hosts = ["api.paddle.com"]
 auth = "bearer"
 variable = "PADDLE_API_KEY"
+validate = "GET /event-types"
 icon = "simple:paddle"
 
 
@@ -857,6 +864,7 @@ category = "search"
 hosts = ["api.firecrawl.dev"]
 auth = "bearer"
 variable = "FIRECRAWL_API_KEY"
+validate = "GET /v1/team/credit-usage"
 icon = "svgl:Firecrawl"
 
 [[service]]
@@ -1361,6 +1369,7 @@ category = "infrastructure"
 hosts = ["api.tailscale.com"]
 auth = "bearer"
 variable = "TAILSCALE_API_KEY"
+validate = "GET /api/v2/tailnet/-/devices"
 aliases = ["vpn", "wireguard"]
 docs = "https://tailscale.com/api"
 
@@ -1623,6 +1632,7 @@ category = "monitoring"
 hosts = ["api.incident.io"]
 auth = "bearer"
 variable = "INCIDENT_IO_API_KEY"
+validate = "GET /v1/identity"
 aliases = ["incidents", "on-call"]
 docs = "https://api-docs.incident.io/"
 icon = "gilbarbara:incident"
@@ -1815,6 +1825,7 @@ auth = "header"
 header = "x-api-token"
 label = "API token"
 variable = "PIPEDRIVE_API_TOKEN"
+validate = "GET /v1/users/me"
 aliases = ["crm"]
 docs = "https://pipedrive.readme.io/docs/core-api-concepts-authentication"
 icon_dark_fills = ["#231F1F", "#3B3B3C", "#525254"]
@@ -2094,6 +2105,7 @@ hosts = ["api.browserbase.com"]
 auth = "header"
 header = "X-BB-API-Key"
 variable = "BROWSERBASE_API_KEY"
+validate = "GET /v1/projects"
 aliases = ["browser", "scraping"]
 docs = "https://docs.browserbase.com/reference/introduction"
 

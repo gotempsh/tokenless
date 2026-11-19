@@ -17,3 +17,7 @@ credential_fields:
 injection:
   method: bearer
   field: token
+validation:
+  method: GET
+  path: /v1/team/credit-usage
+  expect_status: [200]
