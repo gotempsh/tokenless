@@ -100,6 +100,31 @@ export function testFix(
   return null;
 }
 
+/** The edits on a service's page that change what a test sends, and so
+ *  clear its result on the server: the secret and the custom headers. The
+ *  placeholders apply to agents' requests, not to the test request. */
+export function editChangesTest(editing: "secret" | "headers" | "placeholders" | null): boolean {
+  return editing === "secret" || editing === "headers";
+}
+
+/**
+ * The test to show for a service: a fresh one from this page, else the one
+ * kept with the service, unless that came with the service's metadata as it
+ * was before this page changed what the test sends (`staleRevision`, the
+ * metadata's `updated_at` then). The server bumps `updated_at` on that
+ * change and keeps a result only for what is still sent, so metadata read
+ * afterwards is trusted as is; no browser clock is compared with the server's.
+ */
+export function shownTest(
+  fresh: CredentialTest | null,
+  meta: { last_test?: CredentialTest | null; updated_at: string } | undefined,
+  staleRevision: string | null,
+): CredentialTest | null {
+  if (fresh) return fresh;
+  if (!meta?.last_test || meta.updated_at === staleRevision) return null;
+  return meta.last_test;
+}
+
 export function serviceHref(vaultId: string, credentialId: string): string {
   return `#/vaults/${vaultId}/services/${credentialId}`;
 }

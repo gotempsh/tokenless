@@ -5,9 +5,11 @@ import { describe, expect, test } from "bun:test";
 import type { CredentialTest, NodeInfo, TestOutcome } from "./api";
 import {
   canRetest,
+  editChangesTest,
   keyHint,
   nextSteps,
   runCommand,
+  shownTest,
   testAdvice,
   testFix,
   testTitle,
@@ -100,6 +102,24 @@ describe("test results", () => {
     expect(canRetest(result("rejected", 401))).toBe(true);
     expect(canRetest(result("no_probe"))).toBe(false);
     expect(canRetest(null)).toBe(true);
+  });
+
+  test("an edit that changes what is sent hides the old result until a fresh read", () => {
+    const kept = result("accepted", 200);
+    const before = { last_test: kept, updated_at: "2026-11-19T12:00:00.000001Z" };
+    expect(shownTest(null, before, null)).toBe(kept);
+    // Replaced here: the metadata from before is not trusted, whatever the clocks say.
+    expect(shownTest(null, before, before.updated_at)).toBeNull();
+    // Read again afterwards: the server's answer stands, test or not.
+    const after = { last_test: result("rejected", 401), updated_at: "2026-11-19T11:59:00.000000Z" };
+    expect(shownTest(null, after, before.updated_at)?.outcome).toBe("rejected");
+    expect(shownTest(null, { last_test: null, updated_at: after.updated_at }, before.updated_at)).toBeNull();
+    // A fresh result from this page comes first.
+    expect(shownTest(result("timed_out"), before, before.updated_at)?.outcome).toBe("timed_out");
+    expect(editChangesTest("secret")).toBe(true);
+    expect(editChangesTest("headers")).toBe(true);
+    expect(editChangesTest("placeholders")).toBe(false);
+    expect(editChangesTest(null)).toBe(false);
   });
 });
 

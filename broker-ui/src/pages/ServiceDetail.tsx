@@ -4,7 +4,7 @@
 // One service (a credential and how it is sent): what it reaches, the rules
 // and bundles that let agents use it, and everything that changes it.
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AlertTriangle, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import {
   ApiError,
@@ -47,7 +47,7 @@ import {
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
 import { TestResult } from "../components/ServiceTest";
-import { serviceHref } from "../serviceTest";
+import { editChangesTest, serviceHref, shownTest as testToShow } from "../serviceTest";
 import { DetailLayout, Fact, FactList } from "../components/layout";
 import {
   EMPTY_SECRET,
@@ -92,9 +92,13 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const variables = useVariableKeys(isInstanceAdmin(user));
   const [editing, setEditing] = useState<Editing>(null);
   const [result, setResult] = useState<CredentialValidation | null>(null);
-  // When this page replaced the secret: a kept result from before then is
-  // about the old secret, even while the reload still shows it.
-  const [replacedAt, setReplacedAt] = useState<number | null>(null);
+  // The metadata's `updated_at` from before this page changed what a test
+  // sends: its kept result is about the old secret or headers, even while
+  // the reload still shows it.
+  const [staleRevision, setStaleRevision] = useState<string | null>(null);
+  // Moves on every such change, so a test that started before it does not
+  // show its result afterwards.
+  const inputs = useRef(0);
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
   const names = useActorNames(user);
@@ -126,8 +130,11 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
 
   const test = async (target: CredentialMeta) => {
     setResult(null);
+    const started = inputs.current;
     const r = await action.run(() => post<CredentialValidation>(`/credentials/${target.id}/validate`));
-    if (r) {
+    // Tested with what was sent before an edit made here: the server did
+    // not keep it, and neither does the page.
+    if (r && started === inputs.current) {
       setResult(r);
       cred.reload();
     }
@@ -143,10 +150,11 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   };
 
   const done = () => {
-    if (editing === "secret") {
-      // Replacing the secret clears its test; an earlier result no longer applies.
+    if (editChangesTest(editing)) {
+      // The server cleared the test; an earlier result no longer applies.
+      inputs.current += 1;
       setResult(null);
-      setReplacedAt(Date.now());
+      setStaleRevision(c?.updated_at ?? null);
     }
     setEditing(null);
     cred.reload();
@@ -157,10 +165,8 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const canTest = isAdmin;
   const testReason = isAdmin ? undefined : ADMIN_ONLY;
   // A fresh result, else the last one kept with the service, unless it
-  // predates a secret replaced here.
-  const kept = c?.last_test;
-  const keptCurrent = kept && (replacedAt === null || Date.parse(kept.tested_at) > replacedAt) ? kept : null;
-  const shownTest = result ?? keptCurrent;
+  // came with the metadata from before an edit made here.
+  const shownTest = testToShow(result, c, staleRevision);
 
   return (
     <PageContainer>
