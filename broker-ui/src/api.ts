@@ -346,9 +346,42 @@ export interface CredentialMeta {
   substitutions: Substitution[];
   /** When the secret stops working upstream, if it does. */
   not_after?: string | null;
+  /** How the last test of the current secret went; null until tested. */
+  last_test?: CredentialTest | null;
   created_by: string;
   created_at: string;
   updated_at: string;
+}
+
+/** What a credential test found; each calls for something different. */
+export type TestOutcome =
+  | "accepted"
+  | "rejected"
+  | "unexpected_status"
+  | "unreachable"
+  | "blocked"
+  | "timed_out"
+  | "no_probe"
+  | "unavailable"
+  | "rate_limited";
+
+/** One test: status code, host and request line only, never a body. */
+export interface CredentialTest {
+  outcome: TestOutcome;
+  ok: boolean;
+  host: string | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  detail: string;
+  retry_after_secs?: number | null;
+  tested_at: string;
+  tested_by: string;
+}
+
+/** `POST /vaults/{id}/credentials`: the new service and its first test. */
+export interface AddedCredential extends CredentialMeta {
+  test: CredentialTest;
 }
 
 export interface VariableUse {
@@ -610,15 +643,9 @@ export interface QuarantinePolicy {
   window_secs: number;
 }
 
-export interface CredentialValidation {
+/** `POST /credentials/{id}/validate`: a test, beside the service it is of. */
+export interface CredentialValidation extends CredentialTest {
   credential_id: string;
-  ok: boolean;
-  host: string;
-  method: string;
-  path: string;
-  status: number | null;
-  expected_status: number[];
-  detail: string;
 }
 
 let csrfToken: string | null = null;

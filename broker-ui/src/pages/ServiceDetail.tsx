@@ -5,7 +5,7 @@
 // and bundles that let agents use it, and everything that changes it.
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import {
   ApiError,
   del,
@@ -46,6 +46,8 @@ import {
   useConfirm,
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { TestResult } from "../components/ServiceTest";
+import { serviceHref } from "../serviceTest";
 import { DetailLayout, Fact, FactList } from "../components/layout";
 import {
   EMPTY_SECRET,
@@ -122,7 +124,10 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const test = async (target: CredentialMeta) => {
     setResult(null);
     const r = await action.run(() => post<CredentialValidation>(`/credentials/${target.id}/validate`));
-    if (r) setResult(r);
+    if (r) {
+      setResult(r);
+      cred.reload();
+    }
   };
 
   const remove = async (target: CredentialMeta) => {
@@ -136,11 +141,17 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
 
   const done = () => {
     setEditing(null);
+    // Replacing the secret clears its test; an earlier result no longer applies.
+    setResult(null);
     cred.reload();
   };
 
-  const canTest = isAdmin && Boolean(template?.validation);
-  const testReason = !isAdmin ? ADMIN_ONLY : template?.validation ? undefined : "This template declares no test request";
+  // The server answers for a service with no test request too ("not tested"),
+  // so the button is there for every service an admin may change.
+  const canTest = isAdmin;
+  const testReason = isAdmin ? undefined : ADMIN_ONLY;
+  // A fresh result, else the last one kept with the service.
+  const shownTest = result ?? c?.last_test ?? null;
 
   return (
     <PageContainer>
@@ -199,7 +210,14 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         }
       />
       <ErrorBanner error={cred.error ?? action.error ?? templates.error ?? rules.error ?? bundles.error ?? variables.error} />
-      {result && <TestResult result={result} />}
+      {c && shownTest && (
+        <TestResult
+          test={shownTest}
+          serviceHref={serviceHref(vaultId, c.id)}
+          showWhen={!result}
+          onReplaceKey={isAdmin ? () => setEditing("secret") : undefined}
+        />
+      )}
       {missing ? (
         <Panel>
           <Empty
@@ -401,37 +419,6 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         }}
       />
     </PageContainer>
-  );
-}
-
-function TestResult({ result }: { result: CredentialValidation }) {
-  const request = `${result.method} ${result.path} on ${result.host}`;
-  if (result.ok)
-    return (
-      <Alert>
-        <CheckCircle2 className="size-4 text-success" />
-        <AlertTitle>The credential works</AlertTitle>
-        <AlertDescription>
-          {request} answered {result.status}.
-        </AlertDescription>
-      </Alert>
-    );
-  return (
-    <Alert variant="warning">
-      <FlaskConical className="size-4" />
-      <AlertTitle>Test of {request} failed</AlertTitle>
-      <AlertDescription>
-        {result.detail}
-        {result.detail.includes("Settings") && (
-          <>
-            {" "}
-            <a href="#/settings" className="font-medium underline underline-offset-4">
-              Open Settings
-            </a>
-          </>
-        )}
-      </AlertDescription>
-    </Alert>
   );
 }
 

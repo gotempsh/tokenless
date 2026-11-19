@@ -13,7 +13,11 @@ import {
   patch,
   post,
   type AccessBundle,
+  type AddedCredential,
   type CredentialMeta,
+  type CredentialTest,
+  type CredentialValidation,
+  type NodeInfo,
   type Page,
   type ProxySession,
   type Rule,
@@ -41,9 +45,10 @@ import {
   type CredentialBody,
 } from "../addService";
 import { latestTemplates } from "../catalog";
-import { useLoad } from "../hooks";
+import { useAction, useLoad } from "../hooks";
 import { backCrumbs, useBreadcrumbs } from "../breadcrumbs";
 import { cn } from "../lib/utils";
+import { keyHint, nextSteps, runCommand, serviceHref } from "../serviceTest";
 
 import {
   CheckField,
@@ -58,6 +63,7 @@ import {
 } from "../components/common";
 import { ServiceForm, useVariableKeys } from "../components/ServiceForm";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { NextSteps, TestResult } from "../components/ServiceTest";
 import { TemplateCatalog } from "../components/TemplateCatalog";
 import { Button } from "../components/ui/button-components";
 import { Input } from "../components/ui/input";
@@ -68,7 +74,7 @@ const NEW_VAULT = "__new__";
 
 const liveApi: AddServiceApi = {
   createVault: (name) => post<Vault>("/vaults", { name }),
-  createCredential: (vaultId, body) => post<CredentialMeta>(`/vaults/${vaultId}/credentials`, body),
+  createCredential: (vaultId, body) => post<AddedCredential>(`/vaults/${vaultId}/credentials`, body),
   createRule: (vaultId, body) => post<Rule>(`/vaults/${vaultId}/rules`, body),
   getBundle: (id) => get<AccessBundle>(`/bundles/${id}`),
   createBundle: (vaultId, body) => post<AccessBundle>(`/vaults/${vaultId}/bundles`, body),
@@ -323,6 +329,7 @@ function ServicePage({
         <Done
           template={template}
           result={result}
+          user={user}
           access={where.access}
           back={back}
           another={addServiceHref({
@@ -722,27 +729,38 @@ function RunningWithout({
 function Done({
   template,
   result,
+  user,
   access,
   back,
   another,
 }: {
   template: ServiceTemplate;
   result: AddServiceProgress;
+  user: Me;
   access: AccessPreset;
   back: string;
   another: string;
 }) {
   const vault = result.vault;
+  const credential = result.credential;
   const bundles = result.bundles ?? [];
+  const [test, setTest] = useState<CredentialTest | undefined>(result.test);
+  const retest = useAction();
+  // Proxies are an admin's to see; for anyone else that step stays open.
+  const isAdmin = isInstanceAdmin(user);
+  const proxies = useLoad(
+    () => (isAdmin ? get<Page<NodeInfo>>("/nodes?page_size=100") : Promise.resolve(undefined)),
+    [isAdmin],
+  );
   const items = [
     vault?.created ? (
       <>
         Created vault <span className="font-medium">{vault.name}</span>
       </>
     ) : null,
-    result.credential ? (
+    credential ? (
       <>
-        Stored the {template.name} credential as <span className="font-medium">{result.credential.name}</span>
+        Stored the {template.name} credential as <span className="font-medium">{credential.name}</span>
       </>
     ) : null,
     result.rule ? (
@@ -752,15 +770,26 @@ function Done({
         <Tags values={result.rule.allow.hosts} />
       </>
     ) : null,
-    ...(bundles.length > 0
-      ? bundles.map((b) => (
-          <>
-            In access bundle <span className="font-mono font-medium">{b.name}</span> ({b.rule_ids.length} service
-            {b.rule_ids.length === 1 ? "" : "s"})
-          </>
-        ))
-      : [<span className="text-muted-foreground">Not in an access bundle</span>]),
   ].filter((x) => x !== null);
+  const href = vault && credential ? serviceHref(vault.id, credential.id) : back;
+  const [first] = bundles;
+  const steps =
+    vault && credential
+      ? nextSteps({
+          vaultId: vault.id,
+          vaultName: vault.name,
+          credentialId: credential.id,
+          test,
+          bundles,
+          proxies: isAdmin ? (proxies.data?.items ?? (proxies.error ? [] : undefined)) : "hidden",
+          now: new Date(),
+        })
+      : [];
+  const runTest = async () => {
+    if (!credential) return;
+    const r = await retest.run(() => post<CredentialValidation>(`/credentials/${credential.id}/validate`));
+    if (r) setTest(r);
+  };
   return (
     <Panel className="space-y-5 p-6 text-sm">
       <ul className="space-y-2">
@@ -771,30 +800,18 @@ function Done({
           </li>
         ))}
       </ul>
-      <RunningWithout bundles={bundles} ruleId={result.rule?.id} service={result.credential?.name ?? template.name} />
-      {bundles.length > 0 ? (
-        <div className="space-y-2 rounded-md border bg-muted/40 p-4">
-          <p className="font-medium">Run an agent with it</p>
-          <p className="text-xs text-muted-foreground">
-            Create a session from {bundles.length === 1 ? bundles[0]?.name : "one of its bundles"} and give its token
-            to the agent. The agent never sees the secret.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {bundles.map((b) => (
-              <Button key={b.id} type="button" variant="outline" size="sm" asChild>
-                <a href={`#/bundles/${b.id}/connect`}>{bundles.length === 1 ? "Run an agent" : `Run with ${b.name}`}</a>
-              </Button>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <p className="text-muted-foreground">
-          Put its rule in an access bundle under{" "}
-          <a href="#/bundles" className="underline underline-offset-4">
-            Access bundles
-          </a>{" "}
-          so agents can start with it by name.
-        </p>
+      <ErrorBanner error={retest.error} title="Could not test it" />
+      {test ? (
+        <TestResult test={test} serviceHref={href} onRetest={() => void runTest()} busy={retest.busy} />
+      ) : null}
+      <RunningWithout bundles={bundles} ruleId={result.rule?.id} service={credential?.name ?? template.name} />
+      {steps.length > 0 && vault && (
+        <NextSteps
+          steps={steps}
+          agentCommand={first ? runCommand(vault.name, first.name, "claude") : undefined}
+          runCommand={first ? runCommand(vault.name, first.name) : undefined}
+          keyHint={keyHint(template.suggested_variable, credential?.substitutions ?? [])}
+        />
       )}
       <DialogActions>
         {vault && (

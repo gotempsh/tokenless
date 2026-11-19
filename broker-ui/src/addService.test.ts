@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { describe, expect, test } from "bun:test";
-import type { AccessBundle, CredentialMeta, Rule, Vault } from "./api";
+import type { AccessBundle, CredentialMeta, CredentialTest, Rule, Vault } from "./api";
 import {
   sessionsWithout,
   bundlesToJoin,
@@ -57,7 +57,18 @@ function fakeApi(failOnce?: keyof AddServiceApi) {
         created_by: "u",
         created_at: at,
         updated_at: at,
-      } satisfies CredentialMeta;
+        test: {
+          outcome: "rejected",
+          ok: false,
+          host: "api.example.com",
+          method: "GET",
+          path: "/v1/me",
+          status: 401,
+          detail: "rejected",
+          tested_at: at,
+          tested_by: "u",
+        },
+      } satisfies CredentialMeta & { test: CredentialTest };
     },
     async createRule(vaultId, body) {
       guard("createRule");
@@ -180,6 +191,26 @@ describe("addService", () => {
     );
     expect(calls).toEqual(["createCredential", "createRule"]);
     expect(done.bundles).toBeUndefined();
+  });
+
+  test("keeps the server's test of the credential apart from the credential", async () => {
+    const { api } = fakeApi();
+    const done = await addService(
+      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundles: { join: [] } },
+      api,
+    );
+    expect(done.test).toEqual(expect.objectContaining({ outcome: "rejected", status: 401 }));
+    expect(done.credential).not.toHaveProperty("test");
+  });
+
+  test("a rejected key still adds the service, its rule and bundles", async () => {
+    const { api, calls } = fakeApi();
+    const done = await addService(
+      { vault: { kind: "existing", id: "v1", name: "main" }, credential, access: "full", bundles: { join: [{ id: "b2", name: "research" }] } },
+      api,
+    );
+    expect(calls).toEqual(["createCredential", "createRule", "getBundle", "setBundleRules"]);
+    expect(done.bundles?.[0]?.rule_ids).toEqual(["r1"]);
   });
 
   test("a bundle that fails is named, and a retry does not join the others again", async () => {

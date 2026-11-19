@@ -287,10 +287,20 @@ export function serviceHistoryPhrase(e: AuditEvent): string {
   }
 }
 
-/** How a service test went: ": it worked (200)", ": it failed (401)". */
+const TEST_OUTCOME: Record<string, string> = {
+  accepted: "it worked",
+  rejected: "the key was rejected",
+  unexpected_status: "it answered unexpectedly",
+  unreachable: "the service was unreachable",
+  blocked: "the egress policy blocked it",
+  timed_out: "it timed out",
+};
+
+/** How a service test went: ": it worked (200)", ": the key was rejected (401)". */
 function tested(e: AuditEvent): string {
   const status = e.detail.status && e.detail.status !== "none" ? ` (${e.detail.status})` : "";
-  return e.outcome === "success" ? `: it worked${status}` : `: it failed${status}`;
+  const said = (e.detail.outcome && TEST_OUTCOME[e.detail.outcome]) ?? (e.outcome === "success" ? "it worked" : "it failed");
+  return `: ${said}${status}`;
 }
 
 /** `api.example.com:443` reads as `api.example.com`; other ports stay. */

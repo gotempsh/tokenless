@@ -219,6 +219,16 @@ describe("serviceHistoryPhrase", () => {
     expect(
       serviceHistoryPhrase(event({ action: "credential.validate", outcome: "failure", detail: { status: "none" } })),
     ).toBe("tested the service: it failed");
+    expect(
+      serviceHistoryPhrase(
+        event({ action: "credential.validate", outcome: "failure", detail: { outcome: "rejected", status: "401" } }),
+      ),
+    ).toBe("tested the service: the key was rejected (401)");
+    expect(
+      serviceHistoryPhrase(
+        event({ action: "credential.validate", outcome: "failure", detail: { outcome: "blocked", status: "none" } }),
+      ),
+    ).toBe("tested the service: the egress policy blocked it");
   });
 
   test("falls back to the general phrase for its rules", () => {
