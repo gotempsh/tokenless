@@ -345,13 +345,18 @@ function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => voi
   );
 }
 
+function changedList(values: string[], original: string[]) {
+  return values.length === original.length && values.every((value, i) => value === original[i]) ? undefined : values;
+}
+
 function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const [page, setPage] = useState(1);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Rule | null>(null);
-  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
+  const choosingCredential = adding && !editing;
+  const templates = useLoad(() => choosingCredential ? get<StoredTemplate[]>("/templates") : Promise.resolve([]), [choosingCredential]);
   const [form, setForm] = useState(EMPTY_RULE);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
@@ -359,21 +364,25 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const saveAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
-  const validScope = !editing || (lines(form.hosts).length > 0 && form.paths.trim().length > 0 && lines(form.methods).length > 0);
+  const hosts = lines(form.hosts);
+  const paths = form.paths.split("\n").filter(Boolean);
+  const methods = lines(form.methods);
+  const changes = editing ? {
+    name: form.name === editing.name ? undefined : form.name,
+    hosts: changedList(hosts, editing.allow.hosts),
+    paths: changedList(paths, editing.allow.paths),
+    methods: changedList(methods, editing.allow.methods),
+  } : {};
+  const validScope = !editing || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
+  const canSave = !saveAction.busy && !!form.credential_id && validScope
+    && (!editing || Object.values(changes).some(value => value !== undefined));
   const save = async (e: FormEvent) => {
     e.preventDefault();
-    if (!validScope || saveAction.busy) return;
+    if (!canSave) return;
     const opt = (v: string) => (lines(v).length ? lines(v) : undefined);
     const saved = await saveAction.run(() => editing
-      ? patch<Rule>(`/rules/${editing.id}`, {
-          expected_updated_at: editing.updated_at,
-          name: form.name === editing.name ? undefined : form.name,
-          hosts: form.hosts === editing.allow.hosts.join("\n") ? undefined : lines(form.hosts),
-          paths: form.paths === editing.allow.paths.join("\n") ? undefined : form.paths.split("\n").filter(Boolean),
-          methods: form.methods === editing.allow.methods.join(", ") ? undefined : lines(form.methods),
-        })
-      :
-      post<Rule>(`/vaults/${vaultId}/rules`, {
+      ? patch<Rule>(`/rules/${editing.id}`, { expected_updated_at: editing.updated_at, ...changes })
+      : post<Rule>(`/vaults/${vaultId}/rules`, {
         name: form.name,
         credential_id: form.credential_id,
         hosts: opt(form.hosts),
@@ -511,85 +520,87 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       >
         <form className="space-y-4" onSubmit={save}>
           <ErrorBanner error={saveAction.error} />
-          <div className="space-y-4">
-            <Field label="Name" htmlFor="rule-name">
-              <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-            </Field>
-            <Field
-              label="Credential"
-              htmlFor="rule-cred"
-              hint={creds.data?.items.length === 0 ? "Add a credential to this vault first." : undefined}
-            >
-              {editing ? <Input id="rule-cred" value={credName(editing.credential_id)} readOnly /> : <SelectField
-                id="rule-cred"
-                value={form.credential_id}
-                onChange={(v) => setForm({ ...form, credential_id: v })}
-                placeholder="Choose…"
-                options={(creds.data?.items ?? []).map((c) => ({
-                  value: c.id,
-                  label: (
-                    <span className="flex min-w-0 items-center gap-2">
-                      <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
-                      <span className="truncate">{c.name} ({c.template_id})</span>
-                    </span>
-                  ),
-                }))}
-              />}
-            </Field>
-          </div>
-          <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
-            <Textarea
-              id="rule-hosts"
-                required={!!editing}
-              rows={2}
-              className="font-mono"
-              value={form.hosts}
-              onChange={(e) => setForm({ ...form, hosts: e.target.value })}
-              placeholder="api.example.com"
-            />
-          </Field>
-          <div className="space-y-4">
-            <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+          <fieldset className="min-w-0 space-y-4" disabled={saveAction.busy}>
+            <div className="space-y-4">
+              <Field label="Name" htmlFor="rule-name">
+                <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              </Field>
+              <Field
+                label="Credential"
+                htmlFor="rule-cred"
+                hint={creds.data?.items.length === 0 ? "Add a credential to this vault first." : undefined}
+              >
+                {editing ? <Input id="rule-cred" value={credName(editing.credential_id)} readOnly /> : <SelectField
+                  id="rule-cred"
+                  value={form.credential_id}
+                  onChange={(v) => setForm({ ...form, credential_id: v })}
+                  placeholder="Choose…"
+                  options={(creds.data?.items ?? []).map((c) => ({
+                    value: c.id,
+                    label: (
+                      <span className="flex min-w-0 items-center gap-2">
+                        <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+                        <span className="truncate">{c.name} ({c.template_id})</span>
+                      </span>
+                    ),
+                  }))}
+                />}
+              </Field>
+            </div>
+            <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
               <Textarea
-                id="rule-paths"
-                required={!!editing}
+                id="rule-hosts"
+                  required={!!editing}
                 rows={2}
                 className="font-mono"
-                value={form.paths}
-                onChange={(e) => setForm({ ...form, paths: e.target.value })}
-                placeholder="/v1/*"
+                value={form.hosts}
+                onChange={(e) => setForm({ ...form, hosts: e.target.value })}
+                placeholder="api.example.com"
               />
             </Field>
-            <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
-              <Input
-                id="rule-methods"
-                required={!!editing}
+            <div className="space-y-4">
+              <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+                <Textarea
+                  id="rule-paths"
+                  required={!!editing}
+                  rows={2}
+                  className="font-mono"
+                  value={form.paths}
+                  onChange={(e) => setForm({ ...form, paths: e.target.value })}
+                  placeholder="/v1/*"
+                />
+              </Field>
+              <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
+                <Input
+                  id="rule-methods"
+                  required={!!editing}
+                  className="font-mono"
+                  value={form.methods}
+                  onChange={(e) => setForm({ ...form, methods: e.target.value })}
+                  placeholder="GET, POST"
+                />
+              </Field>
+            </div>
+            {!editing && <Field
+              label="MCP tools"
+              htmlFor="rule-new-tools"
+              hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
+            >
+              <Textarea
+                id="rule-new-tools"
+                rows={2}
                 className="font-mono"
-                value={form.methods}
-                onChange={(e) => setForm({ ...form, methods: e.target.value })}
-                placeholder="GET, POST"
+                value={form.tools}
+                onChange={(e) => setForm({ ...form, tools: e.target.value })}
+                placeholder="search_issues"
               />
-            </Field>
-          </div>
-          {!editing && <Field
-            label="MCP tools"
-            htmlFor="rule-new-tools"
-            hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
-          >
-            <Textarea
-              id="rule-new-tools"
-              rows={2}
-              className="font-mono"
-              value={form.tools}
-              onChange={(e) => setForm({ ...form, tools: e.target.value })}
-              placeholder="search_issues"
-            />
-          </Field>}
+            </Field>}
+          </fieldset>
           <DialogActions>
             <Button type="button" variant="outline" disabled={saveAction.busy} onClick={() => setAdding(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saveAction.busy || !validScope || !form.credential_id}>
+            <Button type="submit" disabled={!canSave}>
               {editing ? "Save changes" : "Create rule"}
             </Button>
           </DialogActions>
