@@ -7,7 +7,7 @@
 // failure continues from the step that failed instead of creating a second
 // credential.
 
-import type { AccessBundle, CredentialMeta, CustomHeader, ProxySession, Rule, Vault } from "./api";
+import type { AccessBundle, CredentialMeta, CredentialTest, CustomHeader, ProxySession, Rule, Vault } from "./api";
 
 export interface CredentialBody {
   name: string;
@@ -94,7 +94,8 @@ export interface AddServicePlan {
 
 export interface AddServiceApi {
   createVault(name: string): Promise<Vault>;
-  createCredential(vaultId: string, body: CredentialBody): Promise<CredentialMeta>;
+  /** Saves the service; the server tests it and answers with `test`. */
+  createCredential(vaultId: string, body: CredentialBody): Promise<CredentialMeta & { test?: CredentialTest }>;
   createRule(vaultId: string, body: { name: string; credential_id: string; methods?: string[] }): Promise<Rule>;
   getBundle(bundleId: string): Promise<AccessBundle>;
   createBundle(vaultId: string, body: { name: string; description: string; rule_ids: string[] }): Promise<AccessBundle>;
@@ -105,6 +106,8 @@ export interface AddServiceApi {
 export interface AddServiceProgress {
   vault?: { id: string; name: string; created: boolean };
   credential?: CredentialMeta;
+  /** The test the server ran when it saved the credential. */
+  test?: CredentialTest;
   rule?: Rule;
   /** The bundles that hold the rule so far, in the order they were done. */
   bundles?: AccessBundle[];
@@ -186,7 +189,9 @@ export async function addService(
   }
   const vaultId = p.vault.id;
   if (!p.credential) {
-    p.credential = await step("credential", p, () => api.createCredential(vaultId, plan.credential));
+    const { test, ...credential } = await step("credential", p, () => api.createCredential(vaultId, plan.credential));
+    p.credential = credential;
+    p.test = test ?? credential.last_test ?? undefined;
   }
   const credential = p.credential;
   if (!p.rule) {

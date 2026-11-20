@@ -397,12 +397,14 @@ pub async fn create_credential(
     ApiJson(req): ApiJson<CreateCredential>,
 ) -> ApiResult<impl IntoResponse> {
     let id: VaultId = parse_id("vault", &vault_id)?;
-    let meta = s
+    // Stored, then tested: the reply is the service with `test`, the
+    // outcome, which never fails the add.
+    let added = s
         .control
         .policy
-        .create_credential(&authed.caller, &id, req)
+        .add_credential(&authed.caller, &id, req)
         .await?;
-    Ok((StatusCode::CREATED, Json(meta)))
+    Ok((StatusCode::CREATED, Json(added)))
 }
 
 pub async fn list_credentials(
@@ -536,20 +538,33 @@ pub async fn delete_variable(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Runs the template's validation request with the stored credential.
-/// Returns the outcome (status only), never the response body.
+/// Tests the stored credential with its template's test request and keeps
+/// the outcome on the service. Returns the outcome (status code, host and
+/// request line only), never the response body; 429 when tests of this
+/// service, by this person or in all, are over their limit.
 pub async fn validate_credential(
     State(s): St,
     authed: Authed,
     Path(credential_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
     let id: CredentialId = parse_id("credential", &credential_id)?;
-    Ok(Json(
-        s.control
-            .policy
-            .validate_credential(&authed.caller, &id)
-            .await?,
-    ))
+    let test = s
+        .control
+        .policy
+        .test_credential(&authed.caller, &id)
+        .await?;
+    Ok(Json(TestedCredential {
+        credential_id: id,
+        test,
+    }))
+}
+
+/// The outcome's fields, beside the service they are about.
+#[derive(Serialize)]
+pub struct TestedCredential {
+    credential_id: CredentialId,
+    #[serde(flatten)]
+    test: tokenless_control::model::CredentialTest,
 }
 
 pub async fn delete_credential(

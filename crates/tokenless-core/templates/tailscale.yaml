@@ -18,3 +18,7 @@ credential_fields:
 injection:
   method: bearer
   field: token
+validation:
+  method: GET
+  path: /api/v2/tailnet/-/devices
+  expect_status: [200]

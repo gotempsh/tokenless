@@ -74,7 +74,9 @@ when piped (`gh auth token | tokenless service add github ...`). Then it:
 2. stores the credential, encrypted, write-only from then on,
 3. adds a rule that lets agents use it with the template's scope
    (`--read-only` limits it to `GET` and `HEAD`),
-4. adds that rule to the bundle, creating the bundle if needed.
+4. adds that rule to the bundle, creating the bundle if needed,
+5. tests the credential, and prints what is left before an agent can use
+   it.
 
 Templates with several fields (a client ID and a secret, say) ask for
 each one, so run those in a terminal. `--name` names the credential when
@@ -87,6 +89,47 @@ your control plane's afterwards:
 ```sh
 tokenless service templates OPENAI_API_KEY
 ```
+
+### Is the key right?
+
+The test sends the template's test request (for OpenAI, `GET /v1/models`)
+with the stored key, through the same code the proxy uses to add it:
+
+```text
+added openai to vault 'personal' and access bundle 'my-agent'
+test: api.openai.com accepted the credential (200)
+next steps:
+  [x] Credential tested: api.openai.com accepted the credential (200)
+  [x] In an access bundle: in my-agent
+  [x] Proxy connected: laptop connected
+  [ ] Start an agent behind it: ready
+      tokenless run --vault personal --bundle my-agent -- claude
+  a single command: tokenless run --vault personal --bundle my-agent -- <command>
+  a tool that insists on OPENAI_API_KEY gets any dummy value (OPENAI_API_KEY=tokenless); the proxy puts the key in
+```
+
+Each step left to do is followed by the command or console page that does
+it. `--json` gives the same as `test` and `next_steps`.
+
+| Result | Means |
+|---|---|
+| accepted | The service answered the status its template expects (a 2xx; any 2xx when the template names none): the key works |
+| rejected (401, 403) | The key is wrong, expired or lacks the scopes the request needs. Replace it on the service's page |
+| another status | Neither: test again later |
+| couldn't reach, timed out | DNS, TLS or the connection failed, or no answer in 10 seconds |
+| blocked | The host resolves to a private address; allow it under [Settings → Private addresses](./settings.mdx#private-addresses) |
+| could not be completed | An error in the control plane stopped the test; test again |
+| not tested | The service has no test request it may send (none defined, or only wildcard hosts), or the server runs with `--no-credential-tests`. The reason is given. Never a pass |
+
+A key that fails is still stored, so you can fix it and test again:
+
+```sh
+tokenless service test openai --vault personal
+```
+
+Only the host, the request line and the status are shown; never the
+key or what the service answered. Each test is in the audit log. A
+service can be tested 5 times a minute.
 
 ### Without typing the key here
 

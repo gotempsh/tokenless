@@ -18,3 +18,7 @@ credential_fields:
 injection:
   method: bearer
   field: token
+validation:
+  method: GET
+  path: /account-info/v3/details
+  expect_status: [200]

@@ -155,6 +155,10 @@ pub struct CredentialMeta {
     /// so a retried rotation is recognised rather than applied twice.
     #[serde(default)]
     pub rotation_id: Option<String>,
+    /// How the last test of the current secret went; `None` until it is
+    /// tested, and again once the secret is replaced.
+    #[serde(default)]
+    pub last_test: Option<CredentialTest>,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -162,6 +166,112 @@ pub struct CredentialMeta {
 
 fn first_generation() -> u64 {
     1
+}
+
+/// What a credential test found. Each says something different about what
+/// to do next, so they stay apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestOutcome {
+    /// The service answered the test request with a success status.
+    Accepted,
+    /// The service answered 401 or 403: the credential is wrong, expired
+    /// or lacks the scopes the request needs.
+    Rejected,
+    /// The service answered something else (a 404, a 429, a 5xx), which
+    /// says nothing either way about the credential.
+    UnexpectedStatus,
+    /// The host could not be reached: DNS, the connection, TLS or HTTP failed.
+    Unreachable,
+    /// The host resolves to an address the egress policy blocks.
+    Blocked,
+    /// The service did not answer in time.
+    TimedOut,
+    /// Nothing was sent: the service defines no test request (or has no
+    /// concrete host to send one to).
+    NoProbe,
+    /// Nothing was sent: this deployment makes no outbound requests.
+    Unavailable,
+    /// Nothing was sent: too many tests in a short time. Never stored.
+    RateLimited,
+    /// The test could not be completed: an error in the control plane
+    /// (its store, or decrypting the credential), not the service's answer.
+    /// Never stored; testing again may work.
+    Error,
+}
+
+impl TestOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TestOutcome::Accepted => "accepted",
+            TestOutcome::Rejected => "rejected",
+            TestOutcome::UnexpectedStatus => "unexpected_status",
+            TestOutcome::Unreachable => "unreachable",
+            TestOutcome::Blocked => "blocked",
+            TestOutcome::TimedOut => "timed_out",
+            TestOutcome::NoProbe => "no_probe",
+            TestOutcome::Unavailable => "unavailable",
+            TestOutcome::RateLimited => "rate_limited",
+            TestOutcome::Error => "error",
+        }
+    }
+
+    /// Whether a request went out, so the result says something about
+    /// the credential or the path to its host.
+    pub fn was_sent(self) -> bool {
+        !matches!(
+            self,
+            TestOutcome::NoProbe
+                | TestOutcome::Unavailable
+                | TestOutcome::RateLimited
+                | TestOutcome::Error
+        )
+    }
+}
+
+/// What a credential test was run against, as the store had it when the
+/// test read the credential. A result is kept only if all of it still
+/// holds when the test ends: otherwise what the service is sent (the
+/// secret, the custom headers, a variable they use) changed while it ran,
+/// and the result describes something no longer sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestFence {
+    pub secret_generation: u64,
+    /// The credential's `updated_at`: any change to it moves this.
+    pub updated_at: DateTime<Utc>,
+    /// The `updated_at` of each variable it references, by key (a missing
+    /// one is absent). Each is compared on its own: a change to one variable
+    /// moves its entry even when another variable is newer, which a single
+    /// latest timestamp would hide.
+    pub variables: BTreeMap<String, DateTime<Utc>>,
+}
+
+/// The result of one credential test. Only the status code, the host and
+/// the request line are kept: a response body could echo the credential,
+/// so it is never read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialTest {
+    pub outcome: TestOutcome,
+    /// `outcome == Accepted`.
+    pub ok: bool,
+    /// Where the request went (`host:port`), when one was chosen.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The upstream's status code, when it answered.
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// One sentence for a person: what happened and what to do about it.
+    pub detail: String,
+    /// For `RateLimited`: when another test may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+    pub tested_at: DateTime<Utc>,
+    /// Who ran it (an actor, as in the audit log).
+    pub tested_by: String,
 }
 
 /// A named secret referenced as `{{KEY}}`. The value is stored encrypted

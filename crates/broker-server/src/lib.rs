@@ -54,6 +54,11 @@ pub struct ServerConfig {
     pub ui_dir: Option<PathBuf>,
     /// Serve the management API over TLS with this certificate and key.
     pub api_tls: Option<api_tls::ApiTlsFiles>,
+    /// Test credentials when they are added and on request, by sending
+    /// their template's test request upstream. Off, no test request is
+    /// ever sent: a service that has one is answered `unavailable`; one
+    /// without is still answered `no_probe`, as nothing would be sent.
+    pub credential_tests: bool,
     /// Trust the public web PKI for credential validation requests.
     pub validation_public_roots: bool,
     /// Extra CAs trusted for validation requests (self-hosted services).
@@ -72,6 +77,7 @@ impl ServerConfig {
             node_api_names: vec!["localhost".into(), "127.0.0.1".into()],
             ui_dir: None,
             api_tls: None,
+            credential_tests: true,
             validation_public_roots: true,
             validation_extra_roots: Vec::new(),
             control: ControlConfig::default(),
@@ -162,10 +168,14 @@ async fn open_control(config: &ServerConfig) -> Result<Opened, ServerError> {
             stores,
             Arc::new(RbacAuthorizer),
             cipher,
-            Arc::new(probe::HttpProber::new(
-                config.validation_public_roots,
-                &config.validation_extra_roots,
-            )?),
+            if config.credential_tests {
+                Arc::new(probe::HttpProber::new(
+                    config.validation_public_roots,
+                    &config.validation_extra_roots,
+                )?)
+            } else {
+                Arc::new(tokenless_control::probe::DisabledProber)
+            },
             Arc::new(oidc_transport::HttpOidcTransport::new(
                 config.validation_public_roots,
                 &config.validation_extra_roots,

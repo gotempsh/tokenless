@@ -19,3 +19,7 @@ injection:
   method: header
   name: "X-BB-API-Key"
   field: api_key
+validation:
+  method: GET
+  path: /v1/projects
+  expect_status: [200]

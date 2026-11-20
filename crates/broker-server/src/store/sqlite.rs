@@ -20,10 +20,10 @@ use sqlx::sqlite::{
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use tokenless_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, Page,
-    PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SignInScope,
-    SsoIdentity, StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
-    VaultDeletion, VaultScope,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
+    Node, Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings,
+    SignInScope, SsoIdentity, StoredTemplate, TemplateSource, TemplateStatus, TestFence, UiSession,
+    User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -276,13 +276,16 @@ fn credential_from_row(row: &SqliteRow) -> Result<CredentialMeta, StoreError> {
         not_after: get_opt_ts(row, "not_after")?,
         secret_generation: u64::try_from(get::<i64>(row, "secret_generation")?).unwrap_or(0),
         rotation_id: get(row, "rotation_id")?,
+        last_test: get::<Option<String>>(row, "last_test")?
+            .map(|t| from_json("last_test", &t))
+            .transpose()?,
         created_by: get(row, "created_by")?,
         created_at: get_ts(row, "created_at")?,
         updated_at: get_ts(row, "updated_at")?,
     })
 }
 
-const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at";
+const CREDENTIAL_COLUMNS: &str = "id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, last_test, created_by, created_at, updated_at";
 
 fn variable_from_row(row: &SqliteRow) -> Result<Variable, StoreError> {
     Ok(Variable {
@@ -312,7 +315,7 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("insert_credential").await?;
         sqlx::query(
-            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO credentials (id, vault_id, name, template_id, template_version, host_override, field_names, custom_headers, variable_refs, substitutions, not_after, secret_generation, rotation_id, last_test, created_by, created_at, updated_at, secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(meta.id.to_string())
         .bind(meta.vault_id.to_string())
@@ -327,6 +330,12 @@ impl CredentialStore for SqliteStore {
         .bind(opt_ts(&meta.not_after))
         .bind(generation_i64(meta.secret_generation)?)
         .bind(&meta.rotation_id)
+        .bind(
+            meta.last_test
+                .as_ref()
+                .map(|t| to_json("last_test", t))
+                .transpose()?,
+        )
         .bind(&meta.created_by)
         .bind(ts(&meta.created_at))
         .bind(ts(&meta.updated_at))
@@ -416,7 +425,7 @@ impl CredentialStore for SqliteStore {
         // Compare and swap on the generation read above, so a rotation
         // committed in between makes this one stale rather than lost.
         let result = sqlx::query(
-            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, secret_generation = secret_generation + 1, rotation_id = ?, updated_at = ? WHERE id = ? AND secret_generation = ?",
+            "UPDATE credentials SET secret = ?, field_names = ?, variable_refs = ?, not_after = ?, secret_generation = secret_generation + 1, rotation_id = ?, last_test = NULL, updated_at = ? WHERE id = ? AND secret_generation = ?",
         )
         .bind(secret.ciphertext.as_slice())
         .bind(to_json("field_names", &secret.field_names)?)
@@ -487,7 +496,8 @@ impl CredentialStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_custom_headers").await?;
         let result = sqlx::query(
-            "UPDATE credentials SET custom_headers = ?, variable_refs = ?, updated_at = ? WHERE id = ?",
+            // A test sends these headers: its result no longer applies.
+            "UPDATE credentials SET custom_headers = ?, variable_refs = ?, updated_at = ?, last_test = NULL WHERE id = ?",
         )
         .bind(to_json("custom_headers", &custom_headers)?)
         .bind(to_json("variable_refs", &variable_refs)?)
@@ -522,6 +532,56 @@ impl CredentialStore for SqliteStore {
             return Err(StoreError::not_found("credential", id));
         }
         finish(tx, audit, "update_substitutions").await
+    }
+
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        fence: &TestFence,
+        test: &CredentialTest,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut tx = self.begin("record_credential_test").await?;
+        // What the credential sends now: its secret, its row (headers and
+        // all), and the variables it references.
+        let row = sqlx::query("SELECT secret_generation, updated_at FROM credentials WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db("record credential test", "credential"))?
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        // Each referenced variable's own timestamp, compared one by one.
+        let variables: BTreeMap<String, String> = sqlx::query(
+            "SELECT variables.key, variables.updated_at \
+             FROM credentials, json_each(credentials.variable_refs) \
+             JOIN variables ON variables.key = json_each.value \
+             WHERE credentials.id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db("record credential test", "credential"))?
+        .iter()
+        .map(|r| Ok((get::<String>(r, "key")?, get::<String>(r, "updated_at")?)))
+        .collect::<Result<_, StoreError>>()?;
+        let fenced: BTreeMap<String, String> = fence
+            .variables
+            .iter()
+            .map(|(key, at)| (key.clone(), ts(at)))
+            .collect();
+        let current = to_u64(get::<i64>(&row, "secret_generation")?) == fence.secret_generation
+            && get::<String>(&row, "updated_at")? == ts(&fence.updated_at)
+            && variables == fenced;
+        if current {
+            sqlx::query("UPDATE credentials SET last_test = ? WHERE id = ?")
+                .bind(to_json("last_test", test)?)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await
+                .map_err(db("record credential test", "credential"))?;
+        }
+        finish(tx, audit, "record_credential_test").await?;
+        Ok(current)
     }
 
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
@@ -635,6 +695,17 @@ impl CredentialStore for SqliteStore {
         if result.rows_affected() == 0 {
             return Err(StoreError::not_found("variable", id));
         }
+        // What the credentials using it send has changed: their last test
+        // no longer says anything about it.
+        sqlx::query(
+            "UPDATE credentials SET last_test = NULL WHERE EXISTS \
+             (SELECT 1 FROM json_each(credentials.variable_refs), variables \
+              WHERE variables.id = ? AND json_each.value = variables.key)",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db("replace variable value", "credential"))?;
         finish(tx, audit, "replace_variable_value").await
     }
 
@@ -711,8 +782,8 @@ fn vault_from_row(row: &SqliteRow) -> Result<Vault, StoreError> {
 
 fn template_from_row(row: &SqliteRow) -> Result<StoredTemplate, StoreError> {
     let yaml: String = get(row, "yaml")?;
-    let template =
-        ServiceTemplate::from_yaml(&yaml).map_err(|e| StoreError::backend("decode template", e))?;
+    let template = ServiceTemplate::from_stored_yaml(&yaml)
+        .map_err(|e| StoreError::backend("decode template", e))?;
     let source = match get::<String>(row, "source")?.as_str() {
         "builtin" => TemplateSource::Builtin,
         _ => TemplateSource::Imported,

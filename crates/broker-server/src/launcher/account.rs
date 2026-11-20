@@ -25,8 +25,8 @@ use serde_json::json;
 use tokenless_auth::cookie::{session_from_cookie_header, SESSION_COOKIE};
 use tokenless_auth::csrf::CSRF_HEADER;
 use tokenless_control::model::{
-    AccessBundle, Alert, CredentialMeta, Node, Page, ProxySession, Rule, Settings, StoredTemplate,
-    Tripwire, Vault, VaultMember,
+    AccessBundle, Alert, CredentialMeta, CredentialTest, Node, Page, ProxySession, Rule, Settings,
+    StoredTemplate, Tripwire, Vault, VaultMember,
 };
 use tokenless_control::service::auth::{SignIn as SignInRecord, SignInsRevoked, UserSummary};
 use tokenless_control::service::launcher_keys::{
@@ -1066,6 +1066,29 @@ impl<'p> ConsoleClient<'p> {
             .await
     }
 
+    /// One service.
+    pub async fn credential(&self, id: &CredentialId) -> Result<CredentialMeta, LauncherError> {
+        self.call(
+            Method::GET,
+            &format!("/credentials/{id}"),
+            None,
+            "reading the service",
+        )
+        .await
+    }
+
+    /// Tests a service with its template's test request; the outcome is
+    /// also kept on the service.
+    pub async fn test_service(&self, id: &CredentialId) -> Result<CredentialTest, LauncherError> {
+        self.call(
+            Method::POST,
+            &format!("/credentials/{id}/validate"),
+            None,
+            "testing the service",
+        )
+        .await
+    }
+
     /// The services in `vault`.
     pub async fn credentials(&self, vault: &VaultId) -> Result<Vec<CredentialMeta>, LauncherError> {
         self.pages(&format!("/vaults/{vault}/credentials"), "listing services")
@@ -1189,6 +1212,8 @@ pub struct AddedService {
     pub credential: CredentialMeta,
     pub rule: Rule,
     pub bundle: Option<(AccessBundle, bool)>,
+    /// How the control plane's test of the new credential went.
+    pub test: Option<CredentialTest>,
 }
 
 /// The approved template to add a service from: the newest version of `id`.
@@ -1246,7 +1271,16 @@ impl ConsoleClient<'_> {
             "template_version": template.template.version,
             "fields": fields.iter().map(|(k, v)| (k.clone(), v.as_str().to_string())).collect::<BTreeMap<_, _>>(),
         });
-        let credential: CredentialMeta = self
+        /// The service, and the test the control plane ran on it (absent
+        /// from one that predates tests).
+        #[derive(Deserialize)]
+        struct Saved {
+            #[serde(flatten)]
+            credential: CredentialMeta,
+            #[serde(default)]
+            test: Option<CredentialTest>,
+        }
+        let Saved { credential, test } = self
             .call(
                 Method::POST,
                 &format!("/vaults/{}/credentials", vault.id),
@@ -1282,6 +1316,7 @@ impl ConsoleClient<'_> {
             credential,
             rule,
             bundle,
+            test,
         })
     }
 

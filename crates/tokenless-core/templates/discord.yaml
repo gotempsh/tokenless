@@ -19,3 +19,7 @@ injection:
   name: "Authorization"
   field: api_key
   prefix: "Bot "
+validation:
+  method: GET
+  path: /api/v10/users/@me
+  expect_status: [200]

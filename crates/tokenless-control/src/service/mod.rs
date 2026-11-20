@@ -3292,7 +3292,7 @@ mod tests {
             .unwrap();
         let result = cp
             .policy
-            .validate_credential(&admin(0), &meta.id)
+            .test_credential(&admin(0), &meta.id)
             .await
             .unwrap();
         assert!(result.ok, "{result:?}");
@@ -3328,7 +3328,7 @@ mod tests {
             .contains("sk-validate-me"));
 
         // Validation exposes the secret to its own host, so it needs step-up.
-        let stale = cp.policy.validate_credential(&admin(3600), &meta.id).await;
+        let stale = cp.policy.test_credential(&admin(3600), &meta.id).await;
         assert!(matches!(stale, Err(ControlError::StepUpRequired { .. })));
     }
 
@@ -3389,7 +3389,7 @@ mod tests {
             .unwrap();
         assert_eq!(meta.variable_refs, ["OPENAI_KEY", "ORG"]);
 
-        cp.policy.validate_credential(&a, &meta.id).await.unwrap();
+        cp.policy.test_credential(&a, &meta.id).await.unwrap();
         let sent = prober.seen.lock().unwrap()[0].4.clone();
         assert_eq!(
             sent,
@@ -3404,7 +3404,7 @@ mod tests {
             .replace_value(&a, &key.id, SecretValue::from("sk-rotated".to_string()))
             .await
             .unwrap();
-        cp.policy.validate_credential(&a, &meta.id).await.unwrap();
+        cp.policy.test_credential(&a, &meta.id).await.unwrap();
         let sent = prober.seen.lock().unwrap()[1].4.clone();
         assert_eq!(sent[0].1, "Bearer sk-rotated");
 
@@ -3476,11 +3476,12 @@ mod tests {
             .unwrap();
         let result = cp
             .policy
-            .validate_credential(&admin(0), &meta.id)
+            .test_credential(&admin(0), &meta.id)
             .await
             .unwrap();
         assert!(!result.ok);
         assert_eq!(result.status, Some(401));
+        assert_eq!(result.outcome, crate::model::TestOutcome::Rejected);
 
         let generic = cp
             .policy
@@ -3491,11 +3492,13 @@ mod tests {
             )
             .await
             .unwrap();
-        let res = cp.policy.validate_credential(&admin(0), &generic.id).await;
-        assert!(
-            matches!(res, Err(ControlError::Validation { .. })),
-            "{res:?}"
-        );
+        let res = cp
+            .policy
+            .test_credential(&admin(0), &generic.id)
+            .await
+            .unwrap();
+        assert_eq!(res.outcome, crate::model::TestOutcome::NoProbe, "{res:?}");
+        assert!(res.detail.contains("no test request"), "{}", res.detail);
     }
 
     #[tokio::test]
@@ -3509,7 +3512,7 @@ mod tests {
             .unwrap();
         let result = cp
             .policy
-            .validate_credential(&admin(0), &meta.id)
+            .test_credential(&admin(0), &meta.id)
             .await
             .unwrap();
         assert!(!result.ok);

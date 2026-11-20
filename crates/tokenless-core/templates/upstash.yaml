@@ -20,3 +20,7 @@ injection:
   method: basic
   username_field: username
   password_field: password
+validation:
+  method: GET
+  path: /v2/redis/databases
+  expect_status: [200]

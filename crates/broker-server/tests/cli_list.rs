@@ -110,6 +110,8 @@ fn page_ids(page: &Value) -> Vec<String> {
 async fn lists_what_the_console_shows_as_tables_and_json() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -355,6 +357,8 @@ fn by_id(rows: &[Value], id: &str) -> Value {
 async fn a_list_longer_than_a_page_follows_the_pages() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();
@@ -487,6 +491,8 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
 async fn a_vault_an_admin_only_oversees_is_listed_without_its_contents() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();

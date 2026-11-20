@@ -19,21 +19,27 @@ use tokenless_core::rule::{validate_mcp_tools, RuleScope};
 use tokenless_core::scope::Scope;
 use tokenless_core::snapshot::{QuarantinePolicy, RateLimit, UnmatchedHostPolicy};
 use tokenless_core::substitution::{validate_substitutions, Substitution};
-use tokenless_core::template::{builtin_templates, ServiceTemplate};
+use tokenless_core::template::{builtin_templates, ServiceTemplate, ValidationRequest};
 use tokenless_core::variables::{validate_custom_headers, CustomHeader};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::render::render_credential;
 use super::{AuditRecorder, Caller, Guard};
 use crate::cipher::{KeyScope, SecretCipher};
 use crate::error::{ControlError, StoreError};
 use crate::model::{
-    CredentialMeta, Page, PageRequest, Rule, Settings, StoredTemplate, TemplateSource,
-    TemplateStatus, Vault, VaultDeletion, VaultGrant, VaultMember,
+    CredentialMeta, CredentialTest, Page, PageRequest, Rule, Settings, StoredTemplate,
+    TemplateSource, TemplateStatus, TestFence, TestOutcome, Vault, VaultDeletion, VaultGrant,
+    VaultMember,
 };
 use crate::notify::PolicyNotifier;
-use crate::probe::{CredentialProber, ProbeRequest};
+use crate::probe::{
+    redact, CredentialProber, ProbeError, ProbeLimiter, ProbeRequest, PROBE_TIMEOUT,
+};
 use crate::store::{CredentialStore, MembershipStore, NewSecret, PolicyStore, SecretReplaced};
+
+#[cfg(test)]
+mod credential_tests;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateCredential {
@@ -247,20 +253,41 @@ pub struct PolicyService {
     audit: AuditRecorder,
     notifier: Arc<PolicyNotifier>,
     prober: Arc<dyn CredentialProber>,
+    probe_limits: ProbeLimiter,
 }
 
-/// Result of running a template's validation request. Only the status is
-/// reported: the response body could echo the credential.
+/// A credential just stored, and the test that ran on it.
 #[derive(Debug, Clone, Serialize)]
-pub struct CredentialValidation {
-    pub credential_id: CredentialId,
-    pub ok: bool,
-    pub host: String,
-    pub method: String,
-    pub path: String,
-    pub status: Option<u16>,
-    pub expected_status: Vec<u16>,
-    pub detail: String,
+pub struct AddedCredential {
+    #[serde(flatten)]
+    pub credential: CredentialMeta,
+    pub test: CredentialTest,
+}
+
+/// What a test sends, once it is known to be allowed.
+struct PlannedTest {
+    template: ServiceTemplate,
+    host: HostPattern,
+    method: String,
+    path: String,
+    probe: ValidationRequest,
+}
+
+/// The sentence a person reads for each outcome. Never more than the
+/// host, the request line and the status: a response body could echo the
+/// credential.
+fn test_detail(outcome: TestOutcome, host: &str, status: Option<u16>) -> String {
+    let status = status.map(|s| s.to_string()).unwrap_or_default();
+    match outcome {
+        TestOutcome::Accepted => format!("{host} accepted the credential ({status})"),
+        TestOutcome::Rejected => format!(
+            "{host} rejected the credential ({status}): the key is wrong, expired or missing the scopes this request needs; replace it, then test again"
+        ),
+        TestOutcome::UnexpectedStatus => format!(
+            "{host} answered {status}, which says neither that the credential works nor that it does not; test again later"
+        ),
+        _ => String::new(),
+    }
 }
 
 impl PolicyService {
@@ -287,125 +314,323 @@ impl PolicyService {
             audit,
             notifier,
             prober,
+            probe_limits: ProbeLimiter::new(),
         }
     }
 
-    /// Runs the template's declared validation request against one of the
-    /// credential's own hosts, with its injected headers, under the
-    /// instance egress policy. Sends the secret only where a rule could.
-    pub async fn validate_credential(
+    /// Tests a stored credential: sends its template's test request (GET or
+    /// HEAD on one exact path) to one of the credential's own hosts, with
+    /// the headers the proxy would inject, under the instance egress
+    /// policy, and keeps the outcome as the credential's `last_test`. Sends
+    /// the secret only where a rule could.
+    ///
+    /// A test that is refused by the rate limit is an error
+    /// ([`ControlError::RateLimited`]) and leaves `last_test` as it was.
+    pub async fn test_credential(
         &self,
         caller: &Caller,
         id: &CredentialId,
-    ) -> Result<CredentialValidation, ControlError> {
+    ) -> Result<CredentialTest, ControlError> {
         let meta = self.credential_meta(id).await?;
         self.guard
             .check(caller, Action::CredentialWrite, Some(&meta.vault_id))
             .await?;
-        let (template, max) = self.max_scope_for(&meta).await?;
-        let validation = template.validation.clone().ok_or_else(|| {
-            ControlError::validation(format!(
-                "template '{}@{}' declares no validation request",
-                template.id, template.version
-            ))
-        })?;
-        let host = max
-            .hosts
-            .iter()
-            .find(|h| !h.is_wildcard())
-            .ok_or_else(|| {
-                ControlError::validation(format!(
-                    "credential {id} only has wildcard hosts; there is no concrete host to validate against"
-                ))
-            })?
-            .clone();
-        let method = validation.method.as_str().to_string();
-        let path = validation.path.as_str().to_string();
-        if validation.method.is_any() || path.ends_with('*') {
-            return Err(ControlError::validation(format!(
-                "template '{}' validation request must name one method and an exact path",
-                template.id
+        let (test, _) = self.run_test(caller, &meta).await?;
+        if test.outcome == TestOutcome::RateLimited {
+            return Err(ControlError::RateLimited {
+                subject: format!("tests of service '{}'", meta.name),
+                retry_after_secs: test.retry_after_secs.unwrap_or(1),
+            });
+        }
+        Ok(test)
+    }
+
+    /// Stores a credential ([`Self::create_credential`]), then tests it
+    /// ([`Self::test_credential`]). A failed test keeps the credential: it
+    /// is reported, so the person can replace the key or test again.
+    pub async fn add_credential(
+        &self,
+        caller: &Caller,
+        vault_id: &VaultId,
+        req: CreateCredential,
+    ) -> Result<AddedCredential, ControlError> {
+        let mut credential = self.create_credential(caller, vault_id, req).await?;
+        let (test, tested) = match self.run_test(caller, &credential).await {
+            Ok(tested) => tested,
+            // The credential is stored either way; a test that could not
+            // be completed is said, not turned into a failed add. It is an
+            // error, not "tests are off": testing again may work.
+            Err(e) => {
+                warn!(credential = %credential.id, error = %e, "could not test a new credential");
+                let test = CredentialTest {
+                    outcome: TestOutcome::Error,
+                    ok: false,
+                    host: None,
+                    method: None,
+                    path: None,
+                    status: None,
+                    detail: format!("the test could not be completed: {e}"),
+                    retry_after_secs: None,
+                    tested_at: Utc::now(),
+                    tested_by: caller.actor().to_string(),
+                };
+                (test, None)
+            }
+        };
+        // Only what was kept, with the metadata it was kept for: the
+        // credential may have changed between storing and testing it, and
+        // the result must not sit beside another secret's generation or
+        // expiry. A read of the credential then says the same.
+        if let Some(tested) = tested {
+            credential = CredentialMeta {
+                last_test: Some(test.clone()),
+                ..tested
+            };
+        }
+        Ok(AddedCredential { credential, test })
+    }
+
+    /// The test request for `meta`, or why there is none. The template's
+    /// own declaration comes first; a built-in template stored before its
+    /// test request was added to the catalogue gets the catalogue's, which
+    /// is the same template (same id and version) with the request added.
+    async fn plan_test(
+        &self,
+        meta: &CredentialMeta,
+    ) -> Result<Result<PlannedTest, String>, ControlError> {
+        let stored = self
+            .approved_template(&meta.template_id, Some(meta.template_version))
+            .await?;
+        let max = stored.template.max_scope(&meta.host_override)?;
+        let probe = stored.template.validation.clone().or_else(|| {
+            (stored.source == TemplateSource::Builtin)
+                .then(|| builtin_templates().ok())
+                .flatten()
+                .and_then(|all| {
+                    all.into_iter()
+                        .find(|(t, _)| {
+                            t.id == stored.template.id && t.version == stored.template.version
+                        })
+                        .and_then(|(t, _)| t.validation)
+                })
+        });
+        let Some(probe) = probe else {
+            return Ok(Err(
+                "not tested: no test request defined for this service".into()
+            ));
+        };
+        // Checked again here, not only when the template was imported: a
+        // template stored before these rules existed must not slip through.
+        if let Err(problem) = probe.check() {
+            return Ok(Err(format!(
+                "not tested: the template's test request is not allowed ({problem})"
             )));
         }
+        let Some(host) = max.hosts.iter().find(|h| !h.is_wildcard()).cloned() else {
+            return Ok(Err(
+                "not tested: the service only has wildcard hosts, so there is no host to send a test to".into(),
+            ));
+        };
+        let method = probe.method.as_str().to_string();
+        let path = probe.path.as_str().to_string();
         if !max.allows(host.host(), host.port(), &method, &path) {
-            return Err(ControlError::validation(format!(
-                "template '{}' validation request {method} {path} is outside the template's own scope",
-                template.id
+            return Ok(Err(format!(
+                "not tested: the test request {method} {path} is outside what the service may reach"
             )));
+        }
+        Ok(Ok(PlannedTest {
+            template: stored.template,
+            host,
+            method,
+            path,
+            probe,
+        }))
+    }
+
+    /// Runs one test and keeps its outcome as the credential's `last_test`,
+    /// unless it was rate-limited (it did not run) or what the credential
+    /// sends (its secret, headers or variables) changed while it ran.
+    /// Returns, beside the result, the metadata it was run against when the
+    /// result was kept. The caller has been authorised.
+    async fn run_test(
+        &self,
+        caller: &Caller,
+        meta: &CredentialMeta,
+    ) -> Result<(CredentialTest, Option<CredentialMeta>), ControlError> {
+        // Read afresh, with the variables it uses, before rendering: the
+        // fence is what the request was built from, so any change after
+        // this read keeps the result from being saved.
+        let meta = &self.credential_meta(&meta.id).await?;
+        let fence = TestFence {
+            secret_generation: meta.secret_generation,
+            updated_at: meta.updated_at,
+            variables: self
+                .credentials
+                .load_variable_ciphertexts(&meta.variable_refs)
+                .await?
+                .into_iter()
+                .map(|(v, _)| (v.key, v.updated_at))
+                .collect(),
+        };
+        let actor = caller.actor().to_string();
+        let blank = |outcome: TestOutcome, detail: String| CredentialTest {
+            outcome,
+            ok: false,
+            host: None,
+            method: None,
+            path: None,
+            status: None,
+            detail,
+            retry_after_secs: None,
+            tested_at: Utc::now(),
+            tested_by: actor.clone(),
+        };
+        let plan = match self.plan_test(meta).await? {
+            Ok(plan) => plan,
+            Err(why) => {
+                // Nothing left the control plane, so nothing to audit;
+                // kept so the service says it is untested and why.
+                let test = blank(TestOutcome::NoProbe, why);
+                let saved = self
+                    .credentials
+                    .record_credential_test(&meta.id, &fence, &test, &[])
+                    .await?;
+                return Ok((test, saved.then(|| meta.clone())));
+            }
+        };
+        let host = plan.host.to_string();
+        if let Err(wait) = self.probe_limits.acquire(&meta.id.to_string(), &actor) {
+            // Rounded up: waiting the time given is always enough.
+            let secs = (wait.as_secs() + u64::from(wait.subsec_nanos() > 0)).max(1);
+            return Ok((
+                CredentialTest {
+                    host: Some(host),
+                    method: Some(plan.method),
+                    path: Some(plan.path),
+                    retry_after_secs: Some(secs),
+                    ..blank(
+                        TestOutcome::RateLimited,
+                        format!(
+                            "not tested: too many tests in the last minute; try again in {secs}s"
+                        ),
+                    )
+                },
+                None,
+            ));
         }
         let headers = render_credential(
             self.credentials.as_ref(),
             self.cipher.as_ref(),
-            &template,
-            &meta,
+            &plan.template,
+            meta,
         )
         .await?
         .headers;
         let egress = self.policy.get_settings().await?.egress;
-        let expected = validation.expect_status.clone();
-        let result = self
-            .prober
-            .probe(
+        // The prober has its own deadline; this one holds for any prober.
+        let sent = tokio::time::timeout(
+            PROBE_TIMEOUT + std::time::Duration::from_secs(1),
+            self.prober.probe(
                 ProbeRequest {
-                    host: host.host().to_string(),
-                    port: host.port(),
-                    method: method.clone(),
-                    path: path.clone(),
-                    headers,
+                    host: plan.host.host().to_string(),
+                    port: plan.host.port(),
+                    method: plan.method.clone(),
+                    path: plan.path.clone(),
+                    headers: headers.clone(),
                 },
                 &egress,
-            )
-            .await;
-        let (ok, status, detail) = match result {
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(ProbeError::TimedOut {
+                host: host.clone(),
+                secs: PROBE_TIMEOUT.as_secs(),
+            })
+        });
+        let (outcome, status, detail) = match sent {
             Ok(status) => {
-                let ok = if expected.is_empty() {
-                    (200..300).contains(&status)
+                let outcome = if plan.probe.accepts(status) {
+                    TestOutcome::Accepted
+                } else if status == 401 || status == 403 {
+                    TestOutcome::Rejected
                 } else {
-                    expected.contains(&status)
+                    TestOutcome::UnexpectedStatus
                 };
-                let detail = if ok {
-                    format!("{host} answered {status}")
-                } else {
-                    format!("{host} answered {status}; the credential may be invalid or lack permissions")
-                };
-                (ok, Some(status), detail)
+                (
+                    outcome,
+                    Some(status),
+                    test_detail(outcome, &host, Some(status)),
+                )
             }
-            Err(e) => (false, None, e.to_string()),
+            Err(e) => {
+                let outcome = match &e {
+                    ProbeError::Blocked { .. } => TestOutcome::Blocked,
+                    ProbeError::Resolve { .. } | ProbeError::Request { .. } => {
+                        TestOutcome::Unreachable
+                    }
+                    ProbeError::TimedOut { .. } => TestOutcome::TimedOut,
+                    ProbeError::Unavailable => TestOutcome::Unavailable,
+                };
+                (outcome, None, e.to_string())
+            }
         };
-        self.audit
-            .record(
-                AuditEvent::new(
-                    caller.actor(),
-                    "credential.validate",
-                    if ok {
-                        AuditOutcome::Success
-                    } else {
-                        AuditOutcome::Failure
-                    },
-                )
-                .vault(meta.vault_id)
-                .target(format!("credential:{id}"))
-                .detail("host", host.to_string())
-                .detail("request", format!("{method} {path}"))
-                .detail(
-                    "status",
-                    status
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "none".into()),
-                )
-                .detail("detail", detail.clone()),
-            )
-            .await;
-        Ok(CredentialValidation {
-            credential_id: *id,
-            ok,
-            host: host.to_string(),
-            method,
-            path,
+        // Nothing a prober reports may carry the secret onwards.
+        let detail = redact(&detail, &headers);
+        drop(headers);
+        let test = CredentialTest {
+            outcome,
+            ok: outcome == TestOutcome::Accepted,
+            host: Some(host.clone()),
+            method: Some(plan.method.clone()),
+            path: Some(plan.path.clone()),
             status,
-            expected_status: expected,
-            detail,
-        })
+            detail: detail.clone(),
+            retry_after_secs: None,
+            tested_at: Utc::now(),
+            tested_by: actor,
+        };
+        let event = AuditEvent::new(
+            caller.actor(),
+            "credential.validate",
+            if test.ok {
+                AuditOutcome::Success
+            } else {
+                AuditOutcome::Failure
+            },
+        )
+        .vault(meta.vault_id)
+        .target(format!("credential:{}", meta.id))
+        .detail("name", meta.name.clone())
+        .detail("outcome", outcome.as_str())
+        .detail("host", host)
+        .detail("request", format!("{} {}", plan.method, plan.path))
+        .detail(
+            "status",
+            status
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "none".into()),
+        )
+        .detail("detail", detail);
+        let saved = match self
+            .credentials
+            .record_credential_test(&meta.id, &fence, &test, std::slice::from_ref(&event))
+            .await
+        {
+            Ok(saved) => saved,
+            // Deleted while the test ran: still on record that it ran.
+            Err(StoreError::NotFound { .. }) => {
+                self.audit.record(event).await;
+                false
+            }
+            // The credential was sent: that stays on record even when the
+            // result could not be kept.
+            Err(e) => {
+                self.audit.record(event).await;
+                return Err(e.into());
+            }
+        };
+        Ok((test, saved.then(|| meta.clone())))
     }
 
     /// Inserts built-in templates that are not yet stored and returns how
@@ -799,6 +1024,7 @@ impl PolicyService {
             not_after: req.not_after,
             secret_generation: 1,
             rotation_id: None,
+            last_test: None,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,

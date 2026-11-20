@@ -697,3 +697,44 @@ async fn upgrading_keeps_everyone_s_access_as_vault_memberships() {
         "a terminal sign-in from before only starts sessions"
     );
 }
+
+/// A template imported before test requests had to be safe reads (here a
+/// `POST`) still reads back after the upgrade, so it does not stop the
+/// other templates from loading.
+#[tokio::test]
+async fn a_template_with_a_post_test_request_still_loads() {
+    let (_dir, url, pool) = database_before(i64::MAX).await;
+    let github = include_str!("../../tokenless-core/templates/github.yaml");
+    let legacy = github
+        .replacen("id: github", "id: legacy-post", 1)
+        .replace("method: GET", "method: POST");
+    for (id, yaml) in [("github", github.to_string()), ("legacy-post", legacy)] {
+        sqlx::query(
+            "INSERT INTO templates (id, version, yaml, source, status, imported_by, approved_by, created_at) \
+             VALUES (?, 2, ?, 'imported', 'approved', 'user:test', 'user:test', ?)",
+        )
+        .bind(id)
+        .bind(&yaml)
+        .bind(AT)
+        .execute(&pool)
+        .await
+        .expect("template");
+    }
+    pool.close().await;
+
+    let store = SqliteStore::connect(&url).await.expect("open");
+    let templates = store.list_templates().await.expect("every template loads");
+    let legacy = templates
+        .iter()
+        .find(|t| t.template.id == "legacy-post")
+        .expect("the legacy template");
+    assert_eq!(
+        legacy
+            .template
+            .validation
+            .as_ref()
+            .map(|v| v.method.as_str()),
+        Some("POST")
+    );
+    assert!(templates.iter().any(|t| t.template.id == "github"));
+}

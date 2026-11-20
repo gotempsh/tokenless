@@ -44,6 +44,8 @@ fn tokenless(home: &std::path::Path, url: &str, args: &[&str]) -> (bool, String,
 async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
     let data = tempfile::tempdir().unwrap();
     let mut config = ServerConfig::new(data.path());
+    // Never send the dummy keys to the real services.
+    config.credential_tests = false;
     config.api_listen = "127.0.0.1:0".parse().unwrap();
     config.node_listen = "127.0.0.1:0".parse().unwrap();
     let server = Server::start(config).await.unwrap();

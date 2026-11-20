@@ -47,8 +47,11 @@ Pick one, then fill in three things on one page:
    service is stored, given a rule that allows its hosts, and put in
    the bundles you checked, in one step.
 
-When it is saved, **Run an agent with it** takes you to the bundle's
-commands. Only the vault's admins add services. From a terminal, the
+When it is saved, the credential is tested and the page says whether the
+service accepted it, then lists the next steps: tested, in an access
+bundle, a proxy connected, and the `tokenless run` command that starts an
+agent behind it. A step left to do links to the page that does it. A key
+that fails its test is still saved: replace it or test it again. Only the vault's admins add services. From a terminal, the
 same is `tokenless service add` after `tokenless login --manage`
 ([Set up from the terminal](../terminal.mdx)).
 
@@ -59,9 +62,12 @@ Click a service to see where it is used and what it did.
 ![A service's page: its rules, the access bundles that include it, custom headers, placeholders and its request log](../screenshots/console-service.png)
 
 - **Test** sends the template's test request (for GitHub,
-  `GET /user`) with the secret, and says whether the credential works.
-  Templates without a test request say so. Only the vault's admins can
-  test.
+  `GET /user`) with the secret, and says whether the credential works:
+  accepted (2xx), rejected (401 or 403: wrong, expired or missing
+  scopes), unreachable, blocked by the egress policy, or timed out. Only
+  the host and status are shown. Services without a test request say
+  "not tested". The last result stays on the page until what the service
+  is sent changes: its secret, its custom headers or a variable they use. Only the vault's admins can test.
 - **Replace secret** stores a new value, optionally with the date it
   stops working upstream; the proxy stops sending it then. Proxies use
   the new value at their next policy refresh, within seconds. The old

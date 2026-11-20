@@ -24,10 +24,10 @@ use tokenless_core::variables::CustomHeader;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta, Invite,
-    JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor,
-    Settings, SignInSettings, StoredTemplate, Tripwire, UiSession, User, Variable, Vault,
-    VaultDeletion, VaultGrant, VaultMember, VaultScope,
+    AccessBundle, Alert, AlertFilter, ApiKey, AuditDestination, AuditQuery, CredentialMeta,
+    CredentialTest, Invite, JoinTokenRecord, Node, OidcProvider, Page, PageRequest, ProxySession,
+    Rule, SessionCursor, Settings, SignInSettings, StoredTemplate, TestFence, Tripwire, UiSession,
+    User, Variable, Vault, VaultDeletion, VaultGrant, VaultMember, VaultScope,
 };
 
 /// Whose encrypted value a [`StoredCiphertext`] is.
@@ -104,7 +104,8 @@ pub trait CredentialStore: Send + Sync {
     /// 3. If `secret.expected_generation` is set and the current
     ///    generation differs, [`StoreError::StaleGeneration`].
     /// 4. Otherwise the secret, its deadline and `rotation_id` are stored,
-    ///    the generation goes up by one and `audit` is appended in the same
+    ///    the generation goes up by one, `last_test` is cleared (it was a
+    ///    test of the old secret) and `audit` is appended in the same
     ///    transaction. A concurrent replacement between the check and the
     ///    write must make this one fail as in 3, never both succeed.
     async fn replace_secret(
@@ -114,7 +115,9 @@ pub trait CredentialStore: Send + Sync {
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<SecretReplaced, StoreError>;
-    /// Replaces the custom headers; `NotFound` if the credential does not exist.
+    /// Replaces the custom headers; `NotFound` if the credential does not
+    /// exist. Forgets its `last_test`: a test sends these headers, so what
+    /// it sends has changed.
     async fn update_custom_headers(
         &self,
         id: &CredentialId,
@@ -131,6 +134,19 @@ pub trait CredentialStore: Send + Sync {
         updated_at: DateTime<Utc>,
         audit: &[AuditEvent],
     ) -> Result<(), StoreError>;
+    /// Keeps `test` as the credential's `last_test` if everything in
+    /// `fence` still holds (nothing it is sent changed while it was being
+    /// tested), and records `audit` in the same transaction either way.
+    /// `Ok(false)` when something changed: the result is not kept, since it
+    /// is not about what is sent now. `NotFound` if the credential does
+    /// not exist.
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        fence: &TestFence,
+        test: &CredentialTest,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError>;
     /// Credentials in every vault that reference at least one variable.
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError>;
 
@@ -146,7 +162,8 @@ pub trait CredentialStore: Send + Sync {
     async fn list_variables(&self, page: PageRequest) -> Result<Page<Variable>, StoreError>;
     /// The given keys that exist; unknown keys are left out.
     async fn existing_variable_keys(&self, keys: &[String]) -> Result<Vec<String>, StoreError>;
-    /// `NotFound` if the variable does not exist.
+    /// `NotFound` if the variable does not exist. Forgets the `last_test` of
+    /// every credential that references it: what they send has changed.
     async fn replace_variable_value(
         &self,
         id: &VariableId,

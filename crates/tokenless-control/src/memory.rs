@@ -28,9 +28,10 @@ mod tripwires;
 
 use crate::error::StoreError;
 use crate::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, Node, OidcProvider,
-    Page, PageRequest, ProxySession, Rule, SessionCursor, Settings, SignInSettings, StoredTemplate,
-    UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
+    Node, OidcProvider, Page, PageRequest, ProxySession, Rule, SessionCursor, Settings,
+    SignInSettings, StoredTemplate, TestFence, UiSession, User, Variable, Vault, VaultDeletion,
+    VaultScope,
 };
 use crate::store::{
     AuditSink, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore, PolicyStore,
@@ -176,6 +177,7 @@ impl CredentialStore for MemoryStore {
         meta.not_after = secret.not_after;
         meta.secret_generation += 1;
         meta.rotation_id = secret.rotation_id;
+        meta.last_test = None;
         meta.updated_at = updated_at;
         let generation = meta.secret_generation;
         *stored = secret.ciphertext;
@@ -199,6 +201,7 @@ impl CredentialStore for MemoryStore {
         meta.custom_headers = custom_headers;
         meta.variable_refs = variable_refs;
         meta.updated_at = updated_at;
+        meta.last_test = None;
         inner.audit.extend_from_slice(audit);
         Ok(())
     }
@@ -219,6 +222,39 @@ impl CredentialStore for MemoryStore {
         meta.updated_at = updated_at;
         inner.audit.extend_from_slice(audit);
         Ok(())
+    }
+
+    async fn record_credential_test(
+        &self,
+        id: &CredentialId,
+        fence: &TestFence,
+        test: &CredentialTest,
+        audit: &[AuditEvent],
+    ) -> Result<bool, StoreError> {
+        let mut inner = self.lock()?;
+        let refs = inner
+            .credentials
+            .get(id)
+            .map(|(m, _)| m.variable_refs.clone())
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let variables: BTreeMap<String, DateTime<Utc>> = inner
+            .variables
+            .values()
+            .filter(|(v, _)| refs.contains(&v.key))
+            .map(|(v, _)| (v.key.clone(), v.updated_at))
+            .collect();
+        let (meta, _) = inner
+            .credentials
+            .get_mut(id)
+            .ok_or_else(|| StoreError::not_found("credential", id))?;
+        let current = meta.secret_generation == fence.secret_generation
+            && meta.updated_at == fence.updated_at
+            && variables == fence.variables;
+        if current {
+            meta.last_test = Some(test.clone());
+        }
+        inner.audit.extend_from_slice(audit);
+        Ok(current)
     }
 
     async fn list_credentials_with_variables(&self) -> Result<Vec<CredentialMeta>, StoreError> {
@@ -291,6 +327,12 @@ impl CredentialStore for MemoryStore {
         variable.updated_by = updated_by.to_string();
         variable.updated_at = updated_at;
         *stored = ct;
+        let key = variable.key.clone();
+        for (meta, _) in inner.credentials.values_mut() {
+            if meta.variable_refs.contains(&key) {
+                meta.last_test = None;
+            }
+        }
         inner.audit.extend_from_slice(audit);
         Ok(())
     }

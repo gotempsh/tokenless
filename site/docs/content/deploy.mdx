@@ -53,8 +53,12 @@ Proxies then join with `--control-url https://tokenless.internal:8443`.
 
 ### Validation requests to private services
 
-**Test** on a service sends the template's validation request from the
-control plane. For a self-hosted service with a private CA, pass
+Adding a service, and **Test** on its page, send the template's test
+request from the control plane: a `GET` or `HEAD` to the service's own
+host, through the same egress checks as the proxy, with no redirects
+followed, a 10 second timeout and a per-service, per-person and overall
+rate limit. `--no-credential-tests` turns them off for a server that must
+make no outbound calls. For a self-hosted service with a private CA, pass
 `--validation-ca ca.pem` (repeatable). If the service is on a private
 address, also allow that range under
 [Settings → Egress to private addresses](./settings.mdx#private-addresses).

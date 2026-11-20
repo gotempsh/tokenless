@@ -509,6 +509,7 @@ mod tests {
             not_after: None,
             secret_generation: 1,
             rotation_id: None,
+            last_test: None,
             created_by: "user:a".into(),
             created_at: now,
             updated_at: now,

@@ -21,10 +21,10 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokenless_control::model::{
-    AccessBundle, ApiKey, AuditQuery, CredentialMeta, Invite, JoinTokenRecord, LaunchScope, Node,
-    Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor, Settings, SignInScope,
-    StoredTemplate, TemplateSource, TemplateStatus, UiSession, User, Variable, Vault,
-    VaultDeletion, VaultScope,
+    AccessBundle, ApiKey, AuditQuery, CredentialMeta, CredentialTest, Invite, JoinTokenRecord,
+    LaunchScope, Node, Page, PageRequest, ProxySession, Rule, SessionBundle, SessionCursor,
+    Settings, SignInScope, StoredTemplate, TemplateSource, TemplateStatus, TestFence, TestOutcome,
+    UiSession, User, Variable, Vault, VaultDeletion, VaultScope,
 };
 use tokenless_control::store::{
     AuditSink, Authorizer, CiphertextOwner, CredentialStore, IdentityStore, NewSecret, NodeStore,
@@ -109,6 +109,7 @@ fn credential(vault_id: VaultId, name: &str, created_offset: i64) -> CredentialM
         not_after: None,
         secret_generation: 1,
         rotation_id: None,
+        last_test: None,
         created_by: "user:conformance".into(),
         created_at: at(created_offset),
         updated_at: at(created_offset),
@@ -163,6 +164,24 @@ fn session(vault_id: VaultId, expires_offset: i64, limit: Option<u64>) -> ProxyS
         expires_at: at(expires_offset),
         revoked_at: None,
     }
+}
+
+/// What a test of `id` would be fenced by, as the store has it now.
+async fn fence_of(store: &dyn CredentialStore, id: &CredentialId) -> Result<TestFence, StoreError> {
+    let meta = store
+        .get_credential(id)
+        .await?
+        .ok_or_else(|| StoreError::not_found("credential", id))?;
+    Ok(TestFence {
+        secret_generation: meta.secret_generation,
+        updated_at: meta.updated_at,
+        variables: store
+            .load_variable_ciphertexts(&meta.variable_refs)
+            .await?
+            .into_iter()
+            .map(|(v, _)| (v.key, v.updated_at))
+            .collect(),
+    })
 }
 
 pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), ConformanceFailure> {
@@ -372,6 +391,72 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         ct.as_deref() == Some(b"ct-rotated".as_slice()),
         "a stale rotation must leave the secret as it was"
     );
+    // A test result is kept on the credential, with its audit event,
+    // and forgotten when the secret it tested is replaced.
+    let test = CredentialTest {
+        outcome: TestOutcome::Rejected,
+        ok: false,
+        host: Some("api.example.com".into()),
+        method: Some("GET".into()),
+        path: Some("/user".into()),
+        status: Some(401),
+        detail: "api.example.com rejected the credential (401)".into(),
+        retry_after_secs: None,
+        tested_at: at(6),
+        tested_by: "user:tester".into(),
+    };
+    let tested = AuditEvent::new("user:tester", "credential.validate", AuditOutcome::Failure);
+    let fence = fence_of(store, &first.id)
+        .await
+        .map_err(backend(S, "record_test_fence"))?;
+    // A result for a secret that has since been replaced is not kept.
+    let older = TestFence {
+        secret_generation: fence.secret_generation - 1,
+        ..fence.clone()
+    };
+    let stale = store
+        .record_credential_test(&first.id, &older, &test, &[])
+        .await
+        .map_err(backend(S, "record_test_stale"))?;
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "record_test_stale_get"))?;
+    ensure!(
+        S,
+        "record_test_stale",
+        !stale && read.as_ref().is_some_and(|m| m.last_test.is_none()),
+        "a result for an older secret must not be kept, got {stale} and {read:?}"
+    );
+    let kept = store
+        .record_credential_test(&first.id, &fence, &test, std::slice::from_ref(&tested))
+        .await
+        .map_err(backend(S, "record_test"))?;
+    ensure!(
+        S,
+        "record_test",
+        kept,
+        "a result for the current secret must be kept"
+    );
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "record_test_get"))?;
+    ensure!(
+        S,
+        "record_test",
+        read.as_ref().and_then(|m| m.last_test.as_ref()) == Some(&test),
+        "last_test must read back as recorded, got {read:?}"
+    );
+    let missing_test = store
+        .record_credential_test(&CredentialId::new(), &fence, &test, &[])
+        .await;
+    ensure!(
+        S,
+        "record_test_missing",
+        matches!(missing_test, Err(StoreError::NotFound { .. })),
+        "expected NotFound, got {missing_test:?}"
+    );
     // Without an expected generation the rotation applies to any.
     let unfenced = store
         .replace_secret(&first.id, secret(b"ct-3", None, None), at(7), &[])
@@ -382,6 +467,16 @@ pub async fn credential_store_suite(store: &dyn CredentialStore) -> Result<(), C
         "replace_unfenced",
         unfenced == SecretReplaced::Written { generation: 3 },
         "an unfenced rotation must write generation 3, got {unfenced:?}"
+    );
+    let read = store
+        .get_credential(&first.id)
+        .await
+        .map_err(backend(S, "replace_clears_test_get"))?;
+    ensure!(
+        S,
+        "replace_clears_test",
+        read.as_ref().is_some_and(|m| m.last_test.is_none()),
+        "a new secret must not keep the old secret's test, got {read:?}"
     );
     // Concurrent rotations of one generation: exactly one wins.
     let (a, b) = tokio::join!(
@@ -583,11 +678,131 @@ pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), Con
         "deleting a referenced variable must be a Conflict, got {blocked:?}"
     );
 
+    // A new value changes what the credentials using it send, so their
+    // last test no longer applies; the others keep theirs.
+    let test = CredentialTest {
+        outcome: TestOutcome::Accepted,
+        ok: true,
+        host: Some("api.example.com".into()),
+        method: Some("GET".into()),
+        path: Some("/user".into()),
+        status: Some(200),
+        detail: "api.example.com accepted the credential (200)".into(),
+        retry_after_secs: None,
+        tested_at: at(5),
+        tested_by: "user:tester".into(),
+    };
+    let mut fences = Vec::new();
+    for c in [&cred, &plain] {
+        let fence = fence_of(store, &c.id)
+            .await
+            .map_err(backend(S, "variable_test"))?;
+        let kept = store
+            .record_credential_test(&c.id, &fence, &test, &[])
+            .await
+            .map_err(backend(S, "variable_test"))?;
+        ensure!(
+            S,
+            "variable_test",
+            kept,
+            "an unchanged credential keeps its result"
+        );
+        fences.push(fence);
+    }
+    store
+        .replace_variable_value(&org.id, b"v-2c".to_vec(), "user:other", at(6), &[])
+        .await
+        .map_err(backend(S, "variable_clears_test"))?;
+    // A test that read the old value and ends after the change is not
+    // kept either.
+    let late = store
+        .record_credential_test(&cred.id, &fences[0], &test, &[])
+        .await
+        .map_err(backend(S, "variable_race"))?;
+    ensure!(
+        S,
+        "variable_race",
+        !late,
+        "a result for a variable value replaced during the test must not be kept"
+    );
+    let (using, other) = (
+        store
+            .get_credential(&cred.id)
+            .await
+            .map_err(backend(S, "variable_clears_test_get"))?,
+        store
+            .get_credential(&plain.id)
+            .await
+            .map_err(backend(S, "variable_clears_test_get"))?,
+    );
+    ensure!(
+        S,
+        "variable_clears_test",
+        using.as_ref().is_some_and(|m| m.last_test.is_none())
+            && other.as_ref().is_some_and(|m| m.last_test.is_some()),
+        "only the referencing credential's test is forgotten: {using:?} / {other:?}"
+    );
+
+    // Each referenced variable is fenced on its own: a change to one that
+    // is older than another (ORG_ID is newer than GITHUB_TOKEN) still keeps
+    // a result for its old value from being saved.
+    let mut both = credential(VaultId::new(), "two-variables", -3);
+    both.custom_headers = vec![CustomHeader {
+        name: "X-Both".into(),
+        value: "{{ORG_ID}}:{{GITHUB_TOKEN}}".into(),
+    }];
+    both.variable_refs = vec!["GITHUB_TOKEN".into(), "ORG_ID".into()];
+    store
+        .insert_credential(both.clone(), b"ct".to_vec(), &[])
+        .await
+        .map_err(backend(S, "credential_insert"))?;
+    let fence = fence_of(store, &both.id)
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    store
+        .replace_variable_value(&token.id, b"v-1b".to_vec(), "user:other", at(-15), &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    let late = store
+        .record_credential_test(&both.id, &fence, &test, &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
+    ensure!(
+        S,
+        "variable_each",
+        !late,
+        "a result must not be kept when any one referenced variable changed"
+    );
+    // Drop its references, so the variables can be deleted below.
+    store
+        .update_custom_headers(&both.id, vec![], vec![], at(7), &[])
+        .await
+        .map_err(backend(S, "variable_each"))?;
+
+    // Changing the headers changes what a test sends: the last result
+    // is forgotten, and one from before the change is not kept.
+    let fence = fence_of(store, &cred.id)
+        .await
+        .map_err(backend(S, "headers_clear_test"))?;
+    store
+        .record_credential_test(&cred.id, &fence, &test, &[])
+        .await
+        .map_err(backend(S, "headers_clear_test"))?;
     // Dropping the reference frees the variable.
     store
-        .update_custom_headers(&cred.id, vec![], vec![], at(6), &[])
+        .update_custom_headers(&cred.id, vec![], vec![], at(7), &[])
         .await
         .map_err(backend(S, "update_headers"))?;
+    let late = store
+        .record_credential_test(&cred.id, &fence, &test, &[])
+        .await
+        .map_err(backend(S, "headers_race"))?;
+    ensure!(
+        S,
+        "headers_race",
+        !late,
+        "a result for headers replaced during the test must not be kept"
+    );
     let updated = store
         .get_credential(&cred.id)
         .await
@@ -595,10 +810,10 @@ pub async fn variable_store_suite(store: &dyn CredentialStore) -> Result<(), Con
     ensure!(
         S,
         "update_headers",
-        updated
-            .as_ref()
-            .is_some_and(|m| m.custom_headers.is_empty() && m.variable_refs.is_empty()),
-        "headers and refs not cleared: {updated:?}"
+        updated.as_ref().is_some_and(|m| m.custom_headers.is_empty()
+            && m.variable_refs.is_empty()
+            && m.last_test.is_none()),
+        "headers, refs and the last test not cleared: {updated:?}"
     );
     let missing = store
         .update_custom_headers(&CredentialId::new(), vec![], vec![], at(0), &[])

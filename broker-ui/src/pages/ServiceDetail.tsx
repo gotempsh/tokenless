@@ -4,8 +4,8 @@
 // One service (a credential and how it is sent): what it reaches, the rules
 // and bundles that let agents use it, and everything that changes it.
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { AlertTriangle, FlaskConical, KeyRound, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import {
   ApiError,
   del,
@@ -46,6 +46,8 @@ import {
   useConfirm,
 } from "../components/common";
 import { ServiceLogo } from "../components/ServiceLogo";
+import { TestResult } from "../components/ServiceTest";
+import { editChangesTest, serviceHref, shownTest as testToShow } from "../serviceTest";
 import { DetailLayout, Fact, FactList } from "../components/layout";
 import {
   EMPTY_SECRET,
@@ -90,6 +92,13 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   const variables = useVariableKeys(isInstanceAdmin(user));
   const [editing, setEditing] = useState<Editing>(null);
   const [result, setResult] = useState<CredentialValidation | null>(null);
+  // The metadata's `updated_at` from before this page changed what a test
+  // sends: its kept result is about the old secret or headers, even while
+  // the reload still shows it.
+  const [staleRevision, setStaleRevision] = useState<string | null>(null);
+  // Moves on every such change, so a test that started before it does not
+  // show its result afterwards.
+  const inputs = useRef(0);
   const confirm = useConfirm<CredentialMeta>();
   const action = useAction();
   const names = useActorNames(user);
@@ -121,8 +130,14 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
 
   const test = async (target: CredentialMeta) => {
     setResult(null);
+    const started = inputs.current;
     const r = await action.run(() => post<CredentialValidation>(`/credentials/${target.id}/validate`));
-    if (r) setResult(r);
+    // Tested with what was sent before an edit made here: the server did
+    // not keep it, and neither does the page.
+    if (r && started === inputs.current) {
+      setResult(r);
+      cred.reload();
+    }
   };
 
   const remove = async (target: CredentialMeta) => {
@@ -135,12 +150,23 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
   };
 
   const done = () => {
+    if (editChangesTest(editing)) {
+      // The server cleared the test; an earlier result no longer applies.
+      inputs.current += 1;
+      setResult(null);
+      setStaleRevision(c?.updated_at ?? null);
+    }
     setEditing(null);
     cred.reload();
   };
 
-  const canTest = isAdmin && Boolean(template?.validation);
-  const testReason = !isAdmin ? ADMIN_ONLY : template?.validation ? undefined : "This template declares no test request";
+  // The server answers for a service with no test request too ("not tested"),
+  // so the button is there for every service an admin may change.
+  const canTest = isAdmin;
+  const testReason = isAdmin ? undefined : ADMIN_ONLY;
+  // A fresh result, else the last one kept with the service, unless it
+  // came with the metadata from before an edit made here.
+  const shownTest = testToShow(result, c, staleRevision);
 
   return (
     <PageContainer>
@@ -199,7 +225,14 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         }
       />
       <ErrorBanner error={cred.error ?? action.error ?? templates.error ?? rules.error ?? bundles.error ?? variables.error} />
-      {result && <TestResult result={result} />}
+      {c && shownTest && (
+        <TestResult
+          test={shownTest}
+          serviceHref={serviceHref(vaultId, c.id)}
+          showWhen={!result}
+          onReplaceKey={isAdmin ? () => setEditing("secret") : undefined}
+        />
+      )}
       {missing ? (
         <Panel>
           <Empty
@@ -401,37 +434,6 @@ export function ServiceDetail({ vaultId, credentialId, user }: { vaultId: string
         }}
       />
     </PageContainer>
-  );
-}
-
-function TestResult({ result }: { result: CredentialValidation }) {
-  const request = `${result.method} ${result.path} on ${result.host}`;
-  if (result.ok)
-    return (
-      <Alert>
-        <CheckCircle2 className="size-4 text-success" />
-        <AlertTitle>The credential works</AlertTitle>
-        <AlertDescription>
-          {request} answered {result.status}.
-        </AlertDescription>
-      </Alert>
-    );
-  return (
-    <Alert variant="warning">
-      <FlaskConical className="size-4" />
-      <AlertTitle>Test of {request} failed</AlertTitle>
-      <AlertDescription>
-        {result.detail}
-        {result.detail.includes("Settings") && (
-          <>
-            {" "}
-            <a href="#/settings" className="font-medium underline underline-offset-4">
-              Open Settings
-            </a>
-          </>
-        )}
-      </AlertDescription>
-    </Alert>
   );
 }
 

@@ -96,6 +96,14 @@ def check_service(s: dict, seen: set[str]) -> None:
         raise CatalogError(f"service '{sid}': variable '{s['variable']}' is not UPPER_SNAKE_CASE")
     if not s.get("hosts") and "override" not in s:
         raise CatalogError(f"service '{sid}': no hosts, so it needs an 'override'")
+    if "validate" in s:
+        # A test request runs with the real key whenever a service is added
+        # or tested, so it may only read: one GET or HEAD on an exact path.
+        method, _, path = s["validate"].partition(" ")
+        if method not in ("GET", "HEAD") or not path.startswith("/") or "*" in path or " " in path:
+            raise CatalogError(f"service '{sid}': validate must be \"GET /path\" or \"HEAD /path\"")
+        if any(not 200 <= code < 300 for code in s.get("expect", [200])):
+            raise CatalogError(f"service '{sid}': expect may only list 2xx codes")
     if "mcp_path" in s:
         if s.get("kind") != "mcp":
             raise CatalogError(f"service '{sid}': mcp_path is only for kind = \"mcp\"")
