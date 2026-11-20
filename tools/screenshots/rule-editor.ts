@@ -15,7 +15,7 @@ try {
   const patches: string[] = [];
   const rule = (vault: string) => ({
     id: vault + "-rule", name: vault + "-read", credential_id: "service", vault_id: vault,
-    enabled: true, allow: { hosts: ["api.example.com"], paths: ["/read"], methods: ["GET"] },
+    updated_at: "2026-01-01T00:00:00.123456Z", enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -58,7 +58,11 @@ try {
   await edit("b");
   assert.equal(await page.locator("#rule-name").inputValue(), "b-read");
   await page.locator("#rule-name").fill("renamed");
-  await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  await page.locator("#rule-paths").fill("/reports \n/health");
+  const [request] = await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  assert.deepEqual(request.postDataJSON(), {
+    expected_updated_at: rule("b").updated_at, name: "renamed", paths: ["/reports ", "/health"],
+  });
   assert.equal(await page.getByRole("button", { name: "Cancel" }).isDisabled(), true);
   await page.keyboard.press("Escape");
   assert.equal(await page.getByRole("dialog").isVisible(), true);

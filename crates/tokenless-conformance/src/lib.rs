@@ -840,10 +840,18 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let mut updated = r2.clone();
     updated.enabled = true;
     updated.name = "two-renamed".into();
+    updated.updated_at = at(1);
     store
-        .update_rule(updated.clone(), &[])
+        .update_rule(updated.clone(), r2.updated_at, &[])
         .await
         .map_err(backend(S, "rule_update"))?;
+    let stale = store.update_rule(r2.clone(), r2.updated_at, &[]).await;
+    ensure!(
+        S,
+        "stale_rule_update",
+        matches!(stale, Err(StoreError::Conflict { .. })),
+        "expected a revision conflict, got {stale:?}"
+    );
     let got = store
         .get_rule(&r2.id)
         .await
@@ -855,7 +863,7 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         "update not persisted: {got:?}"
     );
     let missing = store
-        .update_rule(rule(v1.id, cred, "ghost", true)?, &[])
+        .update_rule(rule(v1.id, cred, "ghost", true)?, at(0), &[])
         .await;
     ensure!(
         S,
@@ -1890,7 +1898,7 @@ where
 
     let unknown_rule = rule(vault_id, meta.id, "missing", true)?;
     let missing = store
-        .update_rule(unknown_rule, &[event("t.rule.update_missing")])
+        .update_rule(unknown_rule, at(0), &[event("t.rule.update_missing")])
         .await;
     ensure!(
         S,

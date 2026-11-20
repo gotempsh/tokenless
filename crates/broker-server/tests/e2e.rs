@@ -690,11 +690,19 @@ async fn end_to_end() {
         .call(
             reqwest::Method::PATCH,
             &format!("/rules/{rule_id}"),
-            Some(json!({ "mcp_tools": ["search", "search"] })),
+            Some(json!({ "expected_updated_at": rule["updated_at"], "mcp_tools": ["search", "search"] })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{limited}");
     assert_eq!(limited["allow"]["mcp_tools"], json!(["search"]));
+    let (status, _, conflict) = api
+        .call(
+            reqwest::Method::PATCH,
+            &format!("/rules/{rule_id}"),
+            Some(json!({ "expected_updated_at": rule["updated_at"], "allow_all_tools": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
     let call = |tool: &str| {
         json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
                 "params": { "name": tool, "arguments": { "token": "__UPSTREAM_TOKEN__" } } })

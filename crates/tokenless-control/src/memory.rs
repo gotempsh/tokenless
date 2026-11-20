@@ -559,12 +559,26 @@ impl PolicyStore for MemoryStore {
             .count() as u64)
     }
 
-    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
+    async fn update_rule(
+        &self,
+        rule: Rule,
+        expected_updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
         let mut inner = self.lock()?;
         let slot = inner
             .rules
             .get_mut(&rule.id)
             .ok_or_else(|| StoreError::not_found("rule", rule.id))?;
+        if slot.updated_at != expected_updated_at {
+            return Err(StoreError::Conflict {
+                entity: "rule",
+                detail: format!(
+                    "rule {} changed during the update; refresh the page and reopen the rule",
+                    rule.id
+                ),
+            });
+        }
         *slot = rule;
         inner.audit.extend_from_slice(audit);
         Ok(())

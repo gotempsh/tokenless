@@ -1761,6 +1761,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(narrowed.allow.paths[0].as_str(), "/repos/a/*");
+        let stale_edit = cp
+            .policy
+            .update_rule(
+                &a,
+                &created.id,
+                UpdateRule {
+                    expected_updated_at: Some(created.updated_at),
+                    paths: Some(vec!["/repos/*".into()]),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(stale_edit, Err(ControlError::Conflict { .. })));
         let widen = cp
             .policy
             .update_rule(

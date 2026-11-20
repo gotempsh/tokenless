@@ -366,9 +366,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
     const opt = (v: string) => (lines(v).length ? lines(v) : undefined);
     const saved = await saveAction.run(() => editing
       ? patch<Rule>(`/rules/${editing.id}`, {
+          expected_updated_at: editing.updated_at,
           name: form.name === editing.name ? undefined : form.name,
           hosts: form.hosts === editing.allow.hosts.join("\n") ? undefined : lines(form.hosts),
-          paths: form.paths === editing.allow.paths.join("\n") ? undefined : form.paths.split("\n").map((p) => p.trim()).filter(Boolean),
+          paths: form.paths === editing.allow.paths.join("\n") ? undefined : form.paths.split("\n").filter(Boolean),
           methods: form.methods === editing.allow.methods.join(", ") ? undefined : lines(form.methods),
         })
       :
