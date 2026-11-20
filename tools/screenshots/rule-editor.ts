@@ -69,14 +69,17 @@ try {
   assert.deepEqual(request.postDataJSON(), {
     expected_updated_at: rule("b").updated_at, name: "renamed", paths: ["/reports ", "/health"],
   });
-  assert.equal(await page.getByRole("button", { name: "Cancel" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Close", exact: true }).first().isEnabled(), true);
   for (const field of ["name", "hosts", "paths", "methods"]) {
     assert.equal(await page.locator("#rule-" + field).isDisabled(), true);
   }
   await page.keyboard.press("Escape");
-  assert.equal(await page.getByRole("dialog").isVisible(), true);
-  release.resolve();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await edit("b");
+  await page.locator("#rule-name").fill("next draft");
+  await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => release.resolve())]);
+  assert.equal(await page.locator("#rule-name").inputValue(), "next draft");
+  await page.keyboard.press("Escape");
   assert.deepEqual(patches, ["b-rule"]);
   assert.equal(templateLoads, 0);
   await Promise.all([

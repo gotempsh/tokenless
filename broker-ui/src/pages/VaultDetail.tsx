@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
@@ -349,21 +349,28 @@ function changedList(values: string[], original: string[]) {
   return values.length === original.length && values.every((value, i) => value === original[i]) ? undefined : values;
 }
 
-function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
-  const [page, setPage] = useState(1);
-  const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
-  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
-  const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<Rule | null>(null);
-  const choosingCredential = adding && !editing;
-  const templates = useLoad(() => choosingCredential ? get<StoredTemplate[]>("/templates") : Promise.resolve([]), [choosingCredential]);
-  const [form, setForm] = useState(EMPTY_RULE);
-  const [editingTools, setEditingTools] = useState<Rule | null>(null);
-  const confirm = useConfirm<Rule>();
-  const action = useAction();
+function RuleEditor({ vaultId, editing, credentials, onClose, onSaved }: {
+  vaultId: string;
+  editing: Rule | null;
+  credentials?: CredentialMeta[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const saveAction = useAction();
-  const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
-
+  const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
+  const credentialOptions = useMemo(() => (credentials ?? []).map((c) => ({
+    value: c.id,
+    label: (
+      <span className="flex min-w-0 items-center gap-2">
+        <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+        <span className="truncate">{c.name} ({c.template_id})</span>
+      </span>
+    ),
+  })), [credentials, templates.data]);
+  const [form, setForm] = useState(() => editing ? {
+    name: editing.name, credential_id: editing.credential_id, hosts: editing.allow.hosts.join("\n"),
+    paths: editing.allow.paths.join("\n"), methods: editing.allow.methods.join(", "), tools: "",
+  } : EMPTY_RULE);
   const hosts = lines(form.hosts);
   const paths = form.paths.split("\n").filter(Boolean);
   const methods = lines(form.methods);
@@ -391,12 +398,109 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         mcp_tools: opt(form.tools),
       }),
     );
-    if (saved) {
-      setForm(EMPTY_RULE);
-      setAdding(false);
-      rules.reload();
-    }
+    if (saved) onSaved();
   };
+
+  return (
+    <FormDialog
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      wide
+      title={editing ? "Edit rule" : "Add a rule"}
+      description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
+    >
+      <form className="space-y-4" onSubmit={save}>
+        <ErrorBanner error={saveAction.error} />
+        <fieldset className="min-w-0 space-y-4" disabled={saveAction.busy}>
+          <div className="space-y-4">
+            <Field label="Name" htmlFor="rule-name">
+              <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            </Field>
+            <Field
+              label="Credential"
+              htmlFor="rule-cred"
+              hint={credentials?.length === 0 ? "Add a credential to this vault first." : undefined}
+            >
+              {editing ? <Input id="rule-cred" value={credentials?.find(c => c.id === editing.credential_id)?.name ?? editing.credential_id} readOnly /> : <SelectField
+                id="rule-cred"
+                value={form.credential_id}
+                onChange={(v) => setForm({ ...form, credential_id: v })}
+                placeholder="Choose…"
+                options={credentialOptions}
+              />}
+            </Field>
+          </div>
+          <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+            <Textarea
+              id="rule-hosts"
+                required={!!editing}
+              rows={2}
+              className="font-mono"
+              value={form.hosts}
+              onChange={(e) => setForm({ ...form, hosts: e.target.value })}
+              placeholder="api.example.com"
+            />
+          </Field>
+          <div className="space-y-4">
+            <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+              <Textarea
+                id="rule-paths"
+                required={!!editing}
+                rows={2}
+                className="font-mono"
+                value={form.paths}
+                onChange={(e) => setForm({ ...form, paths: e.target.value })}
+                placeholder="/v1/*"
+              />
+            </Field>
+            <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
+              <Input
+                id="rule-methods"
+                required={!!editing}
+                className="font-mono"
+                value={form.methods}
+                onChange={(e) => setForm({ ...form, methods: e.target.value })}
+                placeholder="GET, POST"
+              />
+            </Field>
+          </div>
+          {!editing && <Field
+            label="MCP tools"
+            htmlFor="rule-new-tools"
+            hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
+          >
+            <Textarea
+              id="rule-new-tools"
+              rows={2}
+              className="font-mono"
+              value={form.tools}
+              onChange={(e) => setForm({ ...form, tools: e.target.value })}
+              placeholder="search_issues"
+            />
+          </Field>}
+        </fieldset>
+        <DialogActions>
+          <Button type="button" variant="outline" onClick={onClose}>
+            {saveAction.busy ? "Close" : "Cancel"}
+          </Button>
+          <Button type="submit" disabled={!canSave}>
+            {editing ? "Save changes" : "Create rule"}
+          </Button>
+        </DialogActions>
+      </form>
+    </FormDialog>
+  );
+}
+
+function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
+  const [page, setPage] = useState(1);
+  const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
+  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
+  const [editor, setEditor] = useState<{ rule: Rule | null } | null>(null);
+  const [editingTools, setEditingTools] = useState<Rule | null>(null);
+  const confirm = useConfirm<Rule>();
+  const action = useAction();
+  const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
   const toggle = async (r: Rule) => {
     await action.run(() => patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled }));
@@ -410,7 +514,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   };
 
   const addButton = (
-    <Button type="button" onClick={() => { setEditing(null); setForm(EMPTY_RULE); saveAction.clearError(); setAdding(true); }} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
+    <Button type="button" onClick={() => setEditor({ rule: null })} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
       <Plus />
       Add rule
     </Button>
@@ -476,12 +580,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                           {
                             label: "Edit rule",
                             icon: Pencil,
-                            onSelect: () => {
-                              setEditing(r);
-                              setForm({ name: r.name, credential_id: r.credential_id, hosts: r.allow.hosts.join("\n"), paths: r.allow.paths.join("\n"), methods: r.allow.methods.join(", "), tools: "" });
-                              saveAction.clearError();
-                              setAdding(true);
-                            },
+                            onSelect: () => setEditor({ rule: r }),
                             disabled: !canEdit,
                             reason: onlyFor("edit"),
                           },
@@ -511,101 +610,16 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         )}
         <Pager page={rules.data} onPage={setPage} />
       </Panel>
-      <FormDialog
-        open={adding}
-        onOpenChange={(open) => { if (!saveAction.busy) setAdding(open); }}
-        wide
-        title={editing ? "Edit rule" : "Add a rule"}
-        description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
-      >
-        <form className="space-y-4" onSubmit={save}>
-          <ErrorBanner error={saveAction.error} />
-          <fieldset className="min-w-0 space-y-4" disabled={saveAction.busy}>
-            <div className="space-y-4">
-              <Field label="Name" htmlFor="rule-name">
-                <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              </Field>
-              <Field
-                label="Credential"
-                htmlFor="rule-cred"
-                hint={creds.data?.items.length === 0 ? "Add a credential to this vault first." : undefined}
-              >
-                {editing ? <Input id="rule-cred" value={credName(editing.credential_id)} readOnly /> : <SelectField
-                  id="rule-cred"
-                  value={form.credential_id}
-                  onChange={(v) => setForm({ ...form, credential_id: v })}
-                  placeholder="Choose…"
-                  options={(creds.data?.items ?? []).map((c) => ({
-                    value: c.id,
-                    label: (
-                      <span className="flex min-w-0 items-center gap-2">
-                        <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
-                        <span className="truncate">{c.name} ({c.template_id})</span>
-                      </span>
-                    ),
-                  }))}
-                />}
-              </Field>
-            </div>
-            <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
-              <Textarea
-                id="rule-hosts"
-                  required={!!editing}
-                rows={2}
-                className="font-mono"
-                value={form.hosts}
-                onChange={(e) => setForm({ ...form, hosts: e.target.value })}
-                placeholder="api.example.com"
-              />
-            </Field>
-            <div className="space-y-4">
-              <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
-                <Textarea
-                  id="rule-paths"
-                  required={!!editing}
-                  rows={2}
-                  className="font-mono"
-                  value={form.paths}
-                  onChange={(e) => setForm({ ...form, paths: e.target.value })}
-                  placeholder="/v1/*"
-                />
-              </Field>
-              <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
-                <Input
-                  id="rule-methods"
-                  required={!!editing}
-                  className="font-mono"
-                  value={form.methods}
-                  onChange={(e) => setForm({ ...form, methods: e.target.value })}
-                  placeholder="GET, POST"
-                />
-              </Field>
-            </div>
-            {!editing && <Field
-              label="MCP tools"
-              htmlFor="rule-new-tools"
-              hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
-            >
-              <Textarea
-                id="rule-new-tools"
-                rows={2}
-                className="font-mono"
-                value={form.tools}
-                onChange={(e) => setForm({ ...form, tools: e.target.value })}
-                placeholder="search_issues"
-              />
-            </Field>}
-          </fieldset>
-          <DialogActions>
-            <Button type="button" variant="outline" disabled={saveAction.busy} onClick={() => setAdding(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!canSave}>
-              {editing ? "Save changes" : "Create rule"}
-            </Button>
-          </DialogActions>
-        </form>
-      </FormDialog>
+      {editor && <RuleEditor
+        vaultId={vaultId}
+        editing={editor.rule}
+        credentials={creds.data?.items}
+        onClose={() => setEditor(null)}
+        onSaved={() => {
+          setEditor(current => current === editor ? null : current);
+          rules.reload();
+        }}
+      />}
       <FormDialog
         open={editingTools !== null}
         onOpenChange={(o) => {
