@@ -629,7 +629,11 @@ export function setCsrfToken(token: string | null): void {
 type StepUpHandler = () => Promise<boolean>;
 let stepUpHandler: StepUpHandler | null = null;
 export function setStepUpHandler(handler: StepUpHandler | null): void {
-  stepUpHandler = handler;
+  let challenge: Promise<boolean> | undefined;
+  stepUpHandler = handler && (() => {
+    challenge ??= handler().finally(() => { challenge = undefined; });
+    return challenge;
+  });
 }
 
 function toProblem(status: number, statusText: string, text: string): Problem {

@@ -5,6 +5,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
+  ApiError,
   errorMessage,
   get,
   patch,
@@ -349,7 +350,14 @@ function changedList(values: string[], original: string[]) {
   return values.length === original.length && values.every((value, i) => value === original[i]) ? undefined : values;
 }
 
-function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure }: {
+function ruleForm(rule: Rule) {
+  return {
+    ...EMPTY_RULE, name: rule.name, credential_id: rule.credential_id,
+    hosts: rule.allow.hosts.join("\n"), paths: rule.allow.paths.join("\n"), methods: rule.allow.methods.join(", "),
+  };
+}
+
+function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSaved, onFailure }: {
   vaultId: string;
   editing: Rule | null;
   credentials?: CredentialMeta[];
@@ -357,6 +365,8 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure
   onSaved: () => void;
   onFailure: (message: string) => void;
 }) {
+  const [editing, setEditing] = useState(initialRule);
+  const [conflicted, setConflicted] = useState(false);
   const saveAction = useAction();
   const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
   const lookup = useMemo(() => indexTemplates(templates.data ?? []), [templates.data]);
@@ -369,10 +379,21 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure
       </span>
     ),
   })), [credentials, lookup]);
-  const [form, setForm] = useState(() => editing ? {
-    name: editing.name, credential_id: editing.credential_id, hosts: editing.allow.hosts.join("\n"),
-    paths: editing.allow.paths.join("\n"), methods: editing.allow.methods.join(", "), tools: "",
-  } : EMPTY_RULE);
+  const [form, setForm] = useState(() => editing ? ruleForm(editing) : EMPTY_RULE);
+  const reloadDraft = async () => {
+    if (!editing) return;
+    const latest = await saveAction.run(() => api<Rule>("GET", `/rules/${editing.id}`, undefined, { timeoutMs: 30_000 }));
+    if (!latest) return;
+    const previous = ruleForm(editing);
+    const refreshed = ruleForm(latest);
+    // Keep draft edits only where the remote field has not changed.
+    for (const key of ["name", "hosts", "paths", "methods"] as const) {
+      if (refreshed[key] === previous[key]) refreshed[key] = form[key];
+    }
+    setForm(refreshed);
+    setEditing(latest);
+    setConflicted(false);
+  };
   const hosts = lines(form.hosts);
   const paths = form.paths.split("\n").filter(Boolean);
   const methods = lines(form.methods);
@@ -383,7 +404,7 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure
     methods: changedList(methods, editing.allow.methods),
   } : {};
   const validScope = !editing || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
-  const canSave = !saveAction.busy && !!form.credential_id && validScope
+  const canSave = !conflicted && !saveAction.busy && !!form.credential_id && validScope
     && (!editing || Object.values(changes).some(value => value !== undefined));
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -406,6 +427,7 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure
           mcp_tools: opt(form.tools),
         }, options);
       } catch (error) {
+        if (editing && error instanceof ApiError && error.problem.status === 409) setConflicted(true);
         const message = error instanceof DOMException && error.name === "TimeoutError"
           ? "The save timed out. Check the rule before retrying."
           : errorMessage(error);
@@ -426,6 +448,10 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure
     >
       <form className="space-y-4" onSubmit={save}>
         <ErrorBanner error={saveAction.error} />
+        {conflicted && <div className="space-y-2">
+          <p>This rule changed. Reload to use its latest values for fields changed on the server. Your other edits will be kept.</p>
+          <Button type="button" variant="outline" disabled={saveAction.busy} onClick={() => void reloadDraft()}>Reload rule</Button>
+        </div>}
         <fieldset className="min-w-0 space-y-4" disabled={saveAction.busy}>
           <div className="space-y-4">
             <Field label="Name" htmlFor="rule-name">
@@ -526,7 +552,20 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
 
   const remove = async (r: Rule) => {
     const removed = await deleteAction.run(async () => {
-      await api<void>("DELETE", `/rules/${r.id}`, undefined, { timeoutMs: 30_000 });
+      const path = `/rules/${r.id}`;
+      try {
+        await api<void>("DELETE", path, undefined, { timeoutMs: 30_000 });
+      } catch (error) {
+        if (error instanceof ApiError && error.problem.status === 404) return true;
+        if (!(error instanceof ApiError) || error.problem.status >= 500) {
+          try {
+            await api<Rule>("GET", path, undefined, { timeoutMs: 30_000 });
+          } catch (lookupError) {
+            if (lookupError instanceof ApiError && lookupError.problem.status === 404) return true;
+          }
+        }
+        throw error;
+      }
       return true;
     });
     if (removed) confirm.close();

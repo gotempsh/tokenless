@@ -14,14 +14,17 @@ try {
   const release = Promise.withResolvers<void>();
   const rejectConflict = Promise.withResolvers<void>();
   const releaseOther = Promise.withResolvers<void>();
+  const revision = (n: number) => `2026-01-01T00:00:00.12345${n}Z`;
+  let currentRevision = revision(6);
   let latestName: string | undefined;
   const rejectDelete = Promise.withResolvers<void>();
   let deleteAttempts = 0;
+  const deleted = new Set<string>();
   const patches: string[] = [];
   let templateLoads = 0;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
-    updated_at: "2026-01-01T00:00:00.123456Z", enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
+    updated_at: currentRevision, enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -33,11 +36,20 @@ try {
       user: { username: "editor", role: "user" }, csrf_token: "test",
       vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
     } });
+    if (resource === "rules" && deleted.has(id)) return route.fulfill({ status: 404, body: "already deleted" });
+    if (resource === "rules" && id === "b-rule" && route.request().method() === "DELETE") {
+      deleted.add(id);
+      return route.fulfill({ status: 503, body: "upstream response lost" });
+    }
     if (resource === "rules" && id === "other-rule") {
       const method = route.request().method();
+      if (method === "GET") return route.fulfill({ json: rule("other") });
       if (method === "DELETE") {
         deleteAttempts++;
-        if (deleteAttempts === 2) return route.fulfill({ status: 204 });
+        if (deleteAttempts === 2) {
+          deleted.add(id);
+          return route.fulfill({ status: 404, body: "already deleted" });
+        }
         await rejectDelete.promise;
       }
       if (method === "DELETE" || route.request().postDataJSON().enabled === false) {
@@ -47,12 +59,14 @@ try {
       await releaseOther.promise;
       return route.fulfill({ json: rule("other") });
     }
+    if (resource === "rules" && route.request().method() === "GET") return route.fulfill({ json: rule("b") });
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
       if (patches.length === 2) return; // Leave the second request pending until its real deadline.
-      if (patches.length === 3) {
+      if (patches.length === 3 || patches.length === 5) {
         await rejectConflict.promise;
-        latestName = "concurrent rename";
+        currentRevision = revision(patches.length === 3 ? 7 : 8);
+        latestName = patches.length === 3 ? "concurrent rename" : "latest rename";
         return route.fulfill({ status: 409, json: {
           status: 409, code: "conflict", title: "Conflict", detail: "The rule revision changed.",
         } });
@@ -65,7 +79,8 @@ try {
       templateLoads++;
       return route.fulfill({ json: [] });
     }
-    return route.fulfill({ json: { items: section === "rules" ? (id === "b" ? [rule(id), rule("other")] : [rule(id)]) : [], total: 1, page: 1, page_size: 20 } });
+    const items = section === "rules" ? (id === "b" ? [rule(id), rule("other")] : [rule(id)]).filter(r => !deleted.has(r.id)) : [];
+    return route.fulfill({ json: { items, total: items.length, page: 1, page_size: 20 } });
   });
   const closeEditor = async () => {
     await page.locator('[role="menu"]').waitFor({ state: "detached" });
@@ -132,7 +147,25 @@ try {
   await page.getByRole("menuitem", { name: "Edit rule" }).click();
   assert.equal(await page.locator("#rule-name").inputValue(), "concurrent rename");
   assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
-  await closeEditor();
+  await page.locator("#rule-paths").fill("/reopened");
+  const [reopened] = await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  assert.equal(reopened.postDataJSON().expected_updated_at, revision(7));
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+
+  await page.getByRole("button", { name: "Actions for concurrent rename" }).click();
+  await page.getByRole("menuitem", { name: "Edit rule" }).click();
+  await page.locator("#rule-paths").fill("/pending");
+  await save.click();
+  const reload = page.getByRole("button", { name: "Reload rule" });
+  await reload.waitFor();
+  assert.equal(await save.isDisabled(), true);
+  await reload.click();
+  await reload.waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#rule-name").inputValue(), "latest rename");
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/pending");
+  const [retry] = await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  assert.deepEqual(retry.postDataJSON(), { expected_updated_at: revision(8), paths: ["/pending"] });
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
   await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => releaseOther.resolve())]);
   const conflict = page.getByText(/Saving rule "b-read".*The rule revision changed/);
   await conflict.waitFor();
@@ -153,11 +186,17 @@ try {
   await submitDelete.click();
   await deletion.waitFor({ state: "hidden" });
   assert.equal(deleteAttempts, 2);
+  await page.getByRole("button", { name: "Actions for other-read" }).waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Actions for latest rename" }).click();
+  await page.getByRole("menuitem", { name: "Delete rule" }).click();
+  await submitDelete.click();
+  await deletion.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Actions for latest rename" }).waitFor({ state: "hidden" });
   assert.equal(await conflict.isVisible(), true);
   assert.equal(templateLoads, 0);
   await Promise.all([
     page.waitForResponse(r => new URL(r.url()).pathname === "/api/v1/templates"),
-    page.getByRole("button", { name: "Add rule" }).click(),
+    page.getByRole("button", { name: "Add rule" }).first().click(),
   ]);
   assert.equal(templateLoads, 1);
   console.log("Passed: required scope, vault navigation, and delayed save.");

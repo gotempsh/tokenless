@@ -854,6 +854,16 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .map_err(backend(S, "rule_update"))?;
     let mut stale_proposal = r2.clone();
     stale_proposal.updated_at = at(2);
+    let fractional = updated.updated_at + chrono::Duration::nanoseconds(999);
+    let mismatch = store
+        .update_rule(stale_proposal.clone(), fractional, &[])
+        .await;
+    ensure!(
+        S,
+        "rule_exact_revision",
+        matches!(mismatch, Err(StoreError::Conflict { .. })),
+        "expected an exact revision conflict, got {mismatch:?}"
+    );
     let stale = store.update_rule(stale_proposal, r2.updated_at, &[]).await;
     ensure!(
         S,

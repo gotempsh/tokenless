@@ -1124,7 +1124,8 @@ impl PolicyStore for SqliteStore {
         .bind(i64::from(rule.enabled))
         .bind(ts(&rule.updated_at))
         .bind(rule.id.to_string())
-        .bind(ts(&expected_updated_at))
+        // A sub-microsecond expectation cannot equal a stored SQLite revision.
+        .bind(expected_updated_at.timestamp_subsec_nanos().is_multiple_of(1000).then(|| ts(&expected_updated_at)))
         .bind(ts(&rule.updated_at))
         .execute(&mut *tx)
         .await
