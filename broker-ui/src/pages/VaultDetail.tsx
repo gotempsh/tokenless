@@ -6,7 +6,6 @@ import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-r
 import {
   api,
   errorMessage,
-  del,
   get,
   patch,
   post,
@@ -527,7 +526,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
 
   const remove = async (r: Rule) => {
     const removed = await deleteAction.run(async () => {
-      await del(`/rules/${r.id}`);
+      await api<void>("DELETE", `/rules/${r.id}`, undefined, { timeoutMs: 30_000 });
       return true;
     });
     if (removed) confirm.close();
@@ -675,7 +674,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       </FormDialog>
       <ConfirmDialog
         open={confirm.open}
-        onOpenChange={confirm.onOpenChange}
+        onOpenChange={(open) => { if (!deleteAction.busy) confirm.onOpenChange(open); }}
         title={`Delete rule "${confirm.target?.name ?? ""}"?`}
         description="Sessions that include this rule can no longer use it."
         confirmLabel="Delete rule"

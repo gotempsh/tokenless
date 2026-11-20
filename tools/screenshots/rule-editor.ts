@@ -15,6 +15,8 @@ try {
   const rejectConflict = Promise.withResolvers<void>();
   const releaseOther = Promise.withResolvers<void>();
   let latestName: string | undefined;
+  const rejectDelete = Promise.withResolvers<void>();
+  let deleteAttempts = 0;
   const patches: string[] = [];
   let templateLoads = 0;
   const rule = (vault: string) => ({
@@ -33,6 +35,11 @@ try {
     } });
     if (resource === "rules" && id === "other-rule") {
       const method = route.request().method();
+      if (method === "DELETE") {
+        deleteAttempts++;
+        if (deleteAttempts === 2) return route.fulfill({ status: 204 });
+        await rejectDelete.promise;
+      }
       if (method === "DELETE" || route.request().postDataJSON().enabled === false) {
         const detail = method === "DELETE" ? "Delete failed" : "Toggle failed";
         return route.fulfill({ status: 503, json: { status: 503, code: "unavailable", title: "Unavailable", detail } });
@@ -135,9 +142,17 @@ try {
   await page.getByRole("button", { name: "Actions for other-read" }).click();
   await page.getByRole("menuitem", { name: "Delete rule" }).click();
   const deletion = page.getByRole("dialog");
-  await deletion.getByRole("button", { name: "Delete rule" }).click();
+  const submitDelete = deletion.getByRole("button", { name: "Delete rule" });
+  await Promise.all([page.waitForRequest(r => r.method() === "DELETE"), submitDelete.click()]);
+  await deletion.getByRole("button", { name: "Cancel" }).click();
+  await page.keyboard.press("Escape");
+  await deletion.getByRole("button", { name: "Close" }).click();
+  assert.equal(await submitDelete.isDisabled(), true);
+  rejectDelete.resolve();
   await deletion.getByText("Unavailable: Delete failed", { exact: true }).waitFor();
-  await closeEditor();
+  await submitDelete.click();
+  await deletion.waitFor({ state: "hidden" });
+  assert.equal(deleteAttempts, 2);
   assert.equal(await conflict.isVisible(), true);
   assert.equal(templateLoads, 0);
   await Promise.all([
