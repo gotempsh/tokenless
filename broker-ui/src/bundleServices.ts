@@ -14,6 +14,11 @@ export function templateOf(templates: StoredTemplate[], c: CredentialMeta): Serv
   return templates.find((t) => t.template.id === c.template_id && t.template.version === c.template_version)?.template;
 }
 
+export function indexTemplates(templates: StoredTemplate[]) {
+  const index = new Map(templates.map(({ template }) => [`${template.id}@${template.version}`, template]));
+  return (c: CredentialMeta) => index.get(`${c.template_id}@${c.template_version}`);
+}
+
 /** `rules` as services: the credential's name and its template's logo. */
 export function ruleServices(rules: Rule[], credentials: CredentialMeta[], templates: StoredTemplate[]): StripService[] {
   const byId = new Map(credentials.map((c) => [c.id, c]));

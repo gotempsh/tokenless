@@ -163,7 +163,11 @@ export function App() {
           setStepUpOpen(true);
         }),
     );
-    return () => setStepUpHandler(null);
+    return () => {
+      setStepUpHandler(null);
+      pending.current?.(false);
+      pending.current = null;
+    };
   }, []);
 
   const finishStepUp = (ok: boolean) => {

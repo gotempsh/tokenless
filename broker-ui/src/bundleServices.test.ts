@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AccessBundle, CredentialMeta, Rule, StoredTemplate } from "./api";
-import { bundleRules, bundleServices, ruleServices, templateOf, vaultsKey } from "./bundleServices";
+import { indexTemplates, bundleRules, bundleServices, ruleServices, templateOf, vaultsKey } from "./bundleServices";
 
 const rule = (id: string, credential: string, enabled = true) =>
   ({ id, name: `rule-${id}`, credential_id: credential, enabled }) as Rule;
@@ -15,6 +15,10 @@ const template = (id: string, version: number, logo?: string) =>
 describe("bundle services", () => {
   test("a credential's template is the one at its version", () => {
     const templates = [template("github", 1, "old"), template("github", 2, "new")];
+    const lookup = indexTemplates(templates);
+    expect(lookup(credential("c", "gh", "github", 1))?.logo).toBe("old");
+    expect(lookup(credential("c", "gh", "github", 2))?.logo).toBe("new");
+    expect(lookup(credential("c", "gh", "github", 3))).toBeUndefined();
     expect(templateOf(templates, credential("c", "gh", "github", 2))?.logo).toBe("new");
     expect(templateOf(templates, credential("c", "gh", "github", 3))).toBeUndefined();
   });

@@ -1180,20 +1180,43 @@ impl PolicyStore for SqliteStore {
         .await
     }
 
-    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError> {
+    async fn update_rule(
+        &self,
+        rule: Rule,
+        expected_updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_rule").await?;
         let result = sqlx::query(
-            "UPDATE rules SET name = ?, allow = ?, enabled = ?, updated_at = ? WHERE id = ?",
+            "UPDATE rules SET name = ?, allow = ?, enabled = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND updated_at < ?",
         )
         .bind(&rule.name)
         .bind(to_json("allow", &rule.allow)?)
         .bind(i64::from(rule.enabled))
         .bind(ts(&rule.updated_at))
         .bind(rule.id.to_string())
+        // A sub-microsecond expectation cannot equal a stored SQLite revision.
+        .bind(expected_updated_at.timestamp_subsec_nanos().is_multiple_of(1000).then(|| ts(&expected_updated_at)))
+        .bind(ts(&rule.updated_at))
         .execute(&mut *tx)
         .await
         .map_err(db("update rule", "rule"))?;
         if result.rows_affected() == 0 {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rules WHERE id = ?)")
+                    .bind(rule.id.to_string())
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db("check rule revision", "rule"))?;
+            if exists {
+                return Err(StoreError::Conflict {
+                    entity: "rule",
+                    detail: format!(
+                        "rule {} changed during the update; refresh the page and reopen the rule",
+                        rule.id
+                    ),
+                });
+            }
             return Err(StoreError::not_found("rule", rule.id));
         }
         finish(tx, audit, "update_rule").await

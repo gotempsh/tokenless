@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use tokenless_core::audit::{AuditEvent, AuditOutcome};
 use tokenless_core::authz::{Action, Role};
@@ -104,6 +104,8 @@ pub struct CreateRule {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct UpdateRule {
+    /// Revision seen when the caller opened the rule.
+    pub expected_updated_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -1362,7 +1364,7 @@ impl PolicyService {
         };
         allow.validate(&template.id)?;
         allow.ensure_within(&max, &template.id)?;
-        let now = Utc::now();
+        let now = Utc::now().trunc_subsecs(6);
         let rule = Rule {
             id: RuleId::new(),
             vault_id: *vault_id,
@@ -1403,6 +1405,16 @@ impl PolicyService {
             .await?;
         let meta = self.credential_meta(&rule.credential_id).await?;
         let (template, max) = self.max_scope_for(&meta).await?;
+        if req
+            .expected_updated_at
+            .is_some_and(|revision| revision != rule.updated_at)
+        {
+            return Err(ControlError::Conflict {
+                message: format!(
+                    "rule {id} changed since it was opened; refresh the page and reopen the rule"
+                ),
+            });
+        }
         let previous = rule.clone();
         if let Some(name) = &req.name {
             rule.name = validate_name("rule", name)?;
@@ -1445,7 +1457,10 @@ impl PolicyService {
         if widened {
             self.guard.require_step_up(caller, Action::RuleWrite)?;
         }
-        rule.updated_at = Utc::now();
+        // SQLite stores microseconds. Advance even if the clock repeats or moves back.
+        rule.updated_at = Utc::now()
+            .trunc_subsecs(6)
+            .max(previous.updated_at + chrono::Duration::microseconds(1));
         let event = AuditEvent::new(caller.actor(), "rule.update", AuditOutcome::Success)
             .vault(rule.vault_id)
             .target(format!("rule:{id}"))
@@ -1455,7 +1470,9 @@ impl PolicyService {
             .detail("hosts", hosts_string(&rule.allow.hosts))
             .detail("mcp_tools", tools_string(&rule.allow.mcp_tools))
             .detail("git", git_string(&rule.allow.git));
-        self.policy.update_rule(rule.clone(), &[event]).await?;
+        self.policy
+            .update_rule(rule.clone(), previous.updated_at, &[event])
+            .await?;
         self.notifier.bump_content();
         Ok(rule)
     }

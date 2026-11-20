@@ -257,8 +257,16 @@ pub trait PolicyStore: Send + Sync {
     /// Every enabled rule across vaults, for snapshot building.
     async fn list_enabled_rules(&self) -> Result<Vec<Rule>, StoreError>;
     async fn count_rules_for_credential(&self, id: &CredentialId) -> Result<u64, StoreError>;
-    /// `NotFound` if the rule does not exist.
-    async fn update_rule(&self, rule: Rule, audit: &[AuditEvent]) -> Result<(), StoreError>;
+    /// The stored revision must match `expected_updated_at`, and the new
+    /// `rule.updated_at` must advance by at least one microsecond at storage
+    /// precision. Reject either mismatch atomically with `Conflict`; return
+    /// `NotFound` for a missing rule.
+    async fn update_rule(
+        &self,
+        rule: Rule,
+        expected_updated_at: DateTime<Utc>,
+        audit: &[AuditEvent],
+    ) -> Result<(), StoreError>;
     /// Also removes the rule from every access bundle that lists it.
     async fn delete_rule(&self, id: &RuleId, audit: &[AuditEvent]) -> Result<(), StoreError>;
 
