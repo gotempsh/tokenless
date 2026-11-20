@@ -852,7 +852,9 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
         .update_rule(updated.clone(), r2.updated_at, &[])
         .await
         .map_err(backend(S, "rule_update"))?;
-    let stale = store.update_rule(r2.clone(), r2.updated_at, &[]).await;
+    let mut stale_proposal = r2.clone();
+    stale_proposal.updated_at = at(2);
+    let stale = store.update_rule(stale_proposal, r2.updated_at, &[]).await;
     ensure!(
         S,
         "stale_rule_update",

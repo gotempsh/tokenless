@@ -13,6 +13,7 @@ try {
   const dist = join(import.meta.dir, "../../broker-ui/dist");
   const release = Promise.withResolvers<void>();
   const rejectConflict = Promise.withResolvers<void>();
+  const releaseOther = Promise.withResolvers<void>();
   let latestName: string | undefined;
   const patches: string[] = [];
   let templateLoads = 0;
@@ -30,6 +31,15 @@ try {
       user: { username: "editor", role: "user" }, csrf_token: "test",
       vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
     } });
+    if (resource === "rules" && id === "other-rule") {
+      const method = route.request().method();
+      if (method === "DELETE" || route.request().postDataJSON().enabled === false) {
+        const detail = method === "DELETE" ? "Delete failed" : "Toggle failed";
+        return route.fulfill({ status: 503, json: { status: 503, code: "unavailable", title: "Unavailable", detail } });
+      }
+      await releaseOther.promise;
+      return route.fulfill({ json: rule("other") });
+    }
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
       if (patches.length === 2) return; // Leave the second request pending until its real deadline.
@@ -48,13 +58,20 @@ try {
       templateLoads++;
       return route.fulfill({ json: [] });
     }
-    return route.fulfill({ json: { items: section === "rules" ? [rule(id)] : [], total: 1, page: 1, page_size: 20 } });
+    return route.fulfill({ json: { items: section === "rules" ? (id === "b" ? [rule(id), rule("other")] : [rule(id)]) : [], total: 1, page: 1, page_size: 20 } });
   });
+  const closeEditor = async () => {
+    await page.locator('[role="menu"]').waitFor({ state: "detached" });
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { includeHidden: true }).waitFor({ state: "detached" });
+  };
   const edit = async (vault: string) => {
     await page.getByRole("button", { name: "Actions for " + vault + "-read" }).click();
     await page.getByRole("menuitem", { name: "Edit rule" }).click();
   };
   await page.goto(origin + "/#/vaults/a/rules");
+  // Exercise the dialog transitions independently of the theme’s entrance and exit animations.
+  await page.addStyleTag({ content: "*, *::before, *::after { animation: none !important; transition: none !important; }" });
   await edit("a");
   const save = page.getByRole("button", { name: "Save changes" });
   assert.equal(await save.isDisabled(), true);
@@ -69,7 +86,6 @@ try {
   }
 
   await page.evaluate(() => { location.hash = "/vaults/b/rules"; });
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.deepEqual(patches, []);
   await edit("b");
   assert.equal(await page.locator("#rule-name").inputValue(), "b-read");
@@ -83,32 +99,46 @@ try {
   for (const field of ["name", "hosts", "paths", "methods"]) {
     assert.equal(await page.locator("#rule-" + field).isDisabled(), true);
   }
-  await page.keyboard.press("Escape");
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await closeEditor();
   await edit("b");
   await page.locator("#rule-name").fill("next draft");
   await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => release.resolve())]);
   assert.equal(await page.locator("#rule-name").inputValue(), "next draft");
-  await page.keyboard.press("Escape");
+  await closeEditor();
   assert.deepEqual(patches, ["b-rule"]);
   await edit("b");
   await page.locator("#rule-name").fill("timeout draft");
   await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
-  await page.keyboard.press("Escape");
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await closeEditor();
   await page.getByText(/Saving rule "timeout draft".*timed out/).waitFor({ timeout: 45_000 });
+  await edit("other");
+  await page.locator("#rule-name").fill("older save");
+  await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  await closeEditor();
   await edit("b");
   await page.locator("#rule-paths").fill("/narrow");
   await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
-  await page.keyboard.press("Escape");
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await closeEditor();
   rejectConflict.resolve();
   await page.getByText(/Saving rule "b-read".*The rule revision changed/).waitFor();
   await page.getByRole("button", { name: "Actions for concurrent rename" }).click();
   await page.getByRole("menuitem", { name: "Edit rule" }).click();
   assert.equal(await page.locator("#rule-name").inputValue(), "concurrent rename");
   assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
-  await page.keyboard.press("Escape");
+  await closeEditor();
+  await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => releaseOther.resolve())]);
+  const conflict = page.getByText(/Saving rule "b-read".*The rule revision changed/);
+  await conflict.waitFor();
+  await page.getByRole("switch", { name: "Turn off other-read" }).click();
+  await page.getByText("Unavailable: Toggle failed", { exact: true }).waitFor();
+  assert.equal(await conflict.isVisible(), true);
+  await page.getByRole("button", { name: "Actions for other-read" }).click();
+  await page.getByRole("menuitem", { name: "Delete rule" }).click();
+  const deletion = page.getByRole("dialog");
+  await deletion.getByRole("button", { name: "Delete rule" }).click();
+  await deletion.getByText("Unavailable: Delete failed", { exact: true }).waitFor();
+  await closeEditor();
+  assert.equal(await conflict.isVisible(), true);
   assert.equal(templateLoads, 0);
   await Promise.all([
     page.waitForResponse(r => new URL(r.url()).pathname === "/api/v1/templates"),

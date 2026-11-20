@@ -495,6 +495,7 @@ export function ConfirmDialog({
   open,
   title,
   description,
+  error,
   confirmLabel,
   busy,
   destructive = true,
@@ -504,6 +505,7 @@ export function ConfirmDialog({
   open: boolean;
   title: string;
   description: ReactNode;
+  error?: string | null;
   confirmLabel: string;
   busy?: boolean;
   /** Set false for confirmations that grant rather than take away. */
@@ -518,6 +520,7 @@ export function ConfirmDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
+        <ErrorBanner error={error ?? null} />
         <DialogFooter className="gap-2">
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel

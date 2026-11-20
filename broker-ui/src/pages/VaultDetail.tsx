@@ -512,11 +512,12 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const [page, setPage] = useState(1);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
-  const [saveFailure, setSaveFailure] = useState<string | null>(null);
+  const [saveFailures, setSaveFailures] = useState<string[]>([]);
   const [editor, setEditor] = useState<{ rule: Rule | null } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
+  const deleteAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
   const toggle = async (r: Rule) => {
@@ -525,8 +526,11 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   };
 
   const remove = async (r: Rule) => {
-    await action.run(() => del(`/rules/${r.id}`));
-    confirm.close();
+    const removed = await deleteAction.run(async () => {
+      await del(`/rules/${r.id}`);
+      return true;
+    });
+    if (removed) confirm.close();
     rules.reload();
   };
 
@@ -542,7 +546,16 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       title="Rules"
       actions={addButton}
     >
-      <ErrorBanner error={saveFailure ?? rules.error ?? action.error} />
+      {saveFailures.map(message => (
+        <div key={message} className="flex items-center gap-2">
+          <ErrorBanner error={message} />
+          <Button type="button" variant="outline" onClick={() => setSaveFailures(current => current.filter(m => m !== message))}>
+            Dismiss
+          </Button>
+        </div>
+      ))}
+      <ErrorBanner error={rules.error} />
+      <ErrorBanner error={action.error} />
       <Panel>
         {rules.loading && !rules.data ? (
           <Loading />
@@ -611,7 +624,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                           {
                             label: "Delete rule",
                             icon: Trash2,
-                            onSelect: () => confirm.ask(r),
+                            onSelect: () => { deleteAction.clearError(); confirm.ask(r); },
                             destructive: true,
                             disabled: !canEdit,
                             reason: onlyFor("edit"),
@@ -632,9 +645,11 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         editing={editor.rule}
         credentials={creds.data?.items}
         onClose={() => setEditor(null)}
-        onFailure={message => { setSaveFailure(message); rules.reload(); }}
+        onFailure={message => {
+          setSaveFailures(current => current.includes(message) ? current : [...current, message]);
+          rules.reload();
+        }}
         onSaved={() => {
-          setSaveFailure(null);
           setEditor(current => current === editor ? null : current);
           rules.reload();
         }}
@@ -664,7 +679,8 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         title={`Delete rule "${confirm.target?.name ?? ""}"?`}
         description="Sessions that include this rule can no longer use it."
         confirmLabel="Delete rule"
-        busy={action.busy}
+        busy={deleteAction.busy}
+        error={deleteAction.error}
         onConfirm={() => {
           if (confirm.target) void remove(confirm.target);
         }}
