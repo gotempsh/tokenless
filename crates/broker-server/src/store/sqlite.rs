@@ -1117,7 +1117,7 @@ impl PolicyStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut tx = self.begin("update_rule").await?;
         let result = sqlx::query(
-            "UPDATE rules SET name = ?, allow = ?, enabled = ?, updated_at = ? WHERE id = ? AND updated_at = ?",
+            "UPDATE rules SET name = ?, allow = ?, enabled = ?, updated_at = ? WHERE id = ? AND updated_at = ? AND updated_at < ?",
         )
         .bind(&rule.name)
         .bind(to_json("allow", &rule.allow)?)
@@ -1125,6 +1125,7 @@ impl PolicyStore for SqliteStore {
         .bind(ts(&rule.updated_at))
         .bind(rule.id.to_string())
         .bind(ts(&expected_updated_at))
+        .bind(ts(&rule.updated_at))
         .execute(&mut *tx)
         .await
         .map_err(db("update rule", "rule"))?;

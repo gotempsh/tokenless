@@ -30,6 +30,7 @@ try {
     } });
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
+      if (patches.length === 2) return; // Leave the second request pending until its real deadline.
       await release.promise;
       return route.fulfill({ json: rule("b") });
     }
@@ -81,6 +82,12 @@ try {
   assert.equal(await page.locator("#rule-name").inputValue(), "next draft");
   await page.keyboard.press("Escape");
   assert.deepEqual(patches, ["b-rule"]);
+  await edit("b");
+  await page.locator("#rule-name").fill("timeout draft");
+  await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.getByText(/Saving rule "timeout draft".*timed out/).waitFor({ timeout: 45_000 });
   assert.equal(templateLoads, 0);
   await Promise.all([
     page.waitForResponse(r => new URL(r.url()).pathname === "/api/v1/templates"),

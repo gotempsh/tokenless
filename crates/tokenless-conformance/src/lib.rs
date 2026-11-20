@@ -840,6 +840,13 @@ pub async fn policy_store_suite(store: &dyn PolicyStore) -> Result<(), Conforman
     let mut updated = r2.clone();
     updated.enabled = true;
     updated.name = "two-renamed".into();
+    let reused = store.update_rule(updated.clone(), r2.updated_at, &[]).await;
+    ensure!(
+        S,
+        "rule_revision_must_advance",
+        matches!(reused, Err(StoreError::Conflict { .. })),
+        "expected a conflict for a reused revision, got {reused:?}"
+    );
     updated.updated_at = at(1);
     store
         .update_rule(updated.clone(), r2.updated_at, &[])

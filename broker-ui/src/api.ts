@@ -644,7 +644,7 @@ function toProblem(status: number, statusText: string, text: string): Problem {
   return { title: statusText, status, detail: text || statusText, code: "http_error" };
 }
 
-export async function api<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+export async function api<T>(method: string, path: string, body?: unknown, { retried, timeoutMs }: { retried?: boolean; timeoutMs?: number } = {}): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if (csrfToken && method !== "GET") headers["x-csrf-token"] = csrfToken;
@@ -653,13 +653,14 @@ export async function api<T>(method: string, path: string, body?: unknown, retri
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: "same-origin",
+    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
     cache: "no-store",
   });
   const text = await response.text();
   if (!response.ok) {
     const problem = toProblem(response.status, response.statusText, text);
     if (problem.code === "step_up_required" && method !== "GET" && !retried && stepUpHandler) {
-      if (await stepUpHandler()) return api<T>(method, path, body, true);
+      if (await stepUpHandler()) return api<T>(method, path, body, { retried: true, timeoutMs });
     }
     throw new ApiError(problem);
   }

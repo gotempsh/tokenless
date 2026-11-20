@@ -570,6 +570,12 @@ impl PolicyStore for MemoryStore {
             .rules
             .get_mut(&rule.id)
             .ok_or_else(|| StoreError::not_found("rule", rule.id))?;
+        if rule.updated_at.timestamp_micros() <= expected_updated_at.timestamp_micros() {
+            return Err(StoreError::Conflict {
+                entity: "rule",
+                detail: format!("update to rule {} must advance its revision", rule.id),
+            });
+        }
         if slot.updated_at != expected_updated_at {
             return Err(StoreError::Conflict {
                 entity: "rule",

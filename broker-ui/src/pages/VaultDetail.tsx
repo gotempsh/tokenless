@@ -5,6 +5,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
+  errorMessage,
   del,
   get,
   patch,
@@ -25,7 +26,7 @@ import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { chosenIn } from "../bundleChoice";
 import { BundleChoice } from "../components/BundleChoice";
 import { ServiceLogo } from "../components/ServiceLogo";
-import { templateOf, useBundleServices } from "../bundleServices";
+import { indexTemplates, useBundleServices } from "../bundleServices";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
@@ -349,24 +350,26 @@ function changedList(values: string[], original: string[]) {
   return values.length === original.length && values.every((value, i) => value === original[i]) ? undefined : values;
 }
 
-function RuleEditor({ vaultId, editing, credentials, onClose, onSaved }: {
+function RuleEditor({ vaultId, editing, credentials, onClose, onSaved, onFailure }: {
   vaultId: string;
   editing: Rule | null;
   credentials?: CredentialMeta[];
   onClose: () => void;
   onSaved: () => void;
+  onFailure: (message: string) => void;
 }) {
   const saveAction = useAction();
   const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
+  const lookup = useMemo(() => indexTemplates(templates.data ?? []), [templates.data]);
   const credentialOptions = useMemo(() => (credentials ?? []).map((c) => ({
     value: c.id,
     label: (
       <span className="flex min-w-0 items-center gap-2">
-        <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+        <ServiceLogo template={lookup(c) ?? { id: c.template_id, kind: "http" }} size="xs" />
         <span className="truncate">{c.name} ({c.template_id})</span>
       </span>
     ),
-  })), [credentials, templates.data]);
+  })), [credentials, lookup]);
   const [form, setForm] = useState(() => editing ? {
     name: editing.name, credential_id: editing.credential_id, hosts: editing.allow.hosts.join("\n"),
     paths: editing.allow.paths.join("\n"), methods: editing.allow.methods.join(", "), tools: "",
@@ -387,17 +390,30 @@ function RuleEditor({ vaultId, editing, credentials, onClose, onSaved }: {
     e.preventDefault();
     if (!canSave) return;
     const opt = (v: string) => (lines(v).length ? lines(v) : undefined);
-    const saved = await saveAction.run(() => editing
-      ? patch<Rule>(`/rules/${editing.id}`, { expected_updated_at: editing.updated_at, ...changes })
-      : post<Rule>(`/vaults/${vaultId}/rules`, {
-        name: form.name,
-        credential_id: form.credential_id,
-        hosts: opt(form.hosts),
-        paths: opt(form.paths),
-        methods: opt(form.methods),
-        mcp_tools: opt(form.tools),
-      }),
-    );
+    const saved = await saveAction.run(async () => {
+      try {
+        const options = { timeoutMs: 30_000 };
+        if (editing) {
+          return await api<Rule>("PATCH", `/rules/${editing.id}`, {
+            expected_updated_at: editing.updated_at, ...changes,
+          }, options);
+        }
+        return await api<Rule>("POST", `/vaults/${vaultId}/rules`, {
+          name: form.name,
+          credential_id: form.credential_id,
+          hosts: opt(form.hosts),
+          paths: opt(form.paths),
+          methods: opt(form.methods),
+          mcp_tools: opt(form.tools),
+        }, options);
+      } catch (error) {
+        const message = error instanceof DOMException && error.name === "TimeoutError"
+          ? "The save timed out. Check the rule before retrying."
+          : errorMessage(error);
+        onFailure(`Saving rule "${form.name}": ${message}`);
+        throw new Error(message);
+      }
+    });
     if (saved) onSaved();
   };
 
@@ -496,6 +512,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const [page, setPage] = useState(1);
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
+  const [saveFailure, setSaveFailure] = useState<string | null>(null);
   const [editor, setEditor] = useState<{ rule: Rule | null } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
@@ -525,7 +542,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       title="Rules"
       actions={addButton}
     >
-      <ErrorBanner error={rules.error ?? action.error} />
+      <ErrorBanner error={saveFailure ?? rules.error ?? action.error} />
       <Panel>
         {rules.loading && !rules.data ? (
           <Loading />
@@ -615,7 +632,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         editing={editor.rule}
         credentials={creds.data?.items}
         onClose={() => setEditor(null)}
+        onFailure={message => { setSaveFailure(message); rules.reload(); }}
         onSaved={() => {
+          setSaveFailure(null);
           setEditor(current => current === editor ? null : current);
           rules.reload();
         }}
