@@ -14,6 +14,7 @@ import {
   type Page,
   type ProxySession,
   type Rule,
+  type StoredTemplate,
   type Vault,
   type VaultOverview,
 } from "../api";
@@ -23,7 +24,8 @@ import { useAction, useLoad } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { chosenIn } from "../bundleChoice";
 import { BundleChoice } from "../components/BundleChoice";
-import { useBundleServices } from "../bundleServices";
+import { ServiceLogo } from "../components/ServiceLogo";
+import { templateOf, useBundleServices } from "../bundleServices";
 import { SessionHandoff, useHandoffGuard } from "./SessionHandoff";
 import { Bundles } from "./Bundles";
 import { Services } from "./Services";
@@ -348,6 +350,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [adding, setAdding] = useState(false);
+  const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [form, setForm] = useState(EMPTY_RULE);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
@@ -499,7 +502,15 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                 value={form.credential_id}
                 onChange={(v) => setForm({ ...form, credential_id: v })}
                 placeholder="Choose…"
-                options={(creds.data?.items ?? []).map((c) => ({ value: c.id, label: `${c.name} (${c.template_id})` }))}
+                options={(creds.data?.items ?? []).map((c) => ({
+                  value: c.id,
+                  label: (
+                    <span className="flex min-w-0 items-center gap-2">
+                      <ServiceLogo template={templateOf(templates.data ?? [], c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+                      <span className="truncate">{c.name} ({c.template_id})</span>
+                    </span>
+                  ),
+                }))}
               />
             </Field>
           </div>
