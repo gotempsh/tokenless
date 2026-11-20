@@ -12,10 +12,12 @@ try {
   const origin = "http://console.test";
   const dist = join(import.meta.dir, "../../broker-ui/dist");
   const release = Promise.withResolvers<void>();
+  const rejectConflict = Promise.withResolvers<void>();
+  let latestName: string | undefined;
   const patches: string[] = [];
   let templateLoads = 0;
   const rule = (vault: string) => ({
-    id: vault + "-rule", name: vault + "-read", credential_id: "service", vault_id: vault,
+    id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
     updated_at: "2026-01-01T00:00:00.123456Z", enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
@@ -31,6 +33,13 @@ try {
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
       if (patches.length === 2) return; // Leave the second request pending until its real deadline.
+      if (patches.length === 3) {
+        await rejectConflict.promise;
+        latestName = "concurrent rename";
+        return route.fulfill({ status: 409, json: {
+          status: 409, code: "conflict", title: "Conflict", detail: "The rule revision changed.",
+        } });
+      }
       await release.promise;
       return route.fulfill({ json: rule("b") });
     }
@@ -88,6 +97,18 @@ try {
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   await page.getByText(/Saving rule "timeout draft".*timed out/).waitFor({ timeout: 45_000 });
+  await edit("b");
+  await page.locator("#rule-paths").fill("/narrow");
+  await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  rejectConflict.resolve();
+  await page.getByText(/Saving rule "b-read".*The rule revision changed/).waitFor();
+  await page.getByRole("button", { name: "Actions for concurrent rename" }).click();
+  await page.getByRole("menuitem", { name: "Edit rule" }).click();
+  assert.equal(await page.locator("#rule-name").inputValue(), "concurrent rename");
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  await page.keyboard.press("Escape");
   assert.equal(templateLoads, 0);
   await Promise.all([
     page.waitForResponse(r => new URL(r.url()).pathname === "/api/v1/templates"),

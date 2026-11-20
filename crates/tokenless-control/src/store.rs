@@ -240,7 +240,10 @@ pub trait PolicyStore: Send + Sync {
     /// Every enabled rule across vaults, for snapshot building.
     async fn list_enabled_rules(&self) -> Result<Vec<Rule>, StoreError>;
     async fn count_rules_for_credential(&self, id: &CredentialId) -> Result<u64, StoreError>;
-    /// Atomically rejects a stale revision with `Conflict`, or a missing rule with `NotFound`.
+    /// The stored revision must match `expected_updated_at`, and the new
+    /// `rule.updated_at` must advance by at least one microsecond at storage
+    /// precision. Reject either mismatch atomically with `Conflict`; return
+    /// `NotFound` for a missing rule.
     async fn update_rule(
         &self,
         rule: Rule,
