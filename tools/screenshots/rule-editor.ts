@@ -1,0 +1,71 @@
+// SPDX-FileCopyrightText: 2026 tokenless contributors
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+// Build broker-ui, then run "bun rule-editor.ts" here with Chromium installed.
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { chromium } from "playwright";
+
+const browser = await chromium.launch();
+try {
+  const page = await browser.newPage();
+  const origin = "http://console.test";
+  const dist = join(import.meta.dir, "../../broker-ui/dist");
+  const release = Promise.withResolvers<void>();
+  const patches: string[] = [];
+  const rule = (vault: string) => ({
+    id: vault + "-rule", name: vault + "-read", credential_id: "service", vault_id: vault,
+    enabled: true, allow: { hosts: ["api.example.com"], paths: ["/read"], methods: ["GET"] },
+  });
+  await page.route(origin + "/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (!path.startsWith("/api/v1/")) {
+      return route.fulfill({ path: join(dist, path === "/" ? "index.html" : path) });
+    }
+    const [, , , resource, id, section] = path.split("/");
+    if (resource === "auth") return route.fulfill({ json: {
+      user: { username: "editor", role: "user" }, csrf_token: "test",
+      vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
+    } });
+    if (resource === "rules" && route.request().method() === "PATCH") {
+      patches.push(id);
+      await release.promise;
+      return route.fulfill({ json: rule("b") });
+    }
+    if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
+    if (resource === "templates") return route.fulfill({ json: [] });
+    return route.fulfill({ json: { items: section === "rules" ? [rule(id)] : [], total: 1, page: 1, page_size: 20 } });
+  });
+  const edit = async (vault: string) => {
+    await page.getByRole("button", { name: "Actions for " + vault + "-read" }).click();
+    await page.getByRole("menuitem", { name: "Edit rule" }).click();
+  };
+  await page.goto(origin + "/#/vaults/a/rules");
+  await edit("a");
+  const save = page.getByRole("button", { name: "Save changes" });
+  for (const field of ["hosts", "paths", "methods"]) {
+    const input = page.locator("#rule-" + field);
+    const value = await input.inputValue();
+    await input.fill(" ");
+    assert.equal(await save.isDisabled(), true, field + " must have a value");
+    await input.fill(value);
+    assert.equal(await save.isEnabled(), true);
+  }
+
+  await page.evaluate(() => { location.hash = "/vaults/b/rules"; });
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.deepEqual(patches, []);
+  await edit("b");
+  assert.equal(await page.locator("#rule-name").inputValue(), "b-read");
+  await page.locator("#rule-name").fill("renamed");
+  await Promise.all([page.waitForRequest(r => r.method() === "PATCH"), save.click()]);
+  assert.equal(await page.getByRole("button", { name: "Cancel" }).isDisabled(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("dialog").isVisible(), true);
+  release.resolve();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.deepEqual(patches, ["b-rule"]);
+  console.log("Passed: required scope, vault navigation, and delayed save.");
+} finally {
+  await browser.close();
+}
