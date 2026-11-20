@@ -209,7 +209,7 @@ export function VaultDetail({
         {!(outside && contents) && (
           <>
             {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-            {tab === "rules" && <Rules vaultId={vaultId} canEdit={can(user, vaultId, "edit")} />}
+            {tab === "rules" && <Rules key={vaultId} vaultId={vaultId} canEdit={can(user, vaultId, "edit")} />}
             {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
             {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
           </>
@@ -359,8 +359,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const saveAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
+  const validScope = !editing || (lines(form.hosts).length > 0 && form.paths.trim().length > 0 && lines(form.methods).length > 0);
   const save = async (e: FormEvent) => {
     e.preventDefault();
+    if (!validScope || saveAction.busy) return;
     const opt = (v: string) => (lines(v).length ? lines(v) : undefined);
     const saved = await saveAction.run(() => editing
       ? patch<Rule>(`/rules/${editing.id}`, {
@@ -501,7 +503,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       </Panel>
       <FormDialog
         open={adding}
-        onOpenChange={setAdding}
+        onOpenChange={(open) => { if (!saveAction.busy) setAdding(open); }}
         wide
         title={editing ? "Edit rule" : "Add a rule"}
         description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
@@ -534,9 +536,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
               />}
             </Field>
           </div>
-          <Field label="Hosts" htmlFor="rule-hosts" hint="Optional, one per line.">
+          <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
             <Textarea
               id="rule-hosts"
+                required={!!editing}
               rows={2}
               className="font-mono"
               value={form.hosts}
@@ -545,9 +548,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
             />
           </Field>
           <div className="space-y-4">
-            <Field label="Paths" htmlFor="rule-paths" hint="Optional, one per line.">
+            <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
               <Textarea
                 id="rule-paths"
+                required={!!editing}
                 rows={2}
                 className="font-mono"
                 value={form.paths}
@@ -555,9 +559,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                 placeholder="/v1/*"
               />
             </Field>
-            <Field label="Methods" htmlFor="rule-methods" hint="Optional, comma separated.">
+            <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
               <Input
                 id="rule-methods"
+                required={!!editing}
                 className="font-mono"
                 value={form.methods}
                 onChange={(e) => setForm({ ...form, methods: e.target.value })}
@@ -580,10 +585,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
             />
           </Field>}
           <DialogActions>
-            <Button type="button" variant="outline" onClick={() => setAdding(false)}>
+            <Button type="button" variant="outline" disabled={saveAction.busy} onClick={() => setAdding(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saveAction.busy || !form.credential_id}>
+            <Button type="submit" disabled={saveAction.busy || !validScope || !form.credential_id}>
               {editing ? "Save changes" : "Create rule"}
             </Button>
           </DialogActions>
