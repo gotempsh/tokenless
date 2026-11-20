@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useState, type FormEvent } from "react";
-import { ListChecks, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
+import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   del,
@@ -350,18 +350,26 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Rule | null>(null);
   const templates = useLoad(() => get<StoredTemplate[]>("/templates"), []);
   const [form, setForm] = useState(EMPTY_RULE);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
-  const createAction = useAction();
+  const saveAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
-  const create = async (e: FormEvent) => {
+  const save = async (e: FormEvent) => {
     e.preventDefault();
     const opt = (v: string) => (lines(v).length ? lines(v) : undefined);
-    const created = await createAction.run(() =>
+    const saved = await saveAction.run(() => editing
+      ? patch<Rule>(`/rules/${editing.id}`, {
+          name: form.name === editing.name ? undefined : form.name,
+          hosts: form.hosts === editing.allow.hosts.join("\n") ? undefined : lines(form.hosts),
+          paths: form.paths === editing.allow.paths.join("\n") ? undefined : form.paths.split("\n").map((p) => p.trim()).filter(Boolean),
+          methods: form.methods === editing.allow.methods.join(", ") ? undefined : lines(form.methods),
+        })
+      :
       post<Rule>(`/vaults/${vaultId}/rules`, {
         name: form.name,
         credential_id: form.credential_id,
@@ -371,7 +379,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         mcp_tools: opt(form.tools),
       }),
     );
-    if (created) {
+    if (saved) {
       setForm(EMPTY_RULE);
       setAdding(false);
       rules.reload();
@@ -390,7 +398,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   };
 
   const addButton = (
-    <Button type="button" onClick={() => setAdding(true)} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
+    <Button type="button" onClick={() => { setEditing(null); setForm(EMPTY_RULE); saveAction.clearError(); setAdding(true); }} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
       <Plus />
       Add rule
     </Button>
@@ -454,6 +462,18 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                         label={r.name}
                         items={[
                           {
+                            label: "Edit rule",
+                            icon: Pencil,
+                            onSelect: () => {
+                              setEditing(r);
+                              setForm({ name: r.name, credential_id: r.credential_id, hosts: r.allow.hosts.join("\n"), paths: r.allow.paths.join("\n"), methods: r.allow.methods.join(", "), tools: "" });
+                              saveAction.clearError();
+                              setAdding(true);
+                            },
+                            disabled: !canEdit,
+                            reason: onlyFor("edit"),
+                          },
+                          {
                             label: "MCP tools",
                             icon: Wrench,
                             onSelect: () => setEditingTools(r),
@@ -483,11 +503,11 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         open={adding}
         onOpenChange={setAdding}
         wide
-        title="Add a rule"
-        description="Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."
+        title={editing ? "Edit rule" : "Add a rule"}
+        description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
       >
-        <form className="space-y-4" onSubmit={create}>
-          <ErrorBanner error={createAction.error} />
+        <form className="space-y-4" onSubmit={save}>
+          <ErrorBanner error={saveAction.error} />
           <div className="space-y-4">
             <Field label="Name" htmlFor="rule-name">
               <Input id="rule-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
@@ -497,7 +517,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
               htmlFor="rule-cred"
               hint={creds.data?.items.length === 0 ? "Add a credential to this vault first." : undefined}
             >
-              <SelectField
+              {editing ? <Input id="rule-cred" value={credName(editing.credential_id)} readOnly /> : <SelectField
                 id="rule-cred"
                 value={form.credential_id}
                 onChange={(v) => setForm({ ...form, credential_id: v })}
@@ -511,7 +531,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                     </span>
                   ),
                 }))}
-              />
+              />}
             </Field>
           </div>
           <Field label="Hosts" htmlFor="rule-hosts" hint="Optional, one per line.">
@@ -545,7 +565,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
               />
             </Field>
           </div>
-          <Field
+          {!editing && <Field
             label="MCP tools"
             htmlFor="rule-new-tools"
             hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
@@ -558,13 +578,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
               onChange={(e) => setForm({ ...form, tools: e.target.value })}
               placeholder="search_issues"
             />
-          </Field>
+          </Field>}
           <DialogActions>
             <Button type="button" variant="outline" onClick={() => setAdding(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={createAction.busy || !form.credential_id}>
-              Create rule
+            <Button type="submit" disabled={saveAction.busy || !form.credential_id}>
+              {editing ? "Save changes" : "Create rule"}
             </Button>
           </DialogActions>
         </form>
