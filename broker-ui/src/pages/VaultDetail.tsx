@@ -435,7 +435,8 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onC
             expected_updated_at: editing.updated_at, ...changes,
           }, options);
         }
-        return await api<Rule>("POST", `/vaults/${vaultId}/rules`, {
+        const path = duplicate ? `/vaults/${vaultId}/rules/copies` : `/vaults/${vaultId}/rules`;
+        return await api<Rule>("POST", path, {
           name: form.name,
           credential_id: form.credential_id,
           hosts: opt(form.hosts),

@@ -76,6 +76,7 @@ try {
       return route.fulfill({ json: rule("b") });
     }
     if (section === "rules" && route.request().method() === "POST") {
+      assert.equal(path, `/api/v1/vaults/${id}/rules/copies`);
       creates.push(route.request().postDataJSON());
       return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
     }

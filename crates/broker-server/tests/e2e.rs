@@ -434,7 +434,7 @@ async fn end_to_end() {
     assert_eq!(rule["enabled"], true);
     let copy = api
         .post(
-            &format!("/vaults/{vault_id}/rules"),
+            &format!("/vaults/{vault_id}/rules/copies"),
             json!({ "name": "disabled copy", "credential_id": credential_id, "enabled": false }),
         )
         .await;

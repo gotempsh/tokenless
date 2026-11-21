@@ -127,6 +127,7 @@ fn api_routes() -> Router<Arc<AppState>> {
             "/vaults/{vault_id}/rules",
             get(list_rules).post(create_rule),
         )
+        .route("/vaults/{vault_id}/rules/copies", post(create_rule_copy))
         .route(
             "/vaults/{vault_id}/sessions",
             get(list_sessions).post(mint_session),
