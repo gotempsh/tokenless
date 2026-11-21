@@ -23,6 +23,7 @@ try {
   const patches: string[] = [];
   const creates: unknown[] = [];
   let templateLoads = 0;
+  let credentialPageAttempts = 0;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
     updated_at: currentRevision, enabled: vault !== "a", allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
@@ -81,10 +82,11 @@ try {
       return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
     }
     if (section === "credentials" && new URL(route.request().url()).searchParams.get("page") === "2") {
+      if (++credentialPageAttempts === 1) return route.fulfill({ status: 503, body: "Unavailable" });
       return route.fulfill({ json: { items: [{ id: "another", name: "Another service", template_id: "example" }], total: 101, page: 2, page_size: 100 } });
     }
     if (section === "credentials") return route.fulfill({ json: {
-      items: [{ id: "service", name: "Example", template_id: "example" }], total: 101, page: 1, page_size: 100,
+      items: [{ id: "service", name: "Example", template_id: "example" }, { id: "backup", name: "Backup service", template_id: "example" }], total: 101, page: 1, page_size: 100,
     } });
     if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
     if (resource === "templates") {
@@ -232,6 +234,10 @@ try {
     page.waitForResponse(r => r.url().includes("credentials?page_size=100&page=2")),
     page.getByRole("dialog").getByRole("button", { name: "Next" }).click(),
   ]);
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Backup service/ }).click();
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  await page.getByRole("dialog").getByRole("button", { name: "Next" }).click();
   await page.locator("#rule-cred").click();
   await page.getByRole("option", { name: /Another service/ }).click();
   await page.locator("#rule-git-repos").fill("example/another");

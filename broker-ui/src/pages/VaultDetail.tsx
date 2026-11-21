@@ -379,7 +379,12 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
   const [page, setPage] = useState(1);
   const extraPage = useLoad(() => page === 1 ? Promise.resolve(undefined)
     : get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100&page=${page}`), [vaultId, page]);
-  const credentialPage = page === 1 ? firstPage : extraPage.data;
+  // Keep the last available choices usable while another page loads or fails.
+  const credentialPage = page === 1 ? firstPage : extraPage.data ?? firstPage;
+  const browseCredentials = (next: number) => {
+    if (next !== page) setPage(next);
+    else if (extraPage.error && !extraPage.loading) extraPage.reload();
+  };
   const credentials = credentialPage?.items;
   const credentialOptions = useMemo(() => {
     const options = (credentials ?? []).map((c) => ({
@@ -494,7 +499,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
                 placeholder="Choose…"
                 options={credentialOptions}
               />}
-              {!editing && <Pager page={credentialPage ?? firstPage} onPage={setPage} />}
+              {!editing && <Pager page={credentialPage} onPage={browseCredentials} />}
               {page > 1 && extraPage.error && <>
                 <ErrorBanner error={extraPage.error} />
                 <Button type="button" variant="outline" onClick={extraPage.reload}>Retry loading credentials</Button>
