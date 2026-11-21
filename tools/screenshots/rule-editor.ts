@@ -26,9 +26,13 @@ try {
   let credentialPageAttempts = 0;
   let failFirstCredentialPage = false;
   let credentialsShifted = false;
+  let sourceEnabled = false;
+  const finishDisable = Promise.withResolvers<void>();
+  const finishListRefresh = Promise.withResolvers<void>();
+  let holdRefresh = false;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
-    updated_at: currentRevision, enabled: vault !== "a", allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
+    updated_at: currentRevision, enabled: vault === "a" ? sourceEnabled : true, allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -40,6 +44,15 @@ try {
       user: { username: "editor", role: "user" }, csrf_token: "test",
       vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
     } });
+    if (id === "a-rule" && route.request().method() === "PATCH") {
+      if (!route.request().postDataJSON().enabled) {
+        await finishDisable.promise;
+        holdRefresh = true;
+      }
+      sourceEnabled = route.request().postDataJSON().enabled;
+      return route.fulfill({ json: rule("a") });
+    }
+    if (section === "rules" && id === "a" && holdRefresh) await finishListRefresh.promise;
     if (resource === "rules" && deleted.has(id)) return route.fulfill({ status: 404, body: "already deleted" });
     if (resource === "rules" && id === "b-rule" && route.request().method() === "DELETE") {
       deleted.add(id);
@@ -265,9 +278,23 @@ try {
   await duplicate();
   credentialsShifted = true;
   await page.getByRole("dialog").getByRole("button", { name: "Next" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Previous" }).click();
+  const previous = page.getByRole("dialog").getByRole("button", { name: "Previous" });
+  await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent?.trim() === "Previous" && !b.disabled));
+  assert.equal(await page.getByText("Add a credential to this vault first.").count(), 0);
+  await previous.click();
   await page.locator("#rule-cred").click();
   await page.getByRole("option", { name: /Another service/ }).click();
+  await closeEditor();
+  await page.getByRole("switch", { name: "Turn on a-read" }).click();
+  await page.getByRole("switch", { name: "Turn off a-read" }).click();
+  await page.getByRole("button", { name: "Actions for a-read" }).click();
+  const copyItem = page.getByRole("menuitem", { name: "Duplicate rule" });
+  assert.equal(await copyItem.isDisabled(), true);
+  await Promise.all([page.waitForRequest(r => r.url().includes("/vaults/a/rules?")), Promise.resolve().then(() => finishDisable.resolve())]);
+  assert.equal(await copyItem.isDisabled(), true);
+  finishListRefresh.resolve();
+  await copyItem.click();
+  assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
   console.log("Passed: scope validation, vault navigation, save recovery, and editable rule duplication.");
 } finally {
   await browser.close();

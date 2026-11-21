@@ -494,7 +494,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
             <Field
               label="Credential"
               htmlFor="rule-cred"
-              hint={credentials?.length === 0 ? "Add a credential to this vault first." : undefined}
+              hint={credentialPage?.total === 0 ? "Add a credential to this vault first." : undefined}
             >
               {editing ? <Input id="rule-cred" value={credentials?.find(c => c.id === editing.credential_id)?.name ?? editing.credential_id} readOnly /> : <SelectField
                 id="rule-cred"
@@ -601,8 +601,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
   const toggle = async (r: Rule) => {
-    await action.run(() => patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled }));
-    rules.reload();
+    await action.run(async () => {
+      try {
+        return await patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled });
+      } finally {
+        rules.reload();
+      }
+    });
   };
 
   const remove = async (r: Rule) => {
@@ -653,6 +658,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         </div>
       ))}
       <ErrorBanner error={rules.error} />
+      {rules.error && <Button type="button" variant="outline" onClick={rules.reload} disabled={rules.loading}>Retry loading rules</Button>}
       <ErrorBanner error={action.error} />
       <Panel>
         {rules.loading && !rules.data ? (
@@ -716,8 +722,8 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                             label: "Duplicate rule",
                             icon: Copy,
                             onSelect: () => openCreateDraft(r),
-                            disabled: !canEdit,
-                            reason: onlyFor("edit"),
+                            disabled: !canEdit || action.busy || rules.loading || !!rules.error,
+                            reason: !canEdit ? onlyFor("edit") : "Wait for the rules list to refresh.",
                           },
                           {
                             label: "MCP tools",
