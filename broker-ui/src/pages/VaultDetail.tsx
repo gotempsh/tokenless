@@ -293,14 +293,16 @@ function toolsLabel(tools: string[] | undefined): string {
   return tools.join(", ");
 }
 
-function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => void; onDone: () => void }) {
+type SaveRuleChange = (rule: Rule, change: () => Promise<Rule>) => Promise<Rule>;
+
+function ToolsForm({ rule, saveChange, onCancel, onDone }: { rule: Rule; saveChange: SaveRuleChange; onCancel: () => void; onDone: () => void }) {
   const [limited, setLimited] = useState(rule.allow.mcp_tools !== undefined);
   const [text, setText] = useState((rule.allow.mcp_tools ?? []).join("\n"));
   const action = useAction();
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const body = limited ? { mcp_tools: lines(text) } : { allow_all_tools: true };
-    if (await action.run(() => patch<Rule>(`/rules/${rule.id}`, body))) onDone();
+    if (await action.run(() => saveChange(rule, () => api<Rule>("PATCH", `/rules/${rule.id}`, body, { timeoutMs: 30_000 })))) onDone();
   };
   return (
     <form className="space-y-4" onSubmit={submit}>
@@ -357,11 +359,12 @@ function ruleForm(rule: Rule) {
   };
 }
 
-function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClose, onSaved, onFailure }: {
+function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveChange, onClose, onSaved, onFailure }: {
   vaultId: string;
   editing: Rule | null;
   duplicate?: Rule;
   firstPage: Loaded<Page<CredentialMeta>>;
+  saveChange: SaveRuleChange;
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
@@ -445,9 +448,9 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
       try {
         const options = { timeoutMs: 30_000 };
         if (editing) {
-          return await api<Rule>("PATCH", `/rules/${editing.id}`, {
+          return await saveChange(editing, () => api<Rule>("PATCH", `/rules/${editing.id}`, {
             expected_updated_at: editing.updated_at, ...changes,
-          }, options);
+          }, options));
         }
         const path = duplicate ? `/vaults/${vaultId}/rules/copies` : `/vaults/${vaultId}/rules`;
         return await api<Rule>("POST", path, {
@@ -600,14 +603,23 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const deleteAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
+  // Saves can outlive their dialogs. Keep each source unavailable for copying
+  // until every pending change settles and the list has been refreshed.
+  const [savingRules, setSavingRules] = useState<string[]>([]);
+  const saveChange: SaveRuleChange = async (rule, change) => {
+    setSavingRules(ids => [...ids, rule.id]);
+    try {
+      return await change();
+    } finally {
+      rules.reload();
+      setSavingRules(ids => {
+        const index = ids.indexOf(rule.id);
+        return ids.filter((_, i) => i !== index);
+      });
+    }
+  };
   const toggle = async (r: Rule) => {
-    await action.run(async () => {
-      try {
-        return await patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled });
-      } finally {
-        rules.reload();
-      }
-    });
+    await action.run(() => saveChange(r, () => patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled })));
   };
 
   const remove = async (r: Rule) => {
@@ -722,7 +734,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                             label: "Duplicate rule",
                             icon: Copy,
                             onSelect: () => openCreateDraft(r),
-                            disabled: !canEdit || action.busy || rules.loading || !!rules.error,
+                            disabled: !canEdit || savingRules.includes(r.id) || rules.loading || !!rules.error,
                             reason: !canEdit ? onlyFor("edit") : "Wait for the rules list to refresh.",
                           },
                           {
@@ -756,14 +768,15 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         editing={editor.rule}
         duplicate={editor.duplicate}
         firstPage={creds}
+        saveChange={saveChange}
         onClose={() => setEditor(null)}
         onFailure={message => {
           setSaveFailures(current => current.includes(message) ? current : [...current, message]);
-          rules.reload();
+          if (!editor.rule) rules.reload();
         }}
         onSaved={() => {
           setEditor(current => current === editor ? null : current);
-          rules.reload();
+          if (!editor.rule) rules.reload();
         }}
       />}
       <FormDialog
@@ -777,10 +790,10 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         {editingTools && (
           <ToolsForm
             rule={editingTools}
+            saveChange={saveChange}
             onCancel={() => setEditingTools(null)}
             onDone={() => {
-              setEditingTools(null);
-              rules.reload();
+              setEditingTools(current => current === editingTools ? null : current);
             }}
           />
         )}

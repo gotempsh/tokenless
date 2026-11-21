@@ -156,7 +156,9 @@ try {
     assert.equal(await page.locator("#rule-" + field).isDisabled(), true);
   }
   await closeEditor();
-  await edit("b");
+  await page.getByRole("button", { name: "Actions for b-read" }).click();
+  assert.equal(await page.getByRole("menuitem", { name: "Duplicate rule" }).isDisabled(), true);
+  await page.getByRole("menuitem", { name: "Edit rule" }).click();
   await page.locator("#rule-name").fill("next draft");
   await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => release.resolve())]);
   assert.equal(await page.locator("#rule-name").inputValue(), "next draft");
