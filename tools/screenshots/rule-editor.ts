@@ -215,7 +215,7 @@ try {
     await page.getByRole("dialog", { name: "Duplicate rule" }).waitFor();
   };
   await duplicate();
-  assert.equal(await page.locator("#rule-name").inputValue(), "a-read (copy)");
+  assert.match(await page.locator("#rule-name").inputValue(), /^a-read \(copy [a-f0-9]{12}\)$/);
   assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
   assert.match(await page.locator("#rule-cred").innerText(), /Example/);
   await closeEditor();

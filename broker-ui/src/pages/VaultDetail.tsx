@@ -59,7 +59,7 @@ import {
   Tags,
   useConfirm,
 } from "../components/common";
-import { allowsLabel, EVERYTHING } from "../rules";
+import { allowsLabel, EVERYTHING, suggestedCopyName } from "../rules";
 import { useActorNames } from "./Audit";
 import { SessionTable } from "./Sessions";
 import { Button } from "../components/ui/button-components";
@@ -389,7 +389,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onC
   const [form, setForm] = useState(() => {
     if (editing) return ruleForm(editing);
     if (!duplicate) return EMPTY_RULE;
-    return { ...ruleForm(duplicate), name: `${duplicate.name} (copy)`, tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
+    return { ...ruleForm(duplicate), name: suggestedCopyName(duplicate.name), tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
   });
   const [enabled, setEnabled] = useState(duplicate?.enabled ?? true);
   const [limitedTools, setLimitedTools] = useState(duplicate?.allow.mcp_tools !== undefined);
