@@ -24,6 +24,7 @@ try {
   const creates: unknown[] = [];
   let templateLoads = 0;
   let credentialPageAttempts = 0;
+  let failFirstCredentialPage = false;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
     updated_at: currentRevision, enabled: vault !== "a", allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
@@ -84,6 +85,10 @@ try {
     if (section === "credentials" && new URL(route.request().url()).searchParams.get("page") === "2") {
       if (++credentialPageAttempts === 1) return route.fulfill({ status: 503, body: "Unavailable" });
       return route.fulfill({ json: { items: [{ id: "another", name: "Another service", template_id: "example" }], total: 101, page: 2, page_size: 100 } });
+    }
+    if (section === "credentials" && failFirstCredentialPage) {
+      failFirstCredentialPage = false;
+      return route.fulfill({ status: 503, body: "First credential page unavailable" });
     }
     if (section === "credentials") return route.fulfill({ json: {
       items: [{ id: "service", name: "Example", template_id: "example" }, { id: "backup", name: "Backup service", template_id: "example" }], total: 101, page: 1, page_size: 100,
@@ -214,6 +219,7 @@ try {
   ]);
   assert.equal(templateLoads, 1);
   await closeEditor();
+  failFirstCredentialPage = true;
   await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
   const duplicate = async () => {
     await page.getByRole("button", { name: "Actions for a-read" }).click();
@@ -223,6 +229,10 @@ try {
   await duplicate();
   assert.match(await page.locator("#rule-name").inputValue(), /^a-read \(copy [a-f0-9]{12}\)$/);
   assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  const draftName = await page.locator("#rule-name").inputValue();
+  await page.getByRole("button", { name: "Retry loading credentials" }).click();
+  await page.locator("#rule-cred").getByText("Example (example)").waitFor();
+  assert.equal(await page.locator("#rule-name").inputValue(), draftName);
   assert.match(await page.locator("#rule-cred").innerText(), /Example/);
   await closeEditor();
   assert.equal(creates.length, 0);

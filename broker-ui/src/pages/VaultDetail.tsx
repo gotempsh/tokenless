@@ -21,7 +21,7 @@ import {
 } from "../api";
 import { can, onlyFor, oversees, type Me } from "../access";
 import { SettingsSection } from "../components/layout";
-import { useAction, useLoad } from "../hooks";
+import { useAction, useLoad, type Loaded } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { chosenIn } from "../bundleChoice";
 import { BundleChoice } from "../components/BundleChoice";
@@ -361,7 +361,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
   vaultId: string;
   editing: Rule | null;
   duplicate?: Rule;
-  firstPage?: Page<CredentialMeta>;
+  firstPage: Loaded<Page<CredentialMeta>>;
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
@@ -380,7 +380,8 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
   const extraPage = useLoad(() => page === 1 ? Promise.resolve(undefined)
     : get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100&page=${page}`), [vaultId, page]);
   // Keep the last available choices usable while another page loads or fails.
-  const credentialPage = page === 1 ? firstPage : extraPage.data ?? firstPage;
+  const credentialRequest = page === 1 ? firstPage : extraPage;
+  const credentialPage = credentialRequest.data ?? firstPage.data;
   const browseCredentials = (next: number) => {
     if (next !== page) setPage(next);
     else if (extraPage.error && !extraPage.loading) extraPage.reload();
@@ -500,9 +501,9 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
                 options={credentialOptions}
               />}
               {!editing && <Pager page={credentialPage} onPage={browseCredentials} />}
-              {page > 1 && extraPage.error && <>
-                <ErrorBanner error={extraPage.error} />
-                <Button type="button" variant="outline" onClick={extraPage.reload}>Retry loading credentials</Button>
+              {!editing && credentialRequest.error && <>
+                <ErrorBanner error={credentialRequest.error} />
+                <Button type="button" variant="outline" disabled={credentialRequest.loading} onClick={credentialRequest.reload}>Retry loading credentials</Button>
               </>}
             </Field>
           </div>
@@ -740,7 +741,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         vaultId={vaultId}
         editing={editor.rule}
         duplicate={editor.duplicate}
-        firstPage={creds.data}
+        firstPage={creds}
         onClose={() => setEditor(null)}
         onFailure={message => {
           setSaveFailures(current => current.includes(message) ? current : [...current, message]);
