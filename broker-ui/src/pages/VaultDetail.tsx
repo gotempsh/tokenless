@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { useMemo, useState, type FormEvent } from "react";
-import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
+import { Copy, ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   ApiError,
@@ -357,9 +357,10 @@ function ruleForm(rule: Rule) {
   };
 }
 
-function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSaved, onFailure }: {
+function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onClose, onSaved, onFailure }: {
   vaultId: string;
   editing: Rule | null;
+  duplicate?: Rule;
   credentials?: CredentialMeta[];
   onClose: () => void;
   onSaved: () => void;
@@ -370,16 +371,30 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
   const saveAction = useAction();
   const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
   const lookup = useMemo(() => indexTemplates(templates.data ?? []), [templates.data]);
-  const credentialOptions = useMemo(() => (credentials ?? []).map((c) => ({
-    value: c.id,
-    label: (
-      <span className="flex min-w-0 items-center gap-2">
-        <ServiceLogo template={lookup(c) ?? { id: c.template_id, kind: "http" }} size="xs" />
-        <span className="truncate">{c.name} ({c.template_id})</span>
-      </span>
-    ),
-  })), [credentials, lookup]);
-  const [form, setForm] = useState(() => editing ? ruleForm(editing) : EMPTY_RULE);
+  const credentialOptions = useMemo(() => {
+    const options = (credentials ?? []).map((c) => ({
+      value: c.id,
+      label: (
+        <span className="flex min-w-0 items-center gap-2">
+          <ServiceLogo template={lookup(c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+          <span className="truncate">{c.name} ({c.template_id})</span>
+        </span>
+      ),
+    }));
+    if (duplicate && !options.some(option => option.value === duplicate.credential_id)) {
+      options.push({ value: duplicate.credential_id, label: <span>{duplicate.credential_id}</span> });
+    }
+    return options;
+  }, [credentials, lookup, duplicate]);
+  const [form, setForm] = useState(() => {
+    if (editing) return ruleForm(editing);
+    if (!duplicate) return EMPTY_RULE;
+    return { ...ruleForm(duplicate), name: `${duplicate.name} (copy)`, tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
+  });
+  const [enabled, setEnabled] = useState(duplicate?.enabled ?? true);
+  const [limitedTools, setLimitedTools] = useState(duplicate?.allow.mcp_tools !== undefined);
+  const [repositories, setRepositories] = useState(duplicate?.allow.git?.repositories.join("\n") ?? "");
+  const [allowPush, setAllowPush] = useState(duplicate?.allow.git?.push ?? false);
   const reloadDraft = async () => {
     if (!editing) return;
     const latest = await saveAction.run(() => api<Rule>("GET", `/rules/${editing.id}`, undefined, { timeoutMs: 30_000 }));
@@ -403,8 +418,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
     paths: changedList(paths, editing.allow.paths),
     methods: changedList(methods, editing.allow.methods),
   } : {};
-  const validScope = !editing || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
+  const explicitScope = !!(editing || duplicate);
+  const validScope = !explicitScope || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
   const canSave = !conflicted && !saveAction.busy && !!form.credential_id && validScope
+    && (!duplicate?.allow.git || lines(repositories).length > 0)
     && (!editing || Object.values(changes).some(value => value !== undefined));
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -422,9 +439,11 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
           name: form.name,
           credential_id: form.credential_id,
           hosts: opt(form.hosts),
-          paths: opt(form.paths),
+          paths: duplicate ? paths : opt(form.paths),
           methods: opt(form.methods),
-          mcp_tools: opt(form.tools),
+          mcp_tools: duplicate ? (limitedTools ? lines(form.tools) : undefined) : opt(form.tools),
+          git: duplicate?.allow.git ? { repositories: lines(repositories), push: allowPush } : undefined,
+          enabled: duplicate ? enabled : undefined,
         }, options);
       } catch (error) {
         if (editing && error instanceof ApiError && error.problem.status === 409) setConflicted(true);
@@ -443,8 +462,8 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       wide
-      title={editing ? "Edit rule" : "Add a rule"}
-      description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
+      title={editing ? "Edit rule" : duplicate ? "Duplicate rule" : "Add a rule"}
+      description={duplicate ? `Create a new rule from "${duplicate.name}". Review its settings before creating it.` : editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
     >
       <form className="space-y-4" onSubmit={save}>
         <ErrorBanner error={saveAction.error} />
@@ -471,10 +490,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
               />}
             </Field>
           </div>
-          <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+          <Field label="Hosts" htmlFor="rule-hosts" hint={explicitScope ? "Required, one per line." : "Optional, one per line."}>
             <Textarea
               id="rule-hosts"
-                required={!!editing}
+                required={explicitScope}
               rows={2}
               className="font-mono"
               value={form.hosts}
@@ -483,10 +502,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
             />
           </Field>
           <div className="space-y-4">
-            <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+            <Field label="Paths" htmlFor="rule-paths" hint={explicitScope ? "Required, one per line." : "Optional, one per line."}>
               <Textarea
                 id="rule-paths"
-                required={!!editing}
+                required={explicitScope}
                 rows={2}
                 className="font-mono"
                 value={form.paths}
@@ -494,10 +513,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
                 placeholder="/v1/*"
               />
             </Field>
-            <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
+            <Field label="Methods" htmlFor="rule-methods" hint={explicitScope ? "Required, comma separated." : "Optional, comma separated."}>
               <Input
                 id="rule-methods"
-                required={!!editing}
+                required={explicitScope}
                 className="font-mono"
                 value={form.methods}
                 onChange={(e) => setForm({ ...form, methods: e.target.value })}
@@ -505,10 +524,26 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
               />
             </Field>
           </div>
-          {!editing && <Field
+          {duplicate && <>
+            <label className="flex items-center gap-2">
+              <Switch checked={enabled} onCheckedChange={setEnabled} /> Enabled
+            </label>
+            {duplicate.allow.git && <>
+              <Field label="Git repositories" htmlFor="rule-git-repos" hint="Required, one repository per line.">
+                <Textarea id="rule-git-repos" required value={repositories} onChange={e => setRepositories(e.target.value)} />
+              </Field>
+              <label className="flex items-center gap-2">
+                <Switch checked={allowPush} onCheckedChange={setAllowPush} /> Allow Git push
+              </label>
+            </>}
+            <label className="flex items-center gap-2">
+              <Switch checked={limitedTools} onCheckedChange={setLimitedTools} /> Limit MCP tools
+            </label>
+          </>}
+          {!editing && (!duplicate || limitedTools) && <Field
             label="MCP tools"
             htmlFor="rule-new-tools"
-            hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
+            hint={duplicate ? "One tool per line. Leave empty to allow none." : "For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."}
           >
             <Textarea
               id="rule-new-tools"
@@ -538,7 +573,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [saveFailures, setSaveFailures] = useState<string[]>([]);
-  const [editor, setEditor] = useState<{ rule: Rule | null } | null>(null);
+  const [editor, setEditor] = useState<{ rule: Rule | null; duplicate?: Rule } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
@@ -653,6 +688,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                             reason: onlyFor("edit"),
                           },
                           {
+                            label: "Duplicate rule",
+                            icon: Copy,
+                            onSelect: () => setEditor({ rule: null, duplicate: r }),
+                            disabled: !canEdit,
+                            reason: onlyFor("edit"),
+                          },
+                          {
                             label: "MCP tools",
                             icon: Wrench,
                             onSelect: () => setEditingTools(r),
@@ -681,6 +723,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       {editor && <RuleEditor
         vaultId={vaultId}
         editing={editor.rule}
+        duplicate={editor.duplicate}
         credentials={creds.data?.items}
         onClose={() => setEditor(null)}
         onFailure={message => {

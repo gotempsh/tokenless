@@ -21,10 +21,11 @@ try {
   let deleteAttempts = 0;
   const deleted = new Set<string>();
   const patches: string[] = [];
+  const creates: unknown[] = [];
   let templateLoads = 0;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
-    updated_at: currentRevision, enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
+    updated_at: currentRevision, enabled: vault !== "a", allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -74,6 +75,13 @@ try {
       await release.promise;
       return route.fulfill({ json: rule("b") });
     }
+    if (section === "rules" && route.request().method() === "POST") {
+      creates.push(route.request().postDataJSON());
+      return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
+    }
+    if (section === "credentials") return route.fulfill({ json: {
+      items: [{ id: "service", name: "Example", template_id: "example" }], total: 1, page: 1, page_size: 100,
+    } });
     if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
     if (resource === "templates") {
       templateLoads++;
@@ -199,7 +207,33 @@ try {
     page.getByRole("button", { name: "Add rule" }).first().click(),
   ]);
   assert.equal(templateLoads, 1);
-  console.log("Passed: required scope, vault navigation, and delayed save.");
+  await closeEditor();
+  await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
+  const duplicate = async () => {
+    await page.getByRole("button", { name: "Actions for a-read" }).click();
+    await page.getByRole("menuitem", { name: "Duplicate rule" }).click();
+    await page.getByRole("dialog", { name: "Duplicate rule" }).waitFor();
+  };
+  await duplicate();
+  assert.equal(await page.locator("#rule-name").inputValue(), "a-read (copy)");
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  assert.match(await page.locator("#rule-cred").innerText(), /Example/);
+  await closeEditor();
+  assert.equal(creates.length, 0);
+  await duplicate();
+  assert.equal(await page.locator("#rule-git-repos").inputValue(), "example/repo");
+  assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("switch", { name: "Limit MCP tools" }).isChecked(), true);
+  await page.locator("#rule-git-repos").fill("example/another");
+  await page.locator("#rule-name").fill("another rule");
+  await page.locator("#rule-methods").fill("HEAD");
+  await page.getByRole("button", { name: "Create rule" }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.deepEqual(creates, [{ name: "another rule", credential_id: "service",
+    hosts: ["api.example.com"], paths: ["/reports "], methods: ["HEAD"], enabled: false,
+    mcp_tools: [], git: { repositories: ["example/another"], push: false },
+  }]);
+  console.log("Passed: scope validation, vault navigation, save recovery, and editable rule duplication.");
 } finally {
   await browser.close();
 }
