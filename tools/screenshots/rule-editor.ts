@@ -80,8 +80,11 @@ try {
       creates.push(route.request().postDataJSON());
       return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
     }
+    if (section === "credentials" && new URL(route.request().url()).searchParams.get("page") === "2") {
+      return route.fulfill({ json: { items: [{ id: "another", name: "Another service", template_id: "example" }], total: 101, page: 2, page_size: 100 } });
+    }
     if (section === "credentials") return route.fulfill({ json: {
-      items: [{ id: "service", name: "Example", template_id: "example" }], total: 1, page: 1, page_size: 100,
+      items: [{ id: "service", name: "Example", template_id: "example" }], total: 101, page: 1, page_size: 100,
     } });
     if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
     if (resource === "templates") {
@@ -225,12 +228,18 @@ try {
   assert.equal(await page.locator("#rule-git-repos").inputValue(), "example/repo");
   assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
   assert.equal(await page.getByRole("switch", { name: "Limit MCP tools" }).isChecked(), true);
+  await Promise.all([
+    page.waitForResponse(r => r.url().includes("credentials?page_size=100&page=2")),
+    page.getByRole("dialog").getByRole("button", { name: "Next" }).click(),
+  ]);
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Another service/ }).click();
   await page.locator("#rule-git-repos").fill("example/another");
   await page.locator("#rule-name").fill("another rule");
   await page.locator("#rule-methods").fill("HEAD");
   await page.getByRole("button", { name: "Create rule" }).click();
   await page.getByRole("dialog").waitFor({ state: "hidden" });
-  assert.deepEqual(creates, [{ name: "another rule", credential_id: "service",
+  assert.deepEqual(creates, [{ name: "another rule", credential_id: "another",
     hosts: ["api.example.com"], paths: ["/reports "], methods: ["HEAD"], enabled: false,
     mcp_tools: [], git: { repositories: ["example/another"], push: false },
   }]);

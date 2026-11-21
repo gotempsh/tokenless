@@ -357,11 +357,11 @@ function ruleForm(rule: Rule) {
   };
 }
 
-function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onClose, onSaved, onFailure }: {
+function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClose, onSaved, onFailure }: {
   vaultId: string;
   editing: Rule | null;
   duplicate?: Rule;
-  credentials?: CredentialMeta[];
+  firstPage?: Page<CredentialMeta>;
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
@@ -371,6 +371,16 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onC
   const saveAction = useAction();
   const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
   const lookup = useMemo(() => indexTemplates(templates.data ?? []), [templates.data]);
+  const [form, setForm] = useState(() => {
+    if (editing) return ruleForm(editing);
+    if (!duplicate) return EMPTY_RULE;
+    return { ...ruleForm(duplicate), name: suggestedCopyName(duplicate.name), tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
+  });
+  const [page, setPage] = useState(1);
+  const extraPage = useLoad(() => page === 1 ? Promise.resolve(undefined)
+    : get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100&page=${page}`), [vaultId, page]);
+  const credentialPage = page === 1 ? firstPage : extraPage.data;
+  const credentials = credentialPage?.items;
   const credentialOptions = useMemo(() => {
     const options = (credentials ?? []).map((c) => ({
       value: c.id,
@@ -381,16 +391,11 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onC
         </span>
       ),
     }));
-    if (duplicate && !options.some(option => option.value === duplicate.credential_id)) {
-      options.push({ value: duplicate.credential_id, label: <span>{duplicate.credential_id}</span> });
+    if (form.credential_id && !options.some(option => option.value === form.credential_id)) {
+      options.push({ value: form.credential_id, label: <span>{form.credential_id}</span> });
     }
     return options;
-  }, [credentials, lookup, duplicate]);
-  const [form, setForm] = useState(() => {
-    if (editing) return ruleForm(editing);
-    if (!duplicate) return EMPTY_RULE;
-    return { ...ruleForm(duplicate), name: suggestedCopyName(duplicate.name), tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
-  });
+  }, [credentials, lookup, form.credential_id]);
   const [enabled, setEnabled] = useState(duplicate?.enabled ?? true);
   const [limitedTools, setLimitedTools] = useState(duplicate?.allow.mcp_tools !== undefined);
   const [repositories, setRepositories] = useState(duplicate?.allow.git?.repositories.join("\n") ?? "");
@@ -489,6 +494,11 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, credentials, onC
                 placeholder="Choose…"
                 options={credentialOptions}
               />}
+              {!editing && <Pager page={credentialPage ?? firstPage} onPage={setPage} />}
+              {page > 1 && extraPage.error && <>
+                <ErrorBanner error={extraPage.error} />
+                <Button type="button" variant="outline" onClick={extraPage.reload}>Retry loading credentials</Button>
+              </>}
             </Field>
           </div>
           <Field label="Hosts" htmlFor="rule-hosts" hint={explicitScope ? "Required, one per line." : "Optional, one per line."}>
@@ -725,7 +735,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         vaultId={vaultId}
         editing={editor.rule}
         duplicate={editor.duplicate}
-        credentials={creds.data?.items}
+        firstPage={creds.data}
         onClose={() => setEditor(null)}
         onFailure={message => {
           setSaveFailures(current => current.includes(message) ? current : [...current, message]);
