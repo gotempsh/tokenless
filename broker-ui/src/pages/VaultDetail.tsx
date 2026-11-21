@@ -383,7 +383,10 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClo
   const credentialRequest = page === 1 ? firstPage : extraPage;
   const credentialPage = credentialRequest.data ?? firstPage.data;
   const browseCredentials = (next: number) => {
-    if (next !== page) setPage(next);
+    if (next !== page) {
+      if (next === 1) firstPage.reload();
+      setPage(next);
+    }
     else if (extraPage.error && !extraPage.loading) extraPage.reload();
   };
   const credentials = credentialPage?.items;
@@ -624,8 +627,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
     rules.reload();
   };
 
+  const openCreateDraft = (duplicate?: Rule) => {
+    creds.reload();
+    setEditor({ rule: null, duplicate });
+  };
+
   const addButton = (
-    <Button type="button" onClick={() => setEditor({ rule: null })} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
+    <Button type="button" onClick={() => openCreateDraft()} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
       <Plus />
       Add rule
     </Button>
@@ -707,7 +715,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                           {
                             label: "Duplicate rule",
                             icon: Copy,
-                            onSelect: () => setEditor({ rule: null, duplicate: r }),
+                            onSelect: () => openCreateDraft(r),
                             disabled: !canEdit,
                             reason: onlyFor("edit"),
                           },

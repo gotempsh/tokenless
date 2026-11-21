@@ -25,6 +25,7 @@ try {
   let templateLoads = 0;
   let credentialPageAttempts = 0;
   let failFirstCredentialPage = false;
+  let credentialsShifted = false;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
     updated_at: currentRevision, enabled: vault !== "a", allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
@@ -83,6 +84,7 @@ try {
       return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
     }
     if (section === "credentials" && new URL(route.request().url()).searchParams.get("page") === "2") {
+      if (credentialsShifted) return route.fulfill({ json: { items: [], total: 100, page: 2, page_size: 100 } });
       if (++credentialPageAttempts === 1) return route.fulfill({ status: 503, body: "Unavailable" });
       return route.fulfill({ json: { items: [{ id: "another", name: "Another service", template_id: "example" }], total: 101, page: 2, page_size: 100 } });
     }
@@ -91,7 +93,7 @@ try {
       return route.fulfill({ status: 503, body: "First credential page unavailable" });
     }
     if (section === "credentials") return route.fulfill({ json: {
-      items: [{ id: "service", name: "Example", template_id: "example" }, { id: "backup", name: "Backup service", template_id: "example" }], total: 101, page: 1, page_size: 100,
+      items: [{ id: "service", name: "Example", template_id: "example" }, { id: "backup", name: "Backup service", template_id: "example" }, ...(credentialsShifted ? [{ id: "another", name: "Another service", template_id: "example" }] : [])], total: credentialsShifted ? 100 : 101, page: 1, page_size: 100,
     } });
     if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
     if (resource === "templates") {
@@ -219,13 +221,14 @@ try {
   ]);
   assert.equal(templateLoads, 1);
   await closeEditor();
-  failFirstCredentialPage = true;
   await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
   const duplicate = async () => {
     await page.getByRole("button", { name: "Actions for a-read" }).click();
     await page.getByRole("menuitem", { name: "Duplicate rule" }).click();
     await page.getByRole("dialog", { name: "Duplicate rule" }).waitFor();
   };
+  await page.getByRole("button", { name: "Actions for a-read" }).waitFor();
+  failFirstCredentialPage = true;
   await duplicate();
   assert.match(await page.locator("#rule-name").inputValue(), /^a-read \(copy [a-f0-9]{12}\)$/);
   assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
@@ -259,6 +262,12 @@ try {
     hosts: ["api.example.com"], paths: ["/reports "], methods: ["HEAD"], enabled: false,
     mcp_tools: [], git: { repositories: ["example/another"], push: false },
   }]);
+  await duplicate();
+  credentialsShifted = true;
+  await page.getByRole("dialog").getByRole("button", { name: "Next" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Previous" }).click();
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Another service/ }).click();
   console.log("Passed: scope validation, vault navigation, save recovery, and editable rule duplication.");
 } finally {
   await browser.close();
