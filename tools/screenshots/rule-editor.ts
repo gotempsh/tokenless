@@ -27,12 +27,15 @@ try {
   let failFirstCredentialPage = false;
   let credentialsShifted = false;
   let sourceEnabled = false;
+  let sourcePaths = ["/reports "];
+  let sourceTools: string[] = [];
+  const finishNarrowing = Promise.withResolvers<void>();
   const finishDisable = Promise.withResolvers<void>();
   const finishListRefresh = Promise.withResolvers<void>();
   let holdRefresh = false;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
-    updated_at: currentRevision, enabled: vault === "a" ? sourceEnabled : true, allow: { ...(vault === "a" ? { mcp_tools: [], git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
+    updated_at: currentRevision, enabled: vault === "a" ? sourceEnabled : true, allow: { ...(vault === "a" ? { mcp_tools: sourceTools, git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: vault === "a" ? sourcePaths : ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -45,6 +48,11 @@ try {
       vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
     } });
     if (id === "a-rule" && route.request().method() === "PATCH") {
+      if (route.request().postDataJSON().paths) {
+        await finishNarrowing.promise;
+        sourcePaths = route.request().postDataJSON().paths;
+        return route.fulfill({ json: rule("a") });
+      }
       if (!route.request().postDataJSON().enabled) {
         await finishDisable.promise;
         holdRefresh = true;
@@ -76,7 +84,7 @@ try {
       await releaseOther.promise;
       return route.fulfill({ json: rule("other") });
     }
-    if (resource === "rules" && route.request().method() === "GET") return route.fulfill({ json: rule("b") });
+    if (resource === "rules" && route.request().method() === "GET") return route.fulfill({ json: rule(id === "a-rule" ? "a" : "b") });
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
       if (patches.length === 2) return; // Leave the second request pending until its real deadline.
@@ -289,14 +297,33 @@ try {
   await closeEditor();
   await page.getByRole("switch", { name: "Turn on a-read" }).click();
   await page.getByRole("switch", { name: "Turn off a-read" }).click();
-  await page.getByRole("button", { name: "Actions for a-read" }).click();
+  const revisitRules = async () => {
+    await page.evaluate(() => { location.hash = "/vaults/a/bundles"; });
+    await page.getByRole("button", { name: "Actions for a-read" }).waitFor({ state: "detached" });
+    await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
+    await page.getByRole("button", { name: "Actions for a-read" }).click();
+  };
+  await revisitRules();
   const copyItem = page.getByRole("menuitem", { name: "Duplicate rule" });
   assert.equal(await copyItem.isDisabled(), true);
   await Promise.all([page.waitForRequest(r => r.url().includes("/vaults/a/rules?")), Promise.resolve().then(() => finishDisable.resolve())]);
-  assert.equal(await copyItem.isDisabled(), true);
-  finishListRefresh.resolve();
+  // Even a stalled list refresh must not prevent copying the authoritative row.
+  sourceTools = ["search"];
   await copyItem.click();
   assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
+  assert.equal(await page.locator("#rule-new-tools").inputValue(), "search");
+  holdRefresh = false;
+  finishListRefresh.resolve();
+  await closeEditor();
+  await edit("a");
+  await page.locator("#rule-paths").fill("/narrow");
+  await save.click();
+  await closeEditor();
+  await revisitRules();
+  assert.equal(await copyItem.isDisabled(), true);
+  finishNarrowing.resolve();
+  await copyItem.click();
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/narrow");
   console.log("Passed: scope validation, vault navigation, save recovery, and editable rule duplication.");
 } finally {
   await browser.close();

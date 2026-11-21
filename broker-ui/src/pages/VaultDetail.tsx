@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
 import { Copy, ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   ApiError,
   errorMessage,
   get,
-  patch,
   post,
   type AccessBundle,
   type CredentialMeta,
@@ -359,7 +358,7 @@ function ruleForm(rule: Rule) {
   };
 }
 
-function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveChange, onClose, onSaved, onFailure }: {
+interface RuleEditorProps {
   vaultId: string;
   editing: Rule | null;
   duplicate?: Rule;
@@ -368,7 +367,22 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveC
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
-}) {
+}
+
+function DuplicateRuleDraft({ sourceId, ...props }: Omit<RuleEditorProps, "editing" | "duplicate"> & { sourceId: string }) {
+  const source = useLoad(() => api<Rule>("GET", `/rules/${sourceId}`, undefined, { timeoutMs: 30_000 }), [sourceId]);
+  if (source.data) return <RuleEditor {...props} editing={null} duplicate={source.data} />;
+  return (
+    <FormDialog open title="Duplicate rule" onOpenChange={open => { if (!open) props.onClose(); }}>
+      {source.error ? <>
+        <ErrorBanner error={source.error} />
+        <Button type="button" variant="outline" disabled={source.loading} onClick={source.reload}>Retry loading rule</Button>
+      </> : <Loading />}
+    </FormDialog>
+  );
+}
+
+function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveChange, onClose, onSaved, onFailure }: RuleEditorProps) {
   const [editing, setEditing] = useState(initialRule);
   const [conflicted, setConflicted] = useState(false);
   const saveAction = useAction();
@@ -591,35 +605,44 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveC
   );
 }
 
+// A write belongs to the browser session and can outlive both its dialog and
+// its vault tab. The revision invalidates list reads started before it settled.
+let writes = { pending: [] as string[], revision: 0 };
+const writeListeners = new Set<() => void>();
+const readWrites = () => writes;
+const subscribeWrites = (listener: () => void) => {
+  writeListeners.add(listener);
+  return () => { writeListeners.delete(listener); };
+};
+const publishWrites = (next: typeof writes) => {
+  writes = next;
+  writeListeners.forEach(listener => listener());
+};
+const saveChange: SaveRuleChange = async (rule, change) => {
+  publishWrites({ ...writes, pending: [...writes.pending, rule.id] });
+  try {
+    return await change();
+  } finally {
+    const index = writes.pending.indexOf(rule.id);
+    publishWrites({ revision: writes.revision + 1, pending: writes.pending.filter((_, i) => i !== index) });
+  }
+};
+
 function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const [page, setPage] = useState(1);
-  const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
+  const { pending: savingRules, revision } = useSyncExternalStore(subscribeWrites, readWrites);
+  const rules = useLoad(() => api<Page<Rule>>("GET", `/vaults/${vaultId}/rules?page=${page}`, undefined, { timeoutMs: 30_000 }), [vaultId, page, revision]);
   const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
   const [saveFailures, setSaveFailures] = useState<string[]>([]);
-  const [editor, setEditor] = useState<{ rule: Rule | null; duplicate?: Rule } | null>(null);
+  const [editor, setEditor] = useState<{ rule: Rule | null; sourceId?: string } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
   const deleteAction = useAction();
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
-  // Saves can outlive their dialogs. Keep each source unavailable for copying
-  // until every pending change settles and the list has been refreshed.
-  const [savingRules, setSavingRules] = useState<string[]>([]);
-  const saveChange: SaveRuleChange = async (rule, change) => {
-    setSavingRules(ids => [...ids, rule.id]);
-    try {
-      return await change();
-    } finally {
-      rules.reload();
-      setSavingRules(ids => {
-        const index = ids.indexOf(rule.id);
-        return ids.filter((_, i) => i !== index);
-      });
-    }
-  };
   const toggle = async (r: Rule) => {
-    await action.run(() => saveChange(r, () => patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled })));
+    await action.run(() => saveChange(r, () => api<Rule>("PATCH", `/rules/${r.id}`, { enabled: !r.enabled }, { timeoutMs: 30_000 })));
   };
 
   const remove = async (r: Rule) => {
@@ -644,9 +667,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
     rules.reload();
   };
 
-  const openCreateDraft = (duplicate?: Rule) => {
+  const openCreateDraft = (sourceId?: string) => {
     creds.reload();
-    setEditor({ rule: null, duplicate });
+    setEditor({ rule: null, sourceId });
   };
 
   const addButton = (
@@ -655,6 +678,21 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       Add rule
     </Button>
   );
+
+  const editorProps = {
+    vaultId,
+    firstPage: creds,
+    saveChange,
+    onClose: () => setEditor(null),
+    onFailure: (message: string) => {
+      setSaveFailures(current => current.includes(message) ? current : [...current, message]);
+      if (!editor?.rule) rules.reload();
+    },
+    onSaved: () => {
+      setEditor(current => current === editor ? null : current);
+      if (!editor?.rule) rules.reload();
+    },
+  };
 
   return (
     <Section
@@ -733,9 +771,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                           {
                             label: "Duplicate rule",
                             icon: Copy,
-                            onSelect: () => openCreateDraft(r),
-                            disabled: !canEdit || savingRules.includes(r.id) || rules.loading || !!rules.error,
-                            reason: !canEdit ? onlyFor("edit") : "Wait for the rules list to refresh.",
+                            onSelect: () => openCreateDraft(r.id),
+                            disabled: !canEdit || savingRules.includes(r.id),
+                            reason: !canEdit ? onlyFor("edit") : "Wait for this rule to finish saving.",
                           },
                           {
                             label: "MCP tools",
@@ -763,22 +801,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         )}
         <Pager page={rules.data} onPage={setPage} />
       </Panel>
-      {editor && <RuleEditor
-        vaultId={vaultId}
-        editing={editor.rule}
-        duplicate={editor.duplicate}
-        firstPage={creds}
-        saveChange={saveChange}
-        onClose={() => setEditor(null)}
-        onFailure={message => {
-          setSaveFailures(current => current.includes(message) ? current : [...current, message]);
-          if (!editor.rule) rules.reload();
-        }}
-        onSaved={() => {
-          setEditor(current => current === editor ? null : current);
-          if (!editor.rule) rules.reload();
-        }}
-      />}
+      {editor && (editor.sourceId
+        ? <DuplicateRuleDraft key={editor.sourceId} sourceId={editor.sourceId} {...editorProps} />
+        : <RuleEditor editing={editor.rule} {...editorProps} />)}
       <FormDialog
         open={editingTools !== null}
         onOpenChange={(o) => {
