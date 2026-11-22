@@ -241,7 +241,8 @@ The steps it leads through:
    - **A file they fill in.** Run this in the background: it creates a
      file only they can read, waits until they save the key in it, then
      stores the key and deletes the file (if storing fails, the file stays
-     and running the same command again reads it). `--open` opens the file in their
+     and the retry must use the retained path printed as `--secret-file=PATH`).
+     A bare `--secret-file` with custom hosts starts a fresh handoff. `--open` opens the file in their
      text editor. Tell them the path it prints, and never read the file
      yourself.
 

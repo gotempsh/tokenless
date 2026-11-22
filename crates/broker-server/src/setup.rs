@@ -335,7 +335,7 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             stored = client.add_service(&plan, &template, fields) => stored,
             signal = stop.signalled() => {
                 return Err(LauncherError::config(format!(
-                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise retry with --secret-file {}",
+                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise retry with --secret-file={}",
                     args.vault.trim(),
                     path.display(), shell_word(&path.to_string_lossy())
                 ))
@@ -753,7 +753,14 @@ async fn from_file(
         },
     );
     let values = tokio::select! {
-        values = wait => values?,
+        values = wait => match values {
+            Err(error @ LauncherError::HandoffMismatch { .. }) => {
+                // The path now belongs to another handoff; cleanup must leave it alone.
+                remove.armed = false;
+                return Err(error.into());
+            }
+            other => other?,
+        },
         signal = stop.signalled() => {
             let file = if remove.armed { "was deleted" } else { "was left as it was" };
             return Err(LauncherError::config(format!("stopped by {signal}; {shown} {file}, nothing was stored")).into());

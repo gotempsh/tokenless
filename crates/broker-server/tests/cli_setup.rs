@@ -507,6 +507,49 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     })
     .await
     .expect("a fresh file showing both destinations");
+    // Two custom destinations must never share the same pending handoff.
+    // If a different labeled file replaces the second one, its key belongs
+    // to that handoff even though this process originally created the path.
+    let other = cli.spawn(&[
+        "service",
+        "add",
+        "generic-bearer",
+        "--vault",
+        "custom",
+        "--host",
+        "another.example.com",
+        "--secret-file",
+        "--wait",
+        "10s",
+    ]);
+    let other_path = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            for entry in std::fs::read_dir(&incoming).unwrap() {
+                let path = entry.unwrap().path();
+                if std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("another.example.com")
+                {
+                    return path;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(other_path, host_file);
+    let replacement = format!(
+        "{}test-replacement-value\n",
+        std::fs::read_to_string(&host_file).unwrap()
+    );
+    let tmp = cli.home.path().join("replacement");
+    std::fs::write(&tmp, &replacement).unwrap();
+    std::fs::rename(tmp, &other_path).unwrap();
+    let rejected = finish(other).await;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("different handoff"));
+    assert_eq!(std::fs::read_to_string(other_path).unwrap(), replacement);
     std::fs::write(&host_file, "test-bearer-value\n").unwrap();
     let out = finish(child).await;
     assert_eq!(std::fs::read_to_string(stale).unwrap(), "earlier-handoff");

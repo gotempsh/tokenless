@@ -106,7 +106,11 @@ pub fn instructions(service: &str, vault: &str, fields: &[CredentialField]) -> S
     out.push_str("\n# Fill in each line after the =, save the file and close it. tokenless\n# reads it, deletes this file and stores them encrypted.\n");
     for field in fields {
         let optional = if field.required { "" } else { " (optional)" };
-        out.push_str(&format!("\n# {}{optional}\n{}=\n", field.label, field.name));
+        out.push_str(&format!(
+            "\n# Field: {}{optional}\n{}=\n",
+            single_line(&field.label),
+            field.name
+        ));
     }
     out
 }
@@ -120,6 +124,10 @@ pub fn handoff_header(service: &str, vault: &str, fields: &[CredentialField]) ->
         ),
         _ => format!("# tokenless: the credentials of {service} for vault '{vault}'."),
     };
+    single_line(&line)
+}
+
+fn single_line(line: &str) -> String {
     let mut header = String::with_capacity(line.len());
     for c in line.chars() {
         if c.is_control() || c == '\\' {
@@ -266,10 +274,9 @@ fn check_header(content: &str, expected: &str, path: &Path) -> Result<bool, Laun
     if first == expected && headers.next().is_none() {
         return Ok(true);
     }
-    Err(LauncherError::config(format!(
-        "{} identifies a different handoff; choose a new file",
-        path.display()
-    )))
+    Err(LauncherError::HandoffMismatch {
+        path: path.to_owned(),
+    })
 }
 
 pub fn check_existing(
@@ -414,7 +421,7 @@ mod tests {
         ];
         let fresh = instructions("Example", "work", &fields);
         assert!(
-            fresh.contains("\nclient_id=\n") && fresh.contains("# region label (optional)"),
+            fresh.contains("\nclient_id=\n") && fresh.contains("# Field: region label (optional)"),
             "{fresh}"
         );
         assert_eq!(parse(&fresh, &fields).unwrap(), None);
@@ -466,6 +473,17 @@ mod tests {
         assert!(e.contains("line 1"), "{e}");
         // The refusal never repeats a value.
         assert!(!e.contains("just a value"), "{e}");
+    }
+
+    #[test]
+    fn field_labels_cannot_introduce_a_handoff_header() {
+        let mut first = field("user", true);
+        first.label = "tokenless: account\n# tokenless: another header".into();
+        let fields = [first, field("password", true)];
+        let header = handoff_header("Example", "work", &fields);
+        let text = instructions("Example", "work", &fields);
+        assert!(check_header(&text, &header, Path::new("key")).unwrap());
+        assert!(parse(&text, &fields).unwrap().is_none());
     }
 
     #[test]
