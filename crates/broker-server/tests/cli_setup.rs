@@ -473,9 +473,11 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     };
     let cli = Cli::new(&url, &session);
 
-    let host_file = cli.home.path().join("custom-key");
-    std::fs::write(&host_file, "test-bearer-value\n").unwrap();
-    let out = finish(cli.spawn(&[
+    let incoming = cli.home.path().join(".tokenless/incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    let stale = incoming.join("generic-bearer");
+    std::fs::write(&stale, "earlier-handoff").unwrap();
+    let child = cli.spawn(&[
         "service",
         "add",
         "generic-bearer",
@@ -486,9 +488,30 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         "--host",
         "uploads.example.com:8443",
         "--secret-file",
-        host_file.to_str().unwrap(),
-    ]))
-    .await;
+    ]);
+    let host_file = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            for entry in std::fs::read_dir(&incoming).unwrap() {
+                let path = entry.unwrap().path();
+                if path != stale
+                    && std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("api.example.com, uploads.example.com:8443")
+                {
+                    return path;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("a fresh file showing both destinations");
+    std::fs::write(&host_file, "test-bearer-value\n").unwrap();
+    let out = finish(child).await;
+    assert_eq!(std::fs::read_to_string(stale).unwrap(), "earlier-handoff");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("api.example.com, uploads.example.com:8443")
+    );
     assert!(
         out.status.success(),
         "{}",

@@ -904,7 +904,7 @@ enum ServiceCommand {
         /// Read the credential from a file the person fills in, and wipe and
         /// delete it once the credential is stored. The file is created
         /// (mode 0600) if missing, at ~/.tokenless/incoming/<template>
-        /// without a path, and the command waits until it is saved. A file
+        /// without a path (a fresh filename for custom hosts), and the command waits until it is saved. A file
         /// that was already there is only deleted once its key is stored.
         #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "web")]
         secret_file: Option<String>,

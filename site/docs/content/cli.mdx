@@ -80,6 +80,7 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 
 For a custom bearer service, run
 `tokenless service add generic-bearer --host api.example.com --vault work --bundle build --secret-file`.
+With custom hosts and no explicit file path, each run creates a fresh handoff file and lists the destinations inside it.
 Use a bare host, optionally with a port. The server checks permission to override template hosts.
 
 The template is matched by ID or name. A single-field credential can be

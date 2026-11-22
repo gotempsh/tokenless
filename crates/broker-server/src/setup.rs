@@ -290,6 +290,18 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
     // The secret file, kept until the key is stored, and the signals that
     // end the waits (not listened for at a terminal prompt, which handles
     // Ctrl-C itself).
+    let service = if args.hosts.is_empty() {
+        template.template.name.clone()
+    } else {
+        format!(
+            "{} (destination: {})",
+            template.template.name,
+            args.hosts.join(", ")
+        )
+    };
+    if !args.hosts.is_empty() {
+        say(format_args!("Credential for {service}."));
+    }
     let mut file = None;
     let fields = match &args.source {
         Source::Web { open } => {
@@ -298,16 +310,14 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         }
         Source::File { path, open } => {
             let mut stop = Stop::listen()?;
-            let (fields, path) = from_file(&template, &args, path, *open, &mut stop).await?;
+            let (fields, path) =
+                from_file(&template, &service, &args, path, *open, &mut stop).await?;
             file = Some((path, stop));
             fields
         }
         Source::Terminal => {
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                say(messages::service_prompt(
-                    &template.template.name,
-                    args.vault.trim(),
-                ));
+                say(messages::service_prompt(&service, args.vault.trim()));
             }
             read_fields(&template, &prompter)?
         }
@@ -682,6 +692,7 @@ impl Drop for RemoveOnDrop<'_> {
 
 async fn from_file(
     template: &StoredTemplate,
+    service: &str,
     args: &AddArgs,
     path: &Path,
     open: bool,
@@ -694,12 +705,17 @@ async fn from_file(
                 "HOME is not set, so there is no default secret file; pass --secret-file <path>",
             )
         })?;
-        secret_file::default_path(home, &template.template.id)
+        if args.hosts.is_empty() {
+            secret_file::default_path(home, &template.template.id)
+        } else {
+            let filename = format!("{}-{}", template.template.id, uuid::Uuid::new_v4());
+            secret_file::default_path(home, &filename)
+        }
     } else {
         secret_file::expand(path, home.as_deref())
     };
     let fields = &template.template.credential_fields;
-    let prepared = secret_file::prepare(&path, &template.template.name, args.vault.trim(), fields)?;
+    let prepared = secret_file::prepare(&path, service, args.vault.trim(), fields)?;
     let mut remove = RemoveOnDrop {
         path: &path,
         armed: prepared == Prepared::Created,
