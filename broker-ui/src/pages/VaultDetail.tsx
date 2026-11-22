@@ -154,6 +154,7 @@ export function VaultDetail({
   const vault = useLoad(() => get<VaultOverview>(`/vaults/${vaultId}/overview`), [vaultId]);
   const v = vault.data && vault.data.id === vaultId ? vault.data : undefined;
   const [deleting, setDeleting] = useState(false);
+  const [ruleFailures, setRuleFailures] = useState<{ vaultId: string; message: string }[]>([]);
   const isAdmin = user.role === "admin";
   // An instance admin who is not a member sees sessions, keys and the
   // audit log, not what the vault holds.
@@ -209,7 +210,12 @@ export function VaultDetail({
         {!(outside && contents) && (
           <>
             {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-            {tab === "rules" && <Rules key={vaultId} vaultId={vaultId} canEdit={can(user, vaultId, "edit")} />}
+            {tab === "rules" && <Rules key={vaultId} vaultId={vaultId} canEdit={can(user, vaultId, "edit")}
+              saveFailures={ruleFailures.filter(f => f.vaultId === vaultId).map(f => f.message)}
+              onFailure={message => setRuleFailures(current => current.some(f => f.vaultId === vaultId && f.message === message)
+                ? current : [...current, { vaultId, message }])}
+              onDismiss={message => setRuleFailures(current => current.filter(f => f.vaultId !== vaultId || f.message !== message))}
+            />}
             {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
             {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
           </>
@@ -292,9 +298,7 @@ function toolsLabel(tools: string[] | undefined): string {
   return tools.join(", ");
 }
 
-type SaveRuleChange = (rule: Rule, change: () => Promise<Rule>) => Promise<Rule>;
-
-function ToolsForm({ rule, saveChange, onCancel, onDone }: { rule: Rule; saveChange: SaveRuleChange; onCancel: () => void; onDone: () => void }) {
+function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => void; onDone: () => void }) {
   const [limited, setLimited] = useState(rule.allow.mcp_tools !== undefined);
   const [text, setText] = useState((rule.allow.mcp_tools ?? []).join("\n"));
   const action = useAction();
@@ -363,7 +367,6 @@ interface RuleEditorProps {
   editing: Rule | null;
   duplicate?: Rule;
   firstPage: Loaded<Page<CredentialMeta>>;
-  saveChange: SaveRuleChange;
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
@@ -382,7 +385,7 @@ function DuplicateRuleDraft({ sourceId, ...props }: Omit<RuleEditorProps, "editi
   );
 }
 
-function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveChange, onClose, onSaved, onFailure }: RuleEditorProps) {
+function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClose, onSaved, onFailure }: RuleEditorProps) {
   const [editing, setEditing] = useState(initialRule);
   const [conflicted, setConflicted] = useState(false);
   const saveAction = useAction();
@@ -395,7 +398,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveC
   });
   const [page, setPage] = useState(1);
   const extraPage = useLoad(() => page === 1 ? Promise.resolve(undefined)
-    : get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100&page=${page}`), [vaultId, page]);
+    : ruleCredentials(vaultId, page), [vaultId, page]);
   // Keep the last available choices usable while another page loads or fails.
   const credentialRequest = page === 1 ? firstPage : extraPage;
   const credentialPage = credentialRequest.data ?? firstPage.data;
@@ -467,7 +470,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveC
           }, options));
         }
         const path = duplicate ? `/vaults/${vaultId}/rules/copies` : `/vaults/${vaultId}/rules`;
-        return await api<Rule>("POST", path, {
+        return await saveChange(null, () => api<Rule>("POST", path, {
           name: form.name,
           credential_id: form.credential_id,
           hosts: opt(form.hosts),
@@ -476,7 +479,7 @@ function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, saveC
           mcp_tools: duplicate ? (limitedTools ? lines(form.tools) : undefined) : opt(form.tools),
           git: duplicate?.allow.git ? { repositories: lines(repositories), push: allowPush } : undefined,
           enabled: duplicate ? enabled : undefined,
-        }, options);
+        }, options));
       } catch (error) {
         if (editing && error instanceof ApiError && error.problem.status === 409) setConflicted(true);
         const message = error instanceof DOMException && error.name === "TimeoutError"
@@ -618,22 +621,28 @@ const publishWrites = (next: typeof writes) => {
   writes = next;
   writeListeners.forEach(listener => listener());
 };
-const saveChange: SaveRuleChange = async (rule, change) => {
-  publishWrites({ ...writes, pending: [...writes.pending, rule.id] });
+async function saveChange<T>(rule: Rule | null, change: () => Promise<T>): Promise<T> {
+  if (rule) publishWrites({ ...writes, pending: [...writes.pending, rule.id] });
   try {
     return await change();
   } finally {
-    const index = writes.pending.indexOf(rule.id);
+    const index = rule ? writes.pending.indexOf(rule.id) : -1;
     publishWrites({ revision: writes.revision + 1, pending: writes.pending.filter((_, i) => i !== index) });
   }
-};
+}
 
-function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
+function ruleCredentials(vaultId: string, page = 1) {
+  return api<Page<CredentialMeta>>("GET", `/vaults/${vaultId}/credentials?page_size=100&page=${page}`, undefined, { timeoutMs: 30_000 });
+}
+
+function Rules({ vaultId, canEdit, saveFailures, onFailure, onDismiss }: {
+  vaultId: string; canEdit: boolean; saveFailures: string[];
+  onFailure: (message: string) => void; onDismiss: (message: string) => void;
+}) {
   const [page, setPage] = useState(1);
   const { pending: savingRules, revision } = useSyncExternalStore(subscribeWrites, readWrites);
   const rules = useLoad(() => api<Page<Rule>>("GET", `/vaults/${vaultId}/rules?page=${page}`, undefined, { timeoutMs: 30_000 }), [vaultId, page, revision]);
-  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
-  const [saveFailures, setSaveFailures] = useState<string[]>([]);
+  const creds = useLoad(() => ruleCredentials(vaultId), [vaultId]);
   const [editor, setEditor] = useState<{ rule: Rule | null; sourceId?: string } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
@@ -646,7 +655,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   };
 
   const remove = async (r: Rule) => {
-    const removed = await deleteAction.run(async () => {
+    const removed = await deleteAction.run(() => saveChange(r, async () => {
       const path = `/rules/${r.id}`;
       try {
         await api<void>("DELETE", path, undefined, { timeoutMs: 30_000 });
@@ -662,9 +671,8 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         throw error;
       }
       return true;
-    });
+    }));
     if (removed) confirm.close();
-    rules.reload();
   };
 
   const openCreateDraft = (sourceId?: string) => {
@@ -682,16 +690,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const editorProps = {
     vaultId,
     firstPage: creds,
-    saveChange,
     onClose: () => setEditor(null),
-    onFailure: (message: string) => {
-      setSaveFailures(current => current.includes(message) ? current : [...current, message]);
-      if (!editor?.rule) rules.reload();
-    },
-    onSaved: () => {
-      setEditor(current => current === editor ? null : current);
-      if (!editor?.rule) rules.reload();
-    },
+    onFailure,
+    onSaved: () => setEditor(current => current === editor ? null : current),
   };
 
   return (
@@ -702,7 +703,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       {saveFailures.map(message => (
         <div key={message} className="flex items-center gap-2">
           <ErrorBanner error={message} />
-          <Button type="button" variant="outline" onClick={() => setSaveFailures(current => current.filter(m => m !== message))}>
+          <Button type="button" variant="outline" onClick={() => onDismiss(message)}>
             Dismiss
           </Button>
         </div>
@@ -815,7 +816,6 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         {editingTools && (
           <ToolsForm
             rule={editingTools}
-            saveChange={saveChange}
             onCancel={() => setEditingTools(null)}
             onDone={() => {
               setEditingTools(current => current === editingTools ? null : current);
