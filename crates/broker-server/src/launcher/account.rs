@@ -13,10 +13,11 @@ mod sso;
 pub use sso::{begin_browser_sign_in, BrowserSignIn};
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use bytes::Bytes;
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
@@ -115,11 +116,98 @@ pub trait SessionVault: Send + Sync {
     fn delete(&self, server: &str) -> Result<bool, LauncherError>;
 }
 
+/// Coordinate keychain writers across processes regardless of HOME or XDG settings.
+#[cfg(unix)]
+fn keychain_write_lock() -> Result<std::fs::File, LauncherError> {
+    // A keyring can work without a passwd home (for example, a Linux service account).
+    // Use the fixed system temporary directory so TMPDIR cannot split the lock namespace.
+    let uid = nix::unistd::Uid::effective().as_raw();
+    let dir = Path::new("/tmp").join(format!("tokenless-keychain-{uid}"));
+    private_keychain_lock(&dir, uid)
+}
+
+#[cfg(unix)]
+fn private_keychain_lock(dir: &Path, uid: u32) -> Result<std::fs::File, LauncherError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(SessionFiles::io(format!("creating {}", dir.display()))(e)),
+    }
+    // In the sticky system temporary directory only the owner can replace this
+    // entry. Reject links, foreign owners and directories accessible to other users.
+    let meta = dir
+        .symlink_metadata()
+        .map_err(SessionFiles::io(format!("checking {}", dir.display())))?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(LauncherError::config(format!(
+            "expected a private session lock directory owned by the current user at {}",
+            dir.display()
+        )));
+    }
+    lock_in(dir, "keychain.lock")
+}
+
+#[cfg(not(unix))]
+fn keychain_write_lock() -> Result<std::fs::File, LauncherError> {
+    let home = std::env::home_dir().ok_or_else(|| {
+        LauncherError::config("cannot locate the OS user profile for the session-store lock")
+    })?;
+    lock_in(&home.join(".tokenless"), "keychain.lock")
+}
+
+fn lock_in(dir: &Path, name: &str) -> Result<std::fs::File, LauncherError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .map_err(SessionFiles::io(format!("creating {}", dir.display())))?;
+    let path = dir.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // Keep the same inode between invocations. Closing the handle releases the
+    // kernel lock, including if a process is interrupted during a write.
+    let file = options
+        .open(&path)
+        .map_err(SessionFiles::io(format!("opening {}", path.display())))?;
+    file.lock()
+        .map_err(SessionFiles::io(format!("locking {}", path.display())))?;
+    Ok(file)
+}
+
 /// The OS keychain: the macOS Keychain, the Linux kernel keyring or the
 /// Windows Credential Manager.
 pub struct Keychain;
 
 impl Keychain {
+    // Probe availability without decoding the old credential. Login and local
+    // logout must be able to replace or remove even an unreadable entry.
+    fn contains(entry: &keyring::Entry) -> Result<bool, keyring::Error> {
+        match entry.get_secret() {
+            Ok(bytes) => {
+                drop(Zeroizing::new(bytes));
+                Ok(true)
+            }
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn has_entry(key: &str) -> Result<bool, keyring::Error> {
+        Self::contains(&keyring::Entry::new(KEYCHAIN_SERVICE, key)?)
+    }
+
     fn get(server: &str) -> Result<Option<Zeroizing<String>>, keyring::Error> {
         match keyring::Entry::new(KEYCHAIN_SERVICE, server)?.get_password() {
             Ok(json) => Ok(Some(Zeroizing::new(json))),
@@ -186,11 +274,13 @@ impl SessionVault for Keychain {
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        let _lock = keychain_write_lock()?;
         Self::set(&session.key(), &encode(session)?)
             .map_err(|e| keychain("saving", &session.server, e))
     }
 
     fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let _lock = keychain_write_lock()?;
         Self::remove(server).map_err(|e| keychain("removing", server, e))
     }
 }
@@ -254,17 +344,20 @@ impl SessionVault for SessionFiles {
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        let _lock = lock_in(&self.dir, "files.lock")?;
+        self.save_locked(session)
+    }
+
+    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let _lock = lock_in(&self.dir, "files.lock")?;
+        self.delete_locked(server)
+    }
+}
+
+impl SessionFiles {
+    fn save_locked(&self, session: &SavedSession) -> Result<(), LauncherError> {
         use std::io::Write;
         let json = encode(session)?;
-        let mut dir = std::fs::DirBuilder::new();
-        dir.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            dir.mode(0o700);
-        }
-        dir.create(&self.dir)
-            .map_err(Self::io(format!("creating {}", self.dir.display())))?;
         let path = self.path(&session.key());
         let tmp = path.with_extension("tmp");
         // A leftover temporary file may have wider permissions; the mode
@@ -290,7 +383,7 @@ impl SessionVault for SessionFiles {
         std::fs::rename(&tmp, &path).map_err(Self::io(format!("replacing {}", path.display())))
     }
 
-    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+    fn delete_locked(&self, server: &str) -> Result<bool, LauncherError> {
         let path = self.path(server);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(true),
@@ -340,26 +433,45 @@ impl SessionStore {
 
     /// Saves the session and says where it went.
     pub fn store(&self, session: &SavedSession) -> Result<Stored, LauncherError> {
+        let key = session.key();
+        // A file-only installation can work even with no OS account profile.
+        if let Err(e) = Keychain::has_entry(&key) {
+            if keychain_unavailable(&e) {
+                return self.store_file(session, e);
+            }
+            return Err(keychain("reading", &key, e));
+        }
+        let _lock = keychain_write_lock()?;
         let json = encode(session)?;
         match Keychain::set(&session.key(), &json) {
             Ok(()) => {
                 // A file from a time without a keychain is now stale.
                 if let Some(files) = &self.files {
-                    files.delete(&session.key())?;
+                    if files.path(&key).try_exists().map_err(SessionFiles::io(
+                        "checking for a previous session file".into(),
+                    ))? {
+                        files.delete(&key)?;
+                    }
                 }
                 Ok(Stored::Keychain)
             }
-            Err(e) if keychain_unavailable(&e) => {
-                let reason = e.to_string();
-                let files = self.files(&session.server, e)?;
-                files.save(session)?;
-                Ok(Stored::File {
-                    path: files.path(&session.key()),
-                    reason,
-                })
-            }
+            Err(e) if keychain_unavailable(&e) => self.store_file(session, e),
             Err(e) => Err(keychain("saving", &session.server, e)),
         }
+    }
+
+    fn store_file(
+        &self,
+        session: &SavedSession,
+        e: keyring::Error,
+    ) -> Result<Stored, LauncherError> {
+        let reason = e.to_string();
+        let files = self.files(&session.server, e)?;
+        files.save(session)?;
+        Ok(Stored::File {
+            path: files.path(&session.key()),
+            reason,
+        })
     }
 }
 
@@ -382,16 +494,46 @@ impl SessionVault for SessionStore {
     }
 
     fn delete(&self, server: &str) -> Result<bool, LauncherError> {
-        let in_keychain = match Keychain::remove(server) {
-            Ok(removed) => removed,
-            Err(e) if keychain_unavailable(&e) => false,
-            Err(e) => return Err(keychain("removing", server, e)),
-        };
-        let in_file = match &self.files {
-            Some(files) => files.delete(server)?,
-            None => false,
-        };
-        Ok(in_keychain || in_file)
+        self.remove(server, None)
+    }
+}
+
+impl SessionStore {
+    /// Remove only matching credentials, including when the keychain and file
+    /// fallback contain different generations of the same sign-in.
+    pub fn forget(&self, session: &SavedSession) -> Result<bool, LauncherError> {
+        self.remove(&session.key(), Some(&session.token))
+    }
+
+    fn remove(&self, key: &str, expected: Option<&str>) -> Result<bool, LauncherError> {
+        let matches = |s: &SavedSession| expected.is_none_or(|token| token == s.token);
+        // Skip locks for absent entries. Re-read any present entry under the
+        // same lock used to replace it before removing it.
+        let mut removed = false;
+        match Keychain::has_entry(key) {
+            Ok(true) => {
+                let _lock = keychain_write_lock()?;
+                if expected.is_none() || Keychain.load(key)?.is_some_and(|s| matches(&s)) {
+                    removed = Keychain::remove(key).map_err(|e| keychain("removing", key, e))?;
+                }
+            }
+            Ok(false) => {}
+            Err(e) if keychain_unavailable(&e) => {}
+            Err(e) => return Err(keychain("reading", key, e)),
+        }
+        if let Some(files) = &self.files {
+            if files
+                .path(key)
+                .try_exists()
+                .map_err(SessionFiles::io("checking for a saved session file".into()))?
+            {
+                let _lock = lock_in(&files.dir, "files.lock")?;
+                if expected.is_none() || files.load(key)?.is_some_and(|s| matches(&s)) {
+                    removed |= files.delete_locked(key)?;
+                }
+            }
+        }
+        Ok(removed)
     }
 }
 
@@ -442,6 +584,42 @@ struct Problem {
     detail: String,
     #[serde(default)]
     code: String,
+}
+
+impl Problem {
+    /// A proxy can return an arbitrarily large error document, even without Content-Length.
+    async fn read(mut response: reqwest::Response) -> Self {
+        const LIMIT: usize = 16 * 1024;
+        let fallback = Self {
+            title: response
+                .status()
+                .canonical_reason()
+                .unwrap_or("HTTP error")
+                .into(),
+            detail: "the broker returned no readable problem details".into(),
+            code: String::new(),
+        };
+        let mut bytes = Zeroizing::new(Vec::new());
+        while let Ok(chunk) = response.chunk().await {
+            let Some(chunk) = chunk else {
+                return serde_json::from_slice(&bytes).unwrap_or(fallback);
+            };
+            if chunk.len() > LIMIT - bytes.len() {
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        fallback
+    }
+}
+
+fn json_request(builder: reqwest::RequestBuilder, body: Option<Bytes>) -> reqwest::RequestBuilder {
+    match body {
+        Some(bytes) => builder
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(bytes),
+        None => builder,
+    }
 }
 
 fn normalise(server: &str) -> Result<String, LauncherError> {
@@ -543,7 +721,7 @@ pub async fn sign_in(
         })?;
     let status = response.status();
     if !status.is_success() {
-        let problem: Problem = response.json().await.unwrap_or_default();
+        let problem = Problem::read(response).await;
         if problem.code == "second_factor_required" {
             return Ok(SignIn::CodeNeeded);
         }
@@ -609,6 +787,84 @@ pub struct ConsoleClient<'p> {
     prompter: &'p dyn Prompter,
 }
 
+/// Only paths inside the broker management API may carry CLI authentication.
+fn validate_api_path(path: &str) -> Result<(), LauncherError> {
+    let encoded_path = path.split('?').next().unwrap_or_default();
+    let expected = format!("/api/v1{encoded_path}");
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains(['#', '\\'])
+        || path.chars().any(char::is_control)
+        || !reqwest::Url::parse(&format!("https://broker.invalid{expected}"))
+            .is_ok_and(|u| u.path() == expected)
+    {
+        return Err(LauncherError::config(
+            "expected a broker-relative API path such as /vaults",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate the transport before a raw management operation can send sign-in material.
+pub fn management_base(server: &str) -> Result<String, LauncherError> {
+    sso::secure_base(server)
+}
+
+/// Only the proxy session's own discovery and revocation endpoints accept its bearer.
+pub fn validate_session_route(method: &Method, path: &str) -> Result<(), LauncherError> {
+    validate_api_path(path)?;
+    if !matches!(
+        (method.as_str(), path.split('?').next().unwrap_or_default()),
+        ("GET", "/sessions/self") | ("POST", "/sessions/revoke-self")
+    ) {
+        return Err(LauncherError::config(
+            "--session-token-file is for GET /sessions/self or POST /sessions/revoke-self",
+        ));
+    }
+    Ok(())
+}
+
+/// Call a management endpoint without a person’s saved sign-in.
+pub async fn session_or_public_request(
+    server: &str,
+    method: Method,
+    path: &str,
+    body: Option<Bytes>,
+    session_token: Option<&str>,
+) -> Result<reqwest::Response, LauncherError> {
+    let base = management_base(server)?;
+    if session_token.is_some() {
+        validate_session_route(&method, path)?;
+    } else {
+        validate_api_path(path)?;
+    }
+    let req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
+    let req = if let Some(token) = session_token {
+        req.bearer_auth(token)
+    } else {
+        req
+    };
+    let response = json_request(req, body)
+        .send()
+        .await
+        .map_err(|e| LauncherError::Http {
+            operation: "calling the management API",
+            url: base,
+            reason: e.without_url().to_string(),
+        })?;
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status().as_u16();
+    let problem = Problem::read(response).await;
+    Err(LauncherError::Api {
+        operation: "calling the management API",
+        status,
+        title: problem.title,
+        detail: problem.detail,
+    })
+}
+
 impl<'p> ConsoleClient<'p> {
     /// The saved session for `server`, or an error saying to sign in. A
     /// live `--manage` sign-in comes first: the other only starts sessions.
@@ -643,11 +899,11 @@ impl<'p> ConsoleClient<'p> {
         &self,
         method: &Method,
         path: &str,
-        body: Option<&serde_json::Value>,
+        body: Option<Bytes>,
         operation: &'static str,
     ) -> Result<reqwest::Response, LauncherError> {
         let url = format!("{}/api/v1{path}", self.session.server);
-        let mut request = self
+        let request = self
             .http
             .request(method.clone(), &url)
             .header(
@@ -655,14 +911,14 @@ impl<'p> ConsoleClient<'p> {
                 format!("{SESSION_COOKIE}={}", self.session.token),
             )
             .header(CSRF_HEADER, &self.session.csrf_token);
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        request.send().await.map_err(|e| LauncherError::Http {
-            operation,
-            url,
-            reason: e.to_string(),
-        })
+        json_request(request, body)
+            .send()
+            .await
+            .map_err(|e| LauncherError::Http {
+                operation,
+                url: self.session.server.clone(),
+                reason: e.without_url().to_string(),
+            })
     }
 
     async fn call<T: DeserializeOwned>(
@@ -672,34 +928,55 @@ impl<'p> ConsoleClient<'p> {
         body: Option<serde_json::Value>,
         operation: &'static str,
     ) -> Result<T, LauncherError> {
+        let bytes = body.map(|value| Bytes::from(value.to_string()));
+        let response = self
+            .request(method, path, bytes, operation)
+            .await
+            .map_err(|error| {
+                // Named commands use this signal to offer sign-in when a saved session has expired.
+                if matches!(&error, LauncherError::Api { status: 401, operation: failed, .. } if *failed == operation) {
+                    LauncherError::NotSignedIn {
+                        server: self.session.server.clone(),
+                    }
+                } else {
+                    error
+                }
+            })?;
+        let text = response.text().await.map_err(|e| LauncherError::Http {
+            operation,
+            url: path.to_string(),
+            reason: e.to_string(),
+        })?;
+        // Some replies (204) have no body.
+        let text = if text.is_empty() { "null" } else { &text };
+        serde_json::from_str(text).map_err(|e| LauncherError::Http {
+            operation,
+            url: path.to_string(),
+            reason: format!("unexpected response body: {e}"),
+        })
+    }
+
+    /// Make a console request with the same session, CSRF and step-up handling as named commands.
+    pub async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Bytes>,
+        operation: &'static str,
+    ) -> Result<reqwest::Response, LauncherError> {
+        validate_api_path(path)?;
         let mut stepped_up = false;
         loop {
-            let response = self.send(&method, path, body.as_ref(), operation).await?;
+            let response = self.send(&method, path, body.clone(), operation).await?;
             let status = response.status();
             if status.is_success() {
-                let text = response.text().await.map_err(|e| LauncherError::Http {
-                    operation,
-                    url: path.to_string(),
-                    reason: e.to_string(),
-                })?;
-                // Some replies (204) have no body.
-                let text = if text.is_empty() { "null" } else { &text };
-                return serde_json::from_str(text).map_err(|e| LauncherError::Http {
-                    operation,
-                    url: path.to_string(),
-                    reason: format!("unexpected response body: {e}"),
-                });
+                return Ok(response);
             }
-            let problem: Problem = response.json().await.unwrap_or_default();
+            let problem = Problem::read(response).await;
             if problem.code == "step_up_required" && !stepped_up {
                 self.step_up().await?;
                 stepped_up = true;
                 continue;
-            }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(LauncherError::NotSignedIn {
-                    server: self.session.server.clone(),
-                });
             }
             return Err(LauncherError::Api {
                 operation,
@@ -715,6 +992,7 @@ impl<'p> ConsoleClient<'p> {
     async fn step_up(&self) -> Result<(), LauncherError> {
         #[derive(Deserialize)]
         struct Identity {
+            user: UserSummary,
             sso: Option<tokenless_control::service::sso::SsoSignIn>,
         }
         let response = self
@@ -737,20 +1015,25 @@ impl<'p> ConsoleClient<'p> {
                 super::trust::shell_quote(&self.session.server), super::trust::shell_quote(&sso.slug)
             )));
         }
-        let proof = if self.session.totp_enrolled {
+        let proof = if identity.user.totp_enrolled {
             json!({ "code": self.prompter.secret("Authenticator code")?.trim() })
         } else {
             json!({ "password": self.prompter.secret("Password")?.as_str() })
         };
         const OP: &str = "confirming it is you";
         let response = self
-            .send(&Method::POST, "/auth/step-up", Some(&proof), OP)
+            .send(
+                &Method::POST,
+                "/auth/step-up",
+                Some(Bytes::from(proof.to_string())),
+                OP,
+            )
             .await?;
         if response.status().is_success() {
             return Ok(());
         }
         let status = response.status().as_u16();
-        let problem: Problem = response.json().await.unwrap_or_default();
+        let problem = Problem::read(response).await;
         Err(LauncherError::Api {
             operation: OP,
             status,
@@ -1404,6 +1687,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn damaged_keychain_entries_can_be_replaced_and_removed() {
+        let entry =
+            keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        assert!(!Keychain::contains(&entry).unwrap());
+        entry.set_secret(&[0xff]).unwrap();
+        assert!(entry.get_password().is_err());
+        assert!(Keychain::contains(&entry).unwrap());
+        entry.set_password("replacement").unwrap();
+        assert_eq!(entry.get_password().unwrap(), "replacement");
+        entry.set_secret(&[0xff]).unwrap();
+        assert!(Keychain::contains(&entry).unwrap());
+        entry.delete_credential().unwrap();
+        assert!(!Keychain::contains(&entry).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_keychain_directory_coordinates_writers_and_refuses_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        let uid = nix::unistd::Uid::effective().as_raw();
+        let lock = private_keychain_lock(&dir, uid).unwrap();
+        let other = std::fs::File::open(dir.join("keychain.lock")).unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(lock);
+        other.try_lock().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(private_keychain_lock(&link, uid).is_err());
+    }
+
+    #[test]
     fn the_node_api_is_on_8443_of_the_same_host() {
         assert_eq!(
             default_control_url("http://127.0.0.1:8080").unwrap(),
@@ -1464,6 +1782,150 @@ mod tests {
             expires_at: Utc::now(),
             manage: false,
         }
+    }
+
+    async fn serve_test_api(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (base, task)
+    }
+
+    struct ExpectedPrompt(&'static str);
+
+    impl Prompter for ExpectedPrompt {
+        fn secret(&self, label: &str) -> Result<Zeroizing<String>, LauncherError> {
+            assert_eq!(label, self.0);
+            Ok(Zeroizing::new("test-proof".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn step_up_uses_current_enrollment_in_both_directions() {
+        use axum::{
+            routing::{get, post},
+            Json, Router,
+        };
+        for enrolled in [true, false] {
+            let app = Router::new()
+                .route("/api/v1/auth/me", get(move || async move {
+                    Json(json!({"user": {"id":UserId::new(), "username":"operator", "role":"admin",
+                        "created_at":Utc::now(),"totp_enrolled":enrolled}}))
+                }))
+                .route("/api/v1/auth/step-up", post(move |Json(proof): Json<serde_json::Value>| async move {
+                    let field = if enrolled { "code" } else { "password" };
+                    assert_eq!(proof, json!({(field):"test-proof"}));
+                    axum::http::StatusCode::NO_CONTENT
+                }));
+            let (base, task) = serve_test_api(app).await;
+            let prompt = ExpectedPrompt(if enrolled {
+                "Authenticator code"
+            } else {
+                "Password"
+            });
+            let mut saved = session(&base);
+            saved.totp_enrolled = !enrolled;
+            let client = ConsoleClient {
+                http: http_client(&base).unwrap(),
+                session: saved,
+                prompter: &prompt,
+            };
+            client.step_up().await.unwrap();
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn both_request_modes_stop_reading_an_oversized_chunked_problem() {
+        use axum::{body::Body, http::StatusCode, routing::get, Router};
+        use futures_util::{stream, StreamExt};
+        let app = Router::new().route(
+            "/api/v1/error",
+            get(|| async {
+                // No Content-Length and no end-of-stream. The reader must stop at its byte limit.
+                let chunks =
+                    stream::iter([Ok::<_, std::io::Error>(Bytes::from(vec![b' '; 32 * 1024]))])
+                        .chain(stream::pending());
+                (StatusCode::BAD_GATEWAY, Body::from_stream(chunks))
+            }),
+        );
+        let (base, task) = serve_test_api(app).await;
+        let client = ConsoleClient {
+            http: http_client(&base).unwrap(),
+            session: session(&base),
+            prompter: &ExpectedPrompt("unused"),
+        };
+        for anonymous in [true, false] {
+            let result = tokio::time::timeout(Duration::from_secs(3), async {
+                if anonymous {
+                    session_or_public_request(&base, Method::GET, "/error", None, None).await
+                } else {
+                    client
+                        .request(Method::GET, "/error", None, "testing error handling")
+                        .await
+                }
+            })
+            .await
+            .expect("the error reader waited for an unbounded body");
+            assert!(matches!(
+                result,
+                Err(LauncherError::Api { status: 502, .. })
+            ));
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn public_device_login_refuses_remote_http_before_connecting() {
+        for path in ["/auth/cli/start", "/auth/cli/poll"] {
+            let error = session_or_public_request(
+                "http://broker.example.invalid",
+                Method::POST,
+                path,
+                Some(Bytes::from_static(b"{}")),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("requires HTTPS"));
+        }
+        assert!(management_base("http://127.0.0.1:8080").is_ok());
+    }
+
+    #[test]
+    fn a_concurrent_login_waits_for_the_session_write_lock_and_survives_stale_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = std::sync::Arc::new(SessionFiles::new(dir.path()));
+        let old = session(&format!("https://{}.example.invalid", uuid::Uuid::new_v4()));
+        files.save(&old).unwrap();
+        let mut replacement = old.clone();
+        replacement.token = "replacement".into();
+        let lock = lock_in(&files.dir, "files.lock").unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn({
+            let files = files.clone();
+            move || {
+                started_tx.send(()).unwrap();
+                files.save(&replacement).unwrap();
+                done_tx.send(()).unwrap();
+            }
+        });
+        started_rx.recv().unwrap();
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(lock);
+        writer.join().unwrap();
+        let store = SessionStore::new(Some(SessionFiles::new(dir.path())));
+        assert!(!store.forget(&old).unwrap());
+        assert_eq!(
+            files.load(&old.key()).unwrap().unwrap().token,
+            "replacement"
+        );
     }
 
     #[test]
@@ -1532,5 +1994,28 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("TOKENLESS_API_KEY"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod api_path_tests {
+    use super::validate_api_path;
+
+    #[test]
+    fn accepts_api_paths_and_queries_only_inside_the_broker() {
+        for path in ["/auth/me", "/vaults?page_size=1", "/templates/a%20b/1"] {
+            assert!(validate_api_path(path).is_ok(), "{path}");
+        }
+        for path in [
+            "https://example.test",
+            "//example.test",
+            "/../outside",
+            "/%2e%2e/outside",
+            "/vaults#fragment",
+            "/vaults\\other",
+            "/vaults\n",
+        ] {
+            assert!(validate_api_path(path).is_err(), "{path:?}");
+        }
     }
 }

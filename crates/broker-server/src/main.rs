@@ -43,6 +43,7 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
 mod alerts;
+mod console_api;
 mod keys;
 mod list;
 mod members;
@@ -70,6 +71,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Discover and call the management operations used by the web console.
+    Api {
+        #[command(subcommand)]
+        command: console_api::Command,
+    },
     /// Run the control plane: management API, UI and node API.
     Serve(ServeArgs),
     /// Sign in as a person and keep the session in the OS keychain.
@@ -2044,11 +2050,35 @@ fn given_session(
 }
 
 fn read_token_file(path: &std::path::Path) -> Result<Zeroizing<String>, CliError> {
-    let token = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| CliError::Io {
+    use std::io::Read;
+    use tokenless_core::session::MAX_TOKEN_LEN;
+
+    let io = |source| CliError::Io {
         context: format!("reading the session token file {}", path.display()),
-        source: e,
-    })?);
-    Ok(Zeroizing::new(token.trim().to_string()))
+        source,
+    };
+    // Allow a terminal CRLF, and read one extra byte to distinguish overflow from EOF.
+    let max_file = MAX_TOKEN_LEN + 2;
+    let mut bytes = Zeroizing::new(Vec::new());
+    std::fs::File::open(path)
+        .map_err(io)?
+        .take((max_file + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() > max_file {
+        return Err(
+            LauncherError::config(format!("session token file exceeds {max_file} bytes")).into(),
+        );
+    }
+    let token = std::str::from_utf8(&bytes)
+        .map_err(|_| LauncherError::config("session token file must contain UTF-8 text"))?
+        .trim();
+    if token.len() > MAX_TOKEN_LEN {
+        return Err(
+            LauncherError::config(format!("session token exceeds {MAX_TOKEN_LEN} bytes")).into(),
+        );
+    }
+    Ok(Zeroizing::new(token.to_owned()))
 }
 
 /// The session behind a session port: the one handed over, or a new one
@@ -2797,7 +2827,8 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let agent_side = matches!(
         cli.command,
-        Command::Session { .. }
+        Command::Api { .. }
+            | Command::Session { .. }
             | Command::Run(_)
             | Command::Mcp(_)
             | Command::Skill { .. }
@@ -2819,6 +2850,7 @@ async fn main() -> ExitCode {
     report_telemetry(&telemetry, &settings, failed);
     let mut stopped = Stopped::Normally;
     let result = match cli.command {
+        Command::Api { command } => console_api::run(command).await,
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
         Command::Node { command } => node(command, &telemetry).await.map(|how| {
             stopped = how;
@@ -3372,6 +3404,26 @@ mod tests {
             "claude"
         ])
         .is_err());
+    }
+
+    #[test]
+    fn token_file_accepts_the_protocol_limit_and_bounds_the_read() {
+        use tokenless_core::session::MAX_TOKEN_LEN;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session");
+        let at_limit = "x".repeat(MAX_TOKEN_LEN);
+        std::fs::write(&path, format!("{at_limit}\r\n")).unwrap();
+        assert_eq!(read_token_file(&path).unwrap().len(), MAX_TOKEN_LEN);
+        std::fs::write(&path, format!("{at_limit}x")).unwrap();
+        assert!(read_token_file(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds"));
+        std::fs::write(&path, " ".repeat(MAX_TOKEN_LEN * 4)).unwrap();
+        assert!(read_token_file(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("file exceeds"));
     }
 
     #[test]

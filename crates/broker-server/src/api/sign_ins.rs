@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use tokenless_control::model::{Page, PageRequest};
@@ -61,11 +62,15 @@ pub async fn revoke_own(
     State(s): St,
     authed: Authed,
     Path(sign_in_id): Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Response> {
     let auth = session(&authed)?;
     let id: SignInId = parse("sign-in", &sign_in_id)?;
     s.control.auth.revoke_sign_in(auth, &id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    if id == auth.sign_in_id {
+        super::handlers::signed_out_response(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
 }
 
 /// `POST /auth/sign-ins/revoke-others`: ends every sign-in of the caller
@@ -96,12 +101,21 @@ pub async fn revoke_user(
     State(s): St,
     authed: Authed,
     Path(user_id): Path<String>,
-) -> ApiResult<Json<SignInsRevoked>> {
+) -> ApiResult<Response> {
     let id: UserId = parse("user", &user_id)?;
-    Ok(Json(
+    let body = Json(
         s.control
             .auth
             .revoke_user_sign_ins(&authed.caller, &id)
             .await?,
-    ))
+    );
+    if authed
+        .session
+        .as_ref()
+        .is_some_and(|session| session.user.id == id)
+    {
+        super::handlers::signed_out_response(body)
+    } else {
+        Ok(body.into_response())
+    }
 }

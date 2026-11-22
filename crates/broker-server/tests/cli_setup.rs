@@ -176,6 +176,29 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
         .await
         .unwrap();
     assert!(!minted.token.is_empty());
+    let cli = Cli::new(&url, &session);
+    let file = cli.home.path().join("session.token");
+    std::fs::write(&file, &minted.token).unwrap();
+    for (method, path) in [("GET", "/sessions/self"), ("POST", "/sessions/revoke-self")] {
+        let out = finish(cli.spawn(&[
+            "api",
+            "request",
+            method,
+            path,
+            "--session-token-file",
+            file.to_str().unwrap(),
+        ]))
+        .await;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .unwrap()
+            .is_object());
+    }
+
     assert!(ApiClient::new(&url, None)
         .unwrap()
         .resolve_vault(Some("work"))
@@ -389,8 +412,9 @@ impl Cli {
         }
     }
 
-    fn spawn(&self, args: &[&str]) -> std::process::Child {
-        std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+    fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"));
+        command
             .args(args)
             .args(["--server", &self.url])
             .env_clear()
@@ -398,9 +422,12 @@ impl Cli {
             .env("PATH", "/usr/bin:/bin")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap()
+            .stderr(std::process::Stdio::piped());
+        command
+    }
+
+    fn spawn(&self, args: &[&str]) -> std::process::Child {
+        self.command(args).spawn().unwrap()
     }
 }
 
@@ -823,4 +850,333 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         format!("tokenless proxy add --name <this machine> --state ~/.tokenless/node.json --server {url}")
     );
     server.shutdown();
+}
+
+#[tokio::test]
+async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
+    use serde_json::{json, Value};
+
+    async fn sign_in_cli(url: &str, name: &str, password: &str) -> Cli {
+        let SignIn::Done(session) =
+            account::sign_in(url, name, password, None, account::SignInFor::Manage)
+                .await
+                .unwrap()
+        else {
+            panic!("test accounts use password sign-in")
+        };
+        Cli::new(url, &session)
+    }
+
+    async fn request(cli: &Cli, args: &[&str]) -> Vec<u8> {
+        let result = finish(cli.spawn(&[&["api", "request"][..], args].concat())).await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        result.stdout
+    }
+
+    let routes = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .args(["api", "routes"])
+        .output()
+        .unwrap();
+    assert!(routes.status.success());
+    let invalid_route = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .args([
+            "api",
+            "request",
+            "GET",
+            "/vaults",
+            "--session-token-file",
+            "absent-file",
+            "--server",
+            "http://127.0.0.2:8080",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid_route.status.success());
+    assert!(String::from_utf8_lossy(&invalid_route.stderr).contains("for GET /sessions/self"));
+    let catalogue = std::str::from_utf8(&routes.stdout).unwrap();
+    for operation in [
+        "GET /vaults",
+        "PATCH /rules/{rule_id}",
+        "POST /invites/accept",
+        "GET /ca/interception.pem",
+    ] {
+        assert!(
+            catalogue.lines().any(|line| line == operation),
+            "{operation}"
+        );
+    }
+
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let url = format!("http://{}", server.api_addr);
+    let initial = server.initial_admin.as_ref().unwrap();
+    let admin = sign_in_cli(&url, &initial.username, &initial.password).await;
+    let file = data.path().join("request.json");
+    let path = file.to_str().unwrap();
+    std::fs::write(&file, r#"{"name":"example"}"#).unwrap();
+    let vault: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/vaults", "--input", path]).await)
+            .unwrap();
+    let id = vault["id"].as_str().unwrap();
+    let listing: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/vaults?page_size=1"]).await).unwrap();
+    assert_eq!(listing["items"][0]["id"], id);
+
+    std::fs::write(&file, b"{\"name\":\"invalid-input\",\"extra\":\"\xff\"}").unwrap();
+    let invalid =
+        finish(admin.spawn(&["api", "request", "POST", "/vaults", "--input", path])).await;
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("UTF-8"));
+
+    std::fs::write(&file, json!({"current_password":initial.password.as_str(),"new_password":initial.password.as_str()}).to_string()).unwrap();
+    let reuse =
+        finish(admin.spawn(&["api", "request", "POST", "/auth/password", "--input", path])).await;
+    let problem = String::from_utf8_lossy(&reuse.stderr);
+    assert!(
+        !reuse.status.success() && problem.contains("new password must differ"),
+        "{problem}"
+    );
+    assert!(!problem.contains(initial.password.as_str()));
+    let mut malformed = admin
+        .command(&["api", "request", "POST", "/vaults", "--input", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut malformed.stdin.take().unwrap(), b"{private-fixture").unwrap();
+    let rejected = finish(malformed).await;
+    assert!(!rejected.status.success());
+    let message = String::from_utf8(rejected.stderr).unwrap();
+    assert!(message.contains("JSON input"));
+    assert!(!message.contains("private-fixture"));
+
+    for (method, route, input, reason) in [
+        (
+            "POST",
+            "/vaults",
+            r#"{"name":"first","name":"second"}"#,
+            "400",
+        ),
+        (
+            "PUT",
+            "/credentials/example/secret",
+            r#"{"fields":"private-fixture"}"#,
+            "400",
+        ),
+        (
+            "POST",
+            "/auth/password",
+            r#"{"current_password":"private-fixture","new_password":"another-fixture"}"#,
+            "the current password is incorrect",
+        ),
+    ] {
+        std::fs::write(&file, input).unwrap();
+        let result = finish(admin.spawn(&["api", "request", method, route, "--input", path])).await;
+        assert!(!result.status.success());
+        let message = String::from_utf8(result.stderr).unwrap();
+        assert!(message.contains(reason), "{message}");
+        assert!(!message.contains("private-fixture"));
+        assert!(result.stdout.is_empty());
+    }
+    let after: Value = serde_json::from_slice(&request(&admin, &["GET", "/vaults"]).await).unwrap();
+    assert_eq!(after["total"], 1);
+    // Provision a viewer through the same authenticated and public routes used in the console.
+    std::fs::write(
+        &file,
+        json!({"role":"member", "vaults":[{"vault_id":id,"role":"viewer"}]}).to_string(),
+    )
+    .unwrap();
+    let invite: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/invites", "--input", path]).await)
+            .unwrap();
+    let password = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        &file,
+        json!({"invite_token":invite["token"],"username":"reader","password":password}).to_string(),
+    )
+    .unwrap();
+    request(
+        &admin,
+        &["POST", "/invites/accept", "--anonymous", "--input", path],
+    )
+    .await;
+    let viewer = sign_in_cli(&url, "reader", &password).await;
+    let resource = format!("/vaults/{id}");
+    let denied = finish(viewer.spawn(&["api", "request", "DELETE", &resource])).await;
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("403"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let visible: Value =
+        serde_json::from_slice(&request(&viewer, &["GET", &resource]).await).unwrap();
+    assert_eq!(visible["id"], id);
+    let anonymous = finish(admin.spawn(&["api", "request", "GET", &resource, "--anonymous"])).await;
+    assert!(!anonymous.status.success());
+    assert!(String::from_utf8_lossy(&anonymous.stderr).contains("401"));
+    assert!(request(&admin, &["GET", "/ca/interception.pem"])
+        .await
+        .starts_with(b"-----BEGIN CERTIFICATE-----"));
+    request(&admin, &["DELETE", &resource]).await;
+    let missing = finish(admin.spawn(&["api", "request", "GET", &resource])).await;
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("404"));
+
+    // Revoking a second, unused invitation returns 204 with an empty body.
+    std::fs::write(&file, r#"{"role":"member"}"#).unwrap();
+    let unused: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/invites", "--input", path]).await)
+            .unwrap();
+    let invite_id = unused["invite"]["id"].as_str().unwrap();
+    assert!(
+        request(&admin, &["DELETE", &format!("/invites/{invite_id}")])
+            .await
+            .is_empty()
+    );
+    // The launch login survives ending only the active management login.
+    let SignIn::Done(launch) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Launch,
+    )
+    .await
+    .unwrap() else {
+        panic!("test account uses a password");
+    };
+    let sessions = account::SessionFiles::new(admin.home.path().join(".config/tokenless/sessions"));
+    sessions.save(&launch).unwrap();
+    request(&admin, &["POST", "/auth/logout?from=cli"]).await;
+    assert!(sessions.load(&account::manage_key(&url)).unwrap().is_none());
+    assert_eq!(sessions.load(&url).unwrap().unwrap().token, launch.token);
+    let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(who["user"]["username"], initial.username);
+    // Revoke by the current sign-in's ID, which also ends the browser cookie.
+    let SignIn::Done(second) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
+        panic!("password sign-in")
+    };
+    sessions.save(&second).unwrap();
+    let list: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/auth/sign-ins"]).await).unwrap();
+    let current = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == true)
+        .unwrap();
+    let id = current["id"].as_str().unwrap();
+    request(&admin, &["POST", &format!("/auth/sign-ins/{id}/revoke")]).await;
+    assert!(sessions.load(&account::manage_key(&url)).unwrap().is_none());
+    let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(who["scope"], "launch");
+
+    // Admin self-revocation removes this management login while a different
+    // user's launch login on the same broker remains usable.
+    let SignIn::Done(manage) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
+        panic!("password sign-in")
+    };
+    let SignIn::Done(reader) =
+        account::sign_in(&url, "reader", &password, None, account::SignInFor::Launch)
+            .await
+            .unwrap()
+    else {
+        panic!("password sign-in")
+    };
+    sessions.save(&manage).unwrap();
+    sessions.save(&reader).unwrap();
+    let route = format!(
+        "/users/{}/sign-ins/revoke",
+        who["user"]["id"].as_str().unwrap()
+    );
+    let result: Value = serde_json::from_slice(&request(&admin, &["POST", &route]).await).unwrap();
+    assert!(result["revoked"].as_u64().unwrap() >= 1);
+    assert!(sessions.load(&manage.key()).unwrap().is_none());
+    let active: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(active["user"]["username"], "reader");
+    assert_eq!(active["scope"], "launch");
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn self_revocation_without_a_cookie_header_forgets_only_the_revoked_login() {
+    use axum::{
+        http::StatusCode,
+        routing::{get, post},
+        Router,
+    };
+    let app = Router::new()
+        .route(
+            "/api/v1/auth/sign-ins/{id}/revoke",
+            post(|| async { StatusCode::NO_CONTENT }),
+        )
+        .route(
+            "/api/v1/users/{id}/sign-ins/revoke",
+            post(|| async { axum::Json(serde_json::json!({"revoked": 1})) }),
+        )
+        .route(
+            "/api/v1/auth/me",
+            get(|| async { StatusCode::UNAUTHORIZED }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let management = account::SavedSession {
+        server: base.clone(),
+        username: "operator".into(),
+        totp_enrolled: false,
+        token: "management-fixture".into(),
+        csrf_token: "csrf-fixture".into(),
+        expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        manage: true,
+    };
+    let cli = Cli::new(&base, &management);
+    let sessions = account::SessionFiles::new(cli.home.path().join(".config/tokenless/sessions"));
+    let launch = account::SavedSession {
+        token: "launch-fixture".into(),
+        manage: false,
+        ..management.clone()
+    };
+    sessions.save(&launch).unwrap();
+    let id = uuid::Uuid::new_v4();
+    for route in [
+        format!("/auth/sign-ins/{id}/revoke"),
+        format!("/users/{id}/sign-ins/revoke?from=cli"),
+    ] {
+        sessions.save(&management).unwrap();
+        let output = finish(cli.spawn(&["api", "request", "POST", &route])).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(sessions.load(&management.key()).unwrap().is_none());
+        assert_eq!(sessions.load(&base).unwrap().unwrap().token, launch.token);
+    }
+    server.abort();
 }

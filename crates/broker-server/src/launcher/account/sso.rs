@@ -11,18 +11,22 @@ pub struct BrowserSignIn {
     purpose: SignInFor,
     deadline: tokio::time::Instant,
 }
-fn browser_base(server: &str) -> Result<String, LauncherError> {
+pub(super) fn secure_base(server: &str) -> Result<String, LauncherError> {
     let base = normalise(server)?;
     let url = url::Url::parse(&base)
         .map_err(|_| LauncherError::config("the sign-in server URL is invalid"))?;
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let local = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        host => host == Some(url::Host::Domain("localhost")),
+    };
     if (url.scheme() != "https" && !(url.scheme() == "http" && local))
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(LauncherError::config("browser sign-in requires HTTPS (HTTP only on loopback), without URL credentials, query or fragment"));
+        return Err(LauncherError::config("this operation requires HTTPS (HTTP only on loopback), without URL credentials, query or fragment"));
     }
     Ok(base)
 }
@@ -33,7 +37,7 @@ pub(super) async fn checked(
         return Ok(response);
     }
     let status = response.status().as_u16();
-    let problem: Problem = response.json().await.unwrap_or_default();
+    let problem = Problem::read(response).await;
     Err(LauncherError::Api {
         operation: "signing in with single sign-on",
         status,
@@ -46,7 +50,7 @@ pub async fn begin_browser_sign_in(
     provider: &str,
     purpose: SignInFor,
 ) -> Result<BrowserSignIn, LauncherError> {
-    let base = browser_base(server)?;
+    let base = secure_base(server)?;
     let endpoint = format!("{base}/api/v1/auth/cli/start");
     let response = http_client(&base)?
         .post(&endpoint)
@@ -150,17 +154,22 @@ mod tests {
         for url in [
             "https://broker.example",
             "http://127.0.0.1:8080",
+            "http://127.0.0.2:8080",
+            "http://127.255.255.254:8080",
+            "http://[::1]:8080",
             "http://localhost:8080",
         ] {
-            assert!(browser_base(url).is_ok());
+            assert!(secure_base(url).is_ok());
         }
         for url in [
             "http://broker.example",
+            "http://128.0.0.1",
+            "http://[::2]",
             "https://u:p@broker.example",
             "https://broker.example?x=1",
             "https://broker.example/#x",
         ] {
-            assert!(browser_base(url).is_err());
+            assert!(secure_base(url).is_err());
         }
     }
 }

@@ -8,6 +8,7 @@ description: "Every command takes --help for its full list of options."
 | Command | What it does |
 |---|---|
 | `tokenless serve` | Run the control plane (console, management API and node API) and a proxy for this machine. See [Deploy](./deploy.mdx). |
+| `tokenless api routes`, `api request` | Discover management operations and perform console actions using your signed-in session. |
 | `tokenless status` | What is set up here and the command to run next. Start here. |
 | `tokenless vault list`, `service list`, `bundle list` | What you can see in the console's Vaults, Services and Access bundles pages, as a table or `--json`. |
 | `tokenless session list` | Sessions, newest first: the active ones, or every one with `--all`. |
@@ -33,6 +34,83 @@ description: "Every command takes --help for its full list of options."
 | `tokenless mcp` | Print MCP client configuration for a bundle's MCP servers. See [MCP](./mcp.mdx). |
 | `tokenless skill` | Print or install the agent skill. |
 | `tokenless update` | Replace this binary with the latest release. See [Install → Update](./install.mdx#update). |
+
+## Manage the broker from the CLI
+
+Use the named commands above for common workflows. For other console actions,
+`tokenless api routes` lists the methods and paths registered by this version.
+Replace placeholders such as `{rule_id}` with the ID returned by the broker.
+Paths are relative to `/api/v1`. Supply `--server` or set `TOKENLESS_URL` to
+select the broker. Use HTTPS for a remote broker. HTTP is supported on loopback.
+
+```sh
+tokenless login --manage
+tokenless api routes
+tokenless api request GET '/vaults?page=1'
+tokenless api request GET "/vaults/$vault_id/rules"
+tokenless api request GET "/rules/$rule_id" > rule.json
+```
+
+For example, disable the rule you just inspected. Include its revision so
+the broker can detect an intervening edit. A conflict means you should read
+the rule again before applying your change.
+
+```sh
+jq '{expected_updated_at: .updated_at, enabled: false}' rule.json |
+  tokenless api request PATCH "/rules/$rule_id" --input -
+```
+
+`--input FILE` reads a JSON body from a file. `--input -` reads standard
+input. Use a protected file or the interactive `service add` handoff for
+secrets. Successful responses go to standard output, including one-time
+tokens and downloads such as `GET /ca/interception.pem`. Errors go to
+standard error and the command exits unsuccessfully.
+
+The broker checks the same permissions, vault membership and fresh
+authentication as it does for the console. A management sign-in grants only
+the actions your account already has. For public endpoints, such as
+`GET /auth/sign-in-options`, use `--anonymous`. For a single sign-on login
+use `tokenless login --sso PROVIDER --manage`.
+
+For a proxy session's own operations, pass its token in a protected file.
+These commands operate on the session identified by the token.
+
+```sh
+tokenless api request GET /sessions/self --session-token-file session.token
+tokenless api request POST /sessions/revoke-self --session-token-file session.token
+```
+
+### Accept an invitation with an authenticator
+
+In a private terminal, create an owner-only working directory. Put the invitation
+token and your chosen username in `invite.json` as the fields `invite_token`
+and `username`. Inspect the offered access, then request enrollment.
+
+```sh
+umask 077
+work=$(mktemp -d)
+"$EDITOR" "$work/invite.json"
+jq '{invite_token}' "$work/invite.json" |
+  tokenless api request POST /invites/inspect --anonymous --input -
+tokenless api request POST /invites/totp --anonymous \
+  --input "$work/invite.json" > "$work/enrollment.json"
+```
+
+Open `enrollment.json` locally and add its `otpauth_url` or `secret` to your
+authenticator. Write your chosen `password` and the authenticator's current
+`totp_code` as JSON strings in `proof.json`. Accept with the same username,
+invitation token and enrollment secret. The commands remove the temporary files
+after acceptance succeeds. If the code expires, enter a fresh code in
+`proof.json` and retry with the same enrollment.
+
+```sh
+"$EDITOR" "$work/proof.json"
+jq -s '.[0] + .[1] + {totp_secret: .[2].secret}' \
+  "$work/invite.json" "$work/proof.json" "$work/enrollment.json" |
+  tokenless api request POST /invites/accept --anonymous --input - &&
+  rm -f "$work/invite.json" "$work/proof.json" "$work/enrollment.json" &&
+  rmdir "$work"
+```
 
 ## `serve`
 

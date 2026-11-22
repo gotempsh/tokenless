@@ -41,7 +41,8 @@ pub const ISSUER: &str = "credential-broker";
 
 const HEADER: &str = "v4.public.";
 const IMPLICIT_ASSERTION: &[u8] = b"credential-broker/proxy-session/v1";
-const MAX_TOKEN_LEN: usize = 16 * 1024;
+/// Maximum encoded proxy session token size in bytes.
+pub const MAX_TOKEN_LEN: usize = 16 * 1024;
 const SIGNATURE_LEN: usize = 64;
 /// Tolerated clock skew for `nbf`/`iat` only. Expiry is never extended.
 const NOT_BEFORE_LEEWAY_SECS: i64 = 30;

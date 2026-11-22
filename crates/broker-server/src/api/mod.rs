@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::http::{header, HeaderName, HeaderValue};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use tokenless_control::ControlPlane;
 use tower::Layer;
@@ -32,8 +32,22 @@ pub struct AppState {
     pub control: Arc<ControlPlane>,
 }
 
-fn api_routes() -> Router<Arc<AppState>> {
-    use handlers::*;
+// The CLI catalogue and the server router consume the same registrations.
+macro_rules! management_routes {
+    (Router::new() $( .route($path:literal, $first:ident($handler:path) $(.$method:ident($other:path))* $(,)?) )+) => {
+        /// Management API operations provided by this build, relative to /api/v1.
+        pub const MANAGEMENT_ROUTES: &[(&str, &[&str])] = &[
+            $(($path, &[stringify!($first), $(stringify!($method)),*])),+
+        ];
+
+        fn registered_routes() -> Router<Arc<AppState>> {
+            use handlers::*;
+            Router::new()$(.route($path, $first($handler)$(.$method($other))*))+
+        }
+    }
+}
+
+management_routes! {
     Router::new()
         .route("/auth/login", post(login))
         .route("/auth/cli/start", post(cli_login::start))
@@ -116,7 +130,7 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/vaults/{vault_id}/members/{user_id}",
-            axum::routing::delete(members::remove),
+            delete(members::remove),
         )
         .route("/vaults/{vault_id}/join", post(members::join))
         .route(
@@ -202,15 +216,15 @@ fn api_routes() -> Router<Arc<AppState>> {
         )
         .route(
             "/tripwires/{tripwire_id}",
-            axum::routing::delete(tripwires::delete),
+            delete(tripwires::delete),
         )
         .route("/api-keys", get(list_api_keys).post(create_api_key))
         .route(
             "/api-keys/{api_key_id}",
-            axum::routing::delete(revoke_api_key),
+            delete(revoke_api_key),
         )
         .route("/users", get(list_users))
-        .route("/users/{user_id}", axum::routing::patch(update_user))
+        .route("/users/{user_id}", patch(update_user))
         .route("/users/{user_id}/sign-ins", get(sign_ins::list_user))
         .route(
             "/users/{user_id}/sign-ins/revoke",
@@ -220,7 +234,7 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/invites/inspect", post(inspect_invite))
         .route("/invites/totp", post(invite_totp))
         .route("/invites/accept", post(accept_invite))
-        .route("/invites/{invite_id}", axum::routing::delete(revoke_invite))
+        .route("/invites/{invite_id}", delete(revoke_invite))
         .route("/audit", get(query_audit))
         .route("/alerts", get(alerts::list))
         .route("/alerts/summary", get(alerts::summary))
@@ -231,7 +245,11 @@ fn api_routes() -> Router<Arc<AppState>> {
         .route("/nodes/{node_id}/revoke", post(revoke_node))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/ca/interception.pem", get(interception_ca))
-        .fallback(not_found)
+}
+
+fn api_routes() -> Router<Arc<AppState>> {
+    registered_routes()
+        .fallback(handlers::not_found)
         // Nothing the API returns may be cached: several responses carry
         // one-time credentials and the rest describe security state.
         .layer(SetResponseHeaderLayer::overriding(
