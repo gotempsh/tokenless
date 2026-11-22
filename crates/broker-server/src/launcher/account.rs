@@ -116,19 +116,42 @@ pub trait SessionVault: Send + Sync {
     fn delete(&self, server: &str) -> Result<bool, LauncherError>;
 }
 
-/// The OS credential store is shared even by processes with different HOME or
-/// XDG_CONFIG_HOME values. Coordinate its writers under the OS account profile.
+/// Coordinate keychain writers across processes regardless of HOME or XDG settings.
+#[cfg(unix)]
 fn keychain_write_lock() -> Result<std::fs::File, LauncherError> {
-    #[cfg(unix)]
-    let home = {
-        use nix::unistd::{Uid, User};
-        User::from_uid(Uid::effective())
-            .map_err(|e| LauncherError::config(format!("locating the session-store lock: {e}")))?
-            .map(|user| user.dir)
-    };
-    #[cfg(not(unix))]
-    let home = std::env::home_dir();
-    let home = home.ok_or_else(|| {
+    // A keyring can work without a passwd home (for example, a Linux service account).
+    // Use the fixed system temporary directory so TMPDIR cannot split the lock namespace.
+    let uid = nix::unistd::Uid::effective().as_raw();
+    let dir = Path::new("/tmp").join(format!("tokenless-keychain-{uid}"));
+    private_keychain_lock(&dir, uid)
+}
+
+#[cfg(unix)]
+fn private_keychain_lock(dir: &Path, uid: u32) -> Result<std::fs::File, LauncherError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(SessionFiles::io(format!("creating {}", dir.display()))(e)),
+    }
+    // In the sticky system temporary directory only the owner can replace this
+    // entry. Reject links, foreign owners and directories accessible to other users.
+    let meta = dir
+        .symlink_metadata()
+        .map_err(SessionFiles::io(format!("checking {}", dir.display())))?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+        return Err(LauncherError::config(format!(
+            "expected a private session lock directory owned by the current user at {}",
+            dir.display()
+        )));
+    }
+    lock_in(dir, "keychain.lock")
+}
+
+#[cfg(not(unix))]
+fn keychain_write_lock() -> Result<std::fs::File, LauncherError> {
+    let home = std::env::home_dir().ok_or_else(|| {
         LauncherError::config("cannot locate the OS user profile for the session-store lock")
     })?;
     lock_in(&home.join(".tokenless"), "keychain.lock")
@@ -168,6 +191,23 @@ fn lock_in(dir: &Path, name: &str) -> Result<std::fs::File, LauncherError> {
 pub struct Keychain;
 
 impl Keychain {
+    // Probe availability without decoding the old credential. Login and local
+    // logout must be able to replace or remove even an unreadable entry.
+    fn contains(entry: &keyring::Entry) -> Result<bool, keyring::Error> {
+        match entry.get_secret() {
+            Ok(bytes) => {
+                drop(Zeroizing::new(bytes));
+                Ok(true)
+            }
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn has_entry(key: &str) -> Result<bool, keyring::Error> {
+        Self::contains(&keyring::Entry::new(KEYCHAIN_SERVICE, key)?)
+    }
+
     fn get(server: &str) -> Result<Option<Zeroizing<String>>, keyring::Error> {
         match keyring::Entry::new(KEYCHAIN_SERVICE, server)?.get_password() {
             Ok(json) => Ok(Some(Zeroizing::new(json))),
@@ -395,7 +435,7 @@ impl SessionStore {
     pub fn store(&self, session: &SavedSession) -> Result<Stored, LauncherError> {
         let key = session.key();
         // A file-only installation can work even with no OS account profile.
-        if let Err(e) = Keychain::get(&key) {
+        if let Err(e) = Keychain::has_entry(&key) {
             if keychain_unavailable(&e) {
                 return self.store_file(session, e);
             }
@@ -470,14 +510,14 @@ impl SessionStore {
         // Skip locks for absent entries. Re-read any present entry under the
         // same lock used to replace it before removing it.
         let mut removed = false;
-        match Keychain::get(key) {
-            Ok(Some(_)) => {
+        match Keychain::has_entry(key) {
+            Ok(true) => {
                 let _lock = keychain_write_lock()?;
                 if expected.is_none() || Keychain.load(key)?.is_some_and(|s| matches(&s)) {
                     removed = Keychain::remove(key).map_err(|e| keychain("removing", key, e))?;
                 }
             }
-            Ok(None) => {}
+            Ok(false) => {}
             Err(e) if keychain_unavailable(&e) => {}
             Err(e) => return Err(keychain("reading", key, e)),
         }
@@ -770,6 +810,20 @@ pub fn management_base(server: &str) -> Result<String, LauncherError> {
     sso::secure_base(server)
 }
 
+/// Only the proxy session's own discovery and revocation endpoints accept its bearer.
+pub fn validate_session_route(method: &Method, path: &str) -> Result<(), LauncherError> {
+    validate_api_path(path)?;
+    if !matches!(
+        (method.as_str(), path.split('?').next().unwrap_or_default()),
+        ("GET", "/sessions/self") | ("POST", "/sessions/revoke-self")
+    ) {
+        return Err(LauncherError::config(
+            "--session-token-file is for GET /sessions/self or POST /sessions/revoke-self",
+        ));
+    }
+    Ok(())
+}
+
 /// Call a management endpoint without a person’s saved sign-in.
 pub async fn session_or_public_request(
     server: &str,
@@ -778,17 +832,11 @@ pub async fn session_or_public_request(
     body: Option<Bytes>,
     session_token: Option<&str>,
 ) -> Result<reqwest::Response, LauncherError> {
-    validate_api_path(path)?;
     let base = management_base(server)?;
-    if session_token.is_some()
-        && !matches!(
-            (method.as_str(), path.split('?').next().unwrap_or_default()),
-            ("GET", "/sessions/self") | ("POST", "/sessions/revoke-self")
-        )
-    {
-        return Err(LauncherError::config(
-            "--session-token-file is for GET /sessions/self or POST /sessions/revoke-self",
-        ));
+    if session_token.is_some() {
+        validate_session_route(&method, path)?;
+    } else {
+        validate_api_path(path)?;
     }
     let req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
     let req = if let Some(token) = session_token {
@@ -1637,6 +1685,41 @@ pub fn default_control_url(server: &str) -> Result<String, LauncherError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damaged_keychain_entries_can_be_replaced_and_removed() {
+        let entry =
+            keyring::Entry::new_with_credential(Box::<keyring::mock::MockCredential>::default());
+        assert!(!Keychain::contains(&entry).unwrap());
+        entry.set_secret(&[0xff]).unwrap();
+        assert!(entry.get_password().is_err());
+        assert!(Keychain::contains(&entry).unwrap());
+        entry.set_password("replacement").unwrap();
+        assert_eq!(entry.get_password().unwrap(), "replacement");
+        entry.set_secret(&[0xff]).unwrap();
+        assert!(Keychain::contains(&entry).unwrap());
+        entry.delete_credential().unwrap();
+        assert!(!Keychain::contains(&entry).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_keychain_directory_coordinates_writers_and_refuses_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("private");
+        let uid = nix::unistd::Uid::effective().as_raw();
+        let lock = private_keychain_lock(&dir, uid).unwrap();
+        let other = std::fs::File::open(dir.join("keychain.lock")).unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(lock);
+        other.try_lock().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert!(private_keychain_lock(&link, uid).is_err());
+    }
 
     #[test]
     fn the_node_api_is_on_8443_of_the_same_host() {

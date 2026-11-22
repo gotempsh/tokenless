@@ -99,15 +99,17 @@ tokenless api request POST /invites/totp --anonymous \
 Open `enrollment.json` locally and add its `otpauth_url` or `secret` to your
 authenticator. Write your chosen `password` and the authenticator's current
 `totp_code` as JSON strings in `proof.json`. Accept with the same username,
-invitation token and enrollment secret, then remove the temporary files.
+invitation token and enrollment secret. The commands remove the temporary files
+after acceptance succeeds. If the code expires, enter a fresh code in
+`proof.json` and retry with the same enrollment.
 
 ```sh
 "$EDITOR" "$work/proof.json"
 jq -s '.[0] + .[1] + {totp_secret: .[2].secret}' \
   "$work/invite.json" "$work/proof.json" "$work/enrollment.json" |
-  tokenless api request POST /invites/accept --anonymous --input -
-rm -f "$work/invite.json" "$work/proof.json" "$work/enrollment.json"
-rmdir "$work"
+  tokenless api request POST /invites/accept --anonymous --input - &&
+  rm -f "$work/invite.json" "$work/proof.json" "$work/enrollment.json" &&
+  rmdir "$work"
 ```
 
 ## `serve`

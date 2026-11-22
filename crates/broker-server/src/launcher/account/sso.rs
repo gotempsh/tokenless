@@ -15,7 +15,11 @@ pub(super) fn secure_base(server: &str) -> Result<String, LauncherError> {
     let base = normalise(server)?;
     let url = url::Url::parse(&base)
         .map_err(|_| LauncherError::config("the sign-in server URL is invalid"))?;
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let local = match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        host => host == Some(url::Host::Domain("localhost")),
+    };
     if (url.scheme() != "https" && !(url.scheme() == "http" && local))
         || !url.username().is_empty()
         || url.password().is_some()
@@ -150,12 +154,17 @@ mod tests {
         for url in [
             "https://broker.example",
             "http://127.0.0.1:8080",
+            "http://127.0.0.2:8080",
+            "http://127.255.255.254:8080",
+            "http://[::1]:8080",
             "http://localhost:8080",
         ] {
             assert!(secure_base(url).is_ok());
         }
         for url in [
             "http://broker.example",
+            "http://128.0.0.1",
+            "http://[::2]",
             "https://u:p@broker.example",
             "https://broker.example?x=1",
             "https://broker.example/#x",

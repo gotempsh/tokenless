@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 import { expect, test } from 'bun:test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 const content = join(import.meta.dir, '..', 'content');
@@ -28,4 +29,27 @@ test('diagrams are Mermaid, never drawn in a code block', () => {
     }
   }
   expect(drawn).toEqual([]);
+});
+
+test('the invite example preserves retry files until acceptance succeeds', () => {
+  const guide = readFileSync(join(content, 'cli.mdx'), 'utf8');
+  const block = Array.from(guide.matchAll(/^```sh\n([\s\S]*?)^```/gm))
+    .find(([, script]) => script.includes('POST /invites/accept'));
+  if (!block) throw new Error('Missing invitation acceptance example');
+
+  const work = mkdtempSync(join(tmpdir(), 'invite-'));
+  const files = ['invite.json', 'proof.json', 'enrollment.json'];
+  try {
+    for (const file of files) writeFileSync(join(work, file), '{}');
+    const script = 'jq() { echo "{}"; }\ntokenless() { cat >/dev/null; return "$status"; }\n' + block[1];
+    const accept = (status: number) => Bun.spawnSync(['sh', '-c', script], {
+      env: { ...process.env, work, EDITOR: 'true', status: String(status) },
+    }).exitCode;
+    expect(accept(1)).toBe(1);
+    expect(readdirSync(work).sort()).toEqual(files.sort());
+    expect(accept(0)).toBe(0);
+    expect(existsSync(work)).toBe(false);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 });

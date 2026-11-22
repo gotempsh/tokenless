@@ -882,6 +882,21 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
         .output()
         .unwrap();
     assert!(routes.status.success());
+    let invalid_route = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .args([
+            "api",
+            "request",
+            "GET",
+            "/vaults",
+            "--session-token-file",
+            "absent-file",
+            "--server",
+            "http://127.0.0.2:8080",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid_route.status.success());
+    assert!(String::from_utf8_lossy(&invalid_route.stderr).contains("for GET /sessions/self"));
     let catalogue = std::str::from_utf8(&routes.stdout).unwrap();
     for operation in [
         "GET /vaults",
@@ -1069,6 +1084,40 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
     assert!(sessions.load(&account::manage_key(&url)).unwrap().is_none());
     let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
     assert_eq!(who["scope"], "launch");
+
+    // Admin self-revocation removes this management login while a different
+    // user's launch login on the same broker remains usable.
+    let SignIn::Done(manage) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
+        panic!("password sign-in")
+    };
+    let SignIn::Done(reader) =
+        account::sign_in(&url, "reader", &password, None, account::SignInFor::Launch)
+            .await
+            .unwrap()
+    else {
+        panic!("password sign-in")
+    };
+    sessions.save(&manage).unwrap();
+    sessions.save(&reader).unwrap();
+    let route = format!(
+        "/users/{}/sign-ins/revoke",
+        who["user"]["id"].as_str().unwrap()
+    );
+    let result: Value = serde_json::from_slice(&request(&admin, &["POST", &route]).await).unwrap();
+    assert!(result["revoked"].as_u64().unwrap() >= 1);
+    assert!(sessions.load(&manage.key()).unwrap().is_none());
+    let active: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(active["user"]["username"], "reader");
+    assert_eq!(active["scope"], "launch");
     server.shutdown();
 }
 
@@ -1083,6 +1132,10 @@ async fn self_revocation_without_a_cookie_header_forgets_only_the_revoked_login(
         .route(
             "/api/v1/auth/sign-ins/{id}/revoke",
             post(|| async { StatusCode::NO_CONTENT }),
+        )
+        .route(
+            "/api/v1/users/{id}/sign-ins/revoke",
+            post(|| async { axum::Json(serde_json::json!({"revoked": 1})) }),
         )
         .route(
             "/api/v1/auth/me",
@@ -1110,14 +1163,20 @@ async fn self_revocation_without_a_cookie_header_forgets_only_the_revoked_login(
         ..management.clone()
     };
     sessions.save(&launch).unwrap();
-    let route = format!("/auth/sign-ins/{}/revoke", uuid::Uuid::new_v4());
-    let output = finish(cli.spawn(&["api", "request", "POST", &route])).await;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(sessions.load(&management.key()).unwrap().is_none());
-    assert_eq!(sessions.load(&base).unwrap().unwrap().token, launch.token);
+    let id = uuid::Uuid::new_v4();
+    for route in [
+        format!("/auth/sign-ins/{id}/revoke"),
+        format!("/users/{id}/sign-ins/revoke?from=cli"),
+    ] {
+        sessions.save(&management).unwrap();
+        let output = finish(cli.spawn(&["api", "request", "POST", &route])).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(sessions.load(&management.key()).unwrap().is_none());
+        assert_eq!(sessions.load(&base).unwrap().unwrap().token, launch.token);
+    }
     server.abort();
 }

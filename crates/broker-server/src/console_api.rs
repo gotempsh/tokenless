@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use broker_server::launcher::account::{
-    management_base, session_or_public_request, ConsoleClient, SessionStore,
+    management_base, session_or_public_request, validate_session_route, ConsoleClient, SessionStore,
 };
 use broker_server::launcher::LauncherError;
 use bytes::Bytes;
@@ -103,6 +103,9 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
     let method = Method::from_bytes(method.as_bytes())
         .map_err(|_| LauncherError::config("invalid HTTP method"))?;
     let server = management_base(&server)?;
+    if session_token_file.is_some() {
+        validate_session_route(&method, &path)?;
+    }
     let body = input.map(input_json).transpose()?;
     let has_input = body.is_some();
     let response = if anonymous || session_token_file.is_some() {
@@ -122,13 +125,17 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
         let store = SessionStore::system();
         let client = ConsoleClient::open(&store, &server, &TerminalPrompter)?;
         // Older brokers end a sign-in by ID without sending a clearing cookie.
-        let revokes_sign_in = method == Method::POST
-            && path
-                .split('?')
-                .next()
-                .and_then(|p| p.strip_prefix("/auth/sign-ins/"))
-                .and_then(|p| p.strip_suffix("/revoke"))
-                .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
+        let route = path.split('?').next().unwrap_or_default();
+        let revoke_id = route
+            .strip_prefix("/auth/sign-ins/")
+            .and_then(|p| p.strip_suffix("/revoke"))
+            .or_else(|| {
+                route
+                    .strip_prefix("/users/")
+                    .and_then(|p| p.strip_suffix("/sign-ins/revoke"))
+            });
+        let revokes_sign_in =
+            method == Method::POST && revoke_id.is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
         let response = client
             .request(method, &path, body, "calling the management API")
             .await;

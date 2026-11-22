@@ -67,7 +67,7 @@ pub async fn revoke_own(
     let id: SignInId = parse("sign-in", &sign_in_id)?;
     s.control.auth.revoke_sign_in(auth, &id).await?;
     if id == auth.sign_in_id {
-        super::handlers::signed_out_response()
+        super::handlers::signed_out_response(StatusCode::NO_CONTENT)
     } else {
         Ok(StatusCode::NO_CONTENT.into_response())
     }
@@ -101,12 +101,21 @@ pub async fn revoke_user(
     State(s): St,
     authed: Authed,
     Path(user_id): Path<String>,
-) -> ApiResult<Json<SignInsRevoked>> {
+) -> ApiResult<Response> {
     let id: UserId = parse("user", &user_id)?;
-    Ok(Json(
+    let body = Json(
         s.control
             .auth
             .revoke_user_sign_ins(&authed.caller, &id)
             .await?,
-    ))
+    );
+    if authed
+        .session
+        .as_ref()
+        .is_some_and(|session| session.user.id == id)
+    {
+        super::handlers::signed_out_response(body)
+    } else {
+        Ok(body.into_response())
+    }
 }
