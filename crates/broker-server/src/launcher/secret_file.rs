@@ -491,13 +491,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key");
         let fields = [field("token", true)];
-        assert!(prepare(&path, &"a".repeat(MAX_SIZE as usize), "work", &fields).is_err());
+        let basic = [field("username", true), field("password", true)];
+        let error = prepare(&path, &"a".repeat(MAX_SIZE as usize), "work", &basic).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("explicit path to an already filled credential file"));
         assert!(!path.exists());
         let header = handoff_header("API\nname (destination: a.example)", "work", &fields);
         assert_eq!(header.lines().count(), 1);
         std::fs::write(&path, format!("  {header}\nvalue")).unwrap();
         assert!(check_existing(&path, &header, &fields, true).is_ok());
-        assert!(check_existing(&path, "different", &fields, false).is_err());
+        let other = handoff_header("API\nname (destination: b.example)", "work", &fields);
+        assert!(check_existing(&path, &other, &fields, true).is_err());
         std::fs::write(&path, "").unwrap();
         assert!(check_existing(&path, &header, &fields, true).is_err());
         std::fs::write(&path, "supplied-key").unwrap();

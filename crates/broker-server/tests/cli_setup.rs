@@ -474,6 +474,34 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     };
     let cli = Cli::new(&url, &session);
 
+    // Retry an indented, retained self-managed handoff through the real CLI.
+    // Omitting --host must preserve the file; repeating the original host consumes it.
+    let retained = cli.home.path().join("retained");
+    let handoff = "  # tokenless: the GitLab (destination: git.example.com) Personal access token for vault 'retry'.\ntest-only-key\n";
+    std::fs::write(&retained, handoff).unwrap();
+    let retry = [
+        "service",
+        "add",
+        "gitlab",
+        "--vault",
+        "retry",
+        "--secret-file",
+        retained.to_str().unwrap(),
+    ];
+    let refused = finish(cli.spawn(&retry)).await;
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("different handoff"));
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), handoff);
+    let mut matching = retry.to_vec();
+    matching.extend(["--host", "git.example.com"]);
+    let accepted = finish(cli.spawn(&matching)).await;
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert!(!retained.exists());
+
     let incoming = cli.home.path().join(".tokenless/incoming");
     std::fs::create_dir_all(&incoming).unwrap();
     let stale = incoming.join("generic-bearer");
