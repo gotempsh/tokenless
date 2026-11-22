@@ -636,7 +636,9 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert!(!out.status.success(), "{stderr}");
     assert!(stderr.contains("already exists"), "{stderr}");
     assert!(
-        stderr.contains("nothing was stored") && stderr.contains("still holds the key"),
+        stderr.contains("nothing was stored")
+            && stderr.contains("retry with --secret-file")
+            && stderr.contains("still holds the key"),
         "{stderr}"
     );
     assert!(!stderr.contains(KEY), "{stderr}");

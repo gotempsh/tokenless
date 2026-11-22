@@ -68,6 +68,10 @@ pub fn prepare(
             return Err(LauncherError::io(format!("checking {}", path.display()))(e));
         }
     }
+    let text = instructions(service, vault, fields);
+    if text.len() as u64 >= MAX_SIZE {
+        return Err(LauncherError::config("the handoff instructions exceed the secret file size limit; supply the credential on standard input instead"));
+    }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if !parent.exists() {
             let mut builder = std::fs::DirBuilder::new();
@@ -86,7 +90,7 @@ pub fn prepare(
     let mut file = options
         .open(path)
         .map_err(LauncherError::io(format!("creating {}", path.display())))?;
-    file.write_all(instructions(service, vault, fields).as_bytes())
+    file.write_all(text.as_bytes())
         .map_err(LauncherError::io(format!("writing {}", path.display())))?;
     Ok(Prepared::Created)
 }
@@ -236,6 +240,32 @@ fn read(path: &Path) -> Result<Zeroizing<String>, LauncherError> {
         )));
     }
     Ok(content)
+}
+
+/// An existing explicit file may contain a supplied key, or instructions
+/// for this destination. Never invite someone to fill in a different handoff.
+pub fn check_custom_handoff(
+    path: &Path,
+    service: &str,
+    vault: &str,
+    fields: &[CredentialField],
+) -> Result<(), LauncherError> {
+    let content = read(path)?;
+    let expected = instructions(service, vault, fields);
+    let headers: Vec<_> = content
+        .lines()
+        .filter(|line| line.starts_with("# tokenless:"))
+        .collect();
+    if headers.len() == 1 && headers.first().copied() == expected.lines().next() {
+        return Ok(());
+    }
+    if headers.is_empty() && matches!(parse(&content, fields), Ok(Some(_))) {
+        return Ok(());
+    }
+    Err(LauncherError::config(format!(
+        "{} does not identify this destination; choose a new handoff path or supply a filled credential file",
+        path.display()
+    )))
 }
 
 /// Whether the file already holds every required value (a person may have
@@ -414,6 +444,27 @@ mod tests {
         assert!(e.contains("line 1"), "{e}");
         // The refusal never repeats a value.
         assert!(!e.contains("just a value"), "{e}");
+    }
+
+    #[test]
+    fn custom_handoff_checks_destination_and_size_before_collecting_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        let fields = [field("token", true)];
+        let large = "a".repeat(MAX_SIZE as usize);
+        assert!(prepare(&path, &large, "work", &fields).is_err());
+        assert!(!path.exists());
+        prepare(&path, "API (destination: a.example)", "work", &fields).unwrap();
+        assert!(
+            check_custom_handoff(&path, "API (destination: a.example)", "work", &fields).is_ok()
+        );
+        assert!(
+            check_custom_handoff(&path, "API (destination: b.example)", "work", &fields).is_err()
+        );
+        std::fs::write(&path, "").unwrap();
+        assert!(check_custom_handoff(&path, "API", "work", &fields).is_err());
+        std::fs::write(&path, "supplied-key").unwrap();
+        assert!(check_custom_handoff(&path, "API", "work", &fields).is_ok());
     }
 
     #[test]

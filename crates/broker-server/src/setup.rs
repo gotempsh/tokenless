@@ -335,9 +335,9 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             stored = client.add_service(&plan, &template, fields) => stored,
             signal = stop.signalled() => {
                 return Err(LauncherError::config(format!(
-                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise run the same command again",
+                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise retry with --secret-file {}",
                     args.vault.trim(),
-                    path.display()
+                    path.display(), shell_word(&path.to_string_lossy())
                 ))
                 .into());
             }
@@ -716,6 +716,9 @@ async fn from_file(
     };
     let fields = &template.template.credential_fields;
     let prepared = secret_file::prepare(&path, service, args.vault.trim(), fields)?;
+    if prepared == Prepared::Existing && !args.hosts.is_empty() {
+        secret_file::check_custom_handoff(&path, service, args.vault.trim(), fields)?;
+    }
     let mut remove = RemoveOnDrop {
         path: &path,
         armed: prepared == Prepared::Created,
