@@ -40,8 +40,9 @@ pub fn service_prompt(template: &str, vault: &str) -> String {
 /// When `service add --secret-file` read the key but could not store it:
 /// the file is kept, so running the command again picks it up.
 pub fn kept_secret_file(path: &str) -> String {
+    let argument = broker_server::launcher::trust::shell_word(path);
     format!(
-        "nothing was stored, and {path} still holds the key. Fix what the error below says (a sign-in, for instance: tokenless login --manage), then run the same command again and it reads the file; or delete the file yourself"
+        "nothing was stored, and {path} still holds the key. Fix what the error below says (a sign-in, for instance: tokenless login --manage), then retry with --secret-file={argument} to read that file; or delete the file yourself"
     )
 }
 
@@ -112,6 +113,12 @@ pub fn mcp_token(until: &str, session_id: &str, gateway: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_binds_dash_prefixed_paths_to_the_option() {
+        assert!(kept_secret_file("-key").contains("--secret-file=-key"));
+        assert!(kept_secret_file("-key file").contains("--secret-file='-key file'"));
+    }
 
     fn added(bundle: Option<(&'static str, bool)>, vault_created: bool) -> String {
         added_service(&AddedService {

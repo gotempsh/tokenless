@@ -92,6 +92,7 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
     let template = account::pick_template(client.templates().await.unwrap(), "GitHub").unwrap();
     assert!(account::pick_template(client.templates().await.unwrap(), "no-such").is_err());
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "work".into(),
@@ -318,6 +319,7 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
     };
     let values = secret_file::wait(
         &path,
+        &secret_file::handoff_header("OpenAI", "personal", fields),
         fields,
         Duration::from_secs(10),
         Duration::from_millis(50),
@@ -328,6 +330,7 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
     person.await.unwrap();
 
     let plan = AddService {
+        hosts: vec![],
         template_id: "openai".into(),
         name: None,
         vault: "personal".into(),
@@ -471,6 +474,140 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     };
     let cli = Cli::new(&url, &session);
 
+    // Retry an indented, retained self-managed handoff through the real CLI.
+    // Omitting --host must preserve the file; repeating the original host consumes it.
+    let retained = cli.home.path().join("retained");
+    let handoff = "  # tokenless: the GitLab (destination: git.example.com) Personal access token for vault 'retry'.\ntest-only-key\n";
+    std::fs::write(&retained, handoff).unwrap();
+    let retry = [
+        "service",
+        "add",
+        "gitlab",
+        "--vault",
+        "retry",
+        "--secret-file",
+        retained.to_str().unwrap(),
+    ];
+    let refused = finish(cli.spawn(&retry)).await;
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("different handoff"));
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), handoff);
+    let mut matching = retry.to_vec();
+    matching.extend(["--host", "git.example.com"]);
+    let accepted = finish(cli.spawn(&matching)).await;
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    assert!(!retained.exists());
+
+    let incoming = cli.home.path().join(".tokenless/incoming");
+    std::fs::create_dir_all(&incoming).unwrap();
+    let stale = incoming.join("generic-bearer");
+    std::fs::write(&stale, "earlier-handoff").unwrap();
+    let child = cli.spawn(&[
+        "service",
+        "add",
+        "generic-bearer",
+        "--vault",
+        "custom",
+        "--host",
+        "api.example.com",
+        "--host",
+        "uploads.example.com:8443",
+        "--secret-file",
+    ]);
+    let host_file = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            for entry in std::fs::read_dir(&incoming).unwrap() {
+                let path = entry.unwrap().path();
+                if path != stale
+                    && std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("api.example.com, uploads.example.com:8443")
+                {
+                    return path;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("a fresh file showing both destinations");
+    // Two custom destinations must never share the same pending handoff.
+    // If a different labeled file replaces the second one, its key belongs
+    // to that handoff even though this process originally created the path.
+    let other = cli.spawn(&[
+        "service",
+        "add",
+        "generic-bearer",
+        "--vault",
+        "custom",
+        "--host",
+        "another.example.com",
+        "--secret-file",
+        "--wait",
+        "10s",
+    ]);
+    let other_path = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            for entry in std::fs::read_dir(&incoming).unwrap() {
+                let path = entry.unwrap().path();
+                if std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("another.example.com")
+                {
+                    return path;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_ne!(other_path, host_file);
+    let replacement = format!(
+        "{}test-replacement-value\n",
+        std::fs::read_to_string(&host_file).unwrap()
+    );
+    let tmp = cli.home.path().join("replacement");
+    std::fs::write(&tmp, &replacement).unwrap();
+    std::fs::rename(tmp, &other_path).unwrap();
+    let rejected = finish(other).await;
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("different handoff"));
+    assert_eq!(std::fs::read_to_string(other_path).unwrap(), replacement);
+    std::fs::write(&host_file, "test-bearer-value\n").unwrap();
+    let out = finish(child).await;
+    assert_eq!(std::fs::read_to_string(stale).unwrap(), "earlier-handoff");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("api.example.com, uploads.example.com:8443")
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = MemoryVault::default();
+    saved.save(&session).unwrap();
+    let client = ConsoleClient::open(&saved, &url, &NoPrompts).unwrap();
+    let custom = client
+        .vaults()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|v| v.name == "custom")
+        .unwrap();
+    let rules = client.rules(&custom.id).await.unwrap();
+    let hosts: Vec<_> = rules[0]
+        .allow
+        .hosts
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(hosts, ["api.example.com", "uploads.example.com:8443"]);
+
     // --secret-file: the command creates the file, the person fills it in.
     const KEY: &str = "sk-binaryHandoffTestKey0123456789abcdef";
     let child = cli.spawn(&[
@@ -571,7 +708,9 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert!(!out.status.success(), "{stderr}");
     assert!(stderr.contains("already exists"), "{stderr}");
     assert!(
-        stderr.contains("nothing was stored") && stderr.contains("still holds the key"),
+        stderr.contains("nothing was stored")
+            && stderr.contains("retry with --secret-file")
+            && stderr.contains("still holds the key"),
         "{stderr}"
     );
     assert!(!stderr.contains(KEY), "{stderr}");
@@ -743,6 +882,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     // here that comes after a poll has already seen the new service.
     let template = account::pick_template(client.templates().await.unwrap(), "github").unwrap();
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "personal".into(),

@@ -895,13 +895,16 @@ enum ServiceCommand {
         /// Service name (default: the template id).
         #[arg(long)]
         name: Option<String>,
+        /// Override the template's destination with HOST[:PORT]. Repeat for multiple hosts.
+        #[arg(long = "host", value_name = "HOST[:PORT]", value_parser = parse_service_host, conflicts_with = "web")]
+        hosts: Vec<String>,
         /// Let agents only read (GET and HEAD).
         #[arg(long)]
         read_only: bool,
         /// Read the credential from a file the person fills in, and wipe and
         /// delete it once the credential is stored. The file is created
         /// (mode 0600) if missing, at ~/.tokenless/incoming/<template>
-        /// without a path, and the command waits until it is saved. A file
+        /// without a path (a fresh filename for custom hosts), and the command waits until it is saved. A file
         /// that was already there is only deleted once its key is stored.
         #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "web")]
         secret_file: Option<String>,
@@ -1634,6 +1637,12 @@ fn read_fields(
     Ok(out)
 }
 
+fn parse_service_host(value: &str) -> Result<String, String> {
+    tokenless_core::host::HostPattern::parse(value)
+        .map(|host| host.to_string())
+        .map_err(|_| "expected a host name or host pattern with an optional port".to_string())
+}
+
 async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
     match command {
         ServiceCommand::Add {
@@ -1641,6 +1650,7 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
             vault,
             bundle,
             name,
+            hosts,
             read_only,
             secret_file,
             web,
@@ -1663,6 +1673,7 @@ async fn service(command: ServiceCommand) -> Result<ExitCode, CliError> {
                 vault,
                 bundle,
                 name,
+                hosts,
                 read_only,
                 server,
                 source,

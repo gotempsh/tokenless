@@ -73,6 +73,7 @@ async fn a_tripwire_is_planted_listed_and_removed_from_the_cli() {
     client
         .add_service(
             &AddService {
+                hosts: vec![],
                 template_id: "github".into(),
                 name: None,
                 vault: "work".into(),

@@ -234,6 +234,7 @@ pub enum Source {
 
 pub struct AddArgs {
     pub template: String,
+    pub hosts: Vec<String>,
     pub vault: String,
     pub bundle: Option<String>,
     pub name: Option<String>,
@@ -277,9 +278,30 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             .map_err(|e| LauncherError::config(e.to_string()))?;
     }
     let template = account::pick_template(client.templates().await?, &args.template)?;
+    if !matches!(args.source, Source::Web { .. }) {
+        let policy = &template.template.host_override;
+        if args.hosts.is_empty() && policy.required {
+            return Err(LauncherError::config("this template requires --host HOST[:PORT]").into());
+        }
+        if !args.hosts.is_empty() && !policy.allowed {
+            return Err(LauncherError::config("this template does not allow --host").into());
+        }
+    }
     // The secret file, kept until the key is stored, and the signals that
     // end the waits (not listened for at a terminal prompt, which handles
     // Ctrl-C itself).
+    let service = if args.hosts.is_empty() {
+        template.template.name.clone()
+    } else {
+        format!(
+            "{} (destination: {})",
+            template.template.name,
+            args.hosts.join(", ")
+        )
+    };
+    if !args.hosts.is_empty() {
+        say(format_args!("Credential for {service}."));
+    }
     let mut file = None;
     let fields = match &args.source {
         Source::Web { open } => {
@@ -288,16 +310,14 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
         }
         Source::File { path, open } => {
             let mut stop = Stop::listen()?;
-            let (fields, path) = from_file(&template, &args, path, *open, &mut stop).await?;
+            let (fields, path) =
+                from_file(&template, &service, &args, path, *open, &mut stop).await?;
             file = Some((path, stop));
             fields
         }
         Source::Terminal => {
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                say(messages::service_prompt(
-                    &template.template.name,
-                    args.vault.trim(),
-                ));
+                say(messages::service_prompt(&service, args.vault.trim()));
             }
             read_fields(&template, &prompter)?
         }
@@ -305,6 +325,7 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
     let plan = AddService {
         template_id: template.template.id.clone(),
         name: args.name.clone(),
+        hosts: args.hosts.clone(),
         vault: args.vault.clone(),
         bundle: args.bundle.clone(),
         read_only: args.read_only,
@@ -314,9 +335,9 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             stored = client.add_service(&plan, &template, fields) => stored,
             signal = stop.signalled() => {
                 return Err(LauncherError::config(format!(
-                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise run the same command again",
+                    "stopped by {signal} while storing the key, so it may or may not be in vault '{}'; {} still holds it: if the vault's page in the console lists the service, delete the file, otherwise retry with --secret-file={}",
                     args.vault.trim(),
-                    path.display()
+                    path.display(), shell_word(&path.to_string_lossy())
                 ))
                 .into());
             }
@@ -671,6 +692,7 @@ impl Drop for RemoveOnDrop<'_> {
 
 async fn from_file(
     template: &StoredTemplate,
+    service: &str,
     args: &AddArgs,
     path: &Path,
     open: bool,
@@ -683,12 +705,21 @@ async fn from_file(
                 "HOME is not set, so there is no default secret file; pass --secret-file <path>",
             )
         })?;
-        secret_file::default_path(home, &template.template.id)
+        if args.hosts.is_empty() {
+            secret_file::default_path(home, &template.template.id)
+        } else {
+            let filename = format!("{}-{}", template.template.id, uuid::Uuid::new_v4());
+            secret_file::default_path(home, &filename)
+        }
     } else {
         secret_file::expand(path, home.as_deref())
     };
     let fields = &template.template.credential_fields;
-    let prepared = secret_file::prepare(&path, &template.template.name, args.vault.trim(), fields)?;
+    let prepared = secret_file::prepare(&path, service, args.vault.trim(), fields)?;
+    let header = secret_file::handoff_header(service, args.vault.trim(), fields);
+    if prepared == Prepared::Existing {
+        secret_file::check_existing(&path, &header, fields, !args.hosts.is_empty())?;
+    }
     let mut remove = RemoveOnDrop {
         path: &path,
         armed: prepared == Prepared::Created,
@@ -711,6 +742,7 @@ async fn from_file(
     }
     let wait = secret_file::wait(
         path.as_path(),
+        &header,
         fields,
         args.wait.unwrap_or(Duration::ZERO),
         FILE_POLL,
@@ -721,7 +753,14 @@ async fn from_file(
         },
     );
     let values = tokio::select! {
-        values = wait => values?,
+        values = wait => match values {
+            Err(error @ LauncherError::HandoffMismatch { .. }) => {
+                // The path now belongs to another handoff; cleanup must leave it alone.
+                remove.armed = false;
+                return Err(error.into());
+            }
+            other => other?,
+        },
         signal = stop.signalled() => {
             let file = if remove.armed { "was deleted" } else { "was left as it was" };
             return Err(LauncherError::config(format!("stopped by {signal}; {shown} {file}, nothing was stored")).into());

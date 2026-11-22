@@ -34,6 +34,11 @@ pub enum LauncherError {
     #[error("{message}")]
     Config { message: String },
 
+    #[error(
+        "{path} identifies a different handoff; the file was left in place. Choose a new file"
+    )]
+    HandoffMismatch { path: std::path::PathBuf },
+
     #[error("request to {url} while {operation} failed: {reason}")]
     Http {
         operation: &'static str,

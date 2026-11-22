@@ -100,6 +100,7 @@ async fn a_launcher_key_starts_its_bundle_s_sessions_and_nothing_else() {
         )])
     };
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "work".into(),
