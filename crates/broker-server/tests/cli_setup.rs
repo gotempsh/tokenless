@@ -903,6 +903,36 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
     assert!(message.contains("JSON input"));
     assert!(!message.contains("private-fixture"));
 
+    for (method, route, input, reason) in [
+        (
+            "POST",
+            "/vaults",
+            r#"{"name":"first","name":"second"}"#,
+            "400",
+        ),
+        (
+            "PUT",
+            "/credentials/example/secret",
+            r#"{"fields":"private-fixture"}"#,
+            "400",
+        ),
+        (
+            "POST",
+            "/auth/password",
+            r#"{"current_password":"private-fixture","new_password":"another-fixture"}"#,
+            "the current password is incorrect",
+        ),
+    ] {
+        std::fs::write(&file, input).unwrap();
+        let result = finish(admin.spawn(&["api", "request", method, route, "--input", path])).await;
+        assert!(!result.status.success());
+        let message = String::from_utf8(result.stderr).unwrap();
+        assert!(message.contains(reason), "{message}");
+        assert!(!message.contains("private-fixture"));
+        assert!(result.stdout.is_empty());
+    }
+    let after: Value = serde_json::from_slice(&request(&admin, &["GET", "/vaults"]).await).unwrap();
+    assert_eq!(after["total"], 1);
     // Provision a viewer through the same authenticated and public routes used in the console.
     std::fs::write(
         &file,
@@ -956,5 +986,24 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
             .await
             .is_empty()
     );
+    // The launch login survives ending only the active management login.
+    let SignIn::Done(launch) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Launch,
+    )
+    .await
+    .unwrap() else {
+        panic!("test account uses a password");
+    };
+    let sessions = account::SessionFiles::new(admin.home.path().join(".config/tokenless/sessions"));
+    sessions.save(&launch).unwrap();
+    request(&admin, &["POST", "/auth/logout?from=cli"]).await;
+    assert!(sessions.load(&account::manage_key(&url)).unwrap().is_none());
+    assert_eq!(sessions.load(&url).unwrap().unwrap().token, launch.token);
+    let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(who["user"]["username"], initial.username);
     server.shutdown();
 }

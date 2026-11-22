@@ -33,7 +33,7 @@ pub(super) async fn checked(
         return Ok(response);
     }
     let status = response.status().as_u16();
-    let problem: Problem = response.json().await.unwrap_or_default();
+    let problem = Problem::read(response).await;
     Err(LauncherError::Api {
         operation: "signing in with single sign-on",
         status,

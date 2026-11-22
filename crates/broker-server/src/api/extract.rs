@@ -97,7 +97,20 @@ where
         Json::<T>::from_request(req, state)
             .await
             .map(|Json(v)| ApiJson(v))
-            .map_err(|e| ApiError::bad_request(format!("invalid JSON body: {}", e.body_text())))
+            .map_err(|e| {
+                use axum::extract::rejection::JsonRejection;
+                match e {
+                    // Serde's diagnostics can quote a rejected credential value.
+                    JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => {
+                        ApiError::bad_request(
+                            "invalid JSON body: check its syntax, fields and types",
+                        )
+                    }
+                    other => {
+                        ApiError::bad_request(format!("invalid JSON body: {}", other.body_text()))
+                    }
+                }
+            })
     }
 }
 

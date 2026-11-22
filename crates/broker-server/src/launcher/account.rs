@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use bytes::Bytes;
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Method;
 use serde::de::DeserializeOwned;
@@ -444,6 +445,42 @@ struct Problem {
     code: String,
 }
 
+impl Problem {
+    /// A proxy can return an arbitrarily large error document, even without Content-Length.
+    async fn read(mut response: reqwest::Response) -> Self {
+        const LIMIT: usize = 16 * 1024;
+        let fallback = Self {
+            title: response
+                .status()
+                .canonical_reason()
+                .unwrap_or("HTTP error")
+                .into(),
+            detail: "the broker returned no readable problem details".into(),
+            code: String::new(),
+        };
+        let mut bytes = Zeroizing::new(Vec::new());
+        while let Ok(chunk) = response.chunk().await {
+            let Some(chunk) = chunk else {
+                return serde_json::from_slice(&bytes).unwrap_or(fallback);
+            };
+            if chunk.len() > LIMIT - bytes.len() {
+                break;
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        fallback
+    }
+}
+
+fn json_request(builder: reqwest::RequestBuilder, body: Option<Bytes>) -> reqwest::RequestBuilder {
+    match body {
+        Some(bytes) => builder
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(bytes),
+        None => builder,
+    }
+}
+
 fn normalise(server: &str) -> Result<String, LauncherError> {
     let base = server.trim().trim_end_matches('/').to_string();
     if base.starts_with("http://") || base.starts_with("https://") {
@@ -543,7 +580,7 @@ pub async fn sign_in(
         })?;
     let status = response.status();
     if !status.is_success() {
-        let problem: Problem = response.json().await.unwrap_or_default();
+        let problem = Problem::read(response).await;
         if problem.code == "second_factor_required" {
             return Ok(SignIn::CodeNeeded);
         }
@@ -632,24 +669,24 @@ pub async fn public_request(
     server: &str,
     method: Method,
     path: &str,
-    body: Option<&serde_json::Value>,
+    body: Option<Bytes>,
 ) -> Result<reqwest::Response, LauncherError> {
     validate_api_path(path)?;
     let base = normalise(server)?;
-    let mut req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
-    if let Some(body) = body {
-        req = req.json(body);
-    }
-    let response = req.send().await.map_err(|e| LauncherError::Http {
-        operation: "calling the public management API",
-        url: base,
-        reason: e.without_url().to_string(),
-    })?;
+    let req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
+    let response = json_request(req, body)
+        .send()
+        .await
+        .map_err(|e| LauncherError::Http {
+            operation: "calling the public management API",
+            url: base,
+            reason: e.without_url().to_string(),
+        })?;
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status().as_u16();
-    let problem: Problem = response.json().await.unwrap_or_default();
+    let problem = Problem::read(response).await;
     Err(LauncherError::Api {
         operation: "calling the public management API",
         status,
@@ -692,11 +729,11 @@ impl<'p> ConsoleClient<'p> {
         &self,
         method: &Method,
         path: &str,
-        body: Option<&serde_json::Value>,
+        body: Option<Bytes>,
         operation: &'static str,
     ) -> Result<reqwest::Response, LauncherError> {
         let url = format!("{}/api/v1{path}", self.session.server);
-        let mut request = self
+        let request = self
             .http
             .request(method.clone(), &url)
             .header(
@@ -704,14 +741,14 @@ impl<'p> ConsoleClient<'p> {
                 format!("{SESSION_COOKIE}={}", self.session.token),
             )
             .header(CSRF_HEADER, &self.session.csrf_token);
-        if let Some(body) = body {
-            request = request.json(body);
-        }
-        request.send().await.map_err(|e| LauncherError::Http {
-            operation,
-            url: self.session.server.clone(),
-            reason: e.without_url().to_string(),
-        })
+        json_request(request, body)
+            .send()
+            .await
+            .map_err(|e| LauncherError::Http {
+                operation,
+                url: self.session.server.clone(),
+                reason: e.without_url().to_string(),
+            })
     }
 
     async fn call<T: DeserializeOwned>(
@@ -721,7 +758,20 @@ impl<'p> ConsoleClient<'p> {
         body: Option<serde_json::Value>,
         operation: &'static str,
     ) -> Result<T, LauncherError> {
-        let response = self.request(method, path, body.as_ref(), operation).await?;
+        let bytes = body.map(|value| Bytes::from(value.to_string()));
+        let response = self
+            .request(method, path, bytes, operation)
+            .await
+            .map_err(|error| {
+                // Named commands use this signal to offer sign-in when a saved session has expired.
+                if matches!(&error, LauncherError::Api { status: 401, operation: failed, .. } if *failed == operation) {
+                    LauncherError::NotSignedIn {
+                        server: self.session.server.clone(),
+                    }
+                } else {
+                    error
+                }
+            })?;
         let text = response.text().await.map_err(|e| LauncherError::Http {
             operation,
             url: path.to_string(),
@@ -741,27 +791,22 @@ impl<'p> ConsoleClient<'p> {
         &self,
         method: Method,
         path: &str,
-        body: Option<&serde_json::Value>,
+        body: Option<Bytes>,
         operation: &'static str,
     ) -> Result<reqwest::Response, LauncherError> {
         validate_api_path(path)?;
         let mut stepped_up = false;
         loop {
-            let response = self.send(&method, path, body, operation).await?;
+            let response = self.send(&method, path, body.clone(), operation).await?;
             let status = response.status();
             if status.is_success() {
                 return Ok(response);
             }
-            let problem: Problem = response.json().await.unwrap_or_default();
+            let problem = Problem::read(response).await;
             if problem.code == "step_up_required" && !stepped_up {
                 self.step_up().await?;
                 stepped_up = true;
                 continue;
-            }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                return Err(LauncherError::NotSignedIn {
-                    server: self.session.server.clone(),
-                });
             }
             return Err(LauncherError::Api {
                 operation,
@@ -777,6 +822,7 @@ impl<'p> ConsoleClient<'p> {
     async fn step_up(&self) -> Result<(), LauncherError> {
         #[derive(Deserialize)]
         struct Identity {
+            user: UserSummary,
             sso: Option<tokenless_control::service::sso::SsoSignIn>,
         }
         let response = self
@@ -799,20 +845,25 @@ impl<'p> ConsoleClient<'p> {
                 super::trust::shell_quote(&self.session.server), super::trust::shell_quote(&sso.slug)
             )));
         }
-        let proof = if self.session.totp_enrolled {
+        let proof = if identity.user.totp_enrolled {
             json!({ "code": self.prompter.secret("Authenticator code")?.trim() })
         } else {
             json!({ "password": self.prompter.secret("Password")?.as_str() })
         };
         const OP: &str = "confirming it is you";
         let response = self
-            .send(&Method::POST, "/auth/step-up", Some(&proof), OP)
+            .send(
+                &Method::POST,
+                "/auth/step-up",
+                Some(Bytes::from(proof.to_string())),
+                OP,
+            )
             .await?;
         if response.status().is_success() {
             return Ok(());
         }
         let status = response.status().as_u16();
-        let problem: Problem = response.json().await.unwrap_or_default();
+        let problem = Problem::read(response).await;
         Err(LauncherError::Api {
             operation: OP,
             status,
@@ -1526,6 +1577,99 @@ mod tests {
             expires_at: Utc::now(),
             manage: false,
         }
+    }
+
+    async fn serve_test_api(router: axum::Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (base, task)
+    }
+
+    struct ExpectedPrompt(&'static str);
+
+    impl Prompter for ExpectedPrompt {
+        fn secret(&self, label: &str) -> Result<Zeroizing<String>, LauncherError> {
+            assert_eq!(label, self.0);
+            Ok(Zeroizing::new("test-proof".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn step_up_uses_current_enrollment_in_both_directions() {
+        use axum::{
+            routing::{get, post},
+            Json, Router,
+        };
+        for enrolled in [true, false] {
+            let app = Router::new()
+                .route("/api/v1/auth/me", get(move || async move {
+                    Json(json!({"user": {"id":UserId::new(), "username":"operator", "role":"admin",
+                        "created_at":Utc::now(),"totp_enrolled":enrolled}}))
+                }))
+                .route("/api/v1/auth/step-up", post(move |Json(proof): Json<serde_json::Value>| async move {
+                    let field = if enrolled { "code" } else { "password" };
+                    assert_eq!(proof, json!({(field):"test-proof"}));
+                    axum::http::StatusCode::NO_CONTENT
+                }));
+            let (base, task) = serve_test_api(app).await;
+            let prompt = ExpectedPrompt(if enrolled {
+                "Authenticator code"
+            } else {
+                "Password"
+            });
+            let mut saved = session(&base);
+            saved.totp_enrolled = !enrolled;
+            let client = ConsoleClient {
+                http: http_client(&base).unwrap(),
+                session: saved,
+                prompter: &prompt,
+            };
+            client.step_up().await.unwrap();
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn both_request_modes_stop_reading_an_oversized_chunked_problem() {
+        use axum::{body::Body, http::StatusCode, routing::get, Router};
+        use futures_util::{stream, StreamExt};
+        let app = Router::new().route(
+            "/api/v1/error",
+            get(|| async {
+                // No Content-Length and no end-of-stream. The reader must stop at its byte limit.
+                let chunks =
+                    stream::iter([Ok::<_, std::io::Error>(Bytes::from(vec![b' '; 32 * 1024]))])
+                        .chain(stream::pending());
+                (StatusCode::BAD_GATEWAY, Body::from_stream(chunks))
+            }),
+        );
+        let (base, task) = serve_test_api(app).await;
+        let client = ConsoleClient {
+            http: http_client(&base).unwrap(),
+            session: session(&base),
+            prompter: &ExpectedPrompt("unused"),
+        };
+        for anonymous in [true, false] {
+            let result = tokio::time::timeout(Duration::from_secs(3), async {
+                if anonymous {
+                    public_request(&base, Method::GET, "/error", None).await
+                } else {
+                    client
+                        .request(Method::GET, "/error", None, "testing error handling")
+                        .await
+                }
+            })
+            .await
+            .expect("the error reader waited for an unbounded body");
+            assert!(matches!(
+                result,
+                Err(LauncherError::Api { status: 502, .. })
+            ));
+        }
+        task.abort();
     }
 
     #[test]
