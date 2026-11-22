@@ -92,6 +92,7 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
     let template = account::pick_template(client.templates().await.unwrap(), "GitHub").unwrap();
     assert!(account::pick_template(client.templates().await.unwrap(), "no-such").is_err());
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "work".into(),
@@ -328,6 +329,7 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
     person.await.unwrap();
 
     let plan = AddService {
+        hosts: vec![],
         template_id: "openai".into(),
         name: None,
         vault: "personal".into(),
@@ -470,6 +472,46 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
         panic!("the generated admin has no authenticator");
     };
     let cli = Cli::new(&url, &session);
+
+    let host_file = cli.home.path().join("custom-key");
+    std::fs::write(&host_file, "test-bearer-value\n").unwrap();
+    let out = finish(cli.spawn(&[
+        "service",
+        "add",
+        "generic-bearer",
+        "--vault",
+        "custom",
+        "--host",
+        "api.example.com",
+        "--host",
+        "uploads.example.com:8443",
+        "--secret-file",
+        host_file.to_str().unwrap(),
+    ]))
+    .await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = MemoryVault::default();
+    saved.save(&session).unwrap();
+    let client = ConsoleClient::open(&saved, &url, &NoPrompts).unwrap();
+    let custom = client
+        .vaults()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|v| v.name == "custom")
+        .unwrap();
+    let rules = client.rules(&custom.id).await.unwrap();
+    let hosts: Vec<_> = rules[0]
+        .allow
+        .hosts
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(hosts, ["api.example.com", "uploads.example.com:8443"]);
 
     // --secret-file: the command creates the file, the person fills it in.
     const KEY: &str = "sk-binaryHandoffTestKey0123456789abcdef";
@@ -743,6 +785,7 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     // here that comes after a poll has already seen the new service.
     let template = account::pick_template(client.templates().await.unwrap(), "github").unwrap();
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "personal".into(),

@@ -234,6 +234,7 @@ pub enum Source {
 
 pub struct AddArgs {
     pub template: String,
+    pub hosts: Vec<String>,
     pub vault: String,
     pub bundle: Option<String>,
     pub name: Option<String>,
@@ -277,6 +278,15 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
             .map_err(|e| LauncherError::config(e.to_string()))?;
     }
     let template = account::pick_template(client.templates().await?, &args.template)?;
+    if !matches!(args.source, Source::Web { .. }) {
+        let policy = &template.template.host_override;
+        if args.hosts.is_empty() && policy.required {
+            return Err(LauncherError::config("this template requires --host HOST[:PORT]").into());
+        }
+        if !args.hosts.is_empty() && !policy.allowed {
+            return Err(LauncherError::config("this template does not allow --host").into());
+        }
+    }
     // The secret file, kept until the key is stored, and the signals that
     // end the waits (not listened for at a terminal prompt, which handles
     // Ctrl-C itself).
@@ -305,6 +315,7 @@ pub async fn add_service(args: AddArgs) -> Result<ExitCode, CliError> {
     let plan = AddService {
         template_id: template.template.id.clone(),
         name: args.name.clone(),
+        hosts: args.hosts.clone(),
         vault: args.vault.clone(),
         bundle: args.bundle.clone(),
         read_only: args.read_only,

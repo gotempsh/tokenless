@@ -165,6 +165,7 @@ async fn lists_what_the_console_shows_as_tables_and_json() {
         )])
     };
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "work".into(),
@@ -173,6 +174,7 @@ async fn lists_what_the_console_shows_as_tables_and_json() {
     };
     let added = client.add_service(&plan, &template, token()).await.unwrap();
     let read_only = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: Some("github-read".into()),
         vault: "work".into(),
@@ -380,6 +382,7 @@ async fn a_list_longer_than_a_page_follows_the_pages() {
     let client = ConsoleClient::open(&vault, &url, &NoPrompts).unwrap();
     let template = account::pick_template(client.templates().await.unwrap(), "github").unwrap();
     let plan = AddService {
+        hosts: vec![],
         template_id: "github".into(),
         name: None,
         vault: "work".into(),

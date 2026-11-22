@@ -1196,6 +1196,8 @@ pub fn add_service_url(
 /// place in an access bundle, like the console's Add a service.
 #[derive(Debug)]
 pub struct AddService {
+    /// Destination host overrides. Empty uses the template defaults.
+    pub hosts: Vec<String>,
     pub template_id: String,
     pub name: Option<String>,
     /// Created when no vault has this name.
@@ -1269,6 +1271,7 @@ impl ConsoleClient<'_> {
             "name": name,
             "template_id": template.template.id,
             "template_version": template.template.version,
+            "host_override": plan.hosts,
             "fields": fields.iter().map(|(k, v)| (k.clone(), v.as_str().to_string())).collect::<BTreeMap<_, _>>(),
         });
         /// The service, and the test the control plane ran on it (absent

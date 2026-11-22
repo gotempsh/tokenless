@@ -68,6 +68,7 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 |---|---|---|
 | `--vault` | `default` | Created when missing |
 | `--bundle` | | Access bundle to add the rule to, created when missing |
+| `--host HOST[:PORT]` | Template hosts | Repeat for multiple destinations. Required for generic templates. With `--web`, enter hosts in the console instead. |
 | `--name` | the template's ID | Credential name |
 | `--read-only` | | Rule allows only `GET` and `HEAD` |
 | `--secret-file [PATH]` | `~/.tokenless/incoming/<template>` | Wait for the credential to be saved in this file (created, mode 0600); delete it once the credential is stored, keep it if storing fails; a file that was already there is never deleted otherwise |
@@ -76,6 +77,10 @@ is set. See [Deploy → OpenTelemetry](./deploy.mdx#opentelemetry).
 | `--wait` | `15m` | How long `--secret-file` and `--web` wait |
 | `--no-wait` | | With `--web`, only print the page |
 | `--json` | | Print the service, vault, the bundle it joined (`null` if none), its `test` and `next_steps` as JSON |
+
+For a custom bearer service, run
+`tokenless service add generic-bearer --host api.example.com --vault work --bundle build --secret-file`.
+Use a bare host, optionally with a port. The server checks permission to override template hosts.
 
 The template is matched by ID or name. A single-field credential can be
 piped in on standard input. See
