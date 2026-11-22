@@ -319,6 +319,7 @@ async fn an_agent_hands_over_a_secret_in_a_file_without_seeing_it() {
     };
     let values = secret_file::wait(
         &path,
+        &secret_file::handoff_header("OpenAI", "personal", fields),
         fields,
         Duration::from_secs(10),
         Duration::from_millis(50),

@@ -70,7 +70,7 @@ pub fn prepare(
     }
     let text = instructions(service, vault, fields);
     if text.len() as u64 >= MAX_SIZE {
-        return Err(LauncherError::config("the handoff instructions exceed the secret file size limit; supply the credential on standard input instead"));
+        return Err(LauncherError::config("the handoff instructions exceed the secret file size limit; use --secret-file with an explicit path to an already filled credential file instead"));
     }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         if !parent.exists() {
@@ -98,26 +98,37 @@ pub fn prepare(
 /// What the new file says: comment lines, which are ignored, then where
 /// each value goes.
 pub fn instructions(service: &str, vault: &str, fields: &[CredentialField]) -> String {
-    let mut out = String::new();
-    if let [only] = fields {
-        out.push_str(&format!(
-            "# tokenless: the {service} {} for vault '{vault}'.\n\
-             # Paste it below this line, save the file and close it. tokenless\n\
-             # reads it, deletes this file and stores it encrypted.\n",
-            only.label
-        ));
+    let mut out = handoff_header(service, vault, fields);
+    if fields.len() == 1 {
+        out.push_str("\n# Paste it below this line, save the file and close it. tokenless\n# reads it, deletes this file and stores it encrypted.\n");
         return out;
     }
-    out.push_str(&format!(
-        "# tokenless: the credentials of {service} for vault '{vault}'.\n\
-         # Fill in each line after the =, save the file and close it. tokenless\n\
-         # reads it, deletes this file and stores them encrypted.\n"
-    ));
+    out.push_str("\n# Fill in each line after the =, save the file and close it. tokenless\n# reads it, deletes this file and stores them encrypted.\n");
     for field in fields {
         let optional = if field.required { "" } else { " (optional)" };
         out.push_str(&format!("\n# {}{optional}\n{}=\n", field.label, field.name));
     }
     out
+}
+
+/// Keep every destination on the checked line, even for multiline display names.
+pub fn handoff_header(service: &str, vault: &str, fields: &[CredentialField]) -> String {
+    let line = match fields {
+        [only] => format!(
+            "# tokenless: the {service} {} for vault '{vault}'.",
+            only.label
+        ),
+        _ => format!("# tokenless: the credentials of {service} for vault '{vault}'."),
+    };
+    let mut header = String::with_capacity(line.len());
+    for c in line.chars() {
+        if c.is_control() || c == '\\' {
+            header.extend(c.escape_default());
+        } else {
+            header.push(c);
+        }
+    }
+    header
 }
 
 pub type Fields = BTreeMap<String, Zeroizing<String>>;
@@ -244,28 +255,37 @@ fn read(path: &Path) -> Result<Zeroizing<String>, LauncherError> {
 
 /// An existing explicit file may contain a supplied key, or instructions
 /// for this destination. Never invite someone to fill in a different handoff.
-pub fn check_custom_handoff(
-    path: &Path,
-    service: &str,
-    vault: &str,
-    fields: &[CredentialField],
-) -> Result<(), LauncherError> {
-    let content = read(path)?;
-    let expected = instructions(service, vault, fields);
-    let headers: Vec<_> = content
+fn check_header(content: &str, expected: &str, path: &Path) -> Result<bool, LauncherError> {
+    let mut headers = content
         .lines()
-        .filter(|line| line.starts_with("# tokenless:"))
-        .collect();
-    if headers.len() == 1 && headers.first().copied() == expected.lines().next() {
-        return Ok(());
-    }
-    if headers.is_empty() && matches!(parse(&content, fields), Ok(Some(_))) {
-        return Ok(());
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("# tokenless:"));
+    let Some(first) = headers.next() else {
+        return Ok(false);
+    };
+    if first == expected && headers.next().is_none() {
+        return Ok(true);
     }
     Err(LauncherError::config(format!(
-        "{} does not identify this destination; choose a new handoff path or supply a filled credential file",
+        "{} identifies a different handoff; choose a new file",
         path.display()
     )))
+}
+
+pub fn check_existing(
+    path: &Path,
+    expected: &str,
+    fields: &[CredentialField],
+    custom: bool,
+) -> Result<(), LauncherError> {
+    let content = read(path)?;
+    if check_header(&content, expected, path)?
+        || !custom
+        || matches!(parse(&content, fields), Ok(Some(_)))
+    {
+        return Ok(());
+    }
+    Err(LauncherError::config(format!("{} does not identify this destination; choose a new handoff path or supply a filled credential file", path.display())))
 }
 
 /// Whether the file already holds every required value (a person may have
@@ -281,6 +301,7 @@ pub fn filled(path: &Path, fields: &[CredentialField]) -> bool {
 /// fix the line. At the deadline the last such error is returned.
 pub async fn wait(
     path: &Path,
+    expected_header: &str,
     fields: &[CredentialField],
     timeout: Duration,
     poll: Duration,
@@ -294,6 +315,7 @@ pub async fn wait(
             Ok(content) => {
                 let settled = last.as_ref().is_some_and(|l| **l == *content);
                 if settled {
+                    check_header(&content, expected_header, path)?;
                     match parse(&content, fields) {
                         Ok(Some(values)) => return Ok(values),
                         Ok(None) => wrong = None,
@@ -451,20 +473,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key");
         let fields = [field("token", true)];
-        let large = "a".repeat(MAX_SIZE as usize);
-        assert!(prepare(&path, &large, "work", &fields).is_err());
+        assert!(prepare(&path, &"a".repeat(MAX_SIZE as usize), "work", &fields).is_err());
         assert!(!path.exists());
-        prepare(&path, "API (destination: a.example)", "work", &fields).unwrap();
-        assert!(
-            check_custom_handoff(&path, "API (destination: a.example)", "work", &fields).is_ok()
-        );
-        assert!(
-            check_custom_handoff(&path, "API (destination: b.example)", "work", &fields).is_err()
-        );
+        let header = handoff_header("API\nname (destination: a.example)", "work", &fields);
+        assert_eq!(header.lines().count(), 1);
+        std::fs::write(&path, format!("  {header}\nvalue")).unwrap();
+        assert!(check_existing(&path, &header, &fields, true).is_ok());
+        assert!(check_existing(&path, "different", &fields, false).is_err());
         std::fs::write(&path, "").unwrap();
-        assert!(check_custom_handoff(&path, "API", "work", &fields).is_err());
+        assert!(check_existing(&path, &header, &fields, true).is_err());
         std::fs::write(&path, "supplied-key").unwrap();
-        assert!(check_custom_handoff(&path, "API", "work", &fields).is_ok());
+        assert!(check_existing(&path, &header, &fields, true).is_ok());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_swapped_handoff_at_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key");
+        let fields = [field("token", true)];
+        let header = handoff_header("original", "work", &fields);
+        prepare(&path, "original", "work", &fields).unwrap();
+        check_existing(&path, &header, &fields, true).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\nvalue", handoff_header("replacement", "work", &fields)),
+        )
+        .unwrap();
+        let err = wait(
+            &path,
+            &header,
+            &fields,
+            Duration::from_secs(1),
+            Duration::from_millis(5),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("different handoff"));
     }
 
     #[test]
@@ -540,6 +585,7 @@ mod tests {
         };
         let got = wait(
             &path,
+            &handoff_header("OpenAI", "personal", &fields),
             &fields,
             Duration::from_secs(5),
             Duration::from_millis(100),
@@ -559,6 +605,7 @@ mod tests {
         prepare(&path, "OpenAI", "personal", &fields).unwrap();
         let e = wait(
             &path,
+            &handoff_header("OpenAI", "personal", &fields),
             &fields,
             Duration::from_millis(50),
             Duration::from_millis(10),
@@ -600,6 +647,7 @@ mod tests {
         let mut problems = Vec::new();
         let got = wait(
             &path,
+            &handoff_header("AWS", "personal", &fields),
             &fields,
             Duration::from_secs(5),
             Duration::from_millis(20),
@@ -618,6 +666,7 @@ mod tests {
         std::fs::write(&path, format!("{fresh}s3cr3t==\n")).unwrap();
         let e = wait(
             &path,
+            &handoff_header("AWS", "personal", &fields),
             &fields,
             Duration::from_millis(200),
             Duration::from_millis(20),

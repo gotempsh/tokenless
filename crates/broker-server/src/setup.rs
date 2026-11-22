@@ -716,8 +716,9 @@ async fn from_file(
     };
     let fields = &template.template.credential_fields;
     let prepared = secret_file::prepare(&path, service, args.vault.trim(), fields)?;
-    if prepared == Prepared::Existing && !args.hosts.is_empty() {
-        secret_file::check_custom_handoff(&path, service, args.vault.trim(), fields)?;
+    let header = secret_file::handoff_header(service, args.vault.trim(), fields);
+    if prepared == Prepared::Existing {
+        secret_file::check_existing(&path, &header, fields, !args.hosts.is_empty())?;
     }
     let mut remove = RemoveOnDrop {
         path: &path,
@@ -741,6 +742,7 @@ async fn from_file(
     }
     let wait = secret_file::wait(
         path.as_path(),
+        &header,
         fields,
         args.wait.unwrap_or(Duration::ZERO),
         FILE_POLL,
