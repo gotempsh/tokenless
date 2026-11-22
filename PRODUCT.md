@@ -74,6 +74,10 @@ invented. Service logos for supported integrations live in the template catalogu
 
 ## Product Principles
 
+- Every operation a person can perform in the console must also be available
+  from the CLI with the same role, vault scope, step-up and audit requirements.
+  When a console workflow spans several requests, document the CLI sequence.
+
 - Show the next action: an empty or unconfigured feature says what is missing
   and links to the fix; a page flags problems and what to do about them.
 - Commands ready to paste beat explanations.

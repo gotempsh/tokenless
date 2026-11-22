@@ -609,6 +609,55 @@ pub struct ConsoleClient<'p> {
     prompter: &'p dyn Prompter,
 }
 
+/// Only paths inside the broker management API may carry CLI authentication.
+fn validate_api_path(path: &str) -> Result<(), LauncherError> {
+    let encoded_path = path.split('?').next().unwrap_or_default();
+    let expected = format!("/api/v1{encoded_path}");
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains(['#', '\\'])
+        || path.chars().any(char::is_control)
+        || !reqwest::Url::parse(&format!("https://broker.invalid{expected}"))
+            .is_ok_and(|u| u.path() == expected)
+    {
+        return Err(LauncherError::config(
+            "expected a broker-relative API path such as /vaults",
+        ));
+    }
+    Ok(())
+}
+
+/// Call a public management endpoint before sign-in, for example to accept an invite.
+pub async fn public_request(
+    server: &str,
+    method: Method,
+    path: &str,
+    body: Option<&serde_json::Value>,
+) -> Result<reqwest::Response, LauncherError> {
+    validate_api_path(path)?;
+    let base = normalise(server)?;
+    let mut req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
+    if let Some(body) = body {
+        req = req.json(body);
+    }
+    let response = req.send().await.map_err(|e| LauncherError::Http {
+        operation: "calling the public management API",
+        url: base,
+        reason: e.without_url().to_string(),
+    })?;
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status().as_u16();
+    let problem: Problem = response.json().await.unwrap_or_default();
+    Err(LauncherError::Api {
+        operation: "calling the public management API",
+        status,
+        title: problem.title,
+        detail: problem.detail,
+    })
+}
+
 impl<'p> ConsoleClient<'p> {
     /// The saved session for `server`, or an error saying to sign in. A
     /// live `--manage` sign-in comes first: the other only starts sessions.
@@ -660,8 +709,8 @@ impl<'p> ConsoleClient<'p> {
         }
         request.send().await.map_err(|e| LauncherError::Http {
             operation,
-            url,
-            reason: e.to_string(),
+            url: self.session.server.clone(),
+            reason: e.without_url().to_string(),
         })
     }
 
@@ -672,23 +721,36 @@ impl<'p> ConsoleClient<'p> {
         body: Option<serde_json::Value>,
         operation: &'static str,
     ) -> Result<T, LauncherError> {
+        let response = self.request(method, path, body.as_ref(), operation).await?;
+        let text = response.text().await.map_err(|e| LauncherError::Http {
+            operation,
+            url: path.to_string(),
+            reason: e.to_string(),
+        })?;
+        // Some replies (204) have no body.
+        let text = if text.is_empty() { "null" } else { &text };
+        serde_json::from_str(text).map_err(|e| LauncherError::Http {
+            operation,
+            url: path.to_string(),
+            reason: format!("unexpected response body: {e}"),
+        })
+    }
+
+    /// Make a console request with the same session, CSRF and step-up handling as named commands.
+    pub async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        operation: &'static str,
+    ) -> Result<reqwest::Response, LauncherError> {
+        validate_api_path(path)?;
         let mut stepped_up = false;
         loop {
-            let response = self.send(&method, path, body.as_ref(), operation).await?;
+            let response = self.send(&method, path, body, operation).await?;
             let status = response.status();
             if status.is_success() {
-                let text = response.text().await.map_err(|e| LauncherError::Http {
-                    operation,
-                    url: path.to_string(),
-                    reason: e.to_string(),
-                })?;
-                // Some replies (204) have no body.
-                let text = if text.is_empty() { "null" } else { &text };
-                return serde_json::from_str(text).map_err(|e| LauncherError::Http {
-                    operation,
-                    url: path.to_string(),
-                    reason: format!("unexpected response body: {e}"),
-                });
+                return Ok(response);
             }
             let problem: Problem = response.json().await.unwrap_or_default();
             if problem.code == "step_up_required" && !stepped_up {
@@ -1532,5 +1594,28 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains("TOKENLESS_API_KEY"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod api_path_tests {
+    use super::validate_api_path;
+
+    #[test]
+    fn accepts_api_paths_and_queries_only_inside_the_broker() {
+        for path in ["/auth/me", "/vaults?page_size=1", "/templates/a%20b/1"] {
+            assert!(validate_api_path(path).is_ok(), "{path}");
+        }
+        for path in [
+            "https://example.test",
+            "//example.test",
+            "/../outside",
+            "/%2e%2e/outside",
+            "/vaults#fragment",
+            "/vaults\\other",
+            "/vaults\n",
+        ] {
+            assert!(validate_api_path(path).is_err(), "{path:?}");
+        }
     }
 }

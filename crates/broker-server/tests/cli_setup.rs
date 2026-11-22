@@ -389,8 +389,9 @@ impl Cli {
         }
     }
 
-    fn spawn(&self, args: &[&str]) -> std::process::Child {
-        std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+    fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"));
+        command
             .args(args)
             .args(["--server", &self.url])
             .env_clear()
@@ -398,9 +399,12 @@ impl Cli {
             .env("PATH", "/usr/bin:/bin")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap()
+            .stderr(std::process::Stdio::piped());
+        command
+    }
+
+    fn spawn(&self, args: &[&str]) -> std::process::Child {
+        self.command(args).spawn().unwrap()
     }
 }
 
@@ -821,6 +825,136 @@ async fn service_add_takes_the_secret_from_a_file_or_the_console_never_from_the_
     assert_eq!(
         report["next"],
         format!("tokenless proxy add --name <this machine> --state ~/.tokenless/node.json --server {url}")
+    );
+    server.shutdown();
+}
+
+#[tokio::test]
+async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
+    use serde_json::{json, Value};
+
+    async fn sign_in_cli(url: &str, name: &str, password: &str) -> Cli {
+        let SignIn::Done(session) =
+            account::sign_in(url, name, password, None, account::SignInFor::Manage)
+                .await
+                .unwrap()
+        else {
+            panic!("test accounts use password sign-in")
+        };
+        Cli::new(url, &session)
+    }
+
+    async fn request(cli: &Cli, args: &[&str]) -> Vec<u8> {
+        let result = finish(cli.spawn(&[&["api", "request"][..], args].concat())).await;
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        result.stdout
+    }
+
+    let routes = std::process::Command::new(env!("CARGO_BIN_EXE_tokenless"))
+        .args(["api", "routes"])
+        .output()
+        .unwrap();
+    assert!(routes.status.success());
+    let catalogue = std::str::from_utf8(&routes.stdout).unwrap();
+    for operation in [
+        "GET /vaults",
+        "PATCH /rules/{rule_id}",
+        "POST /invites/accept",
+        "GET /ca/interception.pem",
+    ] {
+        assert!(
+            catalogue.lines().any(|line| line == operation),
+            "{operation}"
+        );
+    }
+
+    let data = tempfile::tempdir().unwrap();
+    let mut config = ServerConfig::new(data.path());
+    config.api_listen = "127.0.0.1:0".parse().unwrap();
+    config.node_listen = "127.0.0.1:0".parse().unwrap();
+    let server = Server::start(config).await.unwrap();
+    let url = format!("http://{}", server.api_addr);
+    let initial = server.initial_admin.as_ref().unwrap();
+    let admin = sign_in_cli(&url, &initial.username, &initial.password).await;
+    let file = data.path().join("request.json");
+    let path = file.to_str().unwrap();
+    std::fs::write(&file, r#"{"name":"example"}"#).unwrap();
+    let vault: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/vaults", "--input", path]).await)
+            .unwrap();
+    let id = vault["id"].as_str().unwrap();
+    let listing: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/vaults?page_size=1"]).await).unwrap();
+    assert_eq!(listing["items"][0]["id"], id);
+
+    let mut malformed = admin
+        .command(&["api", "request", "POST", "/vaults", "--input", "-"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut malformed.stdin.take().unwrap(), b"{private-fixture").unwrap();
+    let rejected = finish(malformed).await;
+    assert!(!rejected.status.success());
+    let message = String::from_utf8(rejected.stderr).unwrap();
+    assert!(message.contains("JSON input"));
+    assert!(!message.contains("private-fixture"));
+
+    // Provision a viewer through the same authenticated and public routes used in the console.
+    std::fs::write(
+        &file,
+        json!({"role":"member", "vaults":[{"vault_id":id,"role":"viewer"}]}).to_string(),
+    )
+    .unwrap();
+    let invite: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/invites", "--input", path]).await)
+            .unwrap();
+    let password = uuid::Uuid::new_v4().to_string();
+    std::fs::write(
+        &file,
+        json!({"invite_token":invite["token"],"username":"reader","password":password}).to_string(),
+    )
+    .unwrap();
+    request(
+        &admin,
+        &["POST", "/invites/accept", "--anonymous", "--input", path],
+    )
+    .await;
+    let viewer = sign_in_cli(&url, "reader", &password).await;
+    let resource = format!("/vaults/{id}");
+    let denied = finish(viewer.spawn(&["api", "request", "DELETE", &resource])).await;
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("403"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let visible: Value =
+        serde_json::from_slice(&request(&viewer, &["GET", &resource]).await).unwrap();
+    assert_eq!(visible["id"], id);
+    let anonymous = finish(admin.spawn(&["api", "request", "GET", &resource, "--anonymous"])).await;
+    assert!(!anonymous.status.success());
+    assert!(String::from_utf8_lossy(&anonymous.stderr).contains("401"));
+    assert!(request(&admin, &["GET", "/ca/interception.pem"])
+        .await
+        .starts_with(b"-----BEGIN CERTIFICATE-----"));
+    request(&admin, &["DELETE", &resource]).await;
+    let missing = finish(admin.spawn(&["api", "request", "GET", &resource])).await;
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("404"));
+
+    // Revoking a second, unused invitation returns 204 with an empty body.
+    std::fs::write(&file, r#"{"role":"member"}"#).unwrap();
+    let unused: Value =
+        serde_json::from_slice(&request(&admin, &["POST", "/invites", "--input", path]).await)
+            .unwrap();
+    let invite_id = unused["invite"]["id"].as_str().unwrap();
+    assert!(
+        request(&admin, &["DELETE", &format!("/invites/{invite_id}")])
+            .await
+            .is_empty()
     );
     server.shutdown();
 }

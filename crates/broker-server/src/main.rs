@@ -43,6 +43,7 @@ use tracing_subscriber::{EnvFilter, Layer as _};
 use zeroize::Zeroizing;
 
 mod alerts;
+mod console_api;
 mod keys;
 mod list;
 mod members;
@@ -70,6 +71,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Discover and call the management operations used by the web console.
+    Api {
+        #[command(subcommand)]
+        command: console_api::Command,
+    },
     /// Run the control plane: management API, UI and node API.
     Serve(ServeArgs),
     /// Sign in as a person and keep the session in the OS keychain.
@@ -2797,7 +2803,8 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let agent_side = matches!(
         cli.command,
-        Command::Session { .. }
+        Command::Api { .. }
+            | Command::Session { .. }
             | Command::Run(_)
             | Command::Mcp(_)
             | Command::Skill { .. }
@@ -2819,6 +2826,7 @@ async fn main() -> ExitCode {
     report_telemetry(&telemetry, &settings, failed);
     let mut stopped = Stopped::Normally;
     let result = match cli.command {
+        Command::Api { command } => console_api::run(command).await,
         Command::Serve(args) => serve(args).await.map(|()| ExitCode::SUCCESS),
         Command::Node { command } => node(command, &telemetry).await.map(|how| {
             stopped = how;
