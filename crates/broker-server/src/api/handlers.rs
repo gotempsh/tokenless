@@ -161,6 +161,10 @@ fn require_session(authed: &Authed) -> ApiResult<&tokenless_control::service::au
 pub async fn logout(State(s): St, authed: Authed) -> ApiResult<Response> {
     let session = require_session(&authed)?;
     s.control.auth.logout(session).await?;
+    signed_out_response()
+}
+
+pub(super) fn signed_out_response() -> ApiResult<Response> {
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,

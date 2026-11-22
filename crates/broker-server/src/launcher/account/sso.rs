@@ -11,7 +11,7 @@ pub struct BrowserSignIn {
     purpose: SignInFor,
     deadline: tokio::time::Instant,
 }
-fn browser_base(server: &str) -> Result<String, LauncherError> {
+pub(super) fn secure_base(server: &str) -> Result<String, LauncherError> {
     let base = normalise(server)?;
     let url = url::Url::parse(&base)
         .map_err(|_| LauncherError::config("the sign-in server URL is invalid"))?;
@@ -22,7 +22,7 @@ fn browser_base(server: &str) -> Result<String, LauncherError> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(LauncherError::config("browser sign-in requires HTTPS (HTTP only on loopback), without URL credentials, query or fragment"));
+        return Err(LauncherError::config("this operation requires HTTPS (HTTP only on loopback), without URL credentials, query or fragment"));
     }
     Ok(base)
 }
@@ -46,7 +46,7 @@ pub async fn begin_browser_sign_in(
     provider: &str,
     purpose: SignInFor,
 ) -> Result<BrowserSignIn, LauncherError> {
-    let base = browser_base(server)?;
+    let base = secure_base(server)?;
     let endpoint = format!("{base}/api/v1/auth/cli/start");
     let response = http_client(&base)?
         .post(&endpoint)
@@ -152,7 +152,7 @@ mod tests {
             "http://127.0.0.1:8080",
             "http://localhost:8080",
         ] {
-            assert!(browser_base(url).is_ok());
+            assert!(secure_base(url).is_ok());
         }
         for url in [
             "http://broker.example",
@@ -160,7 +160,7 @@ mod tests {
             "https://broker.example?x=1",
             "https://broker.example/#x",
         ] {
-            assert!(browser_base(url).is_err());
+            assert!(secure_base(url).is_err());
         }
     }
 }

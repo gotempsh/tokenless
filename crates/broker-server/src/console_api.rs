@@ -5,7 +5,9 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use broker_server::launcher::account::{public_request, ConsoleClient, SessionStore, SessionVault};
+use broker_server::launcher::account::{
+    management_base, session_or_public_request, ConsoleClient, SessionStore,
+};
 use broker_server::launcher::LauncherError;
 use bytes::Bytes;
 use clap::Subcommand;
@@ -29,6 +31,9 @@ pub enum Command {
         /// Call without a session, for public workflows such as invite acceptance.
         #[arg(long)]
         anonymous: bool,
+        /// Use a proxy session bearer for /sessions/self or /sessions/revoke-self.
+        #[arg(long, value_name = "FILE", conflicts_with = "anonymous")]
+        session_token_file: Option<PathBuf>,
         #[arg(long, env = "TOKENLESS_URL", default_value = "http://127.0.0.1:8080")]
         server: String,
     },
@@ -56,7 +61,13 @@ fn input_json(path: PathBuf) -> Result<Bytes, CliError> {
     if bytes.len() as u64 > MAX_JSON {
         return Err(LauncherError::config("management API JSON input exceeds 2 MiB").into());
     }
-    serde_json::from_slice::<serde::de::IgnoredAny>(&bytes).map_err(|e| {
+    std::str::from_utf8(&bytes).map_err(|error| {
+        LauncherError::config(format!(
+            "JSON input must be UTF-8 (invalid byte at offset {})",
+            error.valid_up_to()
+        ))
+    })?;
+    serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| {
         LauncherError::config(format!(
             "could not read JSON input at line {}, column {}",
             e.line(),
@@ -76,6 +87,7 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
         path,
         input,
         anonymous,
+        session_token_file,
         server,
     } = command
     else {
@@ -90,13 +102,33 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
 
     let method = Method::from_bytes(method.as_bytes())
         .map_err(|_| LauncherError::config("invalid HTTP method"))?;
+    let server = management_base(&server)?;
     let body = input.map(input_json).transpose()?;
     let has_input = body.is_some();
-    let response = if anonymous {
-        public_request(&server, method, &path, body).await
+    let response = if anonymous || session_token_file.is_some() {
+        let token = session_token_file
+            .as_deref()
+            .map(crate::read_token_file)
+            .transpose()?;
+        session_or_public_request(
+            &server,
+            method,
+            &path,
+            body,
+            token.as_ref().map(|s| s.as_str()),
+        )
+        .await
     } else {
         let store = SessionStore::system();
         let client = ConsoleClient::open(&store, &server, &TerminalPrompter)?;
+        // Older brokers end a sign-in by ID without sending a clearing cookie.
+        let revokes_sign_in = method == Method::POST
+            && path
+                .split('?')
+                .next()
+                .and_then(|p| p.strip_prefix("/auth/sign-ins/"))
+                .and_then(|p| p.strip_suffix("/revoke"))
+                .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
         let response = client
             .request(method, &path, body, "calling the management API")
             .await;
@@ -114,14 +146,11 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
                         .and_then(|pair| pair.split_once('='))
                         == Some((tokenless_auth::cookie::SESSION_COOKIE, ""))
                 });
-            if clears_session {
-                let key = client.session().key();
-                if store
-                    .load(&key)?
-                    .is_some_and(|saved| saved.token == client.session().token)
-                {
-                    store.delete(&key)?;
-                }
+            if clears_session
+                || (revokes_sign_in
+                    && matches!(client.me().await, Err(LauncherError::NotSignedIn { .. })))
+            {
+                store.forget(client.session())?;
             }
         }
         response
@@ -131,13 +160,16 @@ pub async fn run(command: Command) -> Result<ExitCode, CliError> {
         LauncherError::Api {
             operation,
             status: 400,
+            ref detail,
             ..
-        } if has_input => LauncherError::Api {
-            operation,
-            status: 400,
-            title: "Bad Request".into(),
-            detail: "check the JSON fields, types and values for this operation".into(),
-        },
+        } if has_input && detail.starts_with("bad request: invalid JSON body:") => {
+            LauncherError::Api {
+                operation,
+                status: 400,
+                title: "Bad Request".into(),
+                detail: "check the JSON fields, types and values for this operation".into(),
+            }
+        }
         error => error,
     })?;
     let mut out = std::io::stdout().lock();

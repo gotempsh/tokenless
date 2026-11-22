@@ -176,6 +176,29 @@ async fn the_first_admin_sets_up_a_service_and_a_proxy_from_the_terminal() {
         .await
         .unwrap();
     assert!(!minted.token.is_empty());
+    let cli = Cli::new(&url, &session);
+    let file = cli.home.path().join("session.token");
+    std::fs::write(&file, &minted.token).unwrap();
+    for (method, path) in [("GET", "/sessions/self"), ("POST", "/sessions/revoke-self")] {
+        let out = finish(cli.spawn(&[
+            "api",
+            "request",
+            method,
+            path,
+            "--session-token-file",
+            file.to_str().unwrap(),
+        ]))
+        .await;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .unwrap()
+            .is_object());
+    }
+
     assert!(ApiClient::new(&url, None)
         .unwrap()
         .resolve_vault(Some("work"))
@@ -891,6 +914,21 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
         serde_json::from_slice(&request(&admin, &["GET", "/vaults?page_size=1"]).await).unwrap();
     assert_eq!(listing["items"][0]["id"], id);
 
+    std::fs::write(&file, b"{\"name\":\"invalid-input\",\"extra\":\"\xff\"}").unwrap();
+    let invalid =
+        finish(admin.spawn(&["api", "request", "POST", "/vaults", "--input", path])).await;
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("UTF-8"));
+
+    std::fs::write(&file, json!({"current_password":initial.password.as_str(),"new_password":initial.password.as_str()}).to_string()).unwrap();
+    let reuse =
+        finish(admin.spawn(&["api", "request", "POST", "/auth/password", "--input", path])).await;
+    let problem = String::from_utf8_lossy(&reuse.stderr);
+    assert!(
+        !reuse.status.success() && problem.contains("new password must differ"),
+        "{problem}"
+    );
+    assert!(!problem.contains(initial.password.as_str()));
     let mut malformed = admin
         .command(&["api", "request", "POST", "/vaults", "--input", "-"])
         .stdin(std::process::Stdio::piped())
@@ -1005,5 +1043,81 @@ async fn console_operations_from_the_cli_use_the_persons_server_permissions() {
     assert_eq!(sessions.load(&url).unwrap().unwrap().token, launch.token);
     let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
     assert_eq!(who["user"]["username"], initial.username);
+    // Revoke by the current sign-in's ID, which also ends the browser cookie.
+    let SignIn::Done(second) = account::sign_in(
+        &url,
+        &initial.username,
+        &initial.password,
+        None,
+        account::SignInFor::Manage,
+    )
+    .await
+    .unwrap() else {
+        panic!("password sign-in")
+    };
+    sessions.save(&second).unwrap();
+    let list: Value =
+        serde_json::from_slice(&request(&admin, &["GET", "/auth/sign-ins"]).await).unwrap();
+    let current = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == true)
+        .unwrap();
+    let id = current["id"].as_str().unwrap();
+    request(&admin, &["POST", &format!("/auth/sign-ins/{id}/revoke")]).await;
+    assert!(sessions.load(&account::manage_key(&url)).unwrap().is_none());
+    let who: Value = serde_json::from_slice(&request(&admin, &["GET", "/auth/me"]).await).unwrap();
+    assert_eq!(who["scope"], "launch");
     server.shutdown();
+}
+
+#[tokio::test]
+async fn self_revocation_without_a_cookie_header_forgets_only_the_revoked_login() {
+    use axum::{
+        http::StatusCode,
+        routing::{get, post},
+        Router,
+    };
+    let app = Router::new()
+        .route(
+            "/api/v1/auth/sign-ins/{id}/revoke",
+            post(|| async { StatusCode::NO_CONTENT }),
+        )
+        .route(
+            "/api/v1/auth/me",
+            get(|| async { StatusCode::UNAUTHORIZED }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let management = account::SavedSession {
+        server: base.clone(),
+        username: "operator".into(),
+        totp_enrolled: false,
+        token: "management-fixture".into(),
+        csrf_token: "csrf-fixture".into(),
+        expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        manage: true,
+    };
+    let cli = Cli::new(&base, &management);
+    let sessions = account::SessionFiles::new(cli.home.path().join(".config/tokenless/sessions"));
+    let launch = account::SavedSession {
+        token: "launch-fixture".into(),
+        manage: false,
+        ..management.clone()
+    };
+    sessions.save(&launch).unwrap();
+    let route = format!("/auth/sign-ins/{}/revoke", uuid::Uuid::new_v4());
+    let output = finish(cli.spawn(&["api", "request", "POST", &route])).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(sessions.load(&management.key()).unwrap().is_none());
+    assert_eq!(sessions.load(&base).unwrap().unwrap().token, launch.token);
+    server.abort();
 }

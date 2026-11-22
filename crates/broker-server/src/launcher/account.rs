@@ -13,7 +13,7 @@ mod sso;
 pub use sso::{begin_browser_sign_in, BrowserSignIn};
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -116,6 +116,53 @@ pub trait SessionVault: Send + Sync {
     fn delete(&self, server: &str) -> Result<bool, LauncherError>;
 }
 
+/// The OS credential store is shared even by processes with different HOME or
+/// XDG_CONFIG_HOME values. Coordinate its writers under the OS account profile.
+fn keychain_write_lock() -> Result<std::fs::File, LauncherError> {
+    #[cfg(unix)]
+    let home = {
+        use nix::unistd::{Uid, User};
+        User::from_uid(Uid::effective())
+            .map_err(|e| LauncherError::config(format!("locating the session-store lock: {e}")))?
+            .map(|user| user.dir)
+    };
+    #[cfg(not(unix))]
+    let home = std::env::home_dir();
+    let home = home.ok_or_else(|| {
+        LauncherError::config("cannot locate the OS user profile for the session-store lock")
+    })?;
+    lock_in(&home.join(".tokenless"), "keychain.lock")
+}
+
+fn lock_in(dir: &Path, name: &str) -> Result<std::fs::File, LauncherError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .map_err(SessionFiles::io(format!("creating {}", dir.display())))?;
+    let path = dir.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // Keep the same inode between invocations. Closing the handle releases the
+    // kernel lock, including if a process is interrupted during a write.
+    let file = options
+        .open(&path)
+        .map_err(SessionFiles::io(format!("opening {}", path.display())))?;
+    file.lock()
+        .map_err(SessionFiles::io(format!("locking {}", path.display())))?;
+    Ok(file)
+}
+
 /// The OS keychain: the macOS Keychain, the Linux kernel keyring or the
 /// Windows Credential Manager.
 pub struct Keychain;
@@ -187,11 +234,13 @@ impl SessionVault for Keychain {
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        let _lock = keychain_write_lock()?;
         Self::set(&session.key(), &encode(session)?)
             .map_err(|e| keychain("saving", &session.server, e))
     }
 
     fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let _lock = keychain_write_lock()?;
         Self::remove(server).map_err(|e| keychain("removing", server, e))
     }
 }
@@ -255,17 +304,20 @@ impl SessionVault for SessionFiles {
     }
 
     fn save(&self, session: &SavedSession) -> Result<(), LauncherError> {
+        let _lock = lock_in(&self.dir, "files.lock")?;
+        self.save_locked(session)
+    }
+
+    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+        let _lock = lock_in(&self.dir, "files.lock")?;
+        self.delete_locked(server)
+    }
+}
+
+impl SessionFiles {
+    fn save_locked(&self, session: &SavedSession) -> Result<(), LauncherError> {
         use std::io::Write;
         let json = encode(session)?;
-        let mut dir = std::fs::DirBuilder::new();
-        dir.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            dir.mode(0o700);
-        }
-        dir.create(&self.dir)
-            .map_err(Self::io(format!("creating {}", self.dir.display())))?;
         let path = self.path(&session.key());
         let tmp = path.with_extension("tmp");
         // A leftover temporary file may have wider permissions; the mode
@@ -291,7 +343,7 @@ impl SessionVault for SessionFiles {
         std::fs::rename(&tmp, &path).map_err(Self::io(format!("replacing {}", path.display())))
     }
 
-    fn delete(&self, server: &str) -> Result<bool, LauncherError> {
+    fn delete_locked(&self, server: &str) -> Result<bool, LauncherError> {
         let path = self.path(server);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(true),
@@ -341,26 +393,45 @@ impl SessionStore {
 
     /// Saves the session and says where it went.
     pub fn store(&self, session: &SavedSession) -> Result<Stored, LauncherError> {
+        let key = session.key();
+        // A file-only installation can work even with no OS account profile.
+        if let Err(e) = Keychain::get(&key) {
+            if keychain_unavailable(&e) {
+                return self.store_file(session, e);
+            }
+            return Err(keychain("reading", &key, e));
+        }
+        let _lock = keychain_write_lock()?;
         let json = encode(session)?;
         match Keychain::set(&session.key(), &json) {
             Ok(()) => {
                 // A file from a time without a keychain is now stale.
                 if let Some(files) = &self.files {
-                    files.delete(&session.key())?;
+                    if files.path(&key).try_exists().map_err(SessionFiles::io(
+                        "checking for a previous session file".into(),
+                    ))? {
+                        files.delete(&key)?;
+                    }
                 }
                 Ok(Stored::Keychain)
             }
-            Err(e) if keychain_unavailable(&e) => {
-                let reason = e.to_string();
-                let files = self.files(&session.server, e)?;
-                files.save(session)?;
-                Ok(Stored::File {
-                    path: files.path(&session.key()),
-                    reason,
-                })
-            }
+            Err(e) if keychain_unavailable(&e) => self.store_file(session, e),
             Err(e) => Err(keychain("saving", &session.server, e)),
         }
+    }
+
+    fn store_file(
+        &self,
+        session: &SavedSession,
+        e: keyring::Error,
+    ) -> Result<Stored, LauncherError> {
+        let reason = e.to_string();
+        let files = self.files(&session.server, e)?;
+        files.save(session)?;
+        Ok(Stored::File {
+            path: files.path(&session.key()),
+            reason,
+        })
     }
 }
 
@@ -383,16 +454,46 @@ impl SessionVault for SessionStore {
     }
 
     fn delete(&self, server: &str) -> Result<bool, LauncherError> {
-        let in_keychain = match Keychain::remove(server) {
-            Ok(removed) => removed,
-            Err(e) if keychain_unavailable(&e) => false,
-            Err(e) => return Err(keychain("removing", server, e)),
-        };
-        let in_file = match &self.files {
-            Some(files) => files.delete(server)?,
-            None => false,
-        };
-        Ok(in_keychain || in_file)
+        self.remove(server, None)
+    }
+}
+
+impl SessionStore {
+    /// Remove only matching credentials, including when the keychain and file
+    /// fallback contain different generations of the same sign-in.
+    pub fn forget(&self, session: &SavedSession) -> Result<bool, LauncherError> {
+        self.remove(&session.key(), Some(&session.token))
+    }
+
+    fn remove(&self, key: &str, expected: Option<&str>) -> Result<bool, LauncherError> {
+        let matches = |s: &SavedSession| expected.is_none_or(|token| token == s.token);
+        // Skip locks for absent entries. Re-read any present entry under the
+        // same lock used to replace it before removing it.
+        let mut removed = false;
+        match Keychain::get(key) {
+            Ok(Some(_)) => {
+                let _lock = keychain_write_lock()?;
+                if expected.is_none() || Keychain.load(key)?.is_some_and(|s| matches(&s)) {
+                    removed = Keychain::remove(key).map_err(|e| keychain("removing", key, e))?;
+                }
+            }
+            Ok(None) => {}
+            Err(e) if keychain_unavailable(&e) => {}
+            Err(e) => return Err(keychain("reading", key, e)),
+        }
+        if let Some(files) = &self.files {
+            if files
+                .path(key)
+                .try_exists()
+                .map_err(SessionFiles::io("checking for a saved session file".into()))?
+            {
+                let _lock = lock_in(&files.dir, "files.lock")?;
+                if expected.is_none() || files.load(key)?.is_some_and(|s| matches(&s)) {
+                    removed |= files.delete_locked(key)?;
+                }
+            }
+        }
+        Ok(removed)
     }
 }
 
@@ -664,21 +765,42 @@ fn validate_api_path(path: &str) -> Result<(), LauncherError> {
     Ok(())
 }
 
-/// Call a public management endpoint before sign-in, for example to accept an invite.
-pub async fn public_request(
+/// Validate the transport before a raw management operation can send sign-in material.
+pub fn management_base(server: &str) -> Result<String, LauncherError> {
+    sso::secure_base(server)
+}
+
+/// Call a management endpoint without a person’s saved sign-in.
+pub async fn session_or_public_request(
     server: &str,
     method: Method,
     path: &str,
     body: Option<Bytes>,
+    session_token: Option<&str>,
 ) -> Result<reqwest::Response, LauncherError> {
     validate_api_path(path)?;
-    let base = normalise(server)?;
+    let base = management_base(server)?;
+    if session_token.is_some()
+        && !matches!(
+            (method.as_str(), path.split('?').next().unwrap_or_default()),
+            ("GET", "/sessions/self") | ("POST", "/sessions/revoke-self")
+        )
+    {
+        return Err(LauncherError::config(
+            "--session-token-file is for GET /sessions/self or POST /sessions/revoke-self",
+        ));
+    }
     let req = http_client(&base)?.request(method, format!("{base}/api/v1{path}"));
+    let req = if let Some(token) = session_token {
+        req.bearer_auth(token)
+    } else {
+        req
+    };
     let response = json_request(req, body)
         .send()
         .await
         .map_err(|e| LauncherError::Http {
-            operation: "calling the public management API",
+            operation: "calling the management API",
             url: base,
             reason: e.without_url().to_string(),
         })?;
@@ -688,7 +810,7 @@ pub async fn public_request(
     let status = response.status().as_u16();
     let problem = Problem::read(response).await;
     Err(LauncherError::Api {
-        operation: "calling the public management API",
+        operation: "calling the management API",
         status,
         title: problem.title,
         detail: problem.detail,
@@ -1655,7 +1777,7 @@ mod tests {
         for anonymous in [true, false] {
             let result = tokio::time::timeout(Duration::from_secs(3), async {
                 if anonymous {
-                    public_request(&base, Method::GET, "/error", None).await
+                    session_or_public_request(&base, Method::GET, "/error", None, None).await
                 } else {
                     client
                         .request(Method::GET, "/error", None, "testing error handling")
@@ -1670,6 +1792,57 @@ mod tests {
             ));
         }
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn public_device_login_refuses_remote_http_before_connecting() {
+        for path in ["/auth/cli/start", "/auth/cli/poll"] {
+            let error = session_or_public_request(
+                "http://broker.example.invalid",
+                Method::POST,
+                path,
+                Some(Bytes::from_static(b"{}")),
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("requires HTTPS"));
+        }
+        assert!(management_base("http://127.0.0.1:8080").is_ok());
+    }
+
+    #[test]
+    fn a_concurrent_login_waits_for_the_session_write_lock_and_survives_stale_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = std::sync::Arc::new(SessionFiles::new(dir.path()));
+        let old = session(&format!("https://{}.example.invalid", uuid::Uuid::new_v4()));
+        files.save(&old).unwrap();
+        let mut replacement = old.clone();
+        replacement.token = "replacement".into();
+        let lock = lock_in(&files.dir, "files.lock").unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn({
+            let files = files.clone();
+            move || {
+                started_tx.send(()).unwrap();
+                files.save(&replacement).unwrap();
+                done_tx.send(()).unwrap();
+            }
+        });
+        started_rx.recv().unwrap();
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(lock);
+        writer.join().unwrap();
+        let store = SessionStore::new(Some(SessionFiles::new(dir.path())));
+        assert!(!store.forget(&old).unwrap());
+        assert_eq!(
+            files.load(&old.key()).unwrap().unwrap().token,
+            "replacement"
+        );
     }
 
     #[test]
