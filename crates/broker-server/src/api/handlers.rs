@@ -582,6 +582,13 @@ pub async fn delete_credential(
 
 // ----- rules -------------------------------------------------------------
 
+#[derive(Deserialize)]
+pub struct CreateRuleCopy {
+    #[serde(flatten)]
+    rule: CreateRule,
+    enabled: bool,
+}
+
 pub async fn create_rule(
     State(s): St,
     authed: Authed,
@@ -593,6 +600,21 @@ pub async fn create_rule(
         .control
         .policy
         .create_rule(&authed.caller, &id, req)
+        .await?;
+    Ok((StatusCode::CREATED, Json(rule)))
+}
+
+pub async fn create_rule_copy(
+    State(s): St,
+    authed: Authed,
+    Path(vault_id): Path<String>,
+    ApiJson(req): ApiJson<CreateRuleCopy>,
+) -> ApiResult<impl IntoResponse> {
+    let id: VaultId = parse_id("vault", &vault_id)?;
+    let rule = s
+        .control
+        .policy
+        .create_rule_with_state(&authed.caller, &id, req.rule, req.enabled)
         .await?;
     Ok((StatusCode::CREATED, Json(rule)))
 }

@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 tokenless contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-import { useMemo, useState, type FormEvent } from "react";
-import { ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
+import { useMemo, useState, useSyncExternalStore, type FormEvent } from "react";
+import { Copy, ListChecks, Pencil, Plus, Timer, Trash2, Users, Wrench } from "lucide-react";
 import {
   api,
   ApiError,
   errorMessage,
   get,
-  patch,
   post,
   type AccessBundle,
   type CredentialMeta,
@@ -21,7 +20,7 @@ import {
 } from "../api";
 import { can, onlyFor, oversees, type Me } from "../access";
 import { SettingsSection } from "../components/layout";
-import { useAction, useLoad } from "../hooks";
+import { useAction, useLoad, type Loaded } from "../hooks";
 import { minutesUpTo, type SessionLimits } from "../sessionForm";
 import { chosenIn } from "../bundleChoice";
 import { BundleChoice } from "../components/BundleChoice";
@@ -59,7 +58,7 @@ import {
   Tags,
   useConfirm,
 } from "../components/common";
-import { allowsLabel, EVERYTHING } from "../rules";
+import { allowsLabel, EVERYTHING, suggestedCopyName } from "../rules";
 import { useActorNames } from "./Audit";
 import { SessionTable } from "./Sessions";
 import { Button } from "../components/ui/button-components";
@@ -155,6 +154,7 @@ export function VaultDetail({
   const vault = useLoad(() => get<VaultOverview>(`/vaults/${vaultId}/overview`), [vaultId]);
   const v = vault.data && vault.data.id === vaultId ? vault.data : undefined;
   const [deleting, setDeleting] = useState(false);
+  const [ruleFailures, setRuleFailures] = useState<{ vaultId: string; message: string }[]>([]);
   const isAdmin = user.role === "admin";
   // An instance admin who is not a member sees sessions, keys and the
   // audit log, not what the vault holds.
@@ -210,7 +210,12 @@ export function VaultDetail({
         {!(outside && contents) && (
           <>
             {tab === "credentials" && <Services vaultId={vaultId} user={user} />}
-            {tab === "rules" && <Rules key={vaultId} vaultId={vaultId} canEdit={can(user, vaultId, "edit")} />}
+            {tab === "rules" && <Rules key={vaultId} vaultId={vaultId} canEdit={can(user, vaultId, "edit")}
+              saveFailures={ruleFailures.filter(f => f.vaultId === vaultId).map(f => f.message)}
+              onFailure={message => setRuleFailures(current => current.some(f => f.vaultId === vaultId && f.message === message)
+                ? current : [...current, { vaultId, message }])}
+              onDismiss={message => setRuleFailures(current => current.filter(f => f.vaultId !== vaultId || f.message !== message))}
+            />}
             {tab === "bundles" && <Bundles vaultId={vaultId} user={user} />}
             {tab === "tripwires" && <VaultTripwires vaultId={vaultId} user={user} />}
           </>
@@ -300,7 +305,7 @@ function ToolsForm({ rule, onCancel, onDone }: { rule: Rule; onCancel: () => voi
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const body = limited ? { mcp_tools: lines(text) } : { allow_all_tools: true };
-    if (await action.run(() => patch<Rule>(`/rules/${rule.id}`, body))) onDone();
+    if (await action.run(() => saveChange(rule, () => api<Rule>("PATCH", `/rules/${rule.id}`, body, { timeoutMs: 30_000 })))) onDone();
   };
   return (
     <form className="space-y-4" onSubmit={submit}>
@@ -357,29 +362,73 @@ function ruleForm(rule: Rule) {
   };
 }
 
-function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSaved, onFailure }: {
+interface RuleEditorProps {
   vaultId: string;
   editing: Rule | null;
-  credentials?: CredentialMeta[];
+  duplicate?: Rule;
+  firstPage: Loaded<Page<CredentialMeta>>;
   onClose: () => void;
   onSaved: () => void;
   onFailure: (message: string) => void;
-}) {
+}
+
+function DuplicateRuleDraft({ sourceId, ...props }: Omit<RuleEditorProps, "editing" | "duplicate"> & { sourceId: string }) {
+  const source = useLoad(() => api<Rule>("GET", `/rules/${sourceId}`, undefined, { timeoutMs: 30_000 }), [sourceId]);
+  if (source.data) return <RuleEditor {...props} editing={null} duplicate={source.data} />;
+  return (
+    <FormDialog open title="Duplicate rule" onOpenChange={open => { if (!open) props.onClose(); }}>
+      {source.error ? <>
+        <ErrorBanner error={source.error} />
+        <Button type="button" variant="outline" disabled={source.loading} onClick={source.reload}>Retry loading rule</Button>
+      </> : <Loading />}
+    </FormDialog>
+  );
+}
+
+function RuleEditor({ vaultId, editing: initialRule, duplicate, firstPage, onClose, onSaved, onFailure }: RuleEditorProps) {
   const [editing, setEditing] = useState(initialRule);
   const [conflicted, setConflicted] = useState(false);
   const saveAction = useAction();
   const templates = useLoad(() => editing ? Promise.resolve([]) : get<StoredTemplate[]>("/templates"), [editing]);
   const lookup = useMemo(() => indexTemplates(templates.data ?? []), [templates.data]);
-  const credentialOptions = useMemo(() => (credentials ?? []).map((c) => ({
-    value: c.id,
-    label: (
-      <span className="flex min-w-0 items-center gap-2">
-        <ServiceLogo template={lookup(c) ?? { id: c.template_id, kind: "http" }} size="xs" />
-        <span className="truncate">{c.name} ({c.template_id})</span>
-      </span>
-    ),
-  })), [credentials, lookup]);
-  const [form, setForm] = useState(() => editing ? ruleForm(editing) : EMPTY_RULE);
+  const [form, setForm] = useState(() => {
+    if (editing) return ruleForm(editing);
+    if (!duplicate) return EMPTY_RULE;
+    return { ...ruleForm(duplicate), name: suggestedCopyName(duplicate.name), tools: duplicate.allow.mcp_tools?.join("\n") ?? "" };
+  });
+  const [page, setPage] = useState(1);
+  const extraPage = useLoad(() => page === 1 ? Promise.resolve(undefined)
+    : ruleCredentials(vaultId, page), [vaultId, page]);
+  // Keep the last available choices usable while another page loads or fails.
+  const credentialRequest = page === 1 ? firstPage : extraPage;
+  const credentialPage = credentialRequest.data ?? firstPage.data;
+  const browseCredentials = (next: number) => {
+    if (next !== page) {
+      if (next === 1) firstPage.reload();
+      setPage(next);
+    }
+    else if (extraPage.error && !extraPage.loading) extraPage.reload();
+  };
+  const credentials = credentialPage?.items;
+  const credentialOptions = useMemo(() => {
+    const options = (credentials ?? []).map((c) => ({
+      value: c.id,
+      label: (
+        <span className="flex min-w-0 items-center gap-2">
+          <ServiceLogo template={lookup(c) ?? { id: c.template_id, kind: "http" }} size="xs" />
+          <span className="truncate">{c.name} ({c.template_id})</span>
+        </span>
+      ),
+    }));
+    if (form.credential_id && !options.some(option => option.value === form.credential_id)) {
+      options.push({ value: form.credential_id, label: <span>{form.credential_id}</span> });
+    }
+    return options;
+  }, [credentials, lookup, form.credential_id]);
+  const [enabled, setEnabled] = useState(duplicate?.enabled ?? true);
+  const [limitedTools, setLimitedTools] = useState(duplicate?.allow.mcp_tools !== undefined);
+  const [repositories, setRepositories] = useState(duplicate?.allow.git?.repositories.join("\n") ?? "");
+  const [allowPush, setAllowPush] = useState(duplicate?.allow.git?.push ?? false);
   const reloadDraft = async () => {
     if (!editing) return;
     const latest = await saveAction.run(() => api<Rule>("GET", `/rules/${editing.id}`, undefined, { timeoutMs: 30_000 }));
@@ -403,8 +452,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
     paths: changedList(paths, editing.allow.paths),
     methods: changedList(methods, editing.allow.methods),
   } : {};
-  const validScope = !editing || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
+  const explicitScope = !!(editing || duplicate);
+  const validScope = !explicitScope || (hosts.length > 0 && form.paths.trim().length > 0 && methods.length > 0);
   const canSave = !conflicted && !saveAction.busy && !!form.credential_id && validScope
+    && (!duplicate?.allow.git || lines(repositories).length > 0)
     && (!editing || Object.values(changes).some(value => value !== undefined));
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -414,18 +465,21 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
       try {
         const options = { timeoutMs: 30_000 };
         if (editing) {
-          return await api<Rule>("PATCH", `/rules/${editing.id}`, {
+          return await saveChange(editing, () => api<Rule>("PATCH", `/rules/${editing.id}`, {
             expected_updated_at: editing.updated_at, ...changes,
-          }, options);
+          }, options));
         }
-        return await api<Rule>("POST", `/vaults/${vaultId}/rules`, {
+        const path = duplicate ? `/vaults/${vaultId}/rules/copies` : `/vaults/${vaultId}/rules`;
+        return await saveChange(null, () => api<Rule>("POST", path, {
           name: form.name,
           credential_id: form.credential_id,
           hosts: opt(form.hosts),
-          paths: opt(form.paths),
+          paths: duplicate ? paths : opt(form.paths),
           methods: opt(form.methods),
-          mcp_tools: opt(form.tools),
-        }, options);
+          mcp_tools: duplicate ? (limitedTools ? lines(form.tools) : undefined) : opt(form.tools),
+          git: duplicate?.allow.git ? { repositories: lines(repositories), push: allowPush } : undefined,
+          enabled: duplicate ? enabled : undefined,
+        }, options));
       } catch (error) {
         if (editing && error instanceof ApiError && error.problem.status === 409) setConflicted(true);
         const message = error instanceof DOMException && error.name === "TimeoutError"
@@ -443,8 +497,8 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       wide
-      title={editing ? "Edit rule" : "Add a rule"}
-      description={editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
+      title={editing ? "Edit rule" : duplicate ? "Duplicate rule" : "Add a rule"}
+      description={duplicate ? `Create a new rule from "${duplicate.name}". Review its settings before creating it.` : editing ? "Changes apply to this rule wherever it is used. Its scope must stay within the credential template." : "Leave hosts, paths and methods empty to use the template's maximum scope; anything you enter can only narrow it."}
     >
       <form className="space-y-4" onSubmit={save}>
         <ErrorBanner error={saveAction.error} />
@@ -460,7 +514,7 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
             <Field
               label="Credential"
               htmlFor="rule-cred"
-              hint={credentials?.length === 0 ? "Add a credential to this vault first." : undefined}
+              hint={credentialPage?.total === 0 ? "Add a credential to this vault first." : undefined}
             >
               {editing ? <Input id="rule-cred" value={credentials?.find(c => c.id === editing.credential_id)?.name ?? editing.credential_id} readOnly /> : <SelectField
                 id="rule-cred"
@@ -469,12 +523,17 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
                 placeholder="Choose…"
                 options={credentialOptions}
               />}
+              {!editing && <Pager page={credentialPage} onPage={browseCredentials} />}
+              {!editing && credentialRequest.error && <>
+                <ErrorBanner error={credentialRequest.error} />
+                <Button type="button" variant="outline" disabled={credentialRequest.loading} onClick={credentialRequest.reload}>Retry loading credentials</Button>
+              </>}
             </Field>
           </div>
-          <Field label="Hosts" htmlFor="rule-hosts" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+          <Field label="Hosts" htmlFor="rule-hosts" hint={explicitScope ? "Required, one per line." : "Optional, one per line."}>
             <Textarea
               id="rule-hosts"
-                required={!!editing}
+                required={explicitScope}
               rows={2}
               className="font-mono"
               value={form.hosts}
@@ -483,10 +542,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
             />
           </Field>
           <div className="space-y-4">
-            <Field label="Paths" htmlFor="rule-paths" hint={editing ? "Required, one per line." : "Optional, one per line."}>
+            <Field label="Paths" htmlFor="rule-paths" hint={explicitScope ? "Required, one per line." : "Optional, one per line."}>
               <Textarea
                 id="rule-paths"
-                required={!!editing}
+                required={explicitScope}
                 rows={2}
                 className="font-mono"
                 value={form.paths}
@@ -494,10 +553,10 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
                 placeholder="/v1/*"
               />
             </Field>
-            <Field label="Methods" htmlFor="rule-methods" hint={editing ? "Required, comma separated." : "Optional, comma separated."}>
+            <Field label="Methods" htmlFor="rule-methods" hint={explicitScope ? "Required, comma separated." : "Optional, comma separated."}>
               <Input
                 id="rule-methods"
-                required={!!editing}
+                required={explicitScope}
                 className="font-mono"
                 value={form.methods}
                 onChange={(e) => setForm({ ...form, methods: e.target.value })}
@@ -505,10 +564,26 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
               />
             </Field>
           </div>
-          {!editing && <Field
+          {duplicate && <>
+            <label className="flex items-center gap-2">
+              <Switch checked={enabled} onCheckedChange={setEnabled} /> Enabled
+            </label>
+            {duplicate.allow.git && <>
+              <Field label="Git repositories" htmlFor="rule-git-repos" hint="Required, one repository per line.">
+                <Textarea id="rule-git-repos" required value={repositories} onChange={e => setRepositories(e.target.value)} />
+              </Field>
+              <label className="flex items-center gap-2">
+                <Switch checked={allowPush} onCheckedChange={setAllowPush} /> Allow Git push
+              </label>
+            </>}
+            <label className="flex items-center gap-2">
+              <Switch checked={limitedTools} onCheckedChange={setLimitedTools} /> Limit MCP tools
+            </label>
+          </>}
+          {!editing && (!duplicate || limitedTools) && <Field
             label="MCP tools"
             htmlFor="rule-new-tools"
-            hint="For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."
+            hint={duplicate ? "One tool per line. Leave empty to allow none." : "For MCP servers: optional, one tool per line. Leave empty to allow every tool; otherwise other tools/call requests are refused at the proxy."}
           >
             <Textarea
               id="rule-new-tools"
@@ -533,12 +608,42 @@ function RuleEditor({ vaultId, editing: initialRule, credentials, onClose, onSav
   );
 }
 
-function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
+// A write belongs to the browser session and can outlive both its dialog and
+// its vault tab. The revision invalidates list reads started before it settled.
+let writes = { pending: [] as string[], revision: 0 };
+const writeListeners = new Set<() => void>();
+const readWrites = () => writes;
+const subscribeWrites = (listener: () => void) => {
+  writeListeners.add(listener);
+  return () => { writeListeners.delete(listener); };
+};
+const publishWrites = (next: typeof writes) => {
+  writes = next;
+  writeListeners.forEach(listener => listener());
+};
+async function saveChange<T>(rule: Rule | null, change: () => Promise<T>): Promise<T> {
+  if (rule) publishWrites({ ...writes, pending: [...writes.pending, rule.id] });
+  try {
+    return await change();
+  } finally {
+    const index = rule ? writes.pending.indexOf(rule.id) : -1;
+    publishWrites({ revision: writes.revision + 1, pending: writes.pending.filter((_, i) => i !== index) });
+  }
+}
+
+function ruleCredentials(vaultId: string, page = 1) {
+  return api<Page<CredentialMeta>>("GET", `/vaults/${vaultId}/credentials?page_size=100&page=${page}`, undefined, { timeoutMs: 30_000 });
+}
+
+function Rules({ vaultId, canEdit, saveFailures, onFailure, onDismiss }: {
+  vaultId: string; canEdit: boolean; saveFailures: string[];
+  onFailure: (message: string) => void; onDismiss: (message: string) => void;
+}) {
   const [page, setPage] = useState(1);
-  const rules = useLoad(() => get<Page<Rule>>(`/vaults/${vaultId}/rules?page=${page}`), [vaultId, page]);
-  const creds = useLoad(() => get<Page<CredentialMeta>>(`/vaults/${vaultId}/credentials?page_size=100`), [vaultId]);
-  const [saveFailures, setSaveFailures] = useState<string[]>([]);
-  const [editor, setEditor] = useState<{ rule: Rule | null } | null>(null);
+  const { pending: savingRules, revision } = useSyncExternalStore(subscribeWrites, readWrites);
+  const rules = useLoad(() => api<Page<Rule>>("GET", `/vaults/${vaultId}/rules?page=${page}`, undefined, { timeoutMs: 30_000 }), [vaultId, page, revision]);
+  const creds = useLoad(() => ruleCredentials(vaultId), [vaultId]);
+  const [editor, setEditor] = useState<{ rule: Rule | null; sourceId?: string } | null>(null);
   const [editingTools, setEditingTools] = useState<Rule | null>(null);
   const confirm = useConfirm<Rule>();
   const action = useAction();
@@ -546,12 +651,11 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
   const credName = (id: string) => creds.data?.items.find((c) => c.id === id)?.name ?? id;
 
   const toggle = async (r: Rule) => {
-    await action.run(() => patch<Rule>(`/rules/${r.id}`, { enabled: !r.enabled }));
-    rules.reload();
+    await action.run(() => saveChange(r, () => api<Rule>("PATCH", `/rules/${r.id}`, { enabled: !r.enabled }, { timeoutMs: 30_000 })));
   };
 
   const remove = async (r: Rule) => {
-    const removed = await deleteAction.run(async () => {
+    const removed = await deleteAction.run(() => saveChange(r, async () => {
       const path = `/rules/${r.id}`;
       try {
         await api<void>("DELETE", path, undefined, { timeoutMs: 30_000 });
@@ -567,17 +671,29 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         throw error;
       }
       return true;
-    });
+    }));
     if (removed) confirm.close();
-    rules.reload();
+  };
+
+  const openCreateDraft = (sourceId?: string) => {
+    creds.reload();
+    setEditor({ rule: null, sourceId });
   };
 
   const addButton = (
-    <Button type="button" onClick={() => setEditor({ rule: null })} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
+    <Button type="button" onClick={() => openCreateDraft()} disabled={!canEdit} title={canEdit ? undefined : onlyFor("edit")}>
       <Plus />
       Add rule
     </Button>
   );
+
+  const editorProps = {
+    vaultId,
+    firstPage: creds,
+    onClose: () => setEditor(null),
+    onFailure,
+    onSaved: () => setEditor(current => current === editor ? null : current),
+  };
 
   return (
     <Section
@@ -587,12 +703,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
       {saveFailures.map(message => (
         <div key={message} className="flex items-center gap-2">
           <ErrorBanner error={message} />
-          <Button type="button" variant="outline" onClick={() => setSaveFailures(current => current.filter(m => m !== message))}>
+          <Button type="button" variant="outline" onClick={() => onDismiss(message)}>
             Dismiss
           </Button>
         </div>
       ))}
       <ErrorBanner error={rules.error} />
+      {rules.error && <Button type="button" variant="outline" onClick={rules.reload} disabled={rules.loading}>Retry loading rules</Button>}
       <ErrorBanner error={action.error} />
       <Panel>
         {rules.loading && !rules.data ? (
@@ -653,6 +770,13 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
                             reason: onlyFor("edit"),
                           },
                           {
+                            label: "Duplicate rule",
+                            icon: Copy,
+                            onSelect: () => openCreateDraft(r.id),
+                            disabled: !canEdit || savingRules.includes(r.id),
+                            reason: !canEdit ? onlyFor("edit") : "Wait for this rule to finish saving.",
+                          },
+                          {
                             label: "MCP tools",
                             icon: Wrench,
                             onSelect: () => setEditingTools(r),
@@ -678,20 +802,9 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
         )}
         <Pager page={rules.data} onPage={setPage} />
       </Panel>
-      {editor && <RuleEditor
-        vaultId={vaultId}
-        editing={editor.rule}
-        credentials={creds.data?.items}
-        onClose={() => setEditor(null)}
-        onFailure={message => {
-          setSaveFailures(current => current.includes(message) ? current : [...current, message]);
-          rules.reload();
-        }}
-        onSaved={() => {
-          setEditor(current => current === editor ? null : current);
-          rules.reload();
-        }}
-      />}
+      {editor && (editor.sourceId
+        ? <DuplicateRuleDraft key={editor.sourceId} sourceId={editor.sourceId} {...editorProps} />
+        : <RuleEditor editing={editor.rule} {...editorProps} />)}
       <FormDialog
         open={editingTools !== null}
         onOpenChange={(o) => {
@@ -705,8 +818,7 @@ function Rules({ vaultId, canEdit }: { vaultId: string; canEdit: boolean }) {
             rule={editingTools}
             onCancel={() => setEditingTools(null)}
             onDone={() => {
-              setEditingTools(null);
-              rules.reload();
+              setEditingTools(current => current === editingTools ? null : current);
             }}
           />
         )}

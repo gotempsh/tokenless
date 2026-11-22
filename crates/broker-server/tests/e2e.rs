@@ -431,6 +431,16 @@ async fn end_to_end() {
         .await;
     let rule_id = rule["id"].as_str().unwrap().to_string();
 
+    assert_eq!(rule["enabled"], true);
+    let copy = api
+        .post(
+            &format!("/vaults/{vault_id}/rules/copies"),
+            json!({ "name": "disabled copy", "credential_id": credential_id, "enabled": false }),
+        )
+        .await;
+    assert_ne!(copy["id"], rule["id"]);
+    assert_eq!(copy["enabled"], false);
+
     // --- enrol and start the data plane --------------------------------------
     let join = api.post("/nodes/join-tokens", json!({})).await;
     let join_token = join["token"].as_str().unwrap().to_string();

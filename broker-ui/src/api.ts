@@ -409,7 +409,7 @@ export interface Rule {
   credential_id: string;
   name: string;
   /** `mcp_tools` absent: every tool; a list: only those tools/call names. */
-  allow: { hosts: string[]; paths: string[]; methods: string[]; mcp_tools?: string[] };
+  allow: { hosts: string[]; paths: string[]; methods: string[]; mcp_tools?: string[]; git?: { repositories: string[]; push: boolean } };
   enabled: boolean;
   created_by: string;
   created_at: string;

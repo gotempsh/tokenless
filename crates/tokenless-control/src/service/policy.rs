@@ -1333,6 +1333,18 @@ impl PolicyService {
         vault_id: &VaultId,
         req: CreateRule,
     ) -> Result<Rule, ControlError> {
+        self.create_rule_with_state(caller, vault_id, req, true)
+            .await
+    }
+
+    /// Creates a rule with its initial enabled state in the same write.
+    pub async fn create_rule_with_state(
+        &self,
+        caller: &Caller,
+        vault_id: &VaultId,
+        req: CreateRule,
+        enabled: bool,
+    ) -> Result<Rule, ControlError> {
         self.guard
             .check(caller, Action::RuleWrite, Some(vault_id))
             .await?;
@@ -1371,7 +1383,7 @@ impl PolicyService {
             credential_id: meta.id,
             name,
             allow,
-            enabled: true,
+            enabled,
             created_by: caller.actor().to_string(),
             created_at: now,
             updated_at: now,
@@ -1380,6 +1392,7 @@ impl PolicyService {
             .vault(*vault_id)
             .target(format!("rule:{}", rule.id))
             .detail("credential_id", meta.id.to_string())
+            .detail("enabled", enabled.to_string())
             .detail("hosts", hosts_string(&rule.allow.hosts))
             .detail("mcp_tools", tools_string(&rule.allow.mcp_tools))
             .detail("git", git_string(&rule.allow.git));

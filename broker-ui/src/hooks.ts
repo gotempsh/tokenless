@@ -38,7 +38,11 @@ export function useLoad<T>(load: () => Promise<T>, deps: unknown[]): Loaded<T> {
       cancelled = true;
     };
   }, [run, tick]);
-  return { data, error, loading, reload: () => setTick((t) => t + 1) };
+  const reload = () => {
+    setLoading(true);
+    setTick((t) => t + 1);
+  };
+  return { data, error, loading, reload };
 }
 
 /** Calls `reload` every `ms` while `enabled` and the page is visible. */

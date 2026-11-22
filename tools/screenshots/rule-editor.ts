@@ -21,10 +21,24 @@ try {
   let deleteAttempts = 0;
   const deleted = new Set<string>();
   const patches: string[] = [];
+  const creates: unknown[] = [];
+  let pendingCopy: ReturnType<typeof Promise.withResolvers<boolean>> | undefined;
+  const finishDelete = Promise.withResolvers<void>();
+  let createdName: string | undefined;
   let templateLoads = 0;
+  let credentialPageAttempts = 0;
+  let failFirstCredentialPage = false;
+  let credentialsShifted = false;
+  let sourceEnabled = false;
+  let sourcePaths = ["/reports "];
+  let sourceTools: string[] = [];
+  const finishNarrowing = Promise.withResolvers<void>();
+  const finishDisable = Promise.withResolvers<void>();
+  const finishListRefresh = Promise.withResolvers<void>();
+  let holdRefresh = false;
   const rule = (vault: string) => ({
     id: vault + "-rule", name: (vault === "b" && latestName) || vault + "-read", credential_id: "service", vault_id: vault,
-    updated_at: currentRevision, enabled: true, allow: { hosts: ["api.example.com"], paths: ["/reports "], methods: ["GET"] },
+    updated_at: currentRevision, enabled: vault === "a" ? sourceEnabled : true, allow: { ...(vault === "a" ? { mcp_tools: sourceTools, git: { repositories: ["example/repo"], push: false } } : {}), hosts: ["api.example.com"], paths: vault === "a" ? sourcePaths : ["/reports "], methods: ["GET"] },
   });
   await page.route(origin + "/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -36,7 +50,26 @@ try {
       user: { username: "editor", role: "user" }, csrf_token: "test",
       vaults: ["a", "b"].map(vault_id => ({ vault_id, role: "editor" })),
     } });
+    if (id === "a-rule" && route.request().method() === "PATCH") {
+      if (route.request().postDataJSON().paths) {
+        await finishNarrowing.promise;
+        sourcePaths = route.request().postDataJSON().paths;
+        return route.fulfill({ json: rule("a") });
+      }
+      if (!route.request().postDataJSON().enabled) {
+        await finishDisable.promise;
+        holdRefresh = true;
+      }
+      sourceEnabled = route.request().postDataJSON().enabled;
+      return route.fulfill({ json: rule("a") });
+    }
+    if (section === "rules" && id === "a" && holdRefresh) await finishListRefresh.promise;
     if (resource === "rules" && deleted.has(id)) return route.fulfill({ status: 404, body: "already deleted" });
+    if (resource === "rules" && id === "a-rule" && route.request().method() === "DELETE") {
+      await finishDelete.promise;
+      deleted.add(id);
+      return route.fulfill({ status: 204 });
+    }
     if (resource === "rules" && id === "b-rule" && route.request().method() === "DELETE") {
       deleted.add(id);
       return route.fulfill({ status: 503, body: "upstream response lost" });
@@ -59,7 +92,7 @@ try {
       await releaseOther.promise;
       return route.fulfill({ json: rule("other") });
     }
-    if (resource === "rules" && route.request().method() === "GET") return route.fulfill({ json: rule("b") });
+    if (resource === "rules" && route.request().method() === "GET") return route.fulfill({ json: rule(id === "a-rule" ? "a" : "b") });
     if (resource === "rules" && route.request().method() === "PATCH") {
       patches.push(id);
       if (patches.length === 2) return; // Leave the second request pending until its real deadline.
@@ -74,12 +107,35 @@ try {
       await release.promise;
       return route.fulfill({ json: rule("b") });
     }
+    if (section === "rules" && route.request().method() === "POST") {
+      assert.equal(path, `/api/v1/vaults/${id}/rules/copies`);
+      const draft = route.request().postDataJSON();
+      creates.push(draft);
+      if (pendingCopy) {
+        if (!(await pendingCopy.promise)) return route.fulfill({ status: 503, body: "Copy unavailable" });
+        createdName = draft.name;
+      }
+      return route.fulfill({ status: 201, json: { ...rule(id), id: "new-rule" } });
+    }
+    if (section === "credentials" && new URL(route.request().url()).searchParams.get("page") === "2") {
+      if (credentialsShifted) return route.fulfill({ json: { items: [], total: 100, page: 2, page_size: 100 } });
+      if (++credentialPageAttempts === 1) return; // Exercise the credential request deadline.
+      return route.fulfill({ json: { items: [{ id: "another", name: "Another service", template_id: "example" }], total: 101, page: 2, page_size: 100 } });
+    }
+    if (section === "credentials" && failFirstCredentialPage) {
+      failFirstCredentialPage = false;
+      return route.fulfill({ status: 503, body: "First credential page unavailable" });
+    }
+    if (section === "credentials") return route.fulfill({ json: {
+      items: [{ id: "service", name: "Example", template_id: "example" }, { id: "backup", name: "Backup service", template_id: "example" }, ...(credentialsShifted ? [{ id: "another", name: "Another service", template_id: "example" }] : [])], total: credentialsShifted ? 100 : 101, page: 1, page_size: 100,
+    } });
     if (section === "overview") return route.fulfill({ json: { id, name: id, service_count: 1 } });
     if (resource === "templates") {
       templateLoads++;
       return route.fulfill({ json: [] });
     }
     const items = section === "rules" ? (id === "b" ? [rule(id), rule("other")] : [rule(id)]).filter(r => !deleted.has(r.id)) : [];
+    if (section === "rules" && id === "a" && createdName) items.push({ ...rule("a"), id: "new-rule", name: createdName });
     return route.fulfill({ json: { items, total: items.length, page: 1, page_size: 20 } });
   });
   const closeEditor = async () => {
@@ -122,7 +178,9 @@ try {
     assert.equal(await page.locator("#rule-" + field).isDisabled(), true);
   }
   await closeEditor();
-  await edit("b");
+  await page.getByRole("button", { name: "Actions for b-read" }).click();
+  assert.equal(await page.getByRole("menuitem", { name: "Duplicate rule" }).isDisabled(), true);
+  await page.getByRole("menuitem", { name: "Edit rule" }).click();
   await page.locator("#rule-name").fill("next draft");
   await Promise.all([page.waitForResponse(r => r.url().includes("/vaults/b/rules?")), Promise.resolve().then(() => release.resolve())]);
   assert.equal(await page.locator("#rule-name").inputValue(), "next draft");
@@ -199,7 +257,110 @@ try {
     page.getByRole("button", { name: "Add rule" }).first().click(),
   ]);
   assert.equal(templateLoads, 1);
-  console.log("Passed: required scope, vault navigation, and delayed save.");
+  await closeEditor();
+  await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
+  const duplicate = async () => {
+    await page.getByRole("button", { name: "Actions for a-read" }).click();
+    await page.getByRole("menuitem", { name: "Duplicate rule" }).click();
+    await page.getByRole("dialog", { name: "Duplicate rule" }).waitFor();
+  };
+  await page.getByRole("button", { name: "Actions for a-read" }).waitFor();
+  failFirstCredentialPage = true;
+  await duplicate();
+  assert.match(await page.locator("#rule-name").inputValue(), /^a-read \(copy [a-f0-9]{12}\)$/);
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  const draftName = await page.locator("#rule-name").inputValue();
+  await page.getByRole("button", { name: "Retry loading credentials" }).click();
+  await page.locator("#rule-cred").getByText("Example (example)").waitFor();
+  assert.equal(await page.locator("#rule-name").inputValue(), draftName);
+  assert.match(await page.locator("#rule-cred").innerText(), /Example/);
+  await closeEditor();
+  assert.equal(creates.length, 0);
+  await duplicate();
+  assert.equal(await page.locator("#rule-git-repos").inputValue(), "example/repo");
+  assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
+  assert.equal(await page.getByRole("switch", { name: "Limit MCP tools" }).isChecked(), true);
+  await Promise.all([
+    page.waitForRequest(r => r.url().includes("credentials?page_size=100&page=2")),
+    page.getByRole("dialog").getByRole("button", { name: "Next" }).click(),
+  ]);
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Backup service/ }).click();
+  await page.getByRole("button", { name: "Retry loading credentials" }).waitFor({ timeout: 45_000 });
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/reports ");
+  await page.getByRole("dialog").getByRole("button", { name: "Next" }).click();
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Another service/ }).click();
+  await page.locator("#rule-git-repos").fill("example/another");
+  await page.locator("#rule-name").fill("another rule");
+  await page.locator("#rule-methods").fill("HEAD");
+  await page.getByRole("button", { name: "Create rule" }).click();
+  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  assert.deepEqual(creates, [{ name: "another rule", credential_id: "another",
+    hosts: ["api.example.com"], paths: ["/reports "], methods: ["HEAD"], enabled: false,
+    mcp_tools: [], git: { repositories: ["example/another"], push: false },
+  }]);
+  await duplicate();
+  credentialsShifted = true;
+  await page.getByRole("dialog").getByRole("button", { name: "Next" }).click();
+  const previous = page.getByRole("dialog").getByRole("button", { name: "Previous" });
+  await page.waitForFunction(() => [...document.querySelectorAll("button")].some(b => b.textContent?.trim() === "Previous" && !b.disabled));
+  assert.equal(await page.getByText("Add a credential to this vault first.").count(), 0);
+  await previous.click();
+  await page.locator("#rule-cred").click();
+  await page.getByRole("option", { name: /Another service/ }).click();
+  await closeEditor();
+  await page.getByRole("switch", { name: "Turn on a-read" }).click();
+  await page.getByRole("switch", { name: "Turn off a-read" }).click();
+  const revisitRules = async () => {
+    await page.evaluate(() => { location.hash = "/vaults/a/bundles"; });
+    await page.getByRole("button", { name: "Actions for a-read" }).waitFor({ state: "detached" });
+    await page.evaluate(() => { location.hash = "/vaults/a/rules"; });
+    await page.getByRole("button", { name: "Actions for a-read" }).click();
+  };
+  await revisitRules();
+  const copyItem = page.getByRole("menuitem", { name: "Duplicate rule" });
+  assert.equal(await copyItem.isDisabled(), true);
+  await Promise.all([page.waitForRequest(r => r.url().includes("/vaults/a/rules?")), Promise.resolve().then(() => finishDisable.resolve())]);
+  // Even a stalled list refresh must not prevent copying the authoritative row.
+  sourceTools = ["search"];
+  await copyItem.click();
+  assert.equal(await page.getByRole("switch", { name: "Enabled", exact: true }).isChecked(), false);
+  assert.equal(await page.locator("#rule-new-tools").inputValue(), "search");
+  holdRefresh = false;
+  finishListRefresh.resolve();
+  await closeEditor();
+  await edit("a");
+  await page.locator("#rule-paths").fill("/narrow");
+  await save.click();
+  await closeEditor();
+  await revisitRules();
+  assert.equal(await copyItem.isDisabled(), true);
+  finishNarrowing.resolve();
+  await copyItem.click();
+  assert.equal(await page.locator("#rule-paths").inputValue(), "/narrow");
+  for (const succeeds of [true, false]) {
+    if (!succeeds) await duplicate();
+    const name = succeeds ? "saved copy" : "rejected copy";
+    await page.locator("#rule-name").fill(name);
+    pendingCopy = Promise.withResolvers<boolean>();
+    await Promise.all([page.waitForRequest(r => r.method() === "POST"), page.getByRole("button", { name: "Create rule" }).click()]);
+    await closeEditor();
+    await revisitRules();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.getByRole("button", { name: "Actions for " + name }).count(), 0);
+    pendingCopy.resolve(succeeds);
+    if (succeeds) await page.getByRole("button", { name: "Actions for " + name }).waitFor();
+    else await page.getByText(/Saving rule "rejected copy".*Copy unavailable/).waitFor();
+  }
+  await page.getByRole("button", { name: "Actions for a-read" }).click();
+  await page.getByRole("menuitem", { name: "Delete rule" }).click();
+  await Promise.all([page.waitForRequest(r => r.method() === "DELETE"), submitDelete.click()]);
+  await revisitRules();
+  assert.equal(await copyItem.isDisabled(), true);
+  finishDelete.resolve();
+  await page.getByRole("button", { name: "Actions for a-read" }).waitFor({ state: "detached" });
+  console.log("Passed: scope validation, vault navigation, save recovery, and editable rule duplication.");
 } finally {
   await browser.close();
 }
